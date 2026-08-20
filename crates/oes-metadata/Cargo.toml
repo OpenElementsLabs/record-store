@@ -1,0 +1,22 @@
+[package]
+name = "oes-metadata"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+oes-core = { path = "../oes-core" }
+redb.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
+

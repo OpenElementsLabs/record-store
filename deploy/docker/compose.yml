@@ -1,0 +1,19 @@
+services:
+  oes:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    ports:
+      - "9000:9000"
+    volumes:
+      - oes-data:/var/lib/oes
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  oes-data:
+

@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package oes.internal.system.v1;
+
+// Safe identity information exchanged during future node handshakes.
+message NodeDescriptor {
+  string node_id = 1;
+  uint32 protocol_major_version = 2;
+}

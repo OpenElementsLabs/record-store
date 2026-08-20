@@ -1,0 +1,22 @@
+[package]
+name = "oes-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "oes"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+oes-config = { path = "../../crates/oes-config" }
+reqwest.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
+

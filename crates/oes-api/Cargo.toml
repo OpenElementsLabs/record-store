@@ -1,0 +1,26 @@
+[package]
+name = "oes-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+http.workspace = true
+oes-metadata = { path = "../oes-metadata" }
+oes-storage = { path = "../oes-storage" }
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
+

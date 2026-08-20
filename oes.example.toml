@@ -1,0 +1,14 @@
+[server]
+bind_address = "0.0.0.0"
+port = 9000
+max_request_size_bytes = 67108864
+shutdown_grace_period_seconds = 30
+
+[storage]
+data_directory = "./data"
+# temporary_directory = "/path/on-the-same-filesystem/as-data"
+
+[observability]
+log_filter = "oes=info,tower_http=info"
+json = false
+

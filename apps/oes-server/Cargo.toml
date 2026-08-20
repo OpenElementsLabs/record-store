@@ -1,0 +1,27 @@
+[package]
+name = "oes-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+oes-api = { path = "../../crates/oes-api" }
+oes-config = { path = "../../crates/oes-config" }
+oes-metadata = { path = "../../crates/oes-metadata" }
+oes-observability = { path = "../../crates/oes-observability" }
+oes-storage = { path = "../../crates/oes-storage" }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
+

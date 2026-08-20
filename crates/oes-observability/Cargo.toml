@@ -1,0 +1,15 @@
+[package]
+name = "oes-observability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+oes-config = { path = "../oes-config" }
+thiserror.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
+
