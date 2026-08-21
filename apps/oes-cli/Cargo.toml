@@ -13,10 +13,13 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 oes-config = { path = "../../crates/oes-config" }
+oes-core = { path = "../../crates/oes-core" }
+oes-observability = { path = "../../crates/oes-observability" }
+oes-server = { path = "../oes-server" }
 reqwest.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 
 [lints]
 workspace = true
-

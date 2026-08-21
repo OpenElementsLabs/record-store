@@ -7,8 +7,12 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
+base64.workspace = true
 http.workspace = true
+oes-auth = { path = "../oes-auth" }
+oes-core = { path = "../oes-core" }
 oes-metadata = { path = "../oes-metadata" }
+oes-service = { path = "../oes-service" }
 oes-storage = { path = "../oes-storage" }
 serde.workspace = true
 thiserror.workspace = true
@@ -23,4 +27,3 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
-

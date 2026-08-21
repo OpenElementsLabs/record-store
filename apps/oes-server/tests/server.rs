@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use oes_config::Config;
+use oes_config::{Config, SecretValue};
 use tempfile::tempdir;
 use tokio::{net::TcpListener, sync::oneshot, time::timeout};
 
@@ -10,16 +10,22 @@ async fn starts_serves_operational_routes_and_shuts_down() {
     let mut config = Config::default();
     config.storage.data_directory = directory.path().join("data");
     config.server.shutdown_grace_period_seconds = 2;
+    config.auth.root_access_key = Some("test-access".into());
+    config.auth.root_secret_key = Some(SecretValue::new("test-secret-at-least-sixteen"));
 
     let runtime = oes_server::initialize(&config)
         .await
         .expect("initialize server");
-    let listener = TcpListener::bind("127.0.0.1:0")
+    let api_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind listener");
-    let address = listener.local_addr().expect("listener address");
+    let address = api_listener.local_addr().expect("listener address");
+    let s3_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind S3 listener");
+    let s3_address = s3_listener.local_addr().expect("S3 listener address");
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let server = tokio::spawn(runtime.serve(listener, async move {
+    let server = tokio::spawn(runtime.serve(s3_listener, api_listener, async move {
         let _ = shutdown_rx.await;
     }));
 
@@ -61,6 +67,49 @@ async fn starts_serves_operational_routes_and_shuts_down() {
     assert_eq!(info["name"], "oes");
     assert_eq!(info["status"], "ready");
     assert!(info["version"].is_string());
+
+    let unauthorized_admin = client
+        .get(format!("http://{address}/api/v1/buckets"))
+        .send()
+        .await
+        .expect("unauthorized admin request");
+    assert_eq!(
+        unauthorized_admin.status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+
+    let created = client
+        .post(format!("http://{address}/api/v1/buckets"))
+        .basic_auth("test-access", Some("test-secret-at-least-sixteen"))
+        .json(&serde_json::json!({"name": "native-api-bucket"}))
+        .send()
+        .await
+        .expect("create bucket request");
+    assert_eq!(created.status(), reqwest::StatusCode::CREATED);
+    let buckets = client
+        .get(format!("http://{address}/api/v1/buckets"))
+        .basic_auth("test-access", Some("test-secret-at-least-sixteen"))
+        .send()
+        .await
+        .expect("bucket list request")
+        .json::<serde_json::Value>()
+        .await
+        .expect("bucket list JSON");
+    assert_eq!(buckets[0]["name"], "native-api-bucket");
+
+    let s3_unauthorized = client
+        .get(format!("http://{s3_address}/"))
+        .send()
+        .await
+        .expect("unauthorized S3 request");
+    assert_eq!(s3_unauthorized.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(
+        s3_unauthorized
+            .text()
+            .await
+            .expect("S3 error body")
+            .contains("<Code>AccessDenied</Code>")
+    );
 
     let missing = client
         .get(format!("http://{address}/not-found"))

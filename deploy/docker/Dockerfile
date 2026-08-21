@@ -15,16 +15,15 @@ RUN apt-get update \
 COPY --from=builder /src/target/release/oes-server /usr/local/bin/oes-server
 COPY --from=builder /src/target/release/oes /usr/local/bin/oes
 
-ENV OES_SERVER_BIND_ADDRESS=0.0.0.0 \
-    OES_SERVER_PORT=9000 \
+ENV OES_S3_BIND=0.0.0.0:7600 \
+    OES_API_BIND=0.0.0.0:7601 \
     OES_STORAGE_DATA_DIRECTORY=/var/lib/oes \
     OES_LOG_JSON=true
 
 USER oes:oes
 VOLUME ["/var/lib/oes"]
-EXPOSE 9000
+EXPOSE 7600 7601
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD ["oes", "server", "status", "--endpoint", "http://127.0.0.1:9000"]
-ENTRYPOINT ["oes-server"]
-
+    CMD ["oes", "status", "--endpoint", "http://127.0.0.1:7601"]
+ENTRYPOINT ["oes", "server"]

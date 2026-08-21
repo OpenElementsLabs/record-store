@@ -7,15 +7,22 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
 clap.workspace = true
 oes-api = { path = "../../crates/oes-api" }
+oes-auth = { path = "../../crates/oes-auth" }
 oes-config = { path = "../../crates/oes-config" }
+oes-core = { path = "../../crates/oes-core" }
 oes-metadata = { path = "../../crates/oes-metadata" }
 oes-observability = { path = "../../crates/oes-observability" }
+oes-s3 = { path = "../../crates/oes-s3" }
+oes-service = { path = "../../crates/oes-service" }
 oes-storage = { path = "../../crates/oes-storage" }
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 reqwest.workspace = true
@@ -24,4 +31,3 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
-

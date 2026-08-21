@@ -4,7 +4,11 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     ports:
-      - "9000:9000"
+      - "7600:7600"
+      - "7601:7601"
+    environment:
+      OES_ROOT_ACCESS_KEY: "${OES_ROOT_ACCESS_KEY:?set OES_ROOT_ACCESS_KEY}"
+      OES_ROOT_SECRET_KEY: "${OES_ROOT_SECRET_KEY:?set OES_ROOT_SECRET_KEY}"
     volumes:
       - oes-data:/var/lib/oes
     read_only: true
@@ -16,4 +20,3 @@ services:
 
 volumes:
   oes-data:
-

@@ -36,12 +36,18 @@ pub enum CoreError {
         /// UUID parsing failure.
         reason: String,
     },
+    /// A bucket name violated S3/OES naming constraints.
+    #[error("invalid bucket name: {0}")]
+    InvalidBucketName(String),
     /// An object key violated the OES key constraints.
     #[error("invalid object key: {0}")]
     InvalidObjectKey(String),
     /// A checksum was malformed or unsupported.
     #[error("invalid checksum: {0}")]
     InvalidChecksum(String),
+    /// An entity tag was malformed.
+    #[error("invalid ETag: {0}")]
+    InvalidETag(String),
     /// A byte range was invalid for the requested object.
     #[error("invalid byte range: {0}")]
     InvalidByteRange(String),
@@ -117,6 +123,96 @@ uuid_identifier!(VersionId, "version");
 uuid_identifier!(NodeId, "node");
 uuid_identifier!(OrganizationId, "organization");
 uuid_identifier!(ServiceAccountId, "service account");
+
+/// A validated S3-compatible bucket name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct BucketName(String);
+
+impl BucketName {
+    /// Minimum bucket-name length.
+    pub const MIN_LENGTH: usize = 3;
+    /// Maximum bucket-name length.
+    pub const MAX_LENGTH: usize = 63;
+
+    /// Validates and creates a bucket name.
+    pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
+        let value = value.into();
+        validate_bucket_name(&value)?;
+        Ok(Self(value))
+    }
+
+    /// Returns the validated name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Display for BucketName {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for BucketName {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for BucketName {
+    type Error = CoreError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<BucketName> for String {
+    fn from(value: BucketName) -> Self {
+        value.0
+    }
+}
+
+fn validate_bucket_name(value: &str) -> Result<(), CoreError> {
+    let invalid = |reason: &str| CoreError::InvalidBucketName(reason.to_owned());
+    if !(BucketName::MIN_LENGTH..=BucketName::MAX_LENGTH).contains(&value.len()) {
+        return Err(invalid("name must contain between 3 and 63 bytes"));
+    }
+    let bytes = value.as_bytes();
+    if !bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+    {
+        return Err(invalid("name must begin and end with a letter or digit"));
+    }
+    if !bytes.iter().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'.')
+    }) {
+        return Err(invalid(
+            "only lowercase letters, digits, hyphens, and periods are permitted",
+        ));
+    }
+    if value.contains("..") {
+        return Err(invalid("adjacent periods are not permitted"));
+    }
+    if value.parse::<std::net::Ipv4Addr>().is_ok() {
+        return Err(invalid("IP address notation is not permitted"));
+    }
+    if value.starts_with("xn--")
+        || value.starts_with("sthree-")
+        || value.ends_with("-s3alias")
+        || value.ends_with("--ol-s3")
+        || matches!(value, "oes-system" | "oes-internal")
+    {
+        return Err(invalid(
+            "name uses a reserved prefix, suffix, or internal name",
+        ));
+    }
+    Ok(())
+}
 
 /// A validated logical key. Keys are never interpreted as filesystem paths.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -301,6 +397,61 @@ impl From<Checksum> for String {
     }
 }
 
+/// A stable protocol-facing entity tag, stored without HTTP quote characters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ETag(String);
+
+impl ETag {
+    /// Creates a validated opaque entity tag.
+    pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > 128
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && byte != b'"')
+        {
+            return Err(CoreError::InvalidETag(
+                "ETag must contain 1 to 128 visible ASCII characters excluding quotes".into(),
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Builds the compatibility ETag for a single-part upload.
+    #[must_use]
+    pub fn from_md5(digest: [u8; 16]) -> Self {
+        Self(hex::encode(digest))
+    }
+
+    /// Returns the unquoted ETag value.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Display for ETag {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for ETag {
+    type Error = CoreError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<ETag> for String {
+    fn from(value: ETag) -> Self {
+        value.0
+    }
+}
+
 /// A requested byte range expressed as an offset and non-zero length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteRange {
@@ -363,7 +514,7 @@ pub struct Bucket {
     /// Owning organization.
     pub organization_id: OrganizationId,
     /// User-facing bucket name.
-    pub name: String,
+    pub name: BucketName,
     /// Creation time.
     pub created_at: DateTime<Utc>,
 }
@@ -383,6 +534,8 @@ pub struct ObjectMetadata {
     pub size: u64,
     /// Payload integrity checksum.
     pub checksum: Checksum,
+    /// Stable protocol-facing entity tag.
+    pub etag: ETag,
     /// Optional media type supplied by the caller.
     pub content_type: Option<String>,
     /// Caller-supplied metadata with deterministic serialization order.
@@ -411,10 +564,14 @@ pub struct StorageUsage {
     pub object_count: u64,
     /// Total committed payload bytes.
     pub bytes_used: u64,
+    /// Number of buckets.
+    pub bucket_count: u64,
 }
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -436,6 +593,32 @@ mod tests {
                 .expect("valid object key")
                 .as_str(),
             "images/2026/photo.jpg"
+        );
+    }
+
+    #[test]
+    fn bucket_names_follow_safe_s3_constraints() {
+        for name in [
+            "",
+            "ab",
+            "UPPERCASE",
+            "-leading",
+            "trailing-",
+            "192.168.1.1",
+            "a..b",
+            "oes-system",
+            "xn--reserved",
+        ] {
+            assert!(
+                BucketName::new(name).is_err(),
+                "accepted invalid name: {name}"
+            );
+        }
+        assert_eq!(
+            BucketName::new("photos-2026.example")
+                .expect("valid bucket")
+                .as_str(),
+            "photos-2026.example"
         );
     }
 
@@ -470,5 +653,32 @@ mod tests {
                 length: 5
             }
         );
+    }
+
+    proptest! {
+        #[test]
+        fn accepted_bucket_names_always_satisfy_storage_safety_invariants(value in any::<String>()) {
+            if let Ok(name) = BucketName::new(value) {
+                let value = name.as_str();
+                prop_assert!((BucketName::MIN_LENGTH..=BucketName::MAX_LENGTH).contains(&value.len()));
+                prop_assert!(value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'.')));
+                prop_assert!(!value.contains(".."));
+                prop_assert!(!value.starts_with('-') && !value.starts_with('.'));
+                prop_assert!(!value.ends_with('-') && !value.ends_with('.'));
+                prop_assert!(value.parse::<std::net::Ipv4Addr>().is_err());
+            }
+        }
+
+        #[test]
+        fn accepted_object_keys_never_contain_unsafe_path_segments(value in any::<String>()) {
+            if let Ok(key) = ObjectKey::new(value) {
+                let value = key.as_str();
+                prop_assert!(!value.starts_with('/'));
+                prop_assert!(!value.contains('\\'));
+                prop_assert!(!value.chars().any(char::is_control));
+                prop_assert!(value.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != ".."));
+                prop_assert!(value.len() <= ObjectKey::MAX_LENGTH);
+            }
+        }
     }
 }
