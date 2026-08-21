@@ -1142,19 +1142,40 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
+ "chrono",
  "http",
  "http-body-util",
+ "oes-audit",
  "oes-auth",
  "oes-core",
+ "oes-events",
  "oes-metadata",
  "oes-service",
  "oes-storage",
  "serde",
  "serde_json",
+ "sha2",
+ "subtle",
  "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "oes-audit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "oes-core",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
  "uuid",
 ]
 
@@ -1219,6 +1240,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "oes-events"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "base64",
+ "chrono",
+ "hex",
+ "hkdf",
+ "hmac",
+ "oes-core",
+ "redb",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "oes-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "oes-audit",
+ "oes-core",
+ "oes-metadata",
+ "oes-service",
+ "oes-storage",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "oes-metadata"
 version = "0.1.0"
 dependencies = [
@@ -1267,6 +1333,7 @@ dependencies = [
  "hmac",
  "http",
  "http-body-util",
+ "oes-audit",
  "oes-auth",
  "oes-core",
  "oes-metadata",
@@ -1293,17 +1360,24 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "fs2",
+ "hex",
  "oes-api",
+ "oes-audit",
  "oes-auth",
  "oes-config",
  "oes-core",
+ "oes-events",
+ "oes-lifecycle",
  "oes-metadata",
  "oes-observability",
  "oes-s3",
  "oes-service",
  "oes-storage",
  "reqwest",
+ "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1320,6 +1394,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "oes-core",
+ "oes-events",
  "oes-metadata",
  "oes-storage",
  "tempfile",
@@ -1332,6 +1407,7 @@ dependencies = [
 name = "oes-storage"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "async-trait",
  "bytes",
  "chrono",
@@ -1339,6 +1415,8 @@ dependencies = [
  "fs2",
  "futures-core",
  "futures-util",
+ "hex",
+ "hkdf",
  "md-5",
  "oes-core",
  "oes-metadata",
@@ -1351,6 +1429,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

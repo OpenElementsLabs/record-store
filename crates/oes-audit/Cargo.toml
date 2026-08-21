@@ -1,21 +1,20 @@
 [package]
-name = "oes-service"
+name = "oes-audit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-bytes.workspace = true
+async-trait.workspace = true
 chrono.workspace = true
-futures-util.workspace = true
 oes-core = { path = "../oes-core" }
-oes-events = { path = "../oes-events" }
-oes-metadata = { path = "../oes-metadata" }
-oes-storage = { path = "../oes-storage" }
+redb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

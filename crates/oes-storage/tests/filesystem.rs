@@ -3,11 +3,15 @@ use std::{collections::BTreeMap, sync::Arc};
 use bytes::Bytes;
 use chrono::Utc;
 use futures_util::{StreamExt, TryStreamExt, stream};
-use oes_core::{Bucket, BucketId, BucketName, ByteRange, ObjectId, ObjectKey, OrganizationId};
+use oes_core::{
+    Bucket, BucketId, BucketName, BucketQuota, ByteRange, MultipartUpload, MultipartUploadState,
+    ObjectId, ObjectKey, OrganizationId, PartNumber, PayloadFormat, UploadId, VersioningState,
+};
 use oes_metadata::{MetadataRepository, RedbMetadataRepository};
 use oes_storage::{
-    DeleteObjectRequest, DownloadStream, GetObjectRequest, HeadObjectRequest, LocalFilesystemStore,
-    ObjectStore, PutObjectRequest, StorageError, VerifyObjectRequest, upload_stream,
+    CompleteMultipartRequest, DeleteObjectRequest, DownloadStream, GetObjectRequest,
+    HeadObjectRequest, LocalFilesystemStore, ObjectStore, PutMultipartPartRequest,
+    PutObjectRequest, StorageError, VerifyObjectRequest, upload_stream,
 };
 use tempfile::tempdir;
 use tokio::sync::Notify;
@@ -29,6 +33,8 @@ async fn store() -> (
         organization_id: OrganizationId::new(),
         name: BucketName::new("integration-bucket").expect("bucket name"),
         created_at: Utc::now(),
+        versioning: VersioningState::Disabled,
+        quota: BucketQuota::default(),
     };
     repository
         .create_bucket(&bucket)
@@ -55,6 +61,8 @@ fn put_request(bucket_id: BucketId, key: &str, chunks: &[&'static [u8]]) -> PutO
         content_type: Some("application/octet-stream".into()),
         custom_metadata: BTreeMap::from([("source".into(), "integration-test".into())]),
         expected_checksum: None,
+        object_id: None,
+        protocol_etag: None,
         body: upload_stream(stream::iter(chunks)),
     }
 }
@@ -173,6 +181,8 @@ async fn cancelled_upload_cleans_its_temporary_file() {
         content_type: None,
         custom_metadata: BTreeMap::new(),
         expected_checksum: None,
+        object_id: None,
+        protocol_etag: None,
         body: upload_stream(body),
     };
 
@@ -246,6 +256,8 @@ async fn empty_and_large_generated_objects_remain_streaming() {
             content_type: None,
             custom_metadata: BTreeMap::new(),
             expected_checksum: None,
+            object_id: None,
+            protocol_etag: None,
             body: upload_stream(body),
         })
         .await
@@ -348,6 +360,8 @@ async fn concurrent_reads_and_same_key_writes_publish_only_complete_objects() {
                     content_type: None,
                     custom_metadata: BTreeMap::new(),
                     expected_checksum: None,
+                    object_id: None,
+                    protocol_etag: None,
                     body: upload_stream(stream::once(async move { Ok(payload) })),
                 })
                 .await
@@ -435,4 +449,261 @@ async fn restart_preserves_metadata_detects_corruption_and_cleans_owned_temporar
             .await,
         Err(StorageError::IntegrityMismatch)
     ));
+}
+
+#[tokio::test]
+async fn envelope_encryption_streams_ranges_survives_restart_and_detects_tampering() {
+    const MASTER_KEY: &[u8] = b"test-only-object-master-key-material-000000000001";
+    let directory = tempdir().expect("temporary directory");
+    let repository = Arc::new(
+        RedbMetadataRepository::open(directory.path().join("metadata/catalog.redb"))
+            .await
+            .expect("metadata repository"),
+    );
+    let bucket = Bucket {
+        id: BucketId::new(),
+        organization_id: OrganizationId::new(),
+        name: BucketName::new("encrypted-bucket").expect("bucket name"),
+        created_at: Utc::now(),
+        versioning: VersioningState::Disabled,
+        quota: BucketQuota::default(),
+    };
+    repository
+        .create_bucket(&bucket)
+        .await
+        .expect("create bucket");
+
+    let plaintext = (0..150_000_u32)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let storage = LocalFilesystemStore::open_encrypted(
+        directory.path(),
+        directory.path().join("tmp"),
+        repository.clone(),
+        MASTER_KEY,
+    )
+    .await
+    .expect("encrypted store");
+    let committed = storage
+        .put(PutObjectRequest {
+            bucket_id: bucket.id,
+            key: ObjectKey::new("private/data.bin").expect("key"),
+            content_type: None,
+            custom_metadata: BTreeMap::new(),
+            expected_checksum: None,
+            object_id: None,
+            protocol_etag: None,
+            body: upload_stream(stream::iter(
+                plaintext
+                    .chunks(7_919)
+                    .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+                    .collect::<Vec<_>>(),
+            )),
+        })
+        .await
+        .expect("encrypted put");
+    assert_eq!(
+        committed.metadata.payload_format,
+        PayloadFormat::Aes256GcmEnvelopeV1
+    );
+    let physical_path = payload_path(directory.path(), committed.metadata.id);
+    let stored = std::fs::read(&physical_path).expect("stored ciphertext");
+    assert!(stored.starts_with(b"OESOBJ01"));
+    assert!(stored.len() > plaintext.len());
+    assert!(!stored.windows(64).any(|window| window == &plaintext[..64]));
+
+    let complete = storage
+        .get(GetObjectRequest {
+            bucket_id: bucket.id,
+            key: committed.metadata.key.clone(),
+            range: None,
+        })
+        .await
+        .expect("encrypted get");
+    assert_eq!(collect(complete.body).await.expect("decrypt"), plaintext);
+    let range = storage
+        .get(GetObjectRequest {
+            bucket_id: bucket.id,
+            key: committed.metadata.key.clone(),
+            range: Some(ByteRange::new(65_500, 4_000).expect("range")),
+        })
+        .await
+        .expect("encrypted range");
+    assert_eq!(
+        collect(range.body).await.expect("decrypt range"),
+        plaintext[65_500..69_500]
+    );
+    storage
+        .verify(VerifyObjectRequest {
+            bucket_id: bucket.id,
+            key: committed.metadata.key.clone(),
+        })
+        .await
+        .expect("verify encrypted object");
+    drop(storage);
+
+    assert!(matches!(
+        LocalFilesystemStore::open(
+            directory.path(),
+            directory.path().join("tmp"),
+            repository.clone()
+        )
+        .await,
+        Err(StorageError::EncryptionKeyRequired)
+    ));
+    assert!(matches!(
+        LocalFilesystemStore::open_encrypted(
+            directory.path(),
+            directory.path().join("tmp"),
+            repository.clone(),
+            b"different-test-master-key-material-000000000000"
+        )
+        .await,
+        Err(StorageError::EncryptionKeyMismatch)
+    ));
+
+    let reopened = LocalFilesystemStore::open_encrypted(
+        directory.path(),
+        directory.path().join("tmp"),
+        repository,
+        MASTER_KEY,
+    )
+    .await
+    .expect("reopen encrypted store");
+    let last = stored.len() - 1;
+    let mut corrupted = stored;
+    corrupted[last] ^= 0x80;
+    std::fs::write(&physical_path, corrupted).expect("tamper ciphertext");
+    let opened = reopened
+        .get(GetObjectRequest {
+            bucket_id: bucket.id,
+            key: committed.metadata.key,
+            range: None,
+        })
+        .await
+        .expect("header remains readable");
+    assert!(matches!(
+        collect(opened.body).await,
+        Err(StorageError::IntegrityMismatch)
+    ));
+}
+
+#[tokio::test]
+async fn envelope_encryption_covers_durable_multipart_parts_and_completion() {
+    let directory = tempdir().expect("temporary directory");
+    let repository = Arc::new(
+        RedbMetadataRepository::open(directory.path().join("metadata/catalog.redb"))
+            .await
+            .expect("metadata repository"),
+    );
+    let bucket = Bucket {
+        id: BucketId::new(),
+        organization_id: OrganizationId::new(),
+        name: BucketName::new("encrypted-multipart").expect("bucket name"),
+        created_at: Utc::now(),
+        versioning: VersioningState::Disabled,
+        quota: BucketQuota::default(),
+    };
+    repository
+        .create_bucket(&bucket)
+        .await
+        .expect("create bucket");
+    let upload = MultipartUpload {
+        id: UploadId::new(),
+        bucket_id: bucket.id,
+        key: ObjectKey::new("multipart/secret.bin").expect("key"),
+        content_type: None,
+        custom_metadata: BTreeMap::new(),
+        initiated_at: Utc::now(),
+        state: MultipartUploadState::Active,
+    };
+    repository
+        .create_multipart_upload(&upload)
+        .await
+        .expect("create upload");
+    let storage = LocalFilesystemStore::open_encrypted(
+        directory.path(),
+        directory.path().join("tmp"),
+        repository,
+        b"multipart-test-master-key-material-00000000000001",
+    )
+    .await
+    .expect("encrypted store");
+    let mut parts = Vec::new();
+    for (number, bytes) in [(1, b"first-".as_slice()), (2, b"second".as_slice())] {
+        let part = storage
+            .put_multipart_part(PutMultipartPartRequest {
+                upload_id: upload.id,
+                number: PartNumber::new(number).expect("part number"),
+                expected_checksum: None,
+                body: upload_stream(stream::once(
+                    async move { Ok(Bytes::copy_from_slice(bytes)) },
+                )),
+            })
+            .await
+            .expect("put encrypted part");
+        assert_eq!(part.payload_format, PayloadFormat::Aes256GcmEnvelopeV1);
+        assert!(
+            std::fs::read(payload_path(directory.path(), part.object_id))
+                .expect("stored part")
+                .starts_with(b"OESOBJ01")
+        );
+        parts.push(part);
+    }
+    let completed = storage
+        .complete_multipart(CompleteMultipartRequest { upload, parts })
+        .await
+        .expect("complete encrypted multipart");
+    assert_eq!(
+        completed.metadata.payload_format,
+        PayloadFormat::Aes256GcmEnvelopeV1
+    );
+    let opened = storage
+        .get(GetObjectRequest {
+            bucket_id: bucket.id,
+            key: completed.metadata.key,
+            range: None,
+        })
+        .await
+        .expect("get completed multipart");
+    assert_eq!(
+        collect(opened.body).await.expect("multipart body"),
+        b"first-second"
+    );
+}
+
+#[tokio::test]
+async fn enabling_encryption_preserves_existing_plaintext_objects() {
+    let (directory, plaintext_store, repository, bucket) = store().await;
+    let legacy = plaintext_store
+        .put(put_request(
+            bucket.id,
+            "legacy/plain.txt",
+            &[b"legacy bytes"],
+        ))
+        .await
+        .expect("plaintext put");
+    assert_eq!(legacy.metadata.payload_format, PayloadFormat::Plaintext);
+    drop(plaintext_store);
+
+    let encrypted = LocalFilesystemStore::open_encrypted(
+        directory.path(),
+        directory.path().join("tmp"),
+        repository,
+        b"migration-test-master-key-material-00000000000001",
+    )
+    .await
+    .expect("enable encryption");
+    let opened = encrypted
+        .get(GetObjectRequest {
+            bucket_id: bucket.id,
+            key: legacy.metadata.key,
+            range: None,
+        })
+        .await
+        .expect("read legacy object");
+    assert_eq!(
+        collect(opened.body).await.expect("legacy body"),
+        b"legacy bytes"
+    );
 }

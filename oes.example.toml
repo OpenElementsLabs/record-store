@@ -5,6 +5,7 @@ shutdown_grace_period_seconds = 30
 
 [storage]
 data_directory = "./data"
+encryption_enabled = false # requires a stable OES_CREDENTIAL_MASTER_KEY
 # Keep this on the same filesystem as data_directory when overriding it.
 # temporary_directory = "./data/tmp"
 
@@ -12,12 +13,28 @@ data_directory = "./data"
 # Supply root_access_key and root_secret_key through OES_ROOT_ACCESS_KEY and
 # OES_ROOT_SECRET_KEY. OES deliberately has no default credentials.
 # A stable OES_CREDENTIAL_MASTER_KEY is recommended for service accounts.
+# Set OES_MANAGEMENT_SYSTEM_TOKEN to a distinct 32+ byte bearer token. Optional
+# storage-administrator and auditor tokens can be supplied with their matching
+# OES_MANAGEMENT_* environment variables.
+root_s3_enabled = true # disable after attaching policies to service accounts
 
 [limits]
 maximum_concurrent_operations = 256
 maximum_custom_metadata_entries = 64
 maximum_custom_metadata_bytes = 16384
 maximum_header_bytes = 65536
+
+[webhooks]
+# Safe defaults require HTTPS and reject private/special-use destination IPs.
+allow_http = false
+allow_private_networks = false
+request_timeout_seconds = 10
+maximum_attempts = 6
+poll_interval_seconds = 2
+
+[lifecycle]
+interval_seconds = 3600
+batch_size = 100
 
 [observability]
 log_filter = "oes=info,tower_http=info"

@@ -1,0 +1,9 @@
+{
+  "name": "oes-aws-sdk-js-v3-compatibility",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1115.0",
+    "@aws-sdk/s3-request-presigner": "3.1115.0"
+  }
+}

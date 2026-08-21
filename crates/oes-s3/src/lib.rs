@@ -6,14 +6,15 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    net::SocketAddr,
     sync::Arc,
     time::Instant,
 };
 
 use axum::{
     Router,
-    body::Body,
-    extract::{Extension, Path, RawQuery, Request, State},
+    body::{Body, to_bytes},
+    extract::{ConnectInfo, Extension, Path, RawQuery, Request, State},
     http::{
         HeaderMap, HeaderValue, Method, StatusCode, Uri,
         header::{self, HeaderName},
@@ -22,22 +23,122 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, put},
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use futures_util::TryStreamExt;
 use hmac::{Hmac, Mac};
-use oes_auth::{CredentialLookupError, Principal, SigningCredentialProvider, SigningSecret};
-use oes_core::{BucketName, ByteRange, Checksum, ObjectKey, ObjectMetadata};
+use oes_audit::{AuditEvent, AuditRepository, AuditResult};
+use oes_auth::{
+    Action, AuthorizationContext, Authorizer, CredentialLookupError, Permission, Principal,
+    SigningCredentialProvider, SigningSecret,
+};
+use oes_core::{
+    BucketName, ByteRange, Checksum, CompletedPart, ETag, ObjectKey, ObjectMetadata,
+    ObjectVersionRecord, PartNumber, UploadId, VersionId, VersioningState,
+};
 use oes_service::{
-    ServiceError, ServiceGetResult, ServiceListRequest, ServicePutRequest, Services,
+    CopyMetadataDirective, ServiceCompleteMultipartRequest, ServiceCopyRequest,
+    ServiceCreateMultipartRequest, ServiceError, ServiceGetResult,
+    ServiceListMultipartUploadsRequest, ServiceListRequest, ServiceListVersionsRequest,
+    ServicePutRequest, ServiceUploadPartRequest, Services,
 };
 use oes_storage::upload_stream;
 use percent_encoding::percent_decode_str;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::info;
 use uuid::Uuid;
+
+/// Stable support level for the machine-testable S3 compatibility registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityStatus {
+    /// The operation is implemented and covered by protocol tests.
+    Implemented,
+    /// A useful subset is implemented with explicit unsupported semantics.
+    Partial,
+    /// Requests are rejected with `NotImplemented`.
+    Unsupported,
+}
+
+/// One low-cardinality S3 capability descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct S3Capability {
+    pub name: &'static str,
+    pub status: CapabilityStatus,
+}
+
+/// Testable compatibility surface. Keep this synchronized with routing and
+/// protocol tests instead of maintaining a separate status document.
+pub const S3_CAPABILITIES: &[S3Capability] = &[
+    S3Capability {
+        name: "SigV4HeaderAuthentication",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "PresignedGetObject",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "PresignedPutObject",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "BucketOperations",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "ObjectOperations",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "ListObjectsV2",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "MultipartUpload",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "UploadPartCopy",
+        status: CapabilityStatus::Unsupported,
+    },
+    S3Capability {
+        name: "ObjectVersioning",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "CopyObject",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "RangeAndConditionalReads",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "ClientSha256Checksums",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "ServerSideEncryptionHeaders",
+        status: CapabilityStatus::Unsupported,
+    },
+    S3Capability {
+        name: "AccessControlLists",
+        status: CapabilityStatus::Unsupported,
+    },
+    S3Capability {
+        name: "ObjectLock",
+        status: CapabilityStatus::Unsupported,
+    },
+    S3Capability {
+        name: "AwsChunkedEncoding",
+        status: CapabilityStatus::Unsupported,
+    },
+];
 
 const XML_CONTENT_TYPE: &str = "application/xml";
 /// SHA-256 digest of an empty S3 request payload.
@@ -50,6 +151,9 @@ const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-amz-request-id"
 pub struct S3State {
     services: Services,
     credentials: Arc<dyn SigningCredentialProvider>,
+    authorizer: Option<Arc<dyn Authorizer>>,
+    audit: Option<Arc<dyn AuditRepository>>,
+    root_s3_enabled: bool,
     allowed_clock_skew: Duration,
     maximum_presign_seconds: i64,
     maximum_header_bytes: usize,
@@ -62,10 +166,34 @@ impl S3State {
         Self {
             services,
             credentials,
+            authorizer: None,
+            audit: None,
+            root_s3_enabled: true,
             allowed_clock_skew: Duration::minutes(15),
             maximum_presign_seconds: 604_800,
             maximum_header_bytes: 64 * 1024,
         }
+    }
+
+    /// Enables durable S3 security auditing.
+    #[must_use]
+    pub fn with_audit(mut self, audit: Arc<dyn AuditRepository>) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    /// Enables centralized policy evaluation for non-root principals.
+    #[must_use]
+    pub fn with_authorizer(mut self, authorizer: Arc<dyn Authorizer>) -> Self {
+        self.authorizer = Some(authorizer);
+        self
+    }
+
+    /// Controls whether the root signing credential may access the S3 surface.
+    #[must_use]
+    pub const fn with_root_s3_enabled(mut self, enabled: bool) -> Self {
+        self.root_s3_enabled = enabled;
+        self
     }
 
     /// Applies the maximum lifetime accepted for presigned URLs.
@@ -95,8 +223,16 @@ pub fn router(state: S3State) -> Router {
                 .get(list_objects_v2),
         )
         .route(
+            "/{bucket}/",
+            put(create_bucket)
+                .head(head_bucket)
+                .delete(delete_bucket)
+                .get(list_objects_v2),
+        )
+        .route(
             "/{bucket}/{*key}",
             put(put_object)
+                .post(post_object)
                 .get(get_object)
                 .head(head_object)
                 .delete(delete_object),
@@ -120,6 +256,11 @@ async fn authenticate_request(
     request.extensions_mut().insert(request_id.clone());
     let method = request.method().clone();
     let uri = request.uri().clone();
+    let audit_resource = uri.path().to_owned();
+    let source_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connect| connect.0.ip().to_string());
     let headers = request.headers().clone();
     let header_bytes = headers.iter().fold(0_usize, |total, (name, value)| {
         total
@@ -134,10 +275,42 @@ async fn authenticate_request(
         )
         .into_response();
         insert_request_id(&mut response, &request_id);
+        append_s3_audit(
+            &state,
+            &request_id,
+            &method,
+            &audit_resource,
+            None,
+            source_ip.clone(),
+            response.status(),
+        )
+        .await;
         return response;
     }
-    let mut response = match verify_request(&state, method.clone(), uri, headers).await {
+    let authorization = match verify_request(&state, method.clone(), uri, headers).await {
         Ok(authenticated) => {
+            let permissions = request_permissions(&request);
+            match permissions {
+                Err(kind) => Err(kind),
+                Ok(_)
+                    if !state.root_s3_enabled
+                        && matches!(authenticated.principal, Principal::System { ref component } if component == "root") =>
+                {
+                    Err(S3ErrorKind::AccessDenied)
+                }
+                Ok(permissions) => {
+                    authorize_permissions(&state, &authenticated.principal, permissions)
+                        .await
+                        .map(|()| authenticated)
+                }
+            }
+        }
+        Err(kind) => Err(kind),
+    };
+    let mut audit_principal = None;
+    let mut response = match authorization {
+        Ok(authenticated) => {
+            audit_principal = Some(authenticated.principal.clone());
             request.extensions_mut().insert(authenticated.principal);
             request.extensions_mut().insert(authenticated.payload);
             next.run(request).await
@@ -145,6 +318,16 @@ async fn authenticate_request(
         Err(kind) => S3Error::new(kind, request_id.clone(), request.uri().path()).into_response(),
     };
     insert_request_id(&mut response, &request_id);
+    append_s3_audit(
+        &state,
+        &request_id,
+        &method,
+        &audit_resource,
+        audit_principal.as_ref(),
+        source_ip,
+        response.status(),
+    )
+    .await;
     let duration_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
     info!(
         request_id = %request_id.0,
@@ -154,6 +337,48 @@ async fn authenticate_request(
         "S3 request completed"
     );
     response
+}
+
+async fn append_s3_audit(
+    state: &S3State,
+    request_id: &S3RequestId,
+    method: &Method,
+    resource: &str,
+    principal: Option<&Principal>,
+    source_ip: Option<String>,
+    status: StatusCode,
+) {
+    let Some(audit) = &state.audit else { return };
+    let (principal, credential_id) = principal.map_or_else(
+        || ("anonymous".to_owned(), None),
+        |principal| match principal {
+            Principal::ServiceAccount {
+                id, credential_id, ..
+            } => (format!("service_account:{id}"), *credential_id),
+            Principal::System { component } => (format!("system:{component}"), None),
+            Principal::Anonymous => ("anonymous".into(), None),
+        },
+    );
+    let result = match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => AuditResult::Denied,
+        status if status.is_success() => AuditResult::Success,
+        _ => AuditResult::Failure,
+    };
+    let event = AuditEvent {
+        event_id: oes_core::AuditEventId::new(),
+        timestamp: Utc::now(),
+        request_id: Some(request_id.0.clone()),
+        principal,
+        credential_id,
+        source_ip,
+        operation: format!("s3:{}", method.as_str()),
+        resource: resource.to_owned(),
+        result,
+        metadata: BTreeMap::new(),
+    };
+    if let Err(error) = audit.append(&event).await {
+        tracing::error!(%error, request_id = %request_id.0, "durable S3 audit append failed");
+    }
 }
 
 async fn verify_request(
@@ -188,7 +413,7 @@ async fn verify_request(
         if age < -state.allowed_clock_skew.num_seconds() {
             return Err(S3ErrorKind::RequestTimeTooSkewed);
         }
-        if age > presigned.expires || age > state.maximum_presign_seconds {
+        if age > presigned.expires || presigned.expires > state.maximum_presign_seconds {
             return Err(S3ErrorKind::AccessDenied);
         }
         let parsed = ParsedAuthorization {
@@ -263,6 +488,90 @@ async fn verify_request(
     Ok(Authenticated { principal, payload })
 }
 
+async fn authorize_permissions(
+    state: &S3State,
+    principal: &Principal,
+    permissions: Vec<Permission>,
+) -> Result<(), S3ErrorKind> {
+    if matches!(principal, Principal::System { .. }) {
+        return Ok(());
+    }
+    let authorizer = state.authorizer.as_ref().ok_or(S3ErrorKind::AccessDenied)?;
+    for permission in permissions {
+        authorizer
+            .authorize(AuthorizationContext {
+                principal,
+                permission: &permission,
+            })
+            .await
+            .map_err(|_| S3ErrorKind::AccessDenied)?;
+    }
+    Ok(())
+}
+
+fn request_permissions(request: &Request) -> Result<Vec<Permission>, S3ErrorKind> {
+    let decoded = String::from_utf8(percent_decode_str(request.uri().path()).collect())
+        .map_err(|_| S3ErrorKind::InvalidRequest)?;
+    let path = decoded.trim_start_matches('/');
+    let path = path
+        .strip_suffix('/')
+        .filter(|without_slash| !without_slash.contains('/'))
+        .unwrap_or(path);
+    if path.is_empty() {
+        return Ok(vec![Permission {
+            action: Action::ListBucket,
+            resource: "bucket:*".into(),
+        }]);
+    }
+    let (bucket, key) = path
+        .split_once('/')
+        .map_or((path, None), |(bucket, key)| (bucket, Some(key)));
+    let query = query_map(request.uri().query())?;
+    let action = if key.is_none() {
+        if request.method() == Method::GET && !query.contains_key("versioning") {
+            Action::ListBucket
+        } else {
+            Action::ManageBucket
+        }
+    } else if request.method() == Method::GET || request.method() == Method::HEAD {
+        if query.contains_key("versionId") {
+            Action::GetObjectVersion
+        } else {
+            Action::GetObject
+        }
+    } else if request.method() == Method::DELETE {
+        if query.contains_key("versionId") {
+            Action::DeleteObjectVersion
+        } else {
+            Action::DeleteObject
+        }
+    } else {
+        Action::PutObject
+    };
+    let resource = key.map_or_else(
+        || format!("bucket:{bucket}"),
+        |key| format!("bucket:{bucket}/{key}"),
+    );
+    let mut permissions = vec![Permission { action, resource }];
+    if let Some(source) = request
+        .headers()
+        .get("x-amz-copy-source")
+        .and_then(|value| value.to_str().ok())
+    {
+        let source = String::from_utf8(percent_decode_str(source).collect())
+            .map_err(|_| S3ErrorKind::InvalidRequest)?;
+        let source = source
+            .trim_start_matches('/')
+            .split_once('?')
+            .map_or(source.trim_start_matches('/'), |(path, _)| path);
+        permissions.push(Permission {
+            action: Action::GetObject,
+            resource: format!("bucket:{source}"),
+        });
+    }
+    Ok(permissions)
+}
+
 struct ParsedPresign {
     algorithm: String,
     access_key: String,
@@ -283,7 +592,7 @@ impl ParsedPresign {
             let (name, value) = item.split_once('=').unwrap_or((item, ""));
             let name = decode_query_component(name)?;
             let value = decode_query_component(value)?;
-            if !name.starts_with("X-Amz-") || values.insert(name, value).is_some() {
+            if name.starts_with("X-Amz-") && values.insert(name, value).is_some() {
                 return Err(S3ErrorKind::AuthorizationHeaderMalformed);
             }
         }
@@ -313,8 +622,19 @@ impl ParsedPresign {
         let signature = values
             .remove("X-Amz-Signature")
             .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?;
+        if values
+            .remove("X-Amz-Content-Sha256")
+            .is_some_and(|value| value != "UNSIGNED-PAYLOAD")
+        {
+            return Err(S3ErrorKind::AuthorizationHeaderMalformed);
+        }
         if !values.is_empty()
-            || signed_headers != ["host"]
+            || signed_headers.is_empty()
+            || !signed_headers.windows(2).all(|pair| pair[0] < pair[1])
+            || !signed_headers.iter().any(|name| name == "host")
+            || signed_headers
+                .iter()
+                .any(|name| name.is_empty() || name.bytes().any(|byte| byte.is_ascii_uppercase()))
             || signature.len() != 64
             || !signature.bytes().all(|byte| byte.is_ascii_hexdigit())
         {
@@ -401,6 +721,31 @@ fn parse_payload_hash(headers: &HeaderMap) -> Result<PayloadHash, S3ErrorKind> {
     let digest = hex::decode(value).map_err(|_| S3ErrorKind::InvalidRequest)?;
     let digest: [u8; 32] = digest.try_into().map_err(|_| S3ErrorKind::InvalidRequest)?;
     Ok(PayloadHash::Sha256(Checksum::sha256(digest)))
+}
+
+fn request_checksum(
+    headers: &HeaderMap,
+    payload_hash: &PayloadHash,
+) -> Result<Option<Checksum>, S3ErrorKind> {
+    let signed_payload = payload_hash.expected_checksum();
+    let Some(encoded) = headers.get("x-amz-checksum-sha256") else {
+        return Ok(signed_payload);
+    };
+    let encoded = encoded.to_str().map_err(|_| S3ErrorKind::InvalidRequest)?;
+    let decoded = STANDARD
+        .decode(encoded)
+        .map_err(|_| S3ErrorKind::InvalidRequest)?;
+    let digest: [u8; 32] = decoded
+        .try_into()
+        .map_err(|_| S3ErrorKind::InvalidRequest)?;
+    let supplied = Checksum::sha256(digest);
+    if signed_payload
+        .as_ref()
+        .is_some_and(|signed| signed != &supplied)
+    {
+        return Err(S3ErrorKind::BadDigest);
+    }
+    Ok(Some(supplied))
 }
 
 struct ParsedAuthorization {
@@ -637,7 +982,11 @@ async fn create_bucket(
     Path(bucket): Path<String>,
     RawQuery(raw_query): RawQuery,
     Extension(request_id): Extension<S3RequestId>,
+    body: Body,
 ) -> Result<Response, S3Error> {
+    if has_query_flag(raw_query.as_deref(), "versioning") {
+        return put_bucket_versioning(state, bucket, request_id, body).await;
+    }
     reject_subresources(raw_query.as_deref(), &request_id, &format!("/{bucket}"))?;
     let name = bucket_name(&bucket, &request_id)?;
     state
@@ -696,6 +1045,59 @@ async fn put_object(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, S3Error> {
+    let query = query_map(raw_query.as_deref())
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}/{key}")))?;
+    let expected_checksum = request_checksum(&headers, &payload_hash)
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}/{key}")))?;
+    if let (Some(upload_id), Some(part_number)) = (query.get("uploadId"), query.get("partNumber")) {
+        let bucket_name = bucket_name(&bucket, &request_id)?;
+        let object_key = object_key(&key, &request_id, &format!("/{bucket}/{key}"))?;
+        let upload_id = upload_id.parse::<UploadId>().map_err(|_| {
+            S3Error::new(
+                S3ErrorKind::NoSuchUpload,
+                request_id.clone(),
+                &format!("/{bucket}/{key}"),
+            )
+        })?;
+        let number = part_number.parse::<PartNumber>().map_err(|_| {
+            S3Error::new(
+                S3ErrorKind::InvalidRequest,
+                request_id.clone(),
+                &format!("/{bucket}/{key}"),
+            )
+        })?;
+        if headers.contains_key("x-amz-copy-source") {
+            return Err(S3Error::new(
+                S3ErrorKind::NotImplemented,
+                request_id,
+                &format!("/{bucket}/{key}"),
+            ));
+        }
+        let stream = body.into_data_stream().map_err(io::Error::other);
+        let part = state
+            .services
+            .objects
+            .upload_part(ServiceUploadPartRequest {
+                bucket: bucket_name,
+                key: object_key,
+                upload_id,
+                number,
+                expected_checksum: expected_checksum.clone(),
+                body: upload_stream(stream),
+            })
+            .await
+            .map_err(|error| {
+                service_error(error, request_id.clone(), &format!("/{bucket}/{key}"))
+            })?;
+        let mut response = StatusCode::OK.into_response();
+        if let Ok(value) = HeaderValue::from_str(&format!("\"{}\"", part.etag)) {
+            response.headers_mut().insert(header::ETAG, value);
+        }
+        return Ok(response);
+    }
+    if headers.contains_key("x-amz-copy-source") {
+        return copy_object(state, bucket, key, request_id, headers).await;
+    }
     reject_subresources(
         raw_query.as_deref(),
         &request_id,
@@ -724,13 +1126,14 @@ async fn put_object(
             key: object_key,
             content_type,
             custom_metadata,
-            expected_checksum: payload_hash.expected_checksum(),
+            expected_checksum,
             body: upload_stream(stream),
         })
         .await
-        .map_err(|error| service_error(error, request_id, &format!("/{bucket}/{key}")))?;
+        .map_err(|error| service_error(error, request_id.clone(), &format!("/{bucket}/{key}")))?;
     let mut response = StatusCode::OK.into_response();
     insert_etag(&mut response, &result.metadata);
+    insert_version_id(&mut response, result.metadata.version_id);
     Ok(response)
 }
 
@@ -741,6 +1144,13 @@ async fn get_object(
     Extension(request_id): Extension<S3RequestId>,
     headers: HeaderMap,
 ) -> Result<Response, S3Error> {
+    let query = query_map(raw_query.as_deref())
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}/{key}")))?;
+    if let Some(upload_id) = query.get("uploadId") {
+        return list_parts(state, bucket, key, upload_id, &query, request_id).await;
+    }
+    let version = requested_version(&query)
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}/{key}")))?;
     reject_subresources(
         raw_query.as_deref(),
         &request_id,
@@ -752,12 +1162,30 @@ async fn get_object(
         let value = value
             .to_str()
             .map_err(|_| S3Error::new(S3ErrorKind::InvalidRange, request_id.clone(), &key))?;
-        let metadata = state
-            .services
-            .objects
-            .head(&bucket_name, object_key.clone())
-            .await
-            .map_err(|error| service_error(error, request_id.clone(), &key))?;
+        let metadata = match version {
+            Some(RequestedVersion::Id(version_id)) => {
+                state
+                    .services
+                    .objects
+                    .head_version(&bucket_name, object_key.clone(), version_id)
+                    .await
+            }
+            Some(RequestedVersion::Null) => {
+                state
+                    .services
+                    .objects
+                    .head_null_version(&bucket_name, object_key.clone())
+                    .await
+            }
+            None => {
+                state
+                    .services
+                    .objects
+                    .head(&bucket_name, object_key.clone())
+                    .await
+            }
+        }
+        .map_err(|error| service_error(error, request_id.clone(), &key))?;
         Some(
             parse_range(value, metadata.size)
                 .map_err(|kind| S3Error::new(kind, request_id.clone(), &key))?,
@@ -765,13 +1193,31 @@ async fn get_object(
     } else {
         None
     };
-    let result = state
-        .services
-        .objects
-        .get(&bucket_name, object_key, range)
-        .await
-        .map_err(|error| service_error(error, request_id, &format!("/{bucket}/{key}")))?;
-    streaming_response(result)
+    let result = match version {
+        Some(RequestedVersion::Id(version_id)) => {
+            state
+                .services
+                .objects
+                .get_version(&bucket_name, object_key, version_id, range)
+                .await
+        }
+        Some(RequestedVersion::Null) => {
+            state
+                .services
+                .objects
+                .get_null_version(&bucket_name, object_key, range)
+                .await
+        }
+        None => {
+            state
+                .services
+                .objects
+                .get(&bucket_name, object_key, range)
+                .await
+        }
+    }
+    .map_err(|error| service_error(error, request_id.clone(), &format!("/{bucket}/{key}")))?;
+    conditional_streaming_response(result, &headers, request_id, &format!("/{bucket}/{key}"))
 }
 
 async fn head_object(
@@ -779,7 +1225,12 @@ async fn head_object(
     Path((bucket, key)): Path<(String, String)>,
     RawQuery(raw_query): RawQuery,
     Extension(request_id): Extension<S3RequestId>,
+    headers: HeaderMap,
 ) -> Result<Response, S3Error> {
+    let query = query_map(raw_query.as_deref())
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}/{key}")))?;
+    let version =
+        requested_version(&query).map_err(|kind| S3Error::new(kind, request_id.clone(), &key))?;
     reject_subresources(
         raw_query.as_deref(),
         &request_id,
@@ -787,14 +1238,33 @@ async fn head_object(
     )?;
     let bucket_name = bucket_name(&bucket, &request_id)?;
     let object_key = object_key(&key, &request_id, &format!("/{bucket}/{key}"))?;
-    let metadata = state
-        .services
-        .objects
-        .head(&bucket_name, object_key)
-        .await
-        .map_err(|error| service_error(error, request_id, &format!("/{bucket}/{key}")))?;
+    let metadata = match version {
+        Some(RequestedVersion::Id(version_id)) => {
+            state
+                .services
+                .objects
+                .head_version(&bucket_name, object_key, version_id)
+                .await
+        }
+        Some(RequestedVersion::Null) => {
+            state
+                .services
+                .objects
+                .head_null_version(&bucket_name, object_key)
+                .await
+        }
+        None => state.services.objects.head(&bucket_name, object_key).await,
+    }
+    .map_err(|error| service_error(error, request_id.clone(), &format!("/{bucket}/{key}")))?;
+    if evaluate_conditions(&metadata, &headers)
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}/{key}")))?
+        == ConditionalOutcome::NotModified
+    {
+        return Ok(StatusCode::NOT_MODIFIED.into_response());
+    }
     let mut response = StatusCode::OK.into_response();
     apply_object_headers(&mut response, &metadata, metadata.size);
+    insert_version_id(&mut response, metadata.version_id);
     Ok(response)
 }
 
@@ -803,7 +1273,25 @@ async fn delete_object(
     Path((bucket, key)): Path<(String, String)>,
     RawQuery(raw_query): RawQuery,
     Extension(request_id): Extension<S3RequestId>,
-) -> Result<StatusCode, S3Error> {
+) -> Result<Response, S3Error> {
+    let query = query_map(raw_query.as_deref())
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}/{key}")))?;
+    if let Some(upload_id) = query.get("uploadId") {
+        let bucket_name = bucket_name(&bucket, &request_id)?;
+        let object_key = object_key(&key, &request_id, &key)?;
+        let upload_id = upload_id
+            .parse::<UploadId>()
+            .map_err(|_| S3Error::new(S3ErrorKind::NoSuchUpload, request_id.clone(), &key))?;
+        state
+            .services
+            .objects
+            .abort_multipart(&bucket_name, &object_key, upload_id)
+            .await
+            .map_err(|error| service_error(error, request_id, &key))?;
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    let version =
+        requested_version(&query).map_err(|kind| S3Error::new(kind, request_id.clone(), &key))?;
     reject_subresources(
         raw_query.as_deref(),
         &request_id,
@@ -811,13 +1299,526 @@ async fn delete_object(
     )?;
     let bucket_name = bucket_name(&bucket, &request_id)?;
     let object_key = object_key(&key, &request_id, &format!("/{bucket}/{key}"))?;
-    state
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    match version {
+        Some(RequestedVersion::Id(version_id)) => {
+            state
+                .services
+                .objects
+                .delete_version(&bucket_name, object_key, version_id)
+                .await
+                .map_err(|error| service_error(error, request_id, &format!("/{bucket}/{key}")))?;
+            insert_version_id(&mut response, version_id);
+        }
+        Some(RequestedVersion::Null) => {
+            state
+                .services
+                .objects
+                .delete_null_version(&bucket_name, object_key)
+                .await
+                .map_err(|error| service_error(error, request_id, &format!("/{bucket}/{key}")))?;
+            response.headers_mut().insert(
+                HeaderName::from_static("x-amz-version-id"),
+                HeaderValue::from_static("null"),
+            );
+        }
+        None => {
+            let result = state
+                .services
+                .objects
+                .delete_detailed(&bucket_name, object_key)
+                .await
+                .map_err(|error| service_error(error, request_id, &format!("/{bucket}/{key}")))?;
+            if let Some(marker) = result.delete_marker {
+                response.headers_mut().insert(
+                    HeaderName::from_static("x-amz-delete-marker"),
+                    HeaderValue::from_static("true"),
+                );
+                insert_version_id(&mut response, marker.version_id);
+            }
+        }
+    }
+    Ok(response)
+}
+
+async fn post_object(
+    State(state): State<S3State>,
+    Path((bucket, key)): Path<(String, String)>,
+    RawQuery(raw_query): RawQuery,
+    Extension(request_id): Extension<S3RequestId>,
+    Extension(payload_hash): Extension<PayloadHash>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, S3Error> {
+    let query = query_map(raw_query.as_deref())
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}/{key}")))?;
+    let bucket_name = bucket_name(&bucket, &request_id)?;
+    let object_key = object_key(&key, &request_id, &key)?;
+    if query.contains_key("uploads") {
+        if payload_hash
+            .expected_checksum()
+            .is_some_and(|checksum| checksum != Checksum::sha256(Sha256::digest([]).into()))
+            || headers
+                .get(header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .is_some_and(|length| length != 0)
+        {
+            return Err(S3Error::new(S3ErrorKind::BadDigest, request_id, &key));
+        }
+        let upload = state
+            .services
+            .objects
+            .create_multipart(ServiceCreateMultipartRequest {
+                bucket: bucket_name,
+                key: object_key,
+                content_type: headers
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned),
+                custom_metadata: custom_metadata(
+                    &headers,
+                    &request_id,
+                    &format!("/{bucket}/{key}"),
+                )?,
+            })
+            .await
+            .map_err(|error| service_error(error, request_id.clone(), &key))?;
+        return xml_response(
+            StatusCode::OK,
+            &InitiateMultipartUploadResult {
+                xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+                bucket,
+                key,
+                upload_id: upload.id.to_string(),
+            },
+            request_id,
+            "/",
+        );
+    }
+    let upload_id = query
+        .get("uploadId")
+        .ok_or_else(|| S3Error::new(S3ErrorKind::NotImplemented, request_id.clone(), &key))?
+        .parse::<UploadId>()
+        .map_err(|_| S3Error::new(S3ErrorKind::NoSuchUpload, request_id.clone(), &key))?;
+    let bytes = to_bytes(body, 1024 * 1024)
+        .await
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &key))?;
+    if payload_hash
+        .expected_checksum()
+        .is_some_and(|expected| expected != Checksum::sha256(Sha256::digest(bytes.as_ref()).into()))
+    {
+        return Err(S3Error::new(S3ErrorKind::BadDigest, request_id, &key));
+    }
+    let document: CompleteMultipartUploadDocument = quick_xml::de::from_reader(bytes.as_ref())
+        .map_err(|_| S3Error::new(S3ErrorKind::MalformedXml, request_id.clone(), &key))?;
+    let manifest = document
+        .parts
+        .into_iter()
+        .map(|part| {
+            Ok(CompletedPart {
+                number: PartNumber::new(part.part_number).map_err(|_| {
+                    S3Error::new(S3ErrorKind::InvalidPart, request_id.clone(), &key)
+                })?,
+                etag: ETag::new(part.etag.trim_matches('"').to_owned()).map_err(|_| {
+                    S3Error::new(S3ErrorKind::InvalidPart, request_id.clone(), &key)
+                })?,
+            })
+        })
+        .collect::<Result<Vec<_>, S3Error>>()?;
+    let result = state
         .services
         .objects
-        .delete(&bucket_name, object_key)
+        .complete_multipart(ServiceCompleteMultipartRequest {
+            bucket: bucket_name,
+            key: object_key,
+            upload_id,
+            manifest,
+        })
         .await
-        .map_err(|error| service_error(error, request_id, &format!("/{bucket}/{key}")))?;
-    Ok(StatusCode::NO_CONTENT)
+        .map_err(|error| service_error(error, request_id.clone(), &key))?;
+    let document = CompleteMultipartUploadResult {
+        xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+        location: format!("/{bucket}/{key}"),
+        bucket,
+        key,
+        etag: format!("\"{}\"", result.metadata.etag),
+        version_id: result.metadata.version_id.to_string(),
+    };
+    xml_response(StatusCode::OK, &document, request_id, &document.location)
+}
+
+async fn put_bucket_versioning(
+    state: S3State,
+    bucket: String,
+    request_id: S3RequestId,
+    body: Body,
+) -> Result<Response, S3Error> {
+    let bytes = to_bytes(body, 16 * 1024)
+        .await
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?;
+    let document: VersioningConfigurationDocument = quick_xml::de::from_reader(bytes.as_ref())
+        .map_err(|_| S3Error::new(S3ErrorKind::MalformedXml, request_id.clone(), &bucket))?;
+    let versioning = match document.status.as_deref() {
+        Some("Enabled") => VersioningState::Enabled,
+        Some("Suspended") => VersioningState::Suspended,
+        _ => {
+            return Err(S3Error::new(
+                S3ErrorKind::InvalidRequest,
+                request_id,
+                &bucket,
+            ));
+        }
+    };
+    let name = bucket_name(&bucket, &request_id)?;
+    state
+        .services
+        .buckets
+        .set_versioning(&name, versioning)
+        .await
+        .map_err(|error| service_error(error, request_id, &bucket))?;
+    Ok(StatusCode::OK.into_response())
+}
+
+async fn get_bucket_versioning(
+    state: S3State,
+    bucket: String,
+    request_id: S3RequestId,
+) -> Result<Response, S3Error> {
+    let name = bucket_name(&bucket, &request_id)?;
+    let bucket_record = state
+        .services
+        .buckets
+        .head(&name)
+        .await
+        .map_err(|error| service_error(error, request_id.clone(), &bucket))?;
+    let status = match bucket_record.versioning {
+        VersioningState::Disabled => None,
+        VersioningState::Enabled => Some("Enabled"),
+        VersioningState::Suspended => Some("Suspended"),
+    };
+    xml_response(
+        StatusCode::OK,
+        &VersioningConfigurationResult {
+            xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+            status,
+        },
+        request_id,
+        &bucket,
+    )
+}
+
+async fn copy_object(
+    state: S3State,
+    bucket: String,
+    key: String,
+    request_id: S3RequestId,
+    headers: HeaderMap,
+) -> Result<Response, S3Error> {
+    let source = headers
+        .get("x-amz-copy-source")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &key))?;
+    let decoded = String::from_utf8(percent_decode_str(source).collect())
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &key))?;
+    let (path, source_query) = decoded.split_once('?').unwrap_or((&decoded, ""));
+    let (source_bucket, source_key) = path
+        .trim_start_matches('/')
+        .split_once('/')
+        .ok_or_else(|| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &key))?;
+    let source_version_id = query_map(Some(source_query))
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &key))?
+        .get("versionId")
+        .map(|value| value.parse::<VersionId>())
+        .transpose()
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &key))?;
+    let directive = match headers
+        .get("x-amz-metadata-directive")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("COPY")
+    {
+        "COPY" => CopyMetadataDirective::Copy,
+        "REPLACE" => CopyMetadataDirective::Replace,
+        _ => {
+            return Err(S3Error::new(S3ErrorKind::InvalidRequest, request_id, &key));
+        }
+    };
+    let result = state
+        .services
+        .objects
+        .copy(ServiceCopyRequest {
+            source_bucket: bucket_name(source_bucket, &request_id)?,
+            source_key: object_key(source_key, &request_id, source_key)?,
+            source_version_id,
+            destination_bucket: bucket_name(&bucket, &request_id)?,
+            destination_key: object_key(&key, &request_id, &key)?,
+            metadata_directive: directive,
+            content_type: headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            replacement_metadata: custom_metadata(&headers, &request_id, &key)?,
+        })
+        .await
+        .map_err(|error| service_error(error, request_id.clone(), &key))?;
+    xml_response(
+        StatusCode::OK,
+        &CopyObjectResult {
+            last_modified: result.metadata.modified_at.to_rfc3339(),
+            etag: format!("\"{}\"", result.metadata.etag),
+            version_id: result.metadata.version_id.to_string(),
+        },
+        request_id,
+        &key,
+    )
+}
+
+async fn list_parts(
+    state: S3State,
+    bucket: String,
+    key: String,
+    upload_id: &str,
+    query: &BTreeMap<String, String>,
+    request_id: S3RequestId,
+) -> Result<Response, S3Error> {
+    let upload_id = upload_id
+        .parse::<UploadId>()
+        .map_err(|_| S3Error::new(S3ErrorKind::NoSuchUpload, request_id.clone(), &key))?;
+    let marker = query
+        .get("part-number-marker")
+        .map(|value| value.parse::<PartNumber>())
+        .transpose()
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &key))?;
+    let maximum = query
+        .get("max-parts")
+        .map_or(Ok(1_000), |value| value.parse::<usize>())
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &key))?
+        .min(1_000);
+    let bucket_name = bucket_name(&bucket, &request_id)?;
+    let object_key = object_key(&key, &request_id, &key)?;
+    let parts = state
+        .services
+        .objects
+        .list_parts(&bucket_name, &object_key, upload_id, marker, maximum + 1)
+        .await
+        .map_err(|error| service_error(error, request_id.clone(), &key))?;
+    let truncated = parts.len() > maximum;
+    let visible = parts.into_iter().take(maximum).collect::<Vec<_>>();
+    let next_marker = truncated
+        .then(|| visible.last().map(|part| part.number.get()))
+        .flatten();
+    xml_response(
+        StatusCode::OK,
+        &ListPartsResult {
+            xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+            bucket,
+            key,
+            upload_id: upload_id.to_string(),
+            part_number_marker: marker.map_or(0, PartNumber::get),
+            next_part_number_marker: next_marker,
+            max_parts: maximum,
+            is_truncated: truncated,
+            parts: visible
+                .into_iter()
+                .map(|part| ListedPart {
+                    part_number: part.number.get(),
+                    last_modified: part.modified_at.to_rfc3339(),
+                    etag: format!("\"{}\"", part.etag),
+                    size: part.size,
+                })
+                .collect(),
+        },
+        request_id,
+        "/",
+    )
+}
+
+async fn list_multipart_uploads(
+    state: S3State,
+    bucket: String,
+    raw_query: Option<String>,
+    request_id: S3RequestId,
+) -> Result<Response, S3Error> {
+    let query = query_map(raw_query.as_deref())
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &bucket))?;
+    let maximum = query
+        .get("max-uploads")
+        .map_or(Ok(1_000), |value| value.parse::<usize>())
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?
+        .min(1_000);
+    let marker = query
+        .get("upload-id-marker")
+        .map(|value| value.parse::<UploadId>())
+        .transpose()
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?;
+    let prefix = query.get("prefix").cloned().unwrap_or_default();
+    let result = state
+        .services
+        .objects
+        .list_multipart_uploads(ServiceListMultipartUploadsRequest {
+            bucket: bucket_name(&bucket, &request_id)?,
+            prefix: prefix.clone(),
+            upload_id_marker: marker,
+            maximum_uploads: maximum,
+        })
+        .await
+        .map_err(|error| service_error(error, request_id.clone(), &bucket))?;
+    let is_truncated = result.next_upload_id_marker.is_some();
+    xml_response(
+        StatusCode::OK,
+        &ListMultipartUploadsResult {
+            xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+            bucket,
+            prefix,
+            upload_id_marker: marker.map(|value| value.to_string()),
+            next_upload_id_marker: result.next_upload_id_marker.map(|value| value.to_string()),
+            max_uploads: maximum,
+            is_truncated,
+            uploads: result
+                .uploads
+                .into_iter()
+                .map(|upload| ListedUpload {
+                    key: upload.key.to_string(),
+                    upload_id: upload.id.to_string(),
+                    initiated: upload.initiated_at.to_rfc3339(),
+                })
+                .collect(),
+        },
+        request_id,
+        "/",
+    )
+}
+
+async fn list_object_versions(
+    state: S3State,
+    bucket: String,
+    raw_query: Option<String>,
+    request_id: S3RequestId,
+) -> Result<Response, S3Error> {
+    let query = query_map(raw_query.as_deref())
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &bucket))?;
+    let maximum = query
+        .get("max-keys")
+        .map_or(Ok(1_000), |value| value.parse::<usize>())
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?
+        .min(1_000);
+    let key_marker = query.get("key-marker").cloned();
+    let version_marker = query
+        .get("version-id-marker")
+        .map(|value| value.parse::<VersionId>())
+        .transpose()
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?;
+    let prefix = query.get("prefix").cloned().unwrap_or_default();
+    let result = state
+        .services
+        .objects
+        .list_versions(ServiceListVersionsRequest {
+            bucket: bucket_name(&bucket, &request_id)?,
+            prefix: prefix.clone(),
+            key_marker: key_marker.clone(),
+            version_id_marker: version_marker,
+            maximum_keys: maximum,
+        })
+        .await
+        .map_err(|error| service_error(error, request_id.clone(), &bucket))?;
+    let mut versions = Vec::new();
+    let mut markers = Vec::new();
+    for listed in result.versions {
+        match listed.record {
+            ObjectVersionRecord::Object { metadata, is_null } => versions.push(VersionEntry {
+                key: metadata.key.to_string(),
+                version_id: if is_null {
+                    "null".into()
+                } else {
+                    metadata.version_id.to_string()
+                },
+                is_latest: listed.is_latest,
+                last_modified: metadata.modified_at.to_rfc3339(),
+                etag: format!("\"{}\"", metadata.etag),
+                size: metadata.size,
+                storage_class: "STANDARD",
+            }),
+            ObjectVersionRecord::DeleteMarker { marker, is_null } => {
+                markers.push(DeleteMarkerEntry {
+                    key: marker.key.to_string(),
+                    version_id: if is_null {
+                        "null".into()
+                    } else {
+                        marker.version_id.to_string()
+                    },
+                    is_latest: listed.is_latest,
+                    last_modified: marker.created_at.to_rfc3339(),
+                })
+            }
+        }
+    }
+    let is_truncated = result.next_key_marker.is_some();
+    xml_response(
+        StatusCode::OK,
+        &ListVersionsResult {
+            xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+            name: bucket,
+            prefix,
+            key_marker,
+            version_id_marker: version_marker.map(|value| value.to_string()),
+            next_key_marker: result.next_key_marker,
+            next_version_id_marker: result.next_version_id_marker.map(|value| value.to_string()),
+            max_keys: maximum,
+            is_truncated,
+            versions,
+            delete_markers: markers,
+        },
+        request_id,
+        "/",
+    )
+}
+
+fn has_query_flag(query: Option<&str>, expected: &str) -> bool {
+    query.unwrap_or_default().split('&').any(|item| {
+        let name = item.split_once('=').map_or(item, |(name, _)| name);
+        decode_query_component(name).is_ok_and(|name| name == expected)
+    })
+}
+
+fn query_map(query: Option<&str>) -> Result<BTreeMap<String, String>, S3ErrorKind> {
+    let mut values = BTreeMap::new();
+    for item in query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|item| !item.is_empty())
+    {
+        let (name, value) = item.split_once('=').unwrap_or((item, ""));
+        let name = decode_query_component(name)?;
+        let value = decode_query_component(value)?;
+        if values.insert(name, value).is_some() {
+            return Err(S3ErrorKind::InvalidRequest);
+        }
+    }
+    Ok(values)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RequestedVersion {
+    Null,
+    Id(VersionId),
+}
+
+fn requested_version(
+    query: &BTreeMap<String, String>,
+) -> Result<Option<RequestedVersion>, S3ErrorKind> {
+    query
+        .get("versionId")
+        .map(|value| {
+            if value == "null" {
+                Ok(RequestedVersion::Null)
+            } else {
+                value
+                    .parse::<VersionId>()
+                    .map(RequestedVersion::Id)
+                    .map_err(|_| S3ErrorKind::InvalidRequest)
+            }
+        })
+        .transpose()
 }
 
 #[derive(Debug, Default)]
@@ -836,6 +1837,15 @@ async fn list_objects_v2(
     RawQuery(raw_query): RawQuery,
     Extension(request_id): Extension<S3RequestId>,
 ) -> Result<Response, S3Error> {
+    if has_query_flag(raw_query.as_deref(), "versioning") {
+        return get_bucket_versioning(state, bucket, request_id).await;
+    }
+    if has_query_flag(raw_query.as_deref(), "versions") {
+        return list_object_versions(state, bucket, raw_query, request_id).await;
+    }
+    if has_query_flag(raw_query.as_deref(), "uploads") {
+        return list_multipart_uploads(state, bucket, raw_query, request_id).await;
+    }
     let query = parse_list_query(raw_query.as_deref().unwrap_or_default())
         .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}")))?;
     if query.list_type != Some(2) {
@@ -986,6 +1996,73 @@ fn streaming_response(result: ServiceGetResult) -> Result<Response, S3Error> {
     Ok(response)
 }
 
+fn conditional_streaming_response(
+    result: ServiceGetResult,
+    headers: &HeaderMap,
+    request_id: S3RequestId,
+    resource: &str,
+) -> Result<Response, S3Error> {
+    if evaluate_conditions(&result.metadata, headers)
+        .map_err(|kind| S3Error::new(kind, request_id, resource))?
+        == ConditionalOutcome::NotModified
+    {
+        return Ok(StatusCode::NOT_MODIFIED.into_response());
+    }
+    let version_id = result.metadata.version_id;
+    let mut response = streaming_response(result)?;
+    insert_version_id(&mut response, version_id);
+    Ok(response)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConditionalOutcome {
+    Proceed,
+    NotModified,
+}
+
+fn evaluate_conditions(
+    metadata: &ObjectMetadata,
+    headers: &HeaderMap,
+) -> Result<ConditionalOutcome, S3ErrorKind> {
+    let etag_matches = |value: &str| {
+        value == "*"
+            || value
+                .split(',')
+                .map(str::trim)
+                .map(|value| value.trim_matches('"'))
+                .any(|value| value == metadata.etag.as_str())
+    };
+    if let Some(value) = headers.get(header::IF_MATCH) {
+        let value = value.to_str().map_err(|_| S3ErrorKind::InvalidRequest)?;
+        if !etag_matches(value) {
+            return Err(S3ErrorKind::PreconditionFailed);
+        }
+    } else if let Some(value) = headers.get(header::IF_UNMODIFIED_SINCE) {
+        let value = value.to_str().map_err(|_| S3ErrorKind::InvalidRequest)?;
+        let time = DateTime::parse_from_rfc2822(value)
+            .map_err(|_| S3ErrorKind::InvalidRequest)?
+            .with_timezone(&Utc);
+        if metadata.modified_at > time {
+            return Err(S3ErrorKind::PreconditionFailed);
+        }
+    }
+    if let Some(value) = headers.get(header::IF_NONE_MATCH) {
+        let value = value.to_str().map_err(|_| S3ErrorKind::InvalidRequest)?;
+        if etag_matches(value) {
+            return Ok(ConditionalOutcome::NotModified);
+        }
+    } else if let Some(value) = headers.get(header::IF_MODIFIED_SINCE) {
+        let value = value.to_str().map_err(|_| S3ErrorKind::InvalidRequest)?;
+        let time = DateTime::parse_from_rfc2822(value)
+            .map_err(|_| S3ErrorKind::InvalidRequest)?
+            .with_timezone(&Utc);
+        if metadata.modified_at <= time {
+            return Ok(ConditionalOutcome::NotModified);
+        }
+    }
+    Ok(ConditionalOutcome::Proceed)
+}
+
 fn apply_object_headers(response: &mut Response, metadata: &ObjectMetadata, length: u64) {
     if let Ok(value) = HeaderValue::from_str(&length.to_string()) {
         response.headers_mut().insert(header::CONTENT_LENGTH, value);
@@ -1021,6 +2098,14 @@ fn apply_object_headers(response: &mut Response, metadata: &ObjectMetadata, leng
 fn insert_etag(response: &mut Response, metadata: &ObjectMetadata) {
     if let Ok(value) = HeaderValue::from_str(&format!("\"{}\"", metadata.etag)) {
         response.headers_mut().insert(header::ETAG, value);
+    }
+}
+
+fn insert_version_id(response: &mut Response, version_id: VersionId) {
+    if let Ok(value) = HeaderValue::from_str(&version_id.to_string()) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static("x-amz-version-id"), value);
     }
 }
 
@@ -1062,12 +2147,14 @@ fn reject_subresources(
         let name = decode_query_component(raw_name)
             .map_err(|kind| S3Error::new(kind, request_id.clone(), resource))?;
         if name != "x-id"
+            && name != "versionId"
             && !matches!(
                 name.as_str(),
                 "X-Amz-Algorithm"
                     | "X-Amz-Credential"
                     | "X-Amz-Date"
                     | "X-Amz-Expires"
+                    | "X-Amz-Content-Sha256"
                     | "X-Amz-SignedHeaders"
                     | "X-Amz-Signature"
             )
@@ -1184,9 +2271,18 @@ fn service_error(error: ServiceError, request_id: S3RequestId, resource: &str) -
         ServiceError::BucketAlreadyExists => S3ErrorKind::BucketAlreadyExists,
         ServiceError::BucketNotEmpty => S3ErrorKind::BucketNotEmpty,
         ServiceError::ObjectNotFound => S3ErrorKind::NoSuchKey,
+        ServiceError::DeleteMarker(_) => S3ErrorKind::NoSuchKey,
+        ServiceError::MultipartUploadNotFound => S3ErrorKind::NoSuchUpload,
+        ServiceError::InvalidPart => S3ErrorKind::InvalidPart,
+        ServiceError::InvalidPartOrder => S3ErrorKind::InvalidPartOrder,
+        ServiceError::EntityTooSmall => S3ErrorKind::EntityTooSmall,
+        ServiceError::QuotaExceeded => S3ErrorKind::QuotaExceeded,
         ServiceError::Core(_) => S3ErrorKind::InvalidRequest,
         ServiceError::MetadataTooLarge | ServiceError::InvalidRequest(_) => {
             S3ErrorKind::InvalidRequest
+        }
+        ServiceError::Storage(oes_storage::StorageError::ChecksumMismatch { .. }) => {
+            S3ErrorKind::BadDigest
         }
         ServiceError::Metadata(_)
         | ServiceError::Storage(_)
@@ -1244,11 +2340,19 @@ enum S3ErrorKind {
     RequestTimeTooSkewed,
     NoSuchBucket,
     NoSuchKey,
+    NoSuchUpload,
     BucketAlreadyExists,
     BucketNotEmpty,
     InvalidBucketName,
     InvalidRequest,
     InvalidRange,
+    PreconditionFailed,
+    InvalidPart,
+    InvalidPartOrder,
+    EntityTooSmall,
+    QuotaExceeded,
+    MalformedXml,
+    BadDigest,
     NotImplemented,
     InternalError,
 }
@@ -1263,11 +2367,19 @@ impl S3ErrorKind {
             Self::RequestTimeTooSkewed => "RequestTimeTooSkewed",
             Self::NoSuchBucket => "NoSuchBucket",
             Self::NoSuchKey => "NoSuchKey",
+            Self::NoSuchUpload => "NoSuchUpload",
             Self::BucketAlreadyExists => "BucketAlreadyExists",
             Self::BucketNotEmpty => "BucketNotEmpty",
             Self::InvalidBucketName => "InvalidBucketName",
             Self::InvalidRequest => "InvalidRequest",
             Self::InvalidRange => "InvalidRange",
+            Self::PreconditionFailed => "PreconditionFailed",
+            Self::InvalidPart => "InvalidPart",
+            Self::InvalidPartOrder => "InvalidPartOrder",
+            Self::EntityTooSmall => "EntityTooSmall",
+            Self::QuotaExceeded => "QuotaExceeded",
+            Self::MalformedXml => "MalformedXML",
+            Self::BadDigest => "BadDigest",
             Self::NotImplemented => "NotImplemented",
             Self::InternalError => "InternalError",
         }
@@ -1284,11 +2396,19 @@ impl S3ErrorKind {
             }
             Self::NoSuchBucket => "The specified bucket does not exist",
             Self::NoSuchKey => "The specified key does not exist",
+            Self::NoSuchUpload => "The specified multipart upload does not exist",
             Self::BucketAlreadyExists => "The requested bucket name is not available",
             Self::BucketNotEmpty => "The bucket is not empty",
             Self::InvalidBucketName => "The specified bucket is not valid",
             Self::InvalidRequest => "Invalid Request",
             Self::InvalidRange => "The requested range is not satisfiable",
+            Self::PreconditionFailed => "At least one precondition failed",
+            Self::InvalidPart => "One or more specified parts could not be found",
+            Self::InvalidPartOrder => "The list of parts was not in ascending order",
+            Self::EntityTooSmall => "A non-final multipart part is too small",
+            Self::QuotaExceeded => "The storage quota would be exceeded",
+            Self::MalformedXml => "The XML document was not well formed",
+            Self::BadDigest => "The Content-MD5 or checksum did not match the received data",
             Self::NotImplemented => "A requested operation is not implemented",
             Self::InternalError => "We encountered an internal error",
         }
@@ -1300,15 +2420,22 @@ impl S3ErrorKind {
             | Self::InvalidAccessKeyId
             | Self::SignatureDoesNotMatch
             | Self::RequestTimeTooSkewed => StatusCode::FORBIDDEN,
-            Self::NoSuchBucket | Self::NoSuchKey => StatusCode::NOT_FOUND,
+            Self::NoSuchBucket | Self::NoSuchKey | Self::NoSuchUpload => StatusCode::NOT_FOUND,
             Self::BucketAlreadyExists => StatusCode::CONFLICT,
             Self::BucketNotEmpty => StatusCode::CONFLICT,
             Self::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
+            Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::AuthorizationHeaderMalformed | Self::InvalidBucketName | Self::InvalidRequest => {
-                StatusCode::BAD_REQUEST
-            }
+            Self::AuthorizationHeaderMalformed
+            | Self::InvalidBucketName
+            | Self::InvalidRequest
+            | Self::InvalidPart
+            | Self::InvalidPartOrder
+            | Self::EntityTooSmall
+            | Self::QuotaExceeded
+            | Self::MalformedXml
+            | Self::BadDigest => StatusCode::BAD_REQUEST,
         }
     }
 }
@@ -1324,6 +2451,207 @@ struct ErrorDocument<'a> {
     resource: &'a str,
     #[serde(rename = "RequestId")]
     request_id: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename = "VersioningConfiguration")]
+struct VersioningConfigurationDocument {
+    #[serde(rename = "Status")]
+    status: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename = "VersioningConfiguration")]
+struct VersioningConfigurationResult<'a> {
+    #[serde(rename = "@xmlns")]
+    xmlns: &'a str,
+    #[serde(rename = "Status", skip_serializing_if = "Option::is_none")]
+    status: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename = "InitiateMultipartUploadResult")]
+struct InitiateMultipartUploadResult<'a> {
+    #[serde(rename = "@xmlns")]
+    xmlns: &'a str,
+    #[serde(rename = "Bucket")]
+    bucket: String,
+    #[serde(rename = "Key")]
+    key: String,
+    #[serde(rename = "UploadId")]
+    upload_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename = "CompleteMultipartUpload")]
+struct CompleteMultipartUploadDocument {
+    #[serde(rename = "Part", default)]
+    parts: Vec<CompletedPartDocument>,
+}
+
+#[derive(Deserialize)]
+struct CompletedPartDocument {
+    #[serde(rename = "PartNumber")]
+    part_number: u16,
+    #[serde(rename = "ETag")]
+    etag: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename = "CompleteMultipartUploadResult")]
+struct CompleteMultipartUploadResult<'a> {
+    #[serde(rename = "@xmlns")]
+    xmlns: &'a str,
+    #[serde(rename = "Location")]
+    location: String,
+    #[serde(rename = "Bucket")]
+    bucket: String,
+    #[serde(rename = "Key")]
+    key: String,
+    #[serde(rename = "ETag")]
+    etag: String,
+    #[serde(rename = "VersionId")]
+    version_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename = "CopyObjectResult")]
+struct CopyObjectResult {
+    #[serde(rename = "LastModified")]
+    last_modified: String,
+    #[serde(rename = "ETag")]
+    etag: String,
+    #[serde(rename = "VersionId")]
+    version_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename = "ListPartsResult")]
+struct ListPartsResult<'a> {
+    #[serde(rename = "@xmlns")]
+    xmlns: &'a str,
+    #[serde(rename = "Bucket")]
+    bucket: String,
+    #[serde(rename = "Key")]
+    key: String,
+    #[serde(rename = "UploadId")]
+    upload_id: String,
+    #[serde(rename = "PartNumberMarker")]
+    part_number_marker: u16,
+    #[serde(
+        rename = "NextPartNumberMarker",
+        skip_serializing_if = "Option::is_none"
+    )]
+    next_part_number_marker: Option<u16>,
+    #[serde(rename = "MaxParts")]
+    max_parts: usize,
+    #[serde(rename = "IsTruncated")]
+    is_truncated: bool,
+    #[serde(rename = "Part", default)]
+    parts: Vec<ListedPart>,
+}
+
+#[derive(Serialize)]
+struct ListedPart {
+    #[serde(rename = "PartNumber")]
+    part_number: u16,
+    #[serde(rename = "LastModified")]
+    last_modified: String,
+    #[serde(rename = "ETag")]
+    etag: String,
+    #[serde(rename = "Size")]
+    size: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename = "ListMultipartUploadsResult")]
+struct ListMultipartUploadsResult<'a> {
+    #[serde(rename = "@xmlns")]
+    xmlns: &'a str,
+    #[serde(rename = "Bucket")]
+    bucket: String,
+    #[serde(rename = "Prefix")]
+    prefix: String,
+    #[serde(rename = "UploadIdMarker", skip_serializing_if = "Option::is_none")]
+    upload_id_marker: Option<String>,
+    #[serde(rename = "NextUploadIdMarker", skip_serializing_if = "Option::is_none")]
+    next_upload_id_marker: Option<String>,
+    #[serde(rename = "MaxUploads")]
+    max_uploads: usize,
+    #[serde(rename = "IsTruncated")]
+    is_truncated: bool,
+    #[serde(rename = "Upload", default)]
+    uploads: Vec<ListedUpload>,
+}
+
+#[derive(Serialize)]
+struct ListedUpload {
+    #[serde(rename = "Key")]
+    key: String,
+    #[serde(rename = "UploadId")]
+    upload_id: String,
+    #[serde(rename = "Initiated")]
+    initiated: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename = "ListVersionsResult")]
+struct ListVersionsResult<'a> {
+    #[serde(rename = "@xmlns")]
+    xmlns: &'a str,
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Prefix")]
+    prefix: String,
+    #[serde(rename = "KeyMarker", skip_serializing_if = "Option::is_none")]
+    key_marker: Option<String>,
+    #[serde(rename = "VersionIdMarker", skip_serializing_if = "Option::is_none")]
+    version_id_marker: Option<String>,
+    #[serde(rename = "NextKeyMarker", skip_serializing_if = "Option::is_none")]
+    next_key_marker: Option<String>,
+    #[serde(
+        rename = "NextVersionIdMarker",
+        skip_serializing_if = "Option::is_none"
+    )]
+    next_version_id_marker: Option<String>,
+    #[serde(rename = "MaxKeys")]
+    max_keys: usize,
+    #[serde(rename = "IsTruncated")]
+    is_truncated: bool,
+    #[serde(rename = "Version", default)]
+    versions: Vec<VersionEntry>,
+    #[serde(rename = "DeleteMarker", default)]
+    delete_markers: Vec<DeleteMarkerEntry>,
+}
+
+#[derive(Serialize)]
+struct VersionEntry {
+    #[serde(rename = "Key")]
+    key: String,
+    #[serde(rename = "VersionId")]
+    version_id: String,
+    #[serde(rename = "IsLatest")]
+    is_latest: bool,
+    #[serde(rename = "LastModified")]
+    last_modified: String,
+    #[serde(rename = "ETag")]
+    etag: String,
+    #[serde(rename = "Size")]
+    size: u64,
+    #[serde(rename = "StorageClass")]
+    storage_class: &'static str,
+}
+
+#[derive(Serialize)]
+struct DeleteMarkerEntry {
+    #[serde(rename = "Key")]
+    key: String,
+    #[serde(rename = "VersionId")]
+    version_id: String,
+    #[serde(rename = "IsLatest")]
+    is_latest: bool,
+    #[serde(rename = "LastModified")]
+    last_modified: String,
 }
 
 #[derive(Serialize)]
@@ -1417,7 +2745,7 @@ mod tests {
 
     use axum::http::Request as HttpRequest;
     use http_body_util::BodyExt;
-    use oes_auth::CredentialManager;
+    use oes_auth::{Action, Authorizer, CredentialManager, PolicyEffect, PolicyStatement};
     use oes_core::OrganizationId;
     use oes_metadata::{MetadataRepository, RedbMetadataRepository};
     use oes_service::ServiceLimits;
@@ -1464,15 +2792,16 @@ mod tests {
                 directory.path().join("credentials.redb"),
                 TEST_ACCESS_KEY,
                 TEST_SECRET_KEY,
-                None,
+                Some(b"s3-test-master-key-at-least-32-bytes"),
             )
             .await
             .expect("credential manager"),
         );
         let provider: Arc<dyn SigningCredentialProvider> = credentials.clone();
+        let authorizer: Arc<dyn Authorizer> = credentials.clone();
         (
             directory,
-            router(S3State::new(services, provider)),
+            router(S3State::new(services, provider).with_authorizer(authorizer)),
             credentials,
         )
     }
@@ -1660,6 +2989,23 @@ mod tests {
             canonical_query("z=last&a=hello%20world&a=first"),
             "a=first&a=hello%20world&z=last"
         );
+    }
+
+    #[test]
+    fn client_sha256_checksum_is_strictly_decoded_and_cross_checked() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-amz-checksum-sha256",
+            HeaderValue::from_str(&STANDARD.encode([7_u8; 32])).expect("header"),
+        );
+        assert_eq!(
+            request_checksum(&headers, &PayloadHash::Unsigned).expect("checksum"),
+            Some(Checksum::sha256([7_u8; 32]))
+        );
+        assert!(matches!(
+            request_checksum(&headers, &PayloadHash::Sha256(Checksum::sha256([8_u8; 32]))),
+            Err(S3ErrorKind::BadDigest)
+        ));
     }
 
     #[tokio::test]
@@ -1867,7 +3213,7 @@ mod tests {
             ))
         );
 
-        let unsupported_copy = application
+        let copy = application
             .clone()
             .oneshot(signed_request(
                 Method::PUT,
@@ -1879,11 +3225,11 @@ mod tests {
                 now,
             ))
             .await
-            .expect("unsupported copy response");
-        assert_eq!(unsupported_copy.status(), StatusCode::NOT_IMPLEMENTED);
+            .expect("copy response");
+        assert_eq!(copy.status(), StatusCode::OK);
         assert_eq!(
-            xml_value(&body_text(unsupported_copy).await, "Code"),
-            Some("NotImplemented")
+            xml_value(&body_text(copy).await, "ETag"),
+            Some("\"5eb63bbbe01eeed093cb22bb8f5acdc3\"")
         );
 
         let head = application
@@ -1967,7 +3313,7 @@ mod tests {
             Some("BucketNotEmpty")
         );
 
-        let unsupported_multipart_delete = application
+        let missing_multipart_delete = application
             .clone()
             .oneshot(signed_request(
                 Method::DELETE,
@@ -1979,11 +3325,8 @@ mod tests {
                 now,
             ))
             .await
-            .expect("unsupported multipart delete response");
-        assert_eq!(
-            unsupported_multipart_delete.status(),
-            StatusCode::NOT_IMPLEMENTED
-        );
+            .expect("missing multipart delete response");
+        assert_eq!(missing_multipart_delete.status(), StatusCode::NOT_FOUND);
 
         for _ in 0..2 {
             let deleted = application
@@ -2021,6 +3364,21 @@ mod tests {
             Some("NoSuchKey")
         );
 
+        let deleted_copy = application
+            .clone()
+            .oneshot(signed_request(
+                Method::DELETE,
+                "/demo-bucket/copied.txt",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("delete copied object response");
+        assert_eq!(deleted_copy.status(), StatusCode::NO_CONTENT);
+
         let deleted_bucket = application
             .oneshot(signed_request(
                 Method::DELETE,
@@ -2034,6 +3392,178 @@ mod tests {
             .await
             .expect("delete bucket response");
         assert_eq!(deleted_bucket.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn multipart_and_versioning_work_through_signed_s3_requests() {
+        let (_directory, application, _credentials) = test_router().await;
+        let now = Utc::now();
+        let create = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/advanced-bucket",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("create bucket");
+        assert_eq!(create.status(), StatusCode::OK);
+
+        let configuration =
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+        let enabled = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/advanced-bucket?versioning",
+                configuration,
+                &[("content-type", "application/xml")],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("enable versioning");
+        assert_eq!(enabled.status(), StatusCode::OK);
+
+        let first = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/advanced-bucket/versioned.txt",
+                b"first",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("first version");
+        let first_version = first
+            .headers()
+            .get("x-amz-version-id")
+            .expect("version header")
+            .to_str()
+            .expect("version text")
+            .to_owned();
+        assert_eq!(first.status(), StatusCode::OK);
+        let second = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/advanced-bucket/versioned.txt",
+                b"second",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("second version");
+        assert_eq!(second.status(), StatusCode::OK);
+        let historical = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                &format!("/advanced-bucket/versioned.txt?versionId={first_version}"),
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("historical get");
+        assert_eq!(historical.status(), StatusCode::OK);
+        assert_eq!(body_text(historical).await, "first");
+        let versions = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                "/advanced-bucket?versions",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("list versions");
+        assert_eq!(versions.status(), StatusCode::OK);
+        assert_eq!(body_text(versions).await.matches("<Version>").count(), 2);
+
+        let initiated = application
+            .clone()
+            .oneshot(signed_request(
+                Method::POST,
+                "/advanced-bucket/multipart.bin?uploads",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("initiate multipart");
+        assert_eq!(initiated.status(), StatusCode::OK);
+        let upload_id = xml_value(&body_text(initiated).await, "UploadId")
+            .expect("upload id")
+            .to_owned();
+        let part = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                &format!("/advanced-bucket/multipart.bin?partNumber=1&uploadId={upload_id}"),
+                b"streamed-part",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("upload part");
+        assert_eq!(part.status(), StatusCode::OK);
+        let etag = part
+            .headers()
+            .get(header::ETAG)
+            .expect("part ETag")
+            .to_str()
+            .expect("ETag text")
+            .to_owned();
+        let completion = format!(
+            "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag}</ETag></Part></CompleteMultipartUpload>"
+        );
+        let completed = application
+            .clone()
+            .oneshot(signed_request(
+                Method::POST,
+                &format!("/advanced-bucket/multipart.bin?uploadId={upload_id}"),
+                completion.as_bytes(),
+                &[("content-type", "application/xml")],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("complete multipart");
+        assert_eq!(completed.status(), StatusCode::OK);
+        let downloaded = application
+            .oneshot(signed_request(
+                Method::GET,
+                "/advanced-bucket/multipart.bin",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("download multipart");
+        assert_eq!(body_text(downloaded).await, "streamed-part");
     }
 
     #[tokio::test]
@@ -2153,6 +3683,30 @@ mod tests {
             .create_service_account("s3-test-client", OrganizationId::new())
             .await
             .expect("issue service account");
+        let policy = credentials
+            .create_policy(
+                "s3-test-access",
+                "test-only full access",
+                vec![PolicyStatement {
+                    effect: PolicyEffect::Allow,
+                    actions: vec![
+                        Action::ListBucket,
+                        Action::GetObject,
+                        Action::PutObject,
+                        Action::DeleteObject,
+                        Action::GetObjectVersion,
+                        Action::DeleteObjectVersion,
+                        Action::ManageBucket,
+                    ],
+                    resources: vec!["bucket:*".into()],
+                }],
+            )
+            .await
+            .expect("create policy");
+        credentials
+            .attach_policy(issued.info.account.id, policy.id)
+            .await
+            .expect("attach policy");
         let secret = std::str::from_utf8(issued.secret.expose()).expect("secret text");
         let service_account_request = application
             .clone()
@@ -2263,6 +3817,23 @@ mod tests {
         let second = body_text(second).await;
         assert!(second.contains("<Key>c</Key>"));
         assert!(second.contains("<IsTruncated>false</IsTruncated>"));
+    }
+
+    #[test]
+    fn compatibility_registry_is_unique_and_tracks_explicit_gaps() {
+        let names = S3_CAPABILITIES
+            .iter()
+            .map(|capability| capability.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(names.len(), S3_CAPABILITIES.len());
+        assert!(S3_CAPABILITIES.iter().any(|capability| {
+            capability.name == "MultipartUpload"
+                && capability.status == CapabilityStatus::Implemented
+        }));
+        assert!(S3_CAPABILITIES.iter().any(|capability| {
+            capability.name == "UploadPartCopy"
+                && capability.status == CapabilityStatus::Unsupported
+        }));
     }
 
     proptest! {

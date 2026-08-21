@@ -1,23 +1,26 @@
 [package]
-name = "oes-service"
+name = "oes-lifecycle"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-bytes.workspace = true
 chrono.workspace = true
-futures-util.workspace = true
+oes-audit = { path = "../oes-audit" }
 oes-core = { path = "../oes-core" }
-oes-events = { path = "../oes-events" }
 oes-metadata = { path = "../oes-metadata" }
-oes-storage = { path = "../oes-storage" }
+oes-service = { path = "../oes-service" }
+redb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+oes-storage = { path = "../oes-storage" }
 tempfile.workspace = true
 
 [lints]

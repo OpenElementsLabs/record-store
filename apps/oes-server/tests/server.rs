@@ -12,6 +12,12 @@ async fn starts_serves_operational_routes_and_shuts_down() {
     config.server.shutdown_grace_period_seconds = 2;
     config.auth.root_access_key = Some("test-access".into());
     config.auth.root_secret_key = Some(SecretValue::new("test-secret-at-least-sixteen"));
+    config.auth.management_system_token = Some(SecretValue::new(
+        "test-system-management-token-32-bytes-long",
+    ));
+    config.auth.management_auditor_token = Some(SecretValue::new(
+        "test-auditor-management-token-32-bytes-long",
+    ));
 
     let runtime = oes_server::initialize(&config)
         .await
@@ -80,7 +86,7 @@ async fn starts_serves_operational_routes_and_shuts_down() {
 
     let created = client
         .post(format!("http://{address}/api/v1/buckets"))
-        .basic_auth("test-access", Some("test-secret-at-least-sixteen"))
+        .bearer_auth("test-system-management-token-32-bytes-long")
         .json(&serde_json::json!({"name": "native-api-bucket"}))
         .send()
         .await
@@ -88,7 +94,7 @@ async fn starts_serves_operational_routes_and_shuts_down() {
     assert_eq!(created.status(), reqwest::StatusCode::CREATED);
     let buckets = client
         .get(format!("http://{address}/api/v1/buckets"))
-        .basic_auth("test-access", Some("test-secret-at-least-sixteen"))
+        .bearer_auth("test-auditor-management-token-32-bytes-long")
         .send()
         .await
         .expect("bucket list request")
@@ -96,6 +102,15 @@ async fn starts_serves_operational_routes_and_shuts_down() {
         .await
         .expect("bucket list JSON");
     assert_eq!(buckets[0]["name"], "native-api-bucket");
+
+    let auditor_write = client
+        .post(format!("http://{address}/api/v1/buckets"))
+        .bearer_auth("test-auditor-management-token-32-bytes-long")
+        .json(&serde_json::json!({"name": "forbidden"}))
+        .send()
+        .await
+        .expect("auditor write request");
+    assert_eq!(auditor_write.status(), reqwest::StatusCode::FORBIDDEN);
 
     let s3_unauthorized = client
         .get(format!("http://{s3_address}/"))
@@ -130,4 +145,33 @@ async fn starts_serves_operational_routes_and_shuts_down() {
         .expect("bounded shutdown")
         .expect("server task")
         .expect("clean shutdown");
+}
+
+#[tokio::test]
+async fn offline_metadata_backup_is_versioned_verified_and_non_overwriting() {
+    let directory = tempdir().expect("temporary directory");
+    let mut config = Config::default();
+    config.storage.data_directory = directory.path().join("source");
+    config.auth.root_access_key = Some("test-access".into());
+    config.auth.root_secret_key = Some(SecretValue::new("test-secret-at-least-sixteen"));
+    config.auth.credential_master_key = Some(SecretValue::new(
+        "test-credential-master-key-at-least-32-bytes",
+    ));
+    let runtime = oes_server::initialize(&config)
+        .await
+        .expect("initialize source");
+    let backup = directory.path().join("backup");
+    assert!(oes_server::backup_metadata(&config, &backup).is_err());
+    drop(runtime);
+    oes_server::backup_metadata(&config, &backup).expect("backup");
+    assert!(backup.join("manifest.json").is_file());
+
+    let mut restored = config.clone();
+    restored.storage.data_directory = directory.path().join("restored");
+    oes_server::restore_metadata(&restored, &backup).expect("restore");
+    let restored_runtime = oes_server::initialize(&restored)
+        .await
+        .expect("initialize restored state");
+    drop(restored_runtime);
+    assert!(oes_server::restore_metadata(&restored, &backup).is_err());
 }

@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeMap,
     fmt::{self, Display, Formatter},
-    num::NonZeroU64,
+    num::{NonZeroU16, NonZeroU64},
     str::FromStr,
 };
 
@@ -48,6 +48,12 @@ pub enum CoreError {
     /// An entity tag was malformed.
     #[error("invalid ETag: {0}")]
     InvalidETag(String),
+    /// A multipart part number was outside the S3 range.
+    #[error("invalid multipart part number: {0}")]
+    InvalidPartNumber(String),
+    /// A lifecycle expiration rule was contradictory or unsafe.
+    #[error("invalid lifecycle rule: {0}")]
+    InvalidLifecycleRule(String),
     /// A byte range was invalid for the requested object.
     #[error("invalid byte range: {0}")]
     InvalidByteRange(String),
@@ -120,9 +126,54 @@ macro_rules! uuid_identifier {
 uuid_identifier!(BucketId, "bucket");
 uuid_identifier!(ObjectId, "object");
 uuid_identifier!(VersionId, "version");
+uuid_identifier!(UploadId, "multipart upload");
 uuid_identifier!(NodeId, "node");
 uuid_identifier!(OrganizationId, "organization");
 uuid_identifier!(ServiceAccountId, "service account");
+uuid_identifier!(CredentialId, "credential");
+uuid_identifier!(PolicyId, "policy");
+uuid_identifier!(AuditEventId, "audit event");
+uuid_identifier!(EventId, "storage event");
+uuid_identifier!(WebhookId, "webhook");
+uuid_identifier!(LifecycleRuleId, "lifecycle rule");
+
+/// Validated positive lifecycle age in whole days.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct ExpirationDays(u32);
+
+impl ExpirationDays {
+    pub const MAX: u32 = 36_500;
+
+    pub fn new(days: u32) -> Result<Self, CoreError> {
+        if (1..=Self::MAX).contains(&days) {
+            Ok(Self(days))
+        } else {
+            Err(CoreError::InvalidLifecycleRule(
+                "expiration days must be between 1 and 36500".into(),
+            ))
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl TryFrom<u32> for ExpirationDays {
+    type Error = CoreError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<ExpirationDays> for u32 {
+    fn from(value: ExpirationDays) -> Self {
+        value.0
+    }
+}
 
 /// A validated S3-compatible bucket name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -506,6 +557,132 @@ pub struct ResolvedByteRange {
     pub length: u64,
 }
 
+/// S3 multipart part numbers are one-based and capped at 10,000.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct PartNumber(NonZeroU16);
+
+impl PartNumber {
+    /// Highest part number accepted by S3 multipart uploads.
+    pub const MAX: u16 = 10_000;
+
+    /// Creates a validated part number.
+    pub fn new(value: u16) -> Result<Self, CoreError> {
+        if value > Self::MAX {
+            return Err(CoreError::InvalidPartNumber(format!(
+                "part number must be between 1 and {}",
+                Self::MAX
+            )));
+        }
+        NonZeroU16::new(value).map(Self).ok_or_else(|| {
+            CoreError::InvalidPartNumber(format!("part number must be between 1 and {}", Self::MAX))
+        })
+    }
+
+    /// Returns the one-based numeric part number.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u16> for PartNumber {
+    type Error = CoreError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<PartNumber> for u16 {
+    fn from(value: PartNumber) -> Self {
+        value.get()
+    }
+}
+
+impl FromStr for PartNumber {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .parse::<u16>()
+            .map_err(|_| CoreError::InvalidPartNumber("part number must be an integer".into()))
+            .and_then(Self::new)
+    }
+}
+
+impl Display for PartNumber {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.get(), formatter)
+    }
+}
+
+/// Bucket versioning state. This intentionally is not represented by booleans.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VersioningState {
+    /// No historical versions or delete markers are retained.
+    #[default]
+    Disabled,
+    /// New writes and deletes create immutable versions.
+    Enabled,
+    /// Existing history remains, while new writes use replace semantics.
+    Suspended,
+}
+
+/// A byte quota with an explicit unlimited state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "bytes", rename_all = "snake_case")]
+pub enum ByteQuota {
+    /// No configured byte limit.
+    #[default]
+    Unlimited,
+    /// Maximum committed logical bytes.
+    Limit(u64),
+}
+
+impl ByteQuota {
+    /// Returns whether a proposed value is allowed.
+    #[must_use]
+    pub const fn allows(self, proposed: u64) -> bool {
+        match self {
+            Self::Unlimited => true,
+            Self::Limit(limit) => proposed <= limit,
+        }
+    }
+}
+
+/// An object-count quota with an explicit unlimited state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "objects", rename_all = "snake_case")]
+pub enum ObjectCountQuota {
+    /// No configured object limit.
+    #[default]
+    Unlimited,
+    /// Maximum currently visible object count.
+    Limit(u64),
+}
+
+impl ObjectCountQuota {
+    /// Returns whether a proposed value is allowed.
+    #[must_use]
+    pub const fn allows(self, proposed: u64) -> bool {
+        match self {
+            Self::Unlimited => true,
+            Self::Limit(limit) => proposed <= limit,
+        }
+    }
+}
+
+/// Per-bucket storage limits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketQuota {
+    /// Maximum current logical bytes.
+    pub bytes: ByteQuota,
+    /// Maximum current visible objects.
+    pub objects: ObjectCountQuota,
+}
+
 /// Logical bucket metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bucket {
@@ -517,6 +694,12 @@ pub struct Bucket {
     pub name: BucketName,
     /// Creation time.
     pub created_at: DateTime<Utc>,
+    /// Current object-versioning behavior.
+    #[serde(default)]
+    pub versioning: VersioningState,
+    /// Limits enforced transactionally at metadata publication.
+    #[serde(default)]
+    pub quota: BucketQuota,
 }
 
 /// Persisted object metadata, independent of the physical object layout.
@@ -534,6 +717,10 @@ pub struct ObjectMetadata {
     pub size: u64,
     /// Payload integrity checksum.
     pub checksum: Checksum,
+    /// Versioned on-disk representation. Cryptographic key material is never
+    /// part of this public metadata structure.
+    #[serde(default)]
+    pub payload_format: PayloadFormat,
     /// Stable protocol-facing entity tag.
     pub etag: ETag,
     /// Optional media type supplied by the caller.
@@ -544,6 +731,17 @@ pub struct ObjectMetadata {
     pub created_at: DateTime<Utc>,
     /// Last modification time.
     pub modified_at: DateTime<Utc>,
+}
+
+/// Versioned physical representation used for an immutable payload.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PayloadFormat {
+    /// Historical and explicitly unencrypted payload bytes.
+    #[default]
+    Plaintext,
+    /// OES envelope encryption format 1 using chunked AES-256-GCM.
+    Aes256GcmEnvelopeV1,
 }
 
 /// A concise reference to an immutable object version.
@@ -557,6 +755,193 @@ pub struct ObjectVersion {
     pub created_at: DateTime<Utc>,
 }
 
+/// A logical delete marker in a version-enabled bucket.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteMarker {
+    /// Stable public version identifier.
+    pub version_id: VersionId,
+    /// Owning bucket.
+    pub bucket_id: BucketId,
+    /// Deleted logical key.
+    pub key: ObjectKey,
+    /// Time the marker became current.
+    pub created_at: DateTime<Utc>,
+}
+
+/// One immutable entry in a key's version history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ObjectVersionRecord {
+    /// A version with an immutable physical payload.
+    Object {
+        /// Immutable payload metadata.
+        metadata: ObjectMetadata,
+        /// Whether S3 exposes this as the special `null` version.
+        is_null: bool,
+    },
+    /// A logical deletion without a payload.
+    DeleteMarker {
+        /// Immutable logical deletion metadata.
+        marker: DeleteMarker,
+        /// Whether S3 exposes this as the special `null` version.
+        is_null: bool,
+    },
+}
+
+impl ObjectVersionRecord {
+    /// Returns the stable version identifier.
+    #[must_use]
+    pub const fn version_id(&self) -> VersionId {
+        match self {
+            Self::Object { metadata, .. } => metadata.version_id,
+            Self::DeleteMarker { marker, .. } => marker.version_id,
+        }
+    }
+
+    /// Returns the logical key.
+    #[must_use]
+    pub fn key(&self) -> &ObjectKey {
+        match self {
+            Self::Object { metadata, .. } => &metadata.key,
+            Self::DeleteMarker { marker, .. } => &marker.key,
+        }
+    }
+
+    /// Returns the creation timestamp used for deterministic ordering.
+    #[must_use]
+    pub const fn created_at(&self) -> DateTime<Utc> {
+        match self {
+            Self::Object { metadata, .. } => metadata.created_at,
+            Self::DeleteMarker { marker, .. } => marker.created_at,
+        }
+    }
+
+    /// Returns true for a logical deletion entry.
+    #[must_use]
+    pub const fn is_delete_marker(&self) -> bool {
+        matches!(self, Self::DeleteMarker { .. })
+    }
+
+    /// Returns whether this entry is the special unversioned/null entry.
+    #[must_use]
+    pub const fn is_null(&self) -> bool {
+        match self {
+            Self::Object { is_null, .. } | Self::DeleteMarker { is_null, .. } => *is_null,
+        }
+    }
+}
+
+/// Lifecycle state of a durable multipart upload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum MultipartUploadState {
+    /// Parts may be added or replaced.
+    Active,
+    /// A final immutable payload has been allocated and completion is recoverable.
+    Completing { object_id: ObjectId },
+}
+
+/// Durable multipart upload descriptor. It contains no caller-controlled paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultipartUpload {
+    /// Opaque client-facing upload identifier.
+    pub id: UploadId,
+    /// Destination bucket.
+    pub bucket_id: BucketId,
+    /// Destination logical key.
+    pub key: ObjectKey,
+    /// Media type selected at initiation.
+    pub content_type: Option<String>,
+    /// Custom metadata selected at initiation.
+    pub custom_metadata: BTreeMap<String, String>,
+    /// Creation timestamp.
+    pub initiated_at: DateTime<Utc>,
+    /// Crash-recovery state.
+    pub state: MultipartUploadState,
+}
+
+/// One durably persisted multipart payload part.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadedPart {
+    /// Owning upload.
+    pub upload_id: UploadId,
+    /// Validated one-based part number.
+    pub number: PartNumber,
+    /// OES-controlled immutable payload identifier.
+    pub object_id: ObjectId,
+    /// Part size in bytes.
+    pub size: u64,
+    /// Strong internal checksum.
+    pub checksum: Checksum,
+    /// Versioned physical representation of the durable part payload.
+    #[serde(default)]
+    pub payload_format: PayloadFormat,
+    /// S3-compatible part ETag.
+    pub etag: ETag,
+    /// Last successful upload time.
+    pub modified_at: DateTime<Utc>,
+}
+
+/// A caller completion entry, validated against durable parts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedPart {
+    /// Part number in ascending manifest order.
+    pub number: PartNumber,
+    /// ETag supplied by the completion request.
+    pub etag: ETag,
+}
+
+/// Restart-safe metadata-driven object expiration rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleRule {
+    pub id: LifecycleRuleId,
+    pub bucket_id: BucketId,
+    pub prefix: String,
+    pub enabled: bool,
+    pub expiration: Option<ExpirationDays>,
+    pub noncurrent_version_expiration: Option<ExpirationDays>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl LifecycleRule {
+    /// Rejects no-op rules and unreasonably large prefixes.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.prefix.len() > ObjectKey::MAX_LENGTH {
+            return Err(CoreError::InvalidLifecycleRule(
+                "prefix exceeds the maximum object-key length".into(),
+            ));
+        }
+        if self.expiration.is_none() && self.noncurrent_version_expiration.is_none() {
+            return Err(CoreError::InvalidLifecycleRule(
+                "at least one expiration action is required".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Foundation for future Object Lock enforcement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionMode {
+    /// Deletion may be bypassed by an appropriately authorized administrator.
+    Governance,
+    /// Deletion is forbidden until the retention time has elapsed.
+    Compliance,
+}
+
+/// Retention metadata stored independently from payload layout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectRetention {
+    /// Optional future retention mode.
+    pub mode: Option<RetentionMode>,
+    /// Optional time before which deletion is not allowed.
+    pub retain_until: Option<DateTime<Utc>>,
+    /// Independent legal-hold flag.
+    pub legal_hold: bool,
+}
+
 /// Aggregate storage accounting values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageUsage {
@@ -566,6 +951,18 @@ pub struct StorageUsage {
     pub bytes_used: u64,
     /// Number of buckets.
     pub bucket_count: u64,
+    /// Number of immutable data versions, including current versions.
+    #[serde(default)]
+    pub version_count: u64,
+    /// Bytes referenced by all immutable object versions.
+    #[serde(default)]
+    pub version_bytes: u64,
+    /// Bytes occupied by committed immutable payloads.
+    #[serde(default)]
+    pub physical_bytes: u64,
+    /// Bytes occupied by durable multipart parts.
+    #[serde(default)]
+    pub temporary_multipart_bytes: u64,
 }
 
 #[cfg(test)]

@@ -13,6 +13,10 @@ use std::{
 use serde::Deserialize;
 use thiserror::Error;
 
+const fn default_true() -> bool {
+    true
+}
+
 /// A configuration secret whose debug representation is always redacted.
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(transparent)]
@@ -46,10 +50,14 @@ pub struct Config {
     pub server: ServerConfig,
     /// Local storage settings.
     pub storage: StorageConfig,
-    /// Root and credential-encryption settings.
+    /// Root credentials and injected master-key settings.
     pub auth: AuthConfig,
     /// Request and concurrency limits.
     pub limits: LimitsConfig,
+    /// Outbound webhook safety and retry settings.
+    pub webhooks: WebhookConfig,
+    /// Incremental object expiration settings.
+    pub lifecycle: LifecycleConfig,
     /// Logging settings.
     pub observability: ObservabilityConfig,
 }
@@ -123,6 +131,12 @@ impl Config {
         {
             issues.push("storage.temporary_directory must not be empty".to_owned());
         }
+        if self.storage.encryption_enabled && self.auth.credential_master_key.is_none() {
+            issues.push(
+                "auth.credential_master_key is required when storage.encryption_enabled is true"
+                    .to_owned(),
+            );
+        }
         match (&self.auth.root_access_key, &self.auth.root_secret_key) {
             (Some(access), Some(secret)) => {
                 if !(3..=128).contains(&access.len())
@@ -162,6 +176,52 @@ impl Config {
                     .to_owned(),
             );
         }
+        for (name, token) in [
+            (
+                "auth.management_system_token",
+                &self.auth.management_system_token,
+            ),
+            (
+                "auth.management_storage_token",
+                &self.auth.management_storage_token,
+            ),
+            (
+                "auth.management_auditor_token",
+                &self.auth.management_auditor_token,
+            ),
+        ] {
+            if token.as_ref().is_some_and(|value| {
+                !(32..=1024).contains(&value.expose().len())
+                    || !value.expose().bytes().all(|byte| byte.is_ascii_graphic())
+            }) {
+                issues.push(format!(
+                    "{name} must contain 32 to 1024 visible ASCII characters"
+                ));
+            }
+        }
+        if self.auth.management_system_token.is_none()
+            && (self.auth.management_storage_token.is_some()
+                || self.auth.management_auditor_token.is_some())
+        {
+            issues.push(
+                "auth.management_system_token is required when another management role token is configured"
+                    .to_owned(),
+            );
+        }
+        let management_tokens = [
+            self.auth.management_system_token.as_ref(),
+            self.auth.management_storage_token.as_ref(),
+            self.auth.management_auditor_token.as_ref(),
+        ];
+        for left in 0..management_tokens.len() {
+            for right in left + 1..management_tokens.len() {
+                if management_tokens[left].is_some()
+                    && management_tokens[left] == management_tokens[right]
+                {
+                    issues.push("management role tokens must be distinct".to_owned());
+                }
+            }
+        }
         if self.limits.maximum_concurrent_operations == 0 {
             issues
                 .push("limits.maximum_concurrent_operations must be greater than zero".to_owned());
@@ -178,6 +238,22 @@ impl Config {
         }
         if !(1_024..=1024 * 1024).contains(&self.limits.maximum_header_bytes) {
             issues.push("limits.maximum_header_bytes must be between 1024 and 1048576".to_owned());
+        }
+        if self.webhooks.request_timeout_seconds == 0 || self.webhooks.request_timeout_seconds > 300
+        {
+            issues.push("webhooks.request_timeout_seconds must be between 1 and 300".to_owned());
+        }
+        if self.webhooks.maximum_attempts == 0 || self.webhooks.maximum_attempts > 32 {
+            issues.push("webhooks.maximum_attempts must be between 1 and 32".to_owned());
+        }
+        if self.webhooks.poll_interval_seconds == 0 || self.webhooks.poll_interval_seconds > 3600 {
+            issues.push("webhooks.poll_interval_seconds must be between 1 and 3600".to_owned());
+        }
+        if self.lifecycle.interval_seconds == 0 || self.lifecycle.interval_seconds > 86_400 {
+            issues.push("lifecycle.interval_seconds must be between 1 and 86400".to_owned());
+        }
+        if self.lifecycle.batch_size == 0 || self.lifecycle.batch_size > 1_000 {
+            issues.push("lifecycle.batch_size must be between 1 and 1000".to_owned());
         }
         if self.observability.log_filter.trim().is_empty() {
             issues.push("observability.log_filter must not be empty".to_owned());
@@ -218,6 +294,10 @@ impl Config {
         if let Some(value) = environment_value(environment, "OES_STORAGE_TEMPORARY_DIRECTORY")? {
             self.storage.temporary_directory = Some(PathBuf::from(value));
         }
+        if let Some(value) = environment_value(environment, "OES_STORAGE_ENCRYPTION_ENABLED")? {
+            self.storage.encryption_enabled =
+                parse_environment("OES_STORAGE_ENCRYPTION_ENABLED", value)?;
+        }
         if let Some(value) = environment_value(environment, "OES_ROOT_ACCESS_KEY")? {
             self.auth.root_access_key = Some(value.to_owned());
         }
@@ -227,12 +307,50 @@ impl Config {
         if let Some(value) = environment_value(environment, "OES_CREDENTIAL_MASTER_KEY")? {
             self.auth.credential_master_key = Some(SecretValue::new(value));
         }
+        if let Some(value) = environment_value(environment, "OES_ROOT_S3_ENABLED")? {
+            self.auth.root_s3_enabled = parse_environment("OES_ROOT_S3_ENABLED", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_MANAGEMENT_SYSTEM_TOKEN")? {
+            self.auth.management_system_token = Some(SecretValue::new(value));
+        }
+        if let Some(value) = environment_value(environment, "OES_MANAGEMENT_STORAGE_TOKEN")? {
+            self.auth.management_storage_token = Some(SecretValue::new(value));
+        }
+        if let Some(value) = environment_value(environment, "OES_MANAGEMENT_AUDITOR_TOKEN")? {
+            self.auth.management_auditor_token = Some(SecretValue::new(value));
+        }
         if let Some(value) = environment_value(environment, "OES_MAX_CONCURRENT_OPERATIONS")? {
             self.limits.maximum_concurrent_operations =
                 parse_environment("OES_MAX_CONCURRENT_OPERATIONS", value)?;
         }
         if let Some(value) = environment_value(environment, "OES_MAX_HEADER_BYTES")? {
             self.limits.maximum_header_bytes = parse_environment("OES_MAX_HEADER_BYTES", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_WEBHOOK_ALLOW_HTTP")? {
+            self.webhooks.allow_http = parse_environment("OES_WEBHOOK_ALLOW_HTTP", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_WEBHOOK_ALLOW_PRIVATE_NETWORKS")? {
+            self.webhooks.allow_private_networks =
+                parse_environment("OES_WEBHOOK_ALLOW_PRIVATE_NETWORKS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_WEBHOOK_TIMEOUT_SECONDS")? {
+            self.webhooks.request_timeout_seconds =
+                parse_environment("OES_WEBHOOK_TIMEOUT_SECONDS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_WEBHOOK_MAXIMUM_ATTEMPTS")? {
+            self.webhooks.maximum_attempts =
+                parse_environment("OES_WEBHOOK_MAXIMUM_ATTEMPTS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_WEBHOOK_POLL_INTERVAL_SECONDS")? {
+            self.webhooks.poll_interval_seconds =
+                parse_environment("OES_WEBHOOK_POLL_INTERVAL_SECONDS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_LIFECYCLE_INTERVAL_SECONDS")? {
+            self.lifecycle.interval_seconds =
+                parse_environment("OES_LIFECYCLE_INTERVAL_SECONDS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_LIFECYCLE_BATCH_SIZE")? {
+            self.lifecycle.batch_size = parse_environment("OES_LIFECYCLE_BATCH_SIZE", value)?;
         }
         if let Some(value) = environment_value(environment, "OES_LOG")? {
             self.observability.log_filter = value.to_owned();
@@ -274,6 +392,9 @@ pub struct StorageConfig {
     pub data_directory: PathBuf,
     /// Optional location for incomplete payload files.
     pub temporary_directory: Option<PathBuf>,
+    /// Encrypt newly committed object and multipart payload bytes at rest.
+    #[serde(default)]
+    pub encryption_enabled: bool,
 }
 
 impl StorageConfig {
@@ -291,20 +412,44 @@ impl Default for StorageConfig {
         Self {
             data_directory: PathBuf::from("./data"),
             temporary_directory: None,
+            encryption_enabled: false,
         }
     }
 }
 
 /// Credential bootstrap and encryption settings.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthConfig {
     /// Root S3 access key identifier.
     pub root_access_key: Option<String>,
     /// Root S3 secret key.
     pub root_secret_key: Option<SecretValue>,
-    /// Optional dedicated key for service-account secret encryption.
+    /// Stable master key for credentials, webhooks, and optional object encryption.
     pub credential_master_key: Option<SecretValue>,
+    /// Whether the bootstrap root credential may authenticate to the S3 API.
+    #[serde(default = "default_true")]
+    pub root_s3_enabled: bool,
+    /// Bearer token granting the full system-administrator management role.
+    pub management_system_token: Option<SecretValue>,
+    /// Bearer token granting the storage-administrator management role.
+    pub management_storage_token: Option<SecretValue>,
+    /// Bearer token granting the read-only auditor management role.
+    pub management_auditor_token: Option<SecretValue>,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            root_access_key: None,
+            root_secret_key: None,
+            credential_master_key: None,
+            root_s3_enabled: true,
+            management_system_token: None,
+            management_storage_token: None,
+            management_auditor_token: None,
+        }
+    }
 }
 
 /// Bounded request-resource settings.
@@ -328,6 +473,53 @@ impl Default for LimitsConfig {
             maximum_custom_metadata_entries: 64,
             maximum_custom_metadata_bytes: 16 * 1024,
             maximum_header_bytes: 64 * 1024,
+        }
+    }
+}
+
+/// Safe-default outbound webhook controls.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebhookConfig {
+    /// Permit plain HTTP endpoints. HTTPS is always permitted.
+    pub allow_http: bool,
+    /// Permit loopback, private, link-local, and other special-use targets.
+    pub allow_private_networks: bool,
+    /// Per-attempt network timeout.
+    pub request_timeout_seconds: u64,
+    /// Total attempts before a delivery becomes permanently failed.
+    pub maximum_attempts: u32,
+    /// Durable delivery queue polling interval.
+    pub poll_interval_seconds: u64,
+}
+
+impl Default for WebhookConfig {
+    fn default() -> Self {
+        Self {
+            allow_http: false,
+            allow_private_networks: false,
+            request_timeout_seconds: 10,
+            maximum_attempts: 6,
+            poll_interval_seconds: 2,
+        }
+    }
+}
+
+/// Bounded metadata-driven lifecycle scan controls.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LifecycleConfig {
+    /// Seconds between lifecycle passes.
+    pub interval_seconds: u64,
+    /// Maximum current objects and versions scanned per rule and pass.
+    pub batch_size: usize,
+}
+
+impl Default for LifecycleConfig {
+    fn default() -> Self {
+        Self {
+            interval_seconds: 3_600,
+            batch_size: 100,
         }
     }
 }
@@ -358,6 +550,8 @@ struct PartialConfig {
     storage: Option<PartialStorageConfig>,
     auth: Option<PartialAuthConfig>,
     limits: Option<PartialLimitsConfig>,
+    webhooks: Option<PartialWebhookConfig>,
+    lifecycle: Option<PartialLifecycleConfig>,
     observability: Option<PartialObservabilityConfig>,
 }
 
@@ -374,6 +568,12 @@ impl PartialConfig {
         }
         if let Some(value) = self.limits {
             value.apply(&mut target.limits);
+        }
+        if let Some(value) = self.webhooks {
+            value.apply(&mut target.webhooks);
+        }
+        if let Some(value) = self.lifecycle {
+            value.apply(&mut target.lifecycle);
         }
         if let Some(value) = self.observability {
             value.apply(&mut target.observability);
@@ -409,6 +609,7 @@ impl PartialServerConfig {
 struct PartialStorageConfig {
     data_directory: Option<PathBuf>,
     temporary_directory: Option<PathBuf>,
+    encryption_enabled: Option<bool>,
 }
 
 impl PartialStorageConfig {
@@ -419,6 +620,9 @@ impl PartialStorageConfig {
         if let Some(value) = self.temporary_directory {
             target.temporary_directory = Some(value);
         }
+        if let Some(value) = self.encryption_enabled {
+            target.encryption_enabled = value;
+        }
     }
 }
 
@@ -428,6 +632,10 @@ struct PartialAuthConfig {
     root_access_key: Option<String>,
     root_secret_key: Option<SecretValue>,
     credential_master_key: Option<SecretValue>,
+    root_s3_enabled: Option<bool>,
+    management_system_token: Option<SecretValue>,
+    management_storage_token: Option<SecretValue>,
+    management_auditor_token: Option<SecretValue>,
 }
 
 impl PartialAuthConfig {
@@ -440,6 +648,18 @@ impl PartialAuthConfig {
         }
         if let Some(value) = self.credential_master_key {
             target.credential_master_key = Some(value);
+        }
+        if let Some(value) = self.root_s3_enabled {
+            target.root_s3_enabled = value;
+        }
+        if let Some(value) = self.management_system_token {
+            target.management_system_token = Some(value);
+        }
+        if let Some(value) = self.management_storage_token {
+            target.management_storage_token = Some(value);
+        }
+        if let Some(value) = self.management_auditor_token {
+            target.management_auditor_token = Some(value);
         }
     }
 }
@@ -466,6 +686,54 @@ impl PartialLimitsConfig {
         }
         if let Some(value) = self.maximum_header_bytes {
             target.maximum_header_bytes = value;
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartialWebhookConfig {
+    allow_http: Option<bool>,
+    allow_private_networks: Option<bool>,
+    request_timeout_seconds: Option<u64>,
+    maximum_attempts: Option<u32>,
+    poll_interval_seconds: Option<u64>,
+}
+
+impl PartialWebhookConfig {
+    fn apply(self, target: &mut WebhookConfig) {
+        if let Some(value) = self.allow_http {
+            target.allow_http = value;
+        }
+        if let Some(value) = self.allow_private_networks {
+            target.allow_private_networks = value;
+        }
+        if let Some(value) = self.request_timeout_seconds {
+            target.request_timeout_seconds = value;
+        }
+        if let Some(value) = self.maximum_attempts {
+            target.maximum_attempts = value;
+        }
+        if let Some(value) = self.poll_interval_seconds {
+            target.poll_interval_seconds = value;
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartialLifecycleConfig {
+    interval_seconds: Option<u64>,
+    batch_size: Option<usize>,
+}
+
+impl PartialLifecycleConfig {
+    fn apply(self, target: &mut LifecycleConfig) {
+        if let Some(value) = self.interval_seconds {
+            target.interval_seconds = value;
+        }
+        if let Some(value) = self.batch_size {
+            target.batch_size = value;
         }
     }
 }
@@ -639,5 +907,24 @@ mod tests {
             config.storage.effective_temporary_directory(),
             PathBuf::from("state/tmp")
         );
+    }
+
+    #[test]
+    fn object_encryption_requires_the_explicit_master_key() {
+        let mut without_key = credentials().to_vec();
+        without_key.push(("OES_STORAGE_ENCRYPTION_ENABLED", "true"));
+        assert!(matches!(
+            Config::load_with_environment(None, without_key),
+            Err(ConfigError::Validation(message)) if message.contains("credential_master_key")
+        ));
+
+        let mut configured = credentials().to_vec();
+        configured.push(("OES_STORAGE_ENCRYPTION_ENABLED", "true"));
+        configured.push((
+            "OES_CREDENTIAL_MASTER_KEY",
+            "stable-test-master-key-at-least-thirty-two-bytes",
+        ));
+        let config = Config::load_with_environment(None, configured).expect("encrypted config");
+        assert!(config.storage.encryption_enabled);
     }
 }

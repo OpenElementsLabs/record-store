@@ -8,13 +8,18 @@ license.workspace = true
 [dependencies]
 axum.workspace = true
 base64.workspace = true
+chrono.workspace = true
 http.workspace = true
 oes-auth = { path = "../oes-auth" }
+oes-audit = { path = "../oes-audit" }
 oes-core = { path = "../oes-core" }
+oes-events = { path = "../oes-events" }
 oes-metadata = { path = "../oes-metadata" }
 oes-service = { path = "../oes-service" }
 oes-storage = { path = "../oes-storage" }
 serde.workspace = true
+sha2.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
