@@ -51,6 +51,7 @@ pub struct S3State {
     services: Services,
     credentials: Arc<dyn SigningCredentialProvider>,
     allowed_clock_skew: Duration,
+    maximum_presign_seconds: i64,
     maximum_header_bytes: usize,
 }
 
@@ -62,8 +63,16 @@ impl S3State {
             services,
             credentials,
             allowed_clock_skew: Duration::minutes(15),
+            maximum_presign_seconds: 604_800,
             maximum_header_bytes: 64 * 1024,
         }
+    }
+
+    /// Applies the maximum lifetime accepted for presigned URLs.
+    #[must_use]
+    pub const fn with_maximum_presign_seconds(mut self, seconds: i64) -> Self {
+        self.maximum_presign_seconds = seconds;
+        self
     }
 
     /// Applies the resolved aggregate S3 header limit.
@@ -153,14 +162,49 @@ async fn verify_request(
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<Authenticated, S3ErrorKind> {
-    let authorization = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .ok_or(S3ErrorKind::AccessDenied)?;
-    let parsed = ParsedAuthorization::parse(authorization)?;
-    let request_time = parse_request_time(&headers)?;
+    let (parsed, request_time, payload) = if headers.contains_key(header::AUTHORIZATION) {
+        let authorization = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or(S3ErrorKind::AccessDenied)?;
+        let parsed = ParsedAuthorization::parse(authorization)?;
+        let request_time = parse_request_time(&headers)?;
+        (parsed, request_time, parse_payload_hash(&headers)?)
+    } else {
+        if !uri
+            .query()
+            .unwrap_or_default()
+            .split('&')
+            .any(|item| item.starts_with("X-Amz-"))
+        {
+            return Err(S3ErrorKind::AccessDenied);
+        }
+        let presigned = ParsedPresign::parse(uri.query().unwrap_or_default())?;
+        if presigned.algorithm != "AWS4-HMAC-SHA256" {
+            return Err(S3ErrorKind::AuthorizationHeaderMalformed);
+        }
+        let request_time = parse_amz_date(&presigned.date)?;
+        let age = Utc::now().signed_duration_since(request_time).num_seconds();
+        if age < -state.allowed_clock_skew.num_seconds() {
+            return Err(S3ErrorKind::RequestTimeTooSkewed);
+        }
+        if age > presigned.expires || age > state.maximum_presign_seconds {
+            return Err(S3ErrorKind::AccessDenied);
+        }
+        let parsed = ParsedAuthorization {
+            access_key: presigned.access_key,
+            scope_date: presigned.scope_date,
+            region: presigned.region,
+            service: presigned.service,
+            terminal: presigned.terminal,
+            signed_headers: presigned.signed_headers,
+            signature: presigned.signature,
+        };
+        (parsed, request_time, PayloadHash::Unsigned)
+    };
     if (Utc::now() - request_time).num_seconds().unsigned_abs()
         > state.allowed_clock_skew.num_seconds() as u64
+        && headers.contains_key(header::AUTHORIZATION)
     {
         return Err(S3ErrorKind::RequestTimeTooSkewed);
     }
@@ -171,8 +215,10 @@ async fn verify_request(
     {
         return Err(S3ErrorKind::AuthorizationHeaderMalformed);
     }
-    let payload = parse_payload_hash(&headers)?;
-    if method == Method::PUT && matches!(&payload, PayloadHash::Unsigned) {
+    if method == Method::PUT
+        && matches!(&payload, PayloadHash::Unsigned)
+        && headers.contains_key(header::AUTHORIZATION)
+    {
         return Err(S3ErrorKind::InvalidRequest);
     }
     let (principal, secret) = state
@@ -215,6 +261,97 @@ async fn verify_request(
         return Err(S3ErrorKind::SignatureDoesNotMatch);
     }
     Ok(Authenticated { principal, payload })
+}
+
+struct ParsedPresign {
+    algorithm: String,
+    access_key: String,
+    scope_date: String,
+    region: String,
+    service: String,
+    terminal: String,
+    date: String,
+    expires: i64,
+    signed_headers: Vec<String>,
+    signature: String,
+}
+
+impl ParsedPresign {
+    fn parse(query: &str) -> Result<Self, S3ErrorKind> {
+        let mut values = BTreeMap::new();
+        for item in query.split('&').filter(|item| !item.is_empty()) {
+            let (name, value) = item.split_once('=').unwrap_or((item, ""));
+            let name = decode_query_component(name)?;
+            let value = decode_query_component(value)?;
+            if !name.starts_with("X-Amz-") || values.insert(name, value).is_some() {
+                return Err(S3ErrorKind::AuthorizationHeaderMalformed);
+            }
+        }
+        let algorithm = values
+            .remove("X-Amz-Algorithm")
+            .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?;
+        let credential = values
+            .remove("X-Amz-Credential")
+            .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?;
+        let date = values
+            .remove("X-Amz-Date")
+            .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?;
+        let expires = values
+            .remove("X-Amz-Expires")
+            .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?
+            .parse::<i64>()
+            .map_err(|_| S3ErrorKind::AuthorizationHeaderMalformed)?;
+        if !(1..=604_800).contains(&expires) {
+            return Err(S3ErrorKind::InvalidRequest);
+        }
+        let signed_headers = values
+            .remove("X-Amz-SignedHeaders")
+            .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?
+            .split(';')
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let signature = values
+            .remove("X-Amz-Signature")
+            .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?;
+        if !values.is_empty()
+            || signed_headers != ["host"]
+            || signature.len() != 64
+            || !signature.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(S3ErrorKind::AuthorizationHeaderMalformed);
+        }
+        let mut scope = credential.split('/');
+        let access_key = scope.next().filter(|value| !value.is_empty());
+        let scope_date = scope.next();
+        let region = scope.next();
+        let service = scope.next();
+        let terminal = scope.next();
+        if scope.next().is_some() {
+            return Err(S3ErrorKind::AuthorizationHeaderMalformed);
+        }
+        Ok(Self {
+            algorithm,
+            access_key: access_key
+                .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?
+                .to_owned(),
+            scope_date: scope_date
+                .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?
+                .to_owned(),
+            region: region
+                .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?
+                .to_owned(),
+            service: service
+                .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?
+                .to_owned(),
+            terminal: terminal
+                .ok_or(S3ErrorKind::AuthorizationHeaderMalformed)?
+                .to_owned(),
+            date,
+            expires,
+            signed_headers,
+            signature: signature.to_ascii_lowercase(),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -352,6 +489,10 @@ fn parse_request_time(headers: &HeaderMap) -> Result<DateTime<Utc>, S3ErrorKind>
         .get("x-amz-date")
         .and_then(|value| value.to_str().ok())
         .ok_or(S3ErrorKind::AccessDenied)?;
+    parse_amz_date(value)
+}
+
+fn parse_amz_date(value: &str) -> Result<DateTime<Utc>, S3ErrorKind> {
     let naive = NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%SZ")
         .map_err(|_| S3ErrorKind::AuthorizationHeaderMalformed)?;
     Ok(naive.and_utc())
@@ -408,6 +549,7 @@ fn canonical_query(query: &str) -> String {
                 aws_encode(&percent_decode_str(value).collect::<Vec<_>>(), true),
             )
         })
+        .filter(|(name, _)| name != "X-Amz-Signature")
         .collect::<Vec<_>>();
     pairs.sort();
     pairs
@@ -919,7 +1061,17 @@ fn reject_subresources(
         let raw_name = item.split_once('=').map_or(item, |(name, _)| name);
         let name = decode_query_component(raw_name)
             .map_err(|kind| S3Error::new(kind, request_id.clone(), resource))?;
-        if name != "x-id" {
+        if name != "x-id"
+            && !matches!(
+                name.as_str(),
+                "X-Amz-Algorithm"
+                    | "X-Amz-Credential"
+                    | "X-Amz-Date"
+                    | "X-Amz-Expires"
+                    | "X-Amz-SignedHeaders"
+                    | "X-Amz-Signature"
+            )
+        {
             return Err(S3Error::new(
                 S3ErrorKind::NotImplemented,
                 request_id.clone(),
@@ -1390,6 +1542,55 @@ mod tests {
         request
     }
 
+    fn presigned_request(
+        method: Method,
+        path: &str,
+        access_key: &str,
+        secret_key: &str,
+        time: DateTime<Utc>,
+        expires: i64,
+    ) -> HttpRequest<Body> {
+        let date = time.format("%Y%m%d").to_string();
+        let timestamp = time.format("%Y%m%dT%H%M%SZ").to_string();
+        let scope = format!("{date}/us-east-1/s3/aws4_request");
+        let credential = format!("{access_key}/{scope}");
+        let query = format!(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential={}&X-Amz-Date={timestamp}&X-Amz-Expires={expires}&X-Amz-SignedHeaders=host",
+            aws_encode(credential.as_bytes(), true)
+        );
+        let uri: Uri = format!("{path}?{query}").parse().expect("presigned URI");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("localhost"));
+        let canonical = canonical_request(
+            &method,
+            &uri,
+            &headers,
+            &["host".into()],
+            "UNSIGNED-PAYLOAD".into(),
+        )
+        .expect("presigned canonical request");
+        let canonical_hash = hex::encode(Sha256::digest(canonical.as_bytes()));
+        let string_to_sign = format!("AWS4-HMAC-SHA256\n{timestamp}\n{scope}\n{canonical_hash}");
+        let signature = calculate_signature(
+            &SigningSecret::new(secret_key),
+            &date,
+            "us-east-1",
+            "s3",
+            string_to_sign.as_bytes(),
+        )
+        .expect("presigned signature");
+        let uri: Uri = format!("{uri}&X-Amz-Signature={}", hex::encode(signature))
+            .parse()
+            .expect("signed URI");
+        let mut request = HttpRequest::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .expect("HTTP request");
+        *request.headers_mut() = headers;
+        request
+    }
+
     async fn body_text(response: Response) -> String {
         let body = response
             .into_body()
@@ -1458,6 +1659,101 @@ mod tests {
         assert_eq!(
             canonical_query("z=last&a=hello%20world&a=first"),
             "a=first&a=hello%20world&z=last"
+        );
+    }
+
+    #[tokio::test]
+    async fn presigned_get_put_are_bounded_to_method_and_expiration() {
+        let (_directory, application, _credentials) = test_router().await;
+        let now = Utc::now();
+        let create = signed_request(
+            Method::PUT,
+            "/presigned-bucket",
+            b"",
+            &[],
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+        );
+        assert_eq!(
+            application
+                .clone()
+                .oneshot(create)
+                .await
+                .expect("create bucket")
+                .status(),
+            StatusCode::OK
+        );
+
+        let mut put = presigned_request(
+            Method::PUT,
+            "/presigned-bucket/object.txt",
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+            60,
+        );
+        *put.body_mut() = Body::from("presigned payload");
+        assert_eq!(
+            application
+                .clone()
+                .oneshot(put)
+                .await
+                .expect("presigned put")
+                .status(),
+            StatusCode::OK
+        );
+
+        let get = presigned_request(
+            Method::GET,
+            "/presigned-bucket/object.txt",
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+            60,
+        );
+        let get_uri = get.uri().clone();
+        let response = application
+            .clone()
+            .oneshot(get)
+            .await
+            .expect("presigned get");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_text(response).await, "presigned payload");
+
+        let mut delete = HttpRequest::builder()
+            .method(Method::DELETE)
+            .uri(get_uri)
+            .body(Body::empty())
+            .expect("method-confusion request");
+        delete
+            .headers_mut()
+            .insert(header::HOST, HeaderValue::from_static("localhost"));
+        assert_eq!(
+            application
+                .clone()
+                .oneshot(delete)
+                .await
+                .expect("method-bound URL")
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+
+        let expired = presigned_request(
+            Method::GET,
+            "/presigned-bucket/object.txt",
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now - Duration::seconds(120),
+            60,
+        );
+        assert_eq!(
+            application
+                .oneshot(expired)
+                .await
+                .expect("expired URL")
+                .status(),
+            StatusCode::FORBIDDEN
         );
     }
 
