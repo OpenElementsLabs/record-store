@@ -5,7 +5,7 @@
 //! state is read or written: private networking alone is not treated as
 //! authentication.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use oes_cluster::{
@@ -160,6 +160,8 @@ pub enum AuthenticationRequirement {
 pub struct PeerVerifier {
     local: NodeVersions,
     authenticator: Arc<dyn PeerAuthenticator>,
+    bootstrap_cluster: Option<ClusterId>,
+    bootstrap_peers: BTreeSet<NodeId>,
 }
 
 impl PeerVerifier {
@@ -169,7 +171,21 @@ impl PeerVerifier {
         Self {
             local,
             authenticator,
+            bootstrap_cluster: None,
+            bootstrap_peers: BTreeSet::new(),
         }
+    }
+
+    /// Allows a seed whose identity was pinned during the token exchange to
+    /// install the joining node's first consensus snapshot.
+    ///
+    /// The exception automatically stops applying as soon as cluster state is
+    /// present locally; all subsequent calls require the replicated credential.
+    #[must_use]
+    pub fn with_bootstrap_peer(mut self, cluster_id: ClusterId, node_id: NodeId) -> Self {
+        self.bootstrap_cluster = Some(cluster_id);
+        self.bootstrap_peers.insert(node_id);
+        self
     }
 
     /// Validates protocol compatibility, cluster identity, and credentials.
@@ -200,8 +216,8 @@ impl PeerVerifier {
             ),
             _ => None,
         };
-        if let (Some(presented), Some(local)) =
-            (presented_cluster, self.authenticator.cluster_id().await?)
+        let local_cluster = self.authenticator.cluster_id().await?;
+        if let (Some(presented), Some(local)) = (presented_cluster, local_cluster)
             && presented != local
         {
             return Err(PeerError::ClusterMismatch { presented, local });
@@ -209,15 +225,22 @@ impl PeerVerifier {
 
         let credential = optional_header(metadata, NODE_CREDENTIAL_HEADER);
         let authenticated = match (credential, requirement) {
-            (Some(credential), _) => {
-                let verified = self.authenticator.verify_credential(credential).await?;
-                if verified != node_id {
+            (Some(credential), _) => match self.authenticator.verify_credential(credential).await {
+                Ok(verified) if verified == node_id => true,
+                Ok(_) => {
                     return Err(PeerError::Unauthenticated(
                         "node credential does not belong to the presented node".into(),
                     ));
                 }
-                true
-            }
+                Err(_)
+                    if local_cluster.is_none()
+                        && presented_cluster == self.bootstrap_cluster
+                        && self.bootstrap_peers.contains(&node_id) =>
+                {
+                    true
+                }
+                Err(error) => return Err(error),
+            },
             (None, AuthenticationRequirement::Required) => {
                 return Err(PeerError::Unauthenticated(
                     "a node credential is required for this operation".into(),
@@ -338,6 +361,18 @@ mod tests {
         metadata
     }
 
+    fn credential_headers(node_id: NodeId, cluster_id: ClusterId) -> MetadataMap {
+        let mut metadata = MetadataMap::new();
+        PeerHeaders {
+            node_id,
+            cluster_id: Some(cluster_id),
+            versions: NodeVersions::current("test"),
+            credential: Some("unrecognized-bootstrap-credential".into()),
+        }
+        .write(&mut metadata, &TraceContext::root());
+        metadata
+    }
+
     #[tokio::test]
     async fn missing_headers_are_refused() {
         let verifier = PeerVerifier::new(
@@ -416,5 +451,70 @@ mod tests {
             .expect("a compatible probe must be accepted");
         assert_eq!(peer.node_id, node_id);
         assert!(!peer.authenticated);
+    }
+
+    #[tokio::test]
+    async fn a_pinned_seed_can_install_the_initial_cluster_snapshot() {
+        let cluster_id = ClusterId::new();
+        let seed_id = NodeId::new();
+        let verifier = PeerVerifier::new(
+            NodeVersions::current("test"),
+            Arc::new(AlwaysUnknown { cluster: None }),
+        )
+        .with_bootstrap_peer(cluster_id, seed_id);
+
+        let peer = verifier
+            .verify(
+                &credential_headers(seed_id, cluster_id),
+                AuthenticationRequirement::Required,
+            )
+            .await
+            .expect("the pinned seed must be trusted during initial snapshot installation");
+
+        assert_eq!(peer.node_id, seed_id);
+        assert!(peer.authenticated);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_trust_does_not_apply_to_an_unpinned_peer() {
+        let cluster_id = ClusterId::new();
+        let verifier = PeerVerifier::new(
+            NodeVersions::current("test"),
+            Arc::new(AlwaysUnknown { cluster: None }),
+        )
+        .with_bootstrap_peer(cluster_id, NodeId::new());
+
+        let error = verifier
+            .verify(
+                &credential_headers(NodeId::new(), cluster_id),
+                AuthenticationRequirement::Required,
+            )
+            .await
+            .expect_err("an unpinned peer must not inherit bootstrap trust");
+
+        assert!(matches!(error, PeerError::Unauthenticated(_)));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_trust_closes_after_cluster_state_is_installed() {
+        let cluster_id = ClusterId::new();
+        let seed_id = NodeId::new();
+        let verifier = PeerVerifier::new(
+            NodeVersions::current("test"),
+            Arc::new(AlwaysUnknown {
+                cluster: Some(cluster_id),
+            }),
+        )
+        .with_bootstrap_peer(cluster_id, seed_id);
+
+        let error = verifier
+            .verify(
+                &credential_headers(seed_id, cluster_id),
+                AuthenticationRequirement::Required,
+            )
+            .await
+            .expect_err("replicated credentials must be required after bootstrap");
+
+        assert!(matches!(error, PeerError::Unauthenticated(_)));
     }
 }

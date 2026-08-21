@@ -22,7 +22,7 @@ ENV OES_S3_BIND=0.0.0.0:7600 \
 
 USER oes:oes
 VOLUME ["/var/lib/oes"]
-EXPOSE 7600 7601
+EXPOSE 7600 7601 7603
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD ["oes", "status", "--endpoint", "http://127.0.0.1:7601"]

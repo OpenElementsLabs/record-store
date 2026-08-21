@@ -2,7 +2,7 @@ use std::{env, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use oes_config::Config;
+use oes_config::{Config, DeploymentMode, SecretValue};
 use oes_core::Bucket;
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +60,26 @@ enum Command {
     Storage {
         #[command(subcommand)]
         command: StorageCommand,
+    },
+    /// Initialize and inspect a distributed cluster.
+    Cluster {
+        #[command(subcommand)]
+        command: ClusterCommand,
+    },
+    /// Inspect or change cluster node lifecycle state.
+    Node {
+        #[command(subcommand)]
+        command: NodeCommand,
+    },
+    /// Inspect the durable repair queue.
+    Repair {
+        #[command(subcommand)]
+        command: RepairCommand,
+    },
+    /// Inspect or trigger safe replica rebalancing.
+    Rebalance {
+        #[command(subcommand)]
+        command: RebalanceCommand,
     },
 }
 
@@ -286,6 +306,85 @@ enum StorageCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum ClusterCommand {
+    /// Idempotently initialize or report the configured cluster.
+    Init(EndpointArgs),
+    /// Show cluster, quorum, capacity, and replication health.
+    Status(EndpointArgs),
+    /// Issue a short-lived, single-use node join token.
+    IssueJoinToken {
+        #[arg(long, default_value_t = 3_600)]
+        lifetime_seconds: u64,
+        #[arg(long, default_value = "oes node join")]
+        description: String,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum NodeCommand {
+    /// Join through an existing member and start this storage node.
+    Join {
+        /// Existing member's internal RPC address (normally host:7603).
+        #[arg(long)]
+        control: String,
+        /// Short-lived token issued by `oes cluster issue-join-token`.
+        #[arg(long)]
+        token: String,
+        /// TOML configuration file for this node.
+        #[arg(long, env = "OES_CONFIG_FILE")]
+        config: Option<PathBuf>,
+    },
+    /// List registered nodes.
+    List(EndpointArgs),
+    /// Inspect one stable node identity.
+    Inspect {
+        id: String,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Stop new placement and move replicas away from a node.
+    Drain {
+        id: String,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Retain replicas but exclude a node from new placement.
+    Maintenance {
+        id: String,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Return a drained or maintained node to service.
+    Resume {
+        id: String,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Permanently remove a node after durability checks.
+    Decommission {
+        id: String,
+        /// Explicitly acknowledge durability loss when the safety check fails.
+        #[arg(long)]
+        force: bool,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum RepairCommand {
+    Status(EndpointArgs),
+}
+
+#[derive(Subcommand)]
+enum RebalanceCommand {
+    Status(EndpointArgs),
+    Start(EndpointArgs),
+}
+
 #[derive(Deserialize)]
 struct StatusResponse {
     status: String,
@@ -338,6 +437,10 @@ async fn main() -> Result<()> {
         Command::Audit(arguments) => audit(arguments, json).await?,
         Command::Verify { command } => verify(command, json).await?,
         Command::Storage { command } => storage(command, json).await?,
+        Command::Cluster { command } => cluster(command, json).await?,
+        Command::Node { command } => node(command, json).await?,
+        Command::Repair { command } => repair(command, json).await?,
+        Command::Rebalance { command } => rebalance(command, json).await?,
     }
     Ok(())
 }
@@ -766,6 +869,152 @@ async fn storage(command: StorageCommand, json: bool) -> Result<()> {
         .await
         .context("decode storage result")?;
     print_value(&value, json)
+}
+
+async fn cluster(command: ClusterCommand, json: bool) -> Result<()> {
+    let request = match command {
+        ClusterCommand::Init(endpoint) => {
+            client()?.post(api_url(&endpoint, "/api/v1/cluster/init"))
+        }
+        ClusterCommand::Status(endpoint) => client()?.get(api_url(&endpoint, "/api/v1/cluster")),
+        ClusterCommand::IssueJoinToken {
+            lifetime_seconds,
+            description,
+            endpoint,
+        } => client()?
+            .post(api_url(&endpoint, "/api/v1/cluster/join-tokens"))
+            .json(&serde_json::json!({
+                "lifetime_seconds": lifetime_seconds,
+                "description": description,
+            })),
+    };
+    let value = send_admin(request)
+        .await?
+        .json::<serde_json::Value>()
+        .await
+        .context("decode cluster response")?;
+    if json {
+        return print_json(&value);
+    }
+    if let Some(cluster_id) = value.get("cluster_id") {
+        println!("Cluster ID: {}", display_json_scalar(cluster_id));
+        if let Some(health) = value.get("health") {
+            println!("Health: {}", display_json_scalar(health));
+        }
+        if let Some(nodes) = value.get("nodes").and_then(serde_json::Value::as_array) {
+            println!("Nodes: {}", nodes.len());
+        }
+        if let Some(replication) = value.get("replication") {
+            println!("Replication: {}", serde_json::to_string(replication)?);
+        }
+        if let Some(repair) = value.get("repair") {
+            println!("Repair: {}", serde_json::to_string(repair)?);
+        }
+        return Ok(());
+    }
+    print_value(&value, false)
+}
+
+async fn node(command: NodeCommand, json: bool) -> Result<()> {
+    let command = match command {
+        NodeCommand::Join {
+            control,
+            token,
+            config,
+        } => {
+            let mut config = Config::load(config.as_deref()).context("load OES configuration")?;
+            config.server.mode = DeploymentMode::Cluster;
+            config.cluster.seeds = vec![control];
+            config.cluster.join_token = Some(SecretValue::new(token));
+            config
+                .validate()
+                .context("validate joined-node configuration")?;
+            oes_observability::init(&config.observability).context("initialize observability")?;
+            return oes_server::run(&config, oes_server::shutdown_signal())
+                .await
+                .context("run joined OES node");
+        }
+        other => other,
+    };
+    let (request, no_content_action) = match command {
+        NodeCommand::Join { .. } => bail!("internal join dispatch error"),
+        NodeCommand::List(endpoint) => (client()?.get(api_url(&endpoint, "/api/v1/nodes")), None),
+        NodeCommand::Inspect { id, endpoint } => (
+            client()?.get(api_url(&endpoint, &format!("/api/v1/nodes/{id}"))),
+            None,
+        ),
+        NodeCommand::Drain { id, endpoint } => (
+            client()?.post(api_url(&endpoint, &format!("/api/v1/nodes/{id}/drain"))),
+            None,
+        ),
+        NodeCommand::Maintenance { id, endpoint } => (
+            client()?.post(api_url(
+                &endpoint,
+                &format!("/api/v1/nodes/{id}/maintenance"),
+            )),
+            Some(("maintenance", id)),
+        ),
+        NodeCommand::Resume { id, endpoint } => (
+            client()?.post(api_url(&endpoint, &format!("/api/v1/nodes/{id}/resume"))),
+            Some(("resumed", id)),
+        ),
+        NodeCommand::Decommission {
+            id,
+            force,
+            endpoint,
+        } => (
+            client()?
+                .post(api_url(
+                    &endpoint,
+                    &format!("/api/v1/nodes/{id}/decommission"),
+                ))
+                .json(&serde_json::json!({"force": force})),
+            None,
+        ),
+    };
+    let response = send_admin(request).await?;
+    if let Some((action, id)) = no_content_action {
+        return print_action(action, &id, json);
+    }
+    let value = response
+        .json::<serde_json::Value>()
+        .await
+        .context("decode node response")?;
+    print_value(&value, json)
+}
+
+async fn repair(command: RepairCommand, json: bool) -> Result<()> {
+    let RepairCommand::Status(endpoint) = command;
+    let value = send_admin(client()?.get(api_url(&endpoint, "/api/v1/repair/status")))
+        .await?
+        .json::<serde_json::Value>()
+        .await
+        .context("decode repair status")?;
+    print_value(&value, json)
+}
+
+async fn rebalance(command: RebalanceCommand, json: bool) -> Result<()> {
+    let request = match command {
+        RebalanceCommand::Status(endpoint) => {
+            client()?.get(api_url(&endpoint, "/api/v1/rebalance/status"))
+        }
+        RebalanceCommand::Start(endpoint) => {
+            client()?.post(api_url(&endpoint, "/api/v1/rebalance"))
+        }
+    };
+    let value = send_admin(request)
+        .await?
+        .json::<serde_json::Value>()
+        .await
+        .context("decode rebalance response")?;
+    print_value(&value, json)
+}
+
+fn display_json_scalar(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn api_url(endpoint: &EndpointArgs, path: &str) -> String {

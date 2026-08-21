@@ -1,5 +1,7 @@
 //! Explicit OES server initialization and dual-listener lifecycle orchestration.
 
+mod cluster;
+
 use std::{
     fs::{File, OpenOptions},
     future::Future,
@@ -9,7 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use oes_api::{AppState, ManagementAuth};
+use oes_api::{AppState, ClusterManagement, ManagementAuth};
 use oes_audit::{AuditError, AuditRepository, RedbAuditRepository};
 use oes_auth::{Authorizer, CredentialManager, CredentialStoreError, SigningCredentialProvider};
 use oes_config::Config;
@@ -36,6 +38,7 @@ pub struct ServerRuntime {
     lifecycle_worker: LifecycleWorker,
     process_lock: File,
     cleanup_storage: Arc<dyn ObjectStore>,
+    cluster_process: Option<cluster::ClusterProcess>,
 }
 
 impl ServerRuntime {
@@ -61,6 +64,7 @@ impl ServerRuntime {
         let webhook_shutdown = cancellation.clone();
         let lifecycle_shutdown = cancellation;
         let cleanup_shutdown = lifecycle_shutdown.clone();
+        let cluster_shutdown = lifecycle_shutdown.clone();
         tokio::try_join!(
             async {
                 oes_api::serve(
@@ -98,6 +102,18 @@ impl ServerRuntime {
                 run_payload_cleanup(self.cleanup_storage, cleanup_shutdown).await;
                 Ok::<(), StartupError>(())
             },
+            async {
+                match self.cluster_process {
+                    Some(process) => process
+                        .supervise(cluster_shutdown.cancelled_owned())
+                        .await
+                        .map_err(StartupError::Cluster),
+                    None => {
+                        cluster_shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
+            },
         )
         .map(|_| ())
     }
@@ -131,13 +147,22 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         .await?,
     );
 
-    let catalog_path = config
-        .storage
-        .data_directory
-        .join("metadata")
-        .join("catalog.redb");
-    let metadata = Arc::new(RedbMetadataRepository::open(catalog_path).await?);
-    let metadata_dependency: Arc<dyn MetadataRepository> = metadata;
+    let cluster_dependencies = if config.server.mode.clustered() {
+        Some(cluster::initialize(config).await?)
+    } else {
+        None
+    };
+    let metadata_dependency: Arc<dyn MetadataRepository> = match &cluster_dependencies {
+        Some(dependencies) => Arc::clone(&dependencies.metadata),
+        None => {
+            let catalog_path = config
+                .storage
+                .data_directory
+                .join("metadata")
+                .join("catalog.redb");
+            Arc::new(RedbMetadataRepository::open(catalog_path).await?)
+        }
+    };
     let audit = Arc::new(
         RedbAuditRepository::open(
             config
@@ -173,28 +198,30 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         .await?,
     );
     let event_dependency: Arc<dyn EventRepository> = events;
-    let storage = Arc::new(if config.storage.encryption_enabled {
-        let master_key = config
-            .auth
-            .credential_master_key
-            .as_ref()
-            .ok_or(StorageError::EncryptionKeyRequired)?;
-        LocalFilesystemStore::open_encrypted(
-            &config.storage.data_directory,
-            config.storage.effective_temporary_directory(),
-            Arc::clone(&metadata_dependency),
-            master_key.expose().as_bytes(),
-        )
-        .await?
-    } else {
-        LocalFilesystemStore::open(
-            &config.storage.data_directory,
-            config.storage.effective_temporary_directory(),
-            Arc::clone(&metadata_dependency),
-        )
-        .await?
-    });
-    let storage_dependency: Arc<dyn ObjectStore> = storage;
+    let storage_dependency: Arc<dyn ObjectStore> = match &cluster_dependencies {
+        Some(dependencies) => Arc::clone(&dependencies.storage),
+        None => Arc::new(if config.storage.encryption_enabled {
+            let master_key = config
+                .auth
+                .credential_master_key
+                .as_ref()
+                .ok_or(StorageError::EncryptionKeyRequired)?;
+            LocalFilesystemStore::open_encrypted(
+                &config.storage.data_directory,
+                config.storage.effective_temporary_directory(),
+                Arc::clone(&metadata_dependency),
+                master_key.expose().as_bytes(),
+            )
+            .await?
+        } else {
+            LocalFilesystemStore::open(
+                &config.storage.data_directory,
+                config.storage.effective_temporary_directory(),
+                Arc::clone(&metadata_dependency),
+            )
+            .await?
+        }),
+    };
     let cleanup_storage = Arc::clone(&storage_dependency);
 
     tokio::try_join!(
@@ -253,6 +280,14 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         env!("CARGO_PKG_VERSION"),
     )
     .with_events(Arc::clone(&event_dependency));
+    if let Some(dependencies) = &cluster_dependencies {
+        management_state = management_state.with_cluster(ClusterManagement::new(
+            Arc::clone(&dependencies.context),
+            Arc::clone(&dependencies.consensus),
+            Arc::clone(&dependencies.operations),
+            Arc::clone(&dependencies.task_health),
+        ));
+    }
     if let Some(token) = &config.auth.management_system_token {
         management_state = management_state.with_management_auth(ManagementAuth::bearer_tokens(
             token.expose().as_bytes(),
@@ -294,6 +329,7 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         lifecycle_worker,
         process_lock,
         cleanup_storage,
+        cluster_process: cluster_dependencies.map(|dependencies| dependencies.process),
     })
 }
 
@@ -602,6 +638,9 @@ pub enum StartupError {
     /// Storage initialization or probing failed.
     #[error("storage initialization failed: {0}")]
     Storage(#[from] StorageError),
+    /// Distributed cluster initialization or supervision failed.
+    #[error("cluster subsystem failed: {0}")]
+    Cluster(#[from] cluster::ClusterStartupError),
     /// A configured TCP address could not be bound.
     #[error("failed to bind {interface} HTTP listener: {source}")]
     Listen {

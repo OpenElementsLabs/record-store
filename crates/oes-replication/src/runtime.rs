@@ -357,11 +357,14 @@ impl ClusterRuntime {
             let context = Arc::clone(&self.context);
             let payload_format = self.settings.payload_format;
             let batch = self.settings.reconcile_batch;
+            let orphan_grace_period = self.settings.orphan_grace_period;
             self.tasks
                 .spawn_interval("reconcile", self.settings.reconcile_interval, move || {
                     let context = Arc::clone(&context);
                     async move {
-                        if let Err(error) = reconcile(&context, payload_format, batch).await {
+                        if let Err(error) =
+                            reconcile(&context, payload_format, batch, orphan_grace_period).await
+                        {
                             warn!(%error, "replica reconciliation pass failed");
                         }
                     }

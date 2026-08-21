@@ -20,15 +20,20 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use oes_audit::{AuditEvent, AuditQuery, AuditRepository, AuditResult};
 use oes_auth::{CredentialManager, Policy, PolicyStatement, ServiceAccountInfo};
+use oes_cluster::ClusterOperationKind;
+use oes_consensus::MetadataConsensus;
 use oes_core::{
-    Bucket, BucketName, BucketQuota, ExpirationDays, LifecycleRule, LifecycleRuleId, ObjectKey,
-    ObjectMetadata, OrganizationId, ServiceAccountId, StorageUsage, VersionId, VersioningState,
-    WebhookId,
+    Bucket, BucketName, BucketQuota, ExpirationDays, LifecycleRule, LifecycleRuleId, NodeId,
+    ObjectKey, ObjectMetadata, OrganizationId, ServiceAccountId, StorageUsage, VersionId,
+    VersioningState, WebhookId,
 };
 use oes_events::{
     CreateWebhookRequest, CreatedWebhook, EventRepository, WebhookDeliveryLog, WebhookSubscription,
 };
 use oes_metadata::MetadataRepository;
+use oes_replication::{
+    ClusterContext, ClusterOperations, ClusterStatus, OperationError, TaskHealth,
+};
 use oes_service::{ServiceError, ServiceListRequest, Services};
 use oes_storage::{
     ObjectStore, StorageInspection, StorageRepairRequest, StorageRepairResult, StorageStatus,
@@ -56,6 +61,38 @@ pub struct AppState {
     version: &'static str,
     management_auth: ManagementAuth,
     events: Option<Arc<dyn EventRepository>>,
+    cluster: Option<ClusterManagement>,
+}
+
+/// Cluster services exposed through the authenticated management API.
+#[derive(Clone)]
+pub struct ClusterManagement {
+    context: Arc<ClusterContext>,
+    consensus: Arc<MetadataConsensus>,
+    operations: Arc<ClusterOperations>,
+    task_health: Arc<TaskHealth>,
+}
+
+impl ClusterManagement {
+    /// Creates a cluster management surface from running cluster services.
+    #[must_use]
+    pub const fn new(
+        context: Arc<ClusterContext>,
+        consensus: Arc<MetadataConsensus>,
+        operations: Arc<ClusterOperations>,
+        task_health: Arc<TaskHealth>,
+    ) -> Self {
+        Self {
+            context,
+            consensus,
+            operations,
+            task_health,
+        }
+    }
+
+    async fn status(&self) -> Result<ClusterStatus, String> {
+        ClusterStatus::collect(&self.context, &self.consensus, self.task_health.snapshot()).await
+    }
 }
 
 impl AppState {
@@ -81,6 +118,7 @@ impl AppState {
             version,
             management_auth,
             events: None,
+            cluster: None,
         }
     }
 
@@ -95,6 +133,13 @@ impl AppState {
     #[must_use]
     pub fn with_events(mut self, events: Arc<dyn EventRepository>) -> Self {
         self.events = Some(events);
+        self
+    }
+
+    /// Adds cluster status and administration to this API instance.
+    #[must_use]
+    pub fn with_cluster(mut self, cluster: ClusterManagement) -> Self {
+        self.cluster = Some(cluster);
         self
     }
 
@@ -125,6 +170,19 @@ impl AppState {
                 Ok(())
             },
         )?;
+        if let Some(cluster) = &self.cluster {
+            let status = cluster.status().await.map_err(ReadinessError::Cluster)?;
+            if !status.metadata.status.readable
+                || !status
+                    .nodes
+                    .iter()
+                    .any(|node| node.node_id == cluster.context.node_id)
+            {
+                return Err(ReadinessError::Cluster(
+                    "local node has no usable metadata membership".to_owned(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -236,7 +294,13 @@ impl ManagementPrincipal {
         match self.role {
             ManagementRole::SystemAdministrator => true,
             ManagementRole::StorageAdministrator => {
-                !path.starts_with("/api/v1/service-accounts")
+                let cluster_mutation = request.method() != axum::http::Method::GET
+                    && (path.starts_with("/api/v1/cluster")
+                        || path.starts_with("/api/v1/nodes")
+                        || path.starts_with("/api/v1/rebalance")
+                        || path.starts_with("/api/v1/repair"));
+                !cluster_mutation
+                    && !path.starts_with("/api/v1/service-accounts")
                     && !path.starts_with("/api/v1/policies")
                     && !path.starts_with("/api/v1/audit")
                     && !path.starts_with("/api/v1/webhooks")
@@ -250,7 +314,12 @@ impl ManagementPrincipal {
                         || path == "/api/v1/storage/inspect"
                         || path == "/api/v1/buckets"
                         || path == "/api/v1/webhooks"
-                        || path == "/api/v1/webhook-deliveries")
+                        || path == "/api/v1/webhook-deliveries"
+                        || path.starts_with("/api/v1/cluster")
+                        || path.starts_with("/api/v1/nodes")
+                        || path.starts_with("/api/v1/replication")
+                        || path.starts_with("/api/v1/repair")
+                        || path.starts_with("/api/v1/rebalance"))
             }
         }
     }
@@ -270,6 +339,38 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/storage/status", get(storage_status))
         .route("/api/v1/storage/usage", get(storage_usage))
         .route("/api/v1/storage/inspect", get(storage_inspect))
+        .route("/api/v1/cluster", get(cluster_status))
+        .route(
+            "/api/v1/cluster/init",
+            axum::routing::post(cluster_initialize),
+        )
+        .route("/api/v1/cluster/health", get(cluster_health))
+        .route(
+            "/api/v1/cluster/join-tokens",
+            axum::routing::post(issue_cluster_join_token),
+        )
+        .route("/api/v1/nodes", get(list_cluster_nodes))
+        .route("/api/v1/nodes/{id}", get(inspect_cluster_node))
+        .route(
+            "/api/v1/nodes/{id}/drain",
+            axum::routing::post(drain_cluster_node),
+        )
+        .route(
+            "/api/v1/nodes/{id}/maintenance",
+            axum::routing::post(maintain_cluster_node),
+        )
+        .route(
+            "/api/v1/nodes/{id}/resume",
+            axum::routing::post(resume_cluster_node),
+        )
+        .route(
+            "/api/v1/nodes/{id}/decommission",
+            axum::routing::post(decommission_cluster_node),
+        )
+        .route("/api/v1/replication/status", get(replication_status))
+        .route("/api/v1/repair/status", get(repair_status))
+        .route("/api/v1/rebalance", axum::routing::post(start_rebalance))
+        .route("/api/v1/rebalance/status", get(rebalance_status))
         .route(
             "/api/v1/storage/repair",
             axum::routing::post(storage_repair),
@@ -435,6 +536,293 @@ async fn system_info(
         version: state.version,
         status: "ready",
     }))
+}
+
+async fn cluster_status(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<ClusterStatus>, ApiError> {
+    Ok(Json(collect_cluster_status(&state, request_id).await?))
+}
+
+async fn cluster_initialize(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<ClusterStatus>, ApiError> {
+    // Cluster-mode servers form and persist their initial one-member consensus
+    // group before accepting HTTP traffic. Keeping this endpoint idempotent
+    // gives operators one stable `oes cluster init` workflow without allowing a
+    // second cluster identity to be created accidentally.
+    Ok(Json(collect_cluster_status(&state, request_id).await?))
+}
+
+#[derive(Serialize)]
+struct ClusterHealthResponse {
+    health: oes_cluster::ClusterHealth,
+    reasons: Vec<String>,
+    metadata: oes_consensus::MetadataQuorum,
+    data: oes_cluster::DataHealth,
+}
+
+async fn cluster_health(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<ClusterHealthResponse>, ApiError> {
+    let status = collect_cluster_status(&state, request_id).await?;
+    Ok(Json(ClusterHealthResponse {
+        health: status.health,
+        reasons: status.reasons(),
+        metadata: status.metadata,
+        data: status.data,
+    }))
+}
+
+async fn list_cluster_nodes(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<Vec<oes_replication::NodeStatus>>, ApiError> {
+    Ok(Json(
+        collect_cluster_status(&state, request_id).await?.nodes,
+    ))
+}
+
+async fn inspect_cluster_node(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<oes_replication::NodeStatus>, ApiError> {
+    let node_id = parse_node_id(&id, request_id.clone())?;
+    collect_cluster_status(&state, request_id.clone())
+        .await?
+        .nodes
+        .into_iter()
+        .find(|node| node.node_id == node_id)
+        .map(Json)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "NODE_NOT_FOUND",
+                format!("Node {node_id} is not a member of this cluster"),
+                request_id,
+            )
+        })
+}
+
+async fn drain_cluster_node(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<oes_cluster::ClusterOperation>, ApiError> {
+    let node_id = parse_node_id(&id, request_id.clone())?;
+    let operation = cluster_management(&state, request_id.clone())?
+        .operations
+        .drain(node_id)
+        .await
+        .map_err(|error| cluster_operation_error(error, request_id))?;
+    Ok(Json(operation))
+}
+
+async fn maintain_cluster_node(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<StatusCode, ApiError> {
+    let node_id = parse_node_id(&id, request_id.clone())?;
+    cluster_management(&state, request_id.clone())?
+        .operations
+        .maintenance(node_id)
+        .await
+        .map_err(|error| cluster_operation_error(error, request_id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn resume_cluster_node(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<StatusCode, ApiError> {
+    let node_id = parse_node_id(&id, request_id.clone())?;
+    cluster_management(&state, request_id.clone())?
+        .operations
+        .resume(node_id)
+        .await
+        .map_err(|error| cluster_operation_error(error, request_id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Default, Deserialize)]
+struct DecommissionInput {
+    #[serde(default)]
+    force: bool,
+}
+
+async fn decommission_cluster_node(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+    input: Option<Json<DecommissionInput>>,
+) -> Result<Json<oes_cluster::ClusterOperation>, ApiError> {
+    let node_id = parse_node_id(&id, request_id.clone())?;
+    let force = input.map(|Json(input)| input.force).unwrap_or_default();
+    let operation = cluster_management(&state, request_id.clone())?
+        .operations
+        .decommission(node_id, force)
+        .await
+        .map_err(|error| cluster_operation_error(error, request_id))?;
+    Ok(Json(operation))
+}
+
+async fn replication_status(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<oes_replication::ReplicationStatus>, ApiError> {
+    Ok(Json(
+        collect_cluster_status(&state, request_id)
+            .await?
+            .replication,
+    ))
+}
+
+async fn repair_status(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<oes_replication::RepairStatus>, ApiError> {
+    Ok(Json(
+        collect_cluster_status(&state, request_id).await?.repair,
+    ))
+}
+
+async fn start_rebalance(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<oes_cluster::ClusterOperation>, ApiError> {
+    let operation = cluster_management(&state, request_id.clone())?
+        .operations
+        .rebalance()
+        .await
+        .map_err(|error| cluster_operation_error(error, request_id))?;
+    Ok(Json(operation))
+}
+
+async fn rebalance_status(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<Vec<oes_cluster::ClusterOperation>>, ApiError> {
+    let operations = collect_cluster_status(&state, request_id)
+        .await?
+        .operations
+        .into_iter()
+        .filter(|operation| operation.kind == ClusterOperationKind::Rebalance)
+        .collect();
+    Ok(Json(operations))
+}
+
+#[derive(Deserialize)]
+struct JoinTokenInput {
+    #[serde(default = "default_join_token_lifetime")]
+    lifetime_seconds: u64,
+    #[serde(default)]
+    description: String,
+}
+
+const fn default_join_token_lifetime() -> u64 {
+    3_600
+}
+
+#[derive(Serialize)]
+struct IssuedJoinTokenResponse {
+    id: oes_core::JoinTokenId,
+    token: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+async fn issue_cluster_join_token(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    Json(input): Json<JoinTokenInput>,
+) -> Result<(StatusCode, Json<IssuedJoinTokenResponse>), ApiError> {
+    if !(oes_cluster::JoinToken::MINIMUM_LIFETIME_SECONDS
+        ..=oes_cluster::JoinToken::MAXIMUM_LIFETIME_SECONDS)
+        .contains(&input.lifetime_seconds)
+    {
+        return Err(ApiError::bad_request(
+            request_id,
+            "INVALID_JOIN_TOKEN_LIFETIME",
+            "Join token lifetime must be between 60 and 86400 seconds",
+        ));
+    }
+    let issued = cluster_management(&state, request_id.clone())?
+        .operations
+        .issue_join_token(input.lifetime_seconds, input.description)
+        .await
+        .map_err(|error| cluster_operation_error(error, request_id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(IssuedJoinTokenResponse {
+            id: issued.record.id,
+            token: issued.token.expose().to_owned(),
+            expires_at: issued.record.expires_at,
+        }),
+    ))
+}
+
+fn cluster_management(
+    state: &AppState,
+    request_id: RequestId,
+) -> Result<&ClusterManagement, ApiError> {
+    state.cluster.as_ref().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "CLUSTER_MODE_DISABLED",
+            "This OES process is running in standalone mode",
+            request_id,
+        )
+    })
+}
+
+async fn collect_cluster_status(
+    state: &AppState,
+    request_id: RequestId,
+) -> Result<ClusterStatus, ApiError> {
+    cluster_management(state, request_id.clone())?
+        .status()
+        .await
+        .map_err(|error| {
+            error!(request_id = %request_id, %error, "cluster status collection failed");
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "CLUSTER_UNAVAILABLE",
+                error,
+                request_id,
+            )
+        })
+}
+
+fn parse_node_id(value: &str, request_id: RequestId) -> Result<NodeId, ApiError> {
+    value.parse().map_err(|_| {
+        ApiError::bad_request(
+            request_id,
+            "INVALID_NODE_ID",
+            "Node ID must be a valid OES node identifier",
+        )
+    })
+}
+
+fn cluster_operation_error(error_value: OperationError, request_id: RequestId) -> ApiError {
+    let status = match error_value {
+        OperationError::NodeNotFound(_) => StatusCode::NOT_FOUND,
+        OperationError::InvalidTransition { .. } | OperationError::DurabilityAtRisk(_) => {
+            StatusCode::CONFLICT
+        }
+        OperationError::Cluster(_) => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    let code = match error_value {
+        OperationError::NodeNotFound(_) => "NODE_NOT_FOUND",
+        OperationError::InvalidTransition { .. } => "INVALID_NODE_TRANSITION",
+        OperationError::DurabilityAtRisk(_) => "DURABILITY_AT_RISK",
+        OperationError::Cluster(_) => "CLUSTER_UNAVAILABLE",
+    };
+    ApiError::new(status, code, error_value.to_string(), request_id)
 }
 
 async fn storage_status(
@@ -1228,7 +1616,7 @@ async fn metrics(
         .usage()
         .await
         .map_err(|error| internal_service_error(error, request_id))?;
-    let body = format!(
+    let mut body = format!(
         concat!(
             "# TYPE oes_s3_requests_total counter\n",
             "oes_s3_requests_total {}\n",
@@ -1268,6 +1656,58 @@ async fn metrics(
         metrics.upload_bytes,
         metrics.download_bytes,
     );
+    if let Some(cluster) = &state.cluster {
+        match cluster.status().await {
+            Ok(status) => {
+                let local = status
+                    .nodes
+                    .iter()
+                    .find(|node| node.node_id == cluster.context.node_id);
+                let capacity = local.map_or(0, |node| node.capacity_bytes);
+                let available = local.map_or(0, |node| node.available_bytes);
+                let used = capacity.saturating_sub(available);
+                let healthy = u8::from(status.health == oes_cluster::ClusterHealth::Healthy);
+                let quorum = u8::from(status.metadata.status.writable);
+                body.push_str(&format!(
+                    concat!(
+                        "# TYPE oes_node_capacity_bytes gauge\n",
+                        "oes_node_capacity_bytes {capacity}\n",
+                        "# TYPE oes_node_used_bytes gauge\n",
+                        "oes_node_used_bytes {used}\n",
+                        "# TYPE oes_node_available_bytes gauge\n",
+                        "oes_node_available_bytes {available}\n",
+                        "# TYPE oes_node_health gauge\n",
+                        "oes_node_health {healthy}\n",
+                        "# TYPE oes_cluster_nodes gauge\n",
+                        "oes_cluster_nodes {nodes}\n",
+                        "# TYPE oes_under_replicated_objects gauge\n",
+                        "oes_under_replicated_objects {under_replicated}\n",
+                        "# TYPE oes_replication_queue_depth gauge\n",
+                        "oes_replication_queue_depth {queue}\n",
+                        "# TYPE oes_metadata_quorum_health gauge\n",
+                        "oes_metadata_quorum_health {quorum}\n",
+                        "# TYPE oes_cluster_logical_bytes gauge\n",
+                        "oes_cluster_logical_bytes {logical}\n",
+                        "# TYPE oes_cluster_physical_bytes gauge\n",
+                        "oes_cluster_physical_bytes {physical}\n"
+                    ),
+                    capacity = capacity,
+                    used = used,
+                    available = available,
+                    healthy = healthy,
+                    nodes = status.nodes.len(),
+                    under_replicated = status.replication.under_replicated_payloads,
+                    queue = status.repair.active_tasks,
+                    logical = status.replication.logical_bytes,
+                    physical = status.replication.physical_bytes,
+                    quorum = quorum,
+                ));
+            }
+            Err(error) => {
+                error!(%error, "cluster metrics snapshot could not be collected");
+            }
+        }
+    }
     Ok(([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response())
 }
 
@@ -1599,7 +2039,7 @@ impl From<StorageStatus> for StorageStatusResponse {
 struct ApiError {
     status: StatusCode,
     code: &'static str,
-    message: &'static str,
+    message: String,
     request_id: RequestId,
 }
 
@@ -1653,16 +2093,16 @@ impl ApiError {
         Self::new(StatusCode::BAD_REQUEST, code, message, request_id)
     }
 
-    const fn new(
+    fn new(
         status: StatusCode,
         code: &'static str,
-        message: &'static str,
+        message: impl Into<String>,
         request_id: RequestId,
     ) -> Self {
         Self {
             status,
             code,
-            message,
+            message: message.into(),
             request_id,
         }
     }
@@ -1676,7 +2116,7 @@ impl IntoResponse for ApiError {
                 error: ErrorBody {
                     code: self.code,
                     message: self.message,
-                    request_id: self.request_id.as_str(),
+                    request_id: self.request_id.to_string(),
                 },
             }),
         )
@@ -1685,15 +2125,15 @@ impl IntoResponse for ApiError {
 }
 
 #[derive(Debug, Serialize)]
-struct ErrorEnvelope<'a> {
-    error: ErrorBody<'a>,
+struct ErrorEnvelope {
+    error: ErrorBody,
 }
 
 #[derive(Debug, Serialize)]
-struct ErrorBody<'a> {
+struct ErrorBody {
     code: &'static str,
-    message: &'static str,
-    request_id: &'a str,
+    message: String,
+    request_id: String,
 }
 
 fn service_to_api_error(error: ServiceError, request_id: RequestId) -> ApiError {
@@ -1746,6 +2186,8 @@ enum ReadinessError {
     Audit(oes_audit::AuditError),
     #[error("event dependency failed: {0}")]
     Events(oes_events::EventError),
+    #[error("cluster dependency failed: {0}")]
+    Cluster(String),
 }
 
 /// HTTP serving and bounded-shutdown failures.

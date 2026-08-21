@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use oes_config::{Config, SecretValue};
+use oes_config::{Config, DeploymentMode, SecretValue};
 use tempfile::tempdir;
 use tokio::{net::TcpListener, sync::oneshot, time::timeout};
 
@@ -174,4 +174,187 @@ async fn offline_metadata_backup_is_versioned_verified_and_non_overwriting() {
         .expect("initialize restored state");
     drop(restored_runtime);
     assert!(oes_server::restore_metadata(&restored, &backup).is_err());
+}
+
+#[tokio::test]
+async fn cluster_mode_bootstraps_persistent_identity_and_exposes_status() {
+    let directory = tempdir().expect("temporary directory");
+    let mut config = Config::default();
+    config.server.mode = DeploymentMode::Cluster;
+    let rpc_probe = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve RPC address");
+    config.server.rpc_bind = rpc_probe.local_addr().expect("RPC address");
+    config.server.rpc_advertise = Some(config.server.rpc_bind.to_string());
+    drop(rpc_probe);
+    config.server.shutdown_grace_period_seconds = 2;
+    config.cluster.replication_factor = 1;
+    config.storage.data_directory = directory.path().join("cluster-data");
+    config.auth.root_access_key = Some("test-access".into());
+    config.auth.root_secret_key = Some(SecretValue::new("test-secret-at-least-sixteen"));
+    config.auth.management_system_token = Some(SecretValue::new(
+        "test-system-management-token-32-bytes-long",
+    ));
+
+    let runtime = oes_server::initialize(&config)
+        .await
+        .expect("initialize clustered server");
+    let identity_before = std::fs::read(config.storage.data_directory.join("node-identity.json"))
+        .expect("persisted node identity");
+    assert!(
+        config
+            .storage
+            .data_directory
+            .join("node-credential.json")
+            .is_file()
+    );
+
+    let api_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind API listener");
+    let address = api_listener.local_addr().expect("API address");
+    let s3_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind S3 listener");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(runtime.serve(s3_listener, api_listener, async move {
+        let _ = shutdown_rx.await;
+    }));
+
+    let status = reqwest::Client::new()
+        .get(format!("http://{address}/api/v1/cluster"))
+        .bearer_auth("test-system-management-token-32-bytes-long")
+        .send()
+        .await
+        .expect("cluster status request");
+    assert_eq!(status.status(), reqwest::StatusCode::OK);
+    let status = status
+        .json::<serde_json::Value>()
+        .await
+        .expect("cluster status JSON");
+    assert_eq!(status["replication"]["replication_factor"], 1);
+    assert_eq!(status["nodes"].as_array().map(Vec::len), Some(1));
+    assert!(status["cluster_id"].is_string());
+
+    shutdown_tx.send(()).expect("request shutdown");
+    timeout(Duration::from_secs(3), server)
+        .await
+        .expect("bounded cluster shutdown")
+        .expect("server task")
+        .expect("clean cluster shutdown");
+
+    let restarted = oes_server::initialize(&config)
+        .await
+        .expect("restart clustered server");
+    let identity_after = std::fs::read(config.storage.data_directory.join("node-identity.json"))
+        .expect("reloaded node identity");
+    assert_eq!(identity_before, identity_after);
+    let api_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind restart API listener");
+    let s3_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind restart S3 listener");
+    restarted
+        .serve(s3_listener, api_listener, std::future::ready(()))
+        .await
+        .expect("shut restarted cluster down");
+}
+
+#[tokio::test]
+async fn a_token_joined_node_enters_the_consensus_group() {
+    let directory = tempdir().expect("temporary directory");
+    let first_rpc = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve first RPC");
+    let first_rpc_address = first_rpc.local_addr().expect("first RPC address");
+    drop(first_rpc);
+    let mut first = Config::default();
+    first.server.mode = DeploymentMode::Cluster;
+    first.server.rpc_bind = first_rpc_address;
+    first.server.rpc_advertise = Some(first_rpc_address.to_string());
+    first.server.shutdown_grace_period_seconds = 2;
+    first.cluster.replication_factor = 2;
+    first.storage.data_directory = directory.path().join("first");
+    first.auth.root_access_key = Some("test-access".into());
+    first.auth.root_secret_key = Some(SecretValue::new("test-secret-at-least-sixteen"));
+    first.auth.management_system_token = Some(SecretValue::new(
+        "test-system-management-token-32-bytes-long",
+    ));
+    let first_runtime = oes_server::initialize(&first)
+        .await
+        .expect("initialize first node");
+    let first_api = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind first API");
+    let first_api_address = first_api.local_addr().expect("first API address");
+    let first_s3 = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind first S3");
+    let (first_shutdown_tx, first_shutdown_rx) = oneshot::channel();
+    let first_server = tokio::spawn(first_runtime.serve(first_s3, first_api, async move {
+        let _ = first_shutdown_rx.await;
+    }));
+
+    let client = reqwest::Client::new();
+    let issued = client
+        .post(format!(
+            "http://{first_api_address}/api/v1/cluster/join-tokens"
+        ))
+        .bearer_auth("test-system-management-token-32-bytes-long")
+        .json(&serde_json::json!({
+            "lifetime_seconds": 300,
+            "description": "integration join",
+        }))
+        .send()
+        .await
+        .expect("issue join token")
+        .json::<serde_json::Value>()
+        .await
+        .expect("join token JSON");
+    let token = issued["token"].as_str().expect("join token");
+
+    let second_rpc = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve second RPC");
+    let second_rpc_address = second_rpc.local_addr().expect("second RPC address");
+    drop(second_rpc);
+    let mut second = first.clone();
+    second.server.rpc_bind = second_rpc_address;
+    second.server.rpc_advertise = Some(second_rpc_address.to_string());
+    second.cluster.seeds = vec![first_rpc_address.to_string()];
+    second.cluster.join_token = Some(SecretValue::new(token));
+    second.storage.data_directory = directory.path().join("second");
+    let second_runtime = oes_server::initialize(&second)
+        .await
+        .expect("join second node");
+    let second_api = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind second API");
+    let second_s3 = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind second S3");
+    let (second_shutdown_tx, second_shutdown_rx) = oneshot::channel();
+    let second_server = tokio::spawn(second_runtime.serve(second_s3, second_api, async move {
+        let _ = second_shutdown_rx.await;
+    }));
+
+    let status = client
+        .get(format!("http://{first_api_address}/api/v1/cluster"))
+        .bearer_auth("test-system-management-token-32-bytes-long")
+        .send()
+        .await
+        .expect("cluster status")
+        .json::<serde_json::Value>()
+        .await
+        .expect("cluster status JSON");
+    assert_eq!(status["nodes"].as_array().map(Vec::len), Some(2));
+    assert_eq!(status["metadata"]["status"]["members"], 2);
+
+    second_shutdown_tx.send(()).expect("stop second node");
+    timeout(Duration::from_secs(3), second_server)
+        .await
+        .expect("second node bounded shutdown")
+        .expect("second server task")
+        .expect("second node clean shutdown");
+    first_shutdown_tx.send(()).expect("stop first node");
+    timeout(Duration::from_secs(3), first_server)
+        .await
+        .expect("first node bounded shutdown")
+        .expect("first server task")
+        .expect("first node clean shutdown");
 }

@@ -4,7 +4,6 @@
     reason = "the transport's status type sets the error size and is not ours to box"
 )]
 
-
 use std::sync::Arc;
 
 use async_trait::async_trait;

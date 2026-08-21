@@ -15,7 +15,10 @@ use oes_core::{Checksum, ObjectId};
 use oes_protocol::{
     consensus_v1::consensus_service_client::ConsensusServiceClient,
     replica_v1::replica_service_client::ReplicaServiceClient,
-    system_v1::system_service_client::SystemServiceClient,
+    system_v1::{
+        ActivateRequest, ActivateResponse, JoinRequest, NodeDescriptor, NodeProfile, PingRequest,
+        system_service_client::SystemServiceClient,
+    },
 };
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -27,6 +30,7 @@ use tracing::debug;
 
 use crate::{
     peer::{JOIN_TOKEN_HEADER, PeerHeaders},
+    services::JoinOutcome,
     tls::{TlsError, TlsSettings},
     trace::TraceContext,
 };
@@ -252,6 +256,105 @@ impl PeerPool {
             request.metadata_mut().insert(JOIN_TOKEN_HEADER, value);
         }
         request
+    }
+
+    /// Exchanges a single-use token for durable cluster membership.
+    pub async fn join_cluster(
+        &self,
+        address: &str,
+        token: &str,
+        peer: NodeDescriptor,
+        profile: NodeProfile,
+    ) -> Result<JoinOutcome, RpcClientError> {
+        let mut client = self.system(address).await?;
+        let request = self
+            .join_request(
+                JoinRequest {
+                    join_token: token.to_owned(),
+                    peer: Some(peer),
+                    profile: Some(profile),
+                },
+                token,
+                &TraceContext::root(),
+            )
+            .await;
+        let response = client
+            .join(request)
+            .await
+            .map_err(|status| call_error(address, status))?
+            .into_inner();
+        let cluster_id = response
+            .cluster_id
+            .parse()
+            .map_err(|_| RpcClientError::Response {
+                address: address.to_owned(),
+                reason: "join response contained an invalid cluster identity".to_owned(),
+            })?;
+        let cluster_config = serde_json::from_str(&response.cluster_config).map_err(|error| {
+            RpcClientError::Response {
+                address: address.to_owned(),
+                reason: format!("join response contained invalid cluster configuration: {error}"),
+            }
+        })?;
+        if response.member_id == 0 || response.node_credential.is_empty() {
+            return Err(RpcClientError::Response {
+                address: address.to_owned(),
+                reason: "join response omitted the member identity or node credential".to_owned(),
+            });
+        }
+        Ok(JoinOutcome {
+            cluster_id,
+            member_id: response.member_id,
+            node_credential: response.node_credential,
+            metadata_voter: response.metadata_voter,
+            cluster_config,
+        })
+    }
+
+    /// Retrieves a seed's versioned identity before a join attempt.
+    pub async fn probe_cluster(
+        &self,
+        address: &str,
+        peer: NodeDescriptor,
+    ) -> Result<NodeDescriptor, RpcClientError> {
+        let mut client = self.system(address).await?;
+        let request = self
+            .envelope(PingRequest { peer: Some(peer) }, &TraceContext::root())
+            .await;
+        client
+            .ping(request)
+            .await
+            .map_err(|status| call_error(address, status))?
+            .into_inner()
+            .peer
+            .ok_or_else(|| RpcClientError::Response {
+                address: address.to_owned(),
+                reason: "seed probe omitted its node descriptor".to_owned(),
+            })
+    }
+
+    /// Asks an existing member to add this node to the consensus group.
+    pub async fn activate_cluster(
+        &self,
+        address: &str,
+        peer: NodeDescriptor,
+        profile: NodeProfile,
+    ) -> Result<ActivateResponse, RpcClientError> {
+        let mut client = self.system(address).await?;
+        let request = self
+            .envelope(
+                ActivateRequest {
+                    peer: Some(peer),
+                    profile: Some(profile),
+                },
+                &TraceContext::root(),
+            )
+            .await;
+        client
+            .activate(request)
+            .await
+            .map(tonic::Response::into_inner)
+            .map_err(|status| call_error(address, status))
     }
 }
 

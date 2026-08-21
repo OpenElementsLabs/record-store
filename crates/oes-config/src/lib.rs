@@ -652,9 +652,8 @@ impl ClusterConfig {
             issues.push("cluster.replication_factor must be between 1 and 3".to_owned());
         }
         if self.consensus_heartbeat_millis == 0 || self.consensus_heartbeat_millis > 10_000 {
-            issues.push(
-                "cluster.consensus_heartbeat_millis must be between 1 and 10000".to_owned(),
-            );
+            issues
+                .push("cluster.consensus_heartbeat_millis must be between 1 and 10000".to_owned());
         }
         if self.election_timeout_min_millis <= self.consensus_heartbeat_millis * 2 {
             issues.push(
@@ -679,9 +678,8 @@ impl ClusterConfig {
             issues.push("cluster.movement_concurrency must be between 1 and 256".to_owned());
         }
         if self.reconcile_interval_seconds == 0 || self.reconcile_interval_seconds > 86_400 {
-            issues.push(
-                "cluster.reconcile_interval_seconds must be between 1 and 86400".to_owned(),
-            );
+            issues
+                .push("cluster.reconcile_interval_seconds must be between 1 and 86400".to_owned());
         }
         if self.storage_class.is_empty() || self.storage_class.len() > 32 {
             issues.push("cluster.storage_class must contain between 1 and 32 bytes".to_owned());
@@ -1407,12 +1405,25 @@ mod tests {
         assert_eq!(server.api_bind.port(), 7_601);
         assert_eq!(server.rpc_bind.port(), 7_603);
         assert_eq!(ServerConfig::RESERVED_CONSOLE_PORT, 7_602);
-        for port in [server.s3_bind.port(), server.api_bind.port(), server.rpc_bind.port()] {
-            assert_ne!(port, 9_000, "OES must not default to another product's port");
-            assert_ne!(port, 9_001, "OES must not default to another product's port");
+        for port in [
+            server.s3_bind.port(),
+            server.api_bind.port(),
+            server.rpc_bind.port(),
+        ] {
+            assert_ne!(
+                port, 9_000,
+                "OES must not default to another product's port"
+            );
+            assert_ne!(
+                port, 9_001,
+                "OES must not default to another product's port"
+            );
         }
         assert_eq!(server.mode, DeploymentMode::Standalone);
-        assert_eq!(server.effective_rpc_advertise(), server.rpc_bind.to_string());
+        assert_eq!(
+            server.effective_rpc_advertise(),
+            server.rpc_bind.to_string()
+        );
     }
 
     #[test]

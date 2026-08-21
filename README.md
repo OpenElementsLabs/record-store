@@ -1,6 +1,6 @@
 # OES
 
-OES is a self-hosted, single-node object storage service written in Rust. It exposes an S3-compatible API on port 7600 and a native management API on port 7601. It deliberately does not introduce distributed metadata, replication, or erasure coding.
+OES is a self-hosted object storage service written in Rust. It supports a simple standalone mode and a single-region replicated cluster mode. Public S3 traffic uses port 7600, the native management API uses 7601, 7602 remains reserved for the web console, and authenticated internal gRPC uses 7603. Every listener is configurable; OES does not use ports 9000 or 9001.
 
 ## Supported S3 surface
 
@@ -19,17 +19,25 @@ Presigned multipart part uploads use the same canonical SigV4 verifier. ACLs, Ob
 
 ## Architecture and durability
 
-Protocol crates call shared application services; they do not access filesystem internals:
+Protocol crates call shared application services; they do not access filesystem internals. In cluster mode the same service layer is backed by replicated object storage and a strongly consistent metadata repository:
 
 ```text
-oes-s3 ─────┐
-            ├──> oes-service ──> oes-storage ──> oes-metadata
-oes-api ────┘       │      │
-                    │      └──> oes-events ──> signed webhook worker
-                    └─────────> oes-core
-oes-auth ──> policy engine       oes-audit ──> durable audit catalog
-oes-lifecycle ──> incremental metadata scans and audited expiration
+oes-s3 ─────┐                         ┌── local replica store
+            ├──> oes-service ────────>├── bounded gRPC replica streams
+oes-api ────┘          │              └── checksum verification
+                       ▼
+             replicated metadata adapter
+                       │
+                       ▼
+              OpenRaft metadata group
+              (object bytes never enter Raft)
 ```
+
+Each node persists an opaque `NodeId`, cluster binding, Raft member ID, and unique node credential separately from its hostname or address. Nodes join with expiring single-use tokens. Internal calls carry node identity, cluster identity, protocol major/minor, software version, storage format, cluster format, trace context, and the node credential. TLS and mutual TLS are supported for production internal networks.
+
+Replica placement is deterministic, capacity-aware, storage-class-aware, and failure-domain-aware. A replicated PUT fans out one bounded stream to selected nodes, each destination independently verifies and publishes its bytes durably, and metadata plus placement become visible atomically only after the acknowledgement policy succeeds. Reads prefer a healthy local replica, fall back before response bytes are emitted, and record missing or corrupt replicas for repair. Leader-elected workers detect failures, repair under-replication, reconcile returning nodes, retain deletion tombstones, rebalance, drain, and decommission without deleting a source before its replacement is committed and verified.
+
+Cluster mode does not by itself make a client endpoint highly available. Use at least three metadata voters and three failure-domain-separated storage nodes, and put healthy S3 ingress nodes behind a load balancer. Two Raft voters cannot survive either member's loss. Erasure coding and multi-region conflict resolution are intentionally outside this release.
 
 Payloads are immutable and addressed by generated UUIDs. Logical bucket names and object keys never become filesystem paths. Uploads stream through bounded chunks into create-only temporary files while SHA-256 and MD5 are calculated, then use fsync and atomic rename before metadata publication.
 
@@ -41,7 +49,12 @@ Local state uses this layout:
 
 ```text
 <data-directory>/
-├── metadata/catalog.redb
+├── node-identity.json                     # cluster mode
+├── node-credential.json                   # cluster mode, permission 0600 on Unix
+├── metadata/catalog.redb                  # standalone mode
+├── metadata/consensus/consensus-log.redb  # cluster mode
+├── metadata/consensus/consensus-state.redb
+├── metadata/consensus/snapshots/
 ├── metadata/credentials.redb
 ├── metadata/audit.redb
 ├── metadata/events.redb
@@ -92,6 +105,8 @@ The equivalent daemon entry point is `cargo run --bin oes-server`. Defaults rema
 ```text
 S3 API          http://localhost:7600
 Management API  http://localhost:7601
+Internal RPC    0.0.0.0:7603 (cluster mode only; do not publish publicly)
+Web console     7602 (reserved; no listener yet)
 ```
 
 Load the example file with `cargo run --bin oes -- server --config oes.example.toml`; secrets should still come from the environment.
@@ -142,6 +157,35 @@ cargo run --bin oes -- storage repair              # dry run
 cargo run --bin oes -- storage repair --apply      # explicit orphan deletion
 ```
 
+Cluster administration uses separate management authorization. System administrators can mutate cluster state; storage administrators and auditors can read cluster status, while ordinary S3 service accounts receive no cluster permission.
+
+```bash
+export OES_MANAGEMENT_TOKEN="$OES_MANAGEMENT_SYSTEM_TOKEN"
+cargo run --bin oes -- cluster init
+cargo run --bin oes -- cluster status
+cargo run --bin oes -- cluster issue-join-token --lifetime-seconds 3600
+cargo run --bin oes -- node list
+cargo run --bin oes -- node inspect <node-id>
+cargo run --bin oes -- node drain <node-id>
+cargo run --bin oes -- node maintenance <node-id>
+cargo run --bin oes -- node resume <node-id>
+cargo run --bin oes -- node decommission <node-id>
+cargo run --bin oes -- repair status
+cargo run --bin oes -- rebalance start
+cargo run --bin oes -- rebalance status
+```
+
+The first process configured with `OES_MODE=cluster` and no seeds forms the initial one-member group. Join another storage node with a token from the command above:
+
+```bash
+cargo run --bin oes -- node join \
+  --control storage-1.internal:7603 \
+  --token "$OES_CLUSTER_JOIN_TOKEN" \
+  --config ./node-2.toml
+```
+
+The joining node persists the returned binding and unique credential before activation. A restart reuses both. A node refuses a conflicting cluster or Raft identity rather than silently rebinding stale data.
+
 Service-account and webhook signing secrets are returned only when created or rotated. Stored signing material is encrypted with AES-256-GCM under the injected `OES_CREDENTIAL_MASTER_KEY`. The same injected master material derives a domain-separated object key-encryption key when payload encryption is enabled. OES refuses to create encrypted credentials without it and refuses startup if encrypted records or payload state exist but the key is unavailable. The master key is never stored by OES.
 
 S3 service accounts use attached allow/deny policies. Explicit deny overrides allow; no matching allow is an implicit deny. Policy resources use canonical decoded logical keys and support only a trailing wildcard, avoiding filesystem or ambiguous wildcard semantics.
@@ -171,6 +215,21 @@ Configuration file values overlay defaults, then environment variables take prec
 | --- | --- |
 | `OES_S3_BIND` | `server.s3_bind` |
 | `OES_API_BIND` | `server.api_bind` |
+| `OES_MODE` | `server.mode` (`standalone`, `cluster`, or `control`) |
+| `OES_RPC_BIND` | `server.rpc_bind` |
+| `OES_RPC_ADVERTISE` | `server.rpc_advertise` |
+| `OES_CLUSTER_SEEDS` | `cluster.seeds` (comma-separated) |
+| `OES_CLUSTER_JOIN_TOKEN` | one-time cluster admission token |
+| `OES_CLUSTER_STORAGE_CLASS` | `cluster.storage_class` |
+| `OES_CLUSTER_FAILURE_DOMAIN` | `cluster.failure_domain` |
+| `OES_CLUSTER_REPLICATION_FACTOR` | initial replicated policy |
+| `OES_CLUSTER_MOVEMENT_CONCURRENCY` | node-local movement concurrency |
+| `OES_CLUSTER_MOVEMENT_BYTES_PER_SECOND` | movement bandwidth ceiling |
+| `OES_CLUSTER_RECONCILE_INTERVAL_SECONDS` | returning-node reconciliation interval |
+| `OES_CLUSTER_TLS_CERTIFICATE` | internal TLS certificate chain |
+| `OES_CLUSTER_TLS_PRIVATE_KEY` | internal TLS private key |
+| `OES_CLUSTER_TLS_PEER_CA` | internal peer trust root |
+| `OES_CLUSTER_TLS_CLIENT_CA` | internal client trust root (enables mTLS) |
 | `OES_SHUTDOWN_TIMEOUT_SECONDS` | `server.shutdown_grace_period_seconds` |
 | `OES_STORAGE_DATA_DIRECTORY` | `storage.data_directory` |
 | `OES_STORAGE_TEMPORARY_DIRECTORY` | `storage.temporary_directory` |
@@ -209,9 +268,18 @@ docker run --read-only \
   -v oes-data:/var/lib/oes oes
 ```
 
-For Compose, export those four required values and run `docker compose -f deploy/docker/compose.yml up --build -d`.
+The development Compose file starts `storage-1`, `storage-2`, `storage-3`, a one-shot secure-token bootstrapper, and a management-only `control` process. It publishes only S3 on localhost:7600 and management on localhost:7601; 7603 remains private to the Compose network. Development secrets have explicit local defaults and must not be copied into production:
 
-The runtime image is non-root, supports a read-only root filesystem, exposes only 7600 and 7601, uses the management health endpoint, and performs SIGTERM-aware graceful shutdown across HTTP and background workers.
+```bash
+docker compose -f deploy/docker/compose.yml up --build -d
+docker compose -f deploy/docker/compose.yml ps
+OES_MANAGEMENT_TOKEN=local-development-management-token-change-me \
+  docker compose -f deploy/docker/compose.yml exec control oes cluster status
+```
+
+The Compose network uses plaintext internal traffic strictly for local development. Configure the cluster TLS fields, preferably mutual TLS, in every real deployment.
+
+The runtime image is non-root, supports a read-only root filesystem, declares 7600/7601/7603, publishes only ports selected by the operator, uses the management health endpoint, and performs SIGTERM-aware graceful shutdown across HTTP, Raft, RPC, and background workers.
 
 ## Repository structure
 
@@ -226,10 +294,14 @@ crates/oes-storage    streaming filesystem backend and recovery journal
 crates/oes-metadata   durable indexed catalog and ordered migrations
 crates/oes-auth       encrypted credentials and authorization policies
 crates/oes-audit      durable bounded security audit trail
+crates/oes-cluster    membership, placement, health, credentials, and movement model
+crates/oes-consensus  persistent OpenRaft metadata state machine and snapshots
 crates/oes-events     durable events and signed webhook delivery
 crates/oes-lifecycle  incremental lifecycle expiration worker
 crates/oes-config     configuration loading and validation
 crates/oes-observability structured tracing initialization
-crates/oes-protocol   generated future internal protocol types
+crates/oes-protocol   versioned Protobuf internal contracts
+crates/oes-rpc        authenticated Tonic consensus and replica transport
+crates/oes-replication distributed reads/writes, repair, rebalance, and operations
 deploy/docker/        container and Compose definitions
 ```

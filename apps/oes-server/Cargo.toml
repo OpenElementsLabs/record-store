@@ -8,18 +8,24 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+chrono.workspace = true
 clap.workspace = true
 fs2.workspace = true
 hex.workspace = true
 oes-api = { path = "../../crates/oes-api" }
 oes-audit = { path = "../../crates/oes-audit" }
 oes-auth = { path = "../../crates/oes-auth" }
+oes-cluster = { path = "../../crates/oes-cluster" }
 oes-config = { path = "../../crates/oes-config" }
+oes-consensus = { path = "../../crates/oes-consensus" }
 oes-core = { path = "../../crates/oes-core" }
 oes-events = { path = "../../crates/oes-events" }
 oes-lifecycle = { path = "../../crates/oes-lifecycle" }
 oes-metadata = { path = "../../crates/oes-metadata" }
 oes-observability = { path = "../../crates/oes-observability" }
+oes-protocol = { path = "../../crates/oes-protocol" }
+oes-replication = { path = "../../crates/oes-replication" }
+oes-rpc = { path = "../../crates/oes-rpc" }
 oes-s3 = { path = "../../crates/oes-s3" }
 oes-service = { path = "../../crates/oes-service" }
 oes-storage = { path = "../../crates/oes-storage" }
@@ -33,6 +39,8 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+bytes.workspace = true
+futures-util.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

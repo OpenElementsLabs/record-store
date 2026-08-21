@@ -348,8 +348,11 @@ mod tests {
         assert_eq!(unsafe_check.unavailable_payloads, 1);
         assert!(unsafe_check.reason.contains("unreadable"));
 
-        let still_unsafe =
-            DecommissionSafety::evaluate(&topology, first.node_id, std::slice::from_ref(&replicated));
+        let still_unsafe = DecommissionSafety::evaluate(
+            &topology,
+            first.node_id,
+            std::slice::from_ref(&replicated),
+        );
         assert!(
             !still_unsafe.safe,
             "dropping below the required acknowledgement count is not safe"
