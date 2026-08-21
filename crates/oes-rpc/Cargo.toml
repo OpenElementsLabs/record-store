@@ -1,5 +1,5 @@
 [package]
-name = "oes-lifecycle"
+name = "oes-rpc"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,21 +7,28 @@ license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+bytes.workspace = true
 chrono.workspace = true
-oes-audit = { path = "../oes-audit" }
+futures-util.workspace = true
+hex.workspace = true
+oes-cluster = { path = "../oes-cluster" }
+oes-consensus = { path = "../oes-consensus" }
 oes-core = { path = "../oes-core" }
-oes-metadata = { path = "../oes-metadata" }
-oes-service = { path = "../oes-service" }
-redb.workspace = true
+oes-protocol = { path = "../oes-protocol" }
+oes-storage = { path = "../oes-storage" }
+openraft.workspace = true
+prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-oes-storage = { path = "../oes-storage" }
 tempfile.workspace = true
 
 [lints]

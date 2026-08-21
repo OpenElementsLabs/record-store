@@ -128,6 +128,7 @@ uuid_identifier!(ObjectId, "object");
 uuid_identifier!(VersionId, "version");
 uuid_identifier!(UploadId, "multipart upload");
 uuid_identifier!(NodeId, "node");
+uuid_identifier!(ClusterId, "cluster");
 uuid_identifier!(OrganizationId, "organization");
 uuid_identifier!(ServiceAccountId, "service account");
 uuid_identifier!(CredentialId, "credential");
@@ -136,6 +137,10 @@ uuid_identifier!(AuditEventId, "audit event");
 uuid_identifier!(EventId, "storage event");
 uuid_identifier!(WebhookId, "webhook");
 uuid_identifier!(LifecycleRuleId, "lifecycle rule");
+uuid_identifier!(ReplicaTaskId, "replica task");
+uuid_identifier!(ClusterOperationId, "cluster operation");
+uuid_identifier!(JoinTokenId, "join token");
+uuid_identifier!(NodeCredentialId, "node credential");
 
 /// Validated positive lifecycle age in whole days.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -2284,6 +2284,9 @@ fn service_error(error: ServiceError, request_id: S3RequestId, resource: &str) -
         ServiceError::Storage(oes_storage::StorageError::ChecksumMismatch { .. }) => {
             S3ErrorKind::BadDigest
         }
+        ServiceError::ClusterUnavailable(_) | ServiceError::DurabilityNotMet(_) => {
+            S3ErrorKind::ServiceUnavailable
+        }
         ServiceError::Metadata(_)
         | ServiceError::Storage(_)
         | ServiceError::Coordination
@@ -2354,6 +2357,7 @@ enum S3ErrorKind {
     MalformedXml,
     BadDigest,
     NotImplemented,
+    ServiceUnavailable,
     InternalError,
 }
 
@@ -2381,6 +2385,7 @@ impl S3ErrorKind {
             Self::MalformedXml => "MalformedXML",
             Self::BadDigest => "BadDigest",
             Self::NotImplemented => "NotImplemented",
+            Self::ServiceUnavailable => "ServiceUnavailable",
             Self::InternalError => "InternalError",
         }
     }
@@ -2410,6 +2415,9 @@ impl S3ErrorKind {
             Self::MalformedXml => "The XML document was not well formed",
             Self::BadDigest => "The Content-MD5 or checksum did not match the received data",
             Self::NotImplemented => "A requested operation is not implemented",
+            Self::ServiceUnavailable => {
+                "The cluster cannot currently satisfy this request; retry shortly"
+            }
             Self::InternalError => "We encountered an internal error",
         }
     }
@@ -2426,6 +2434,7 @@ impl S3ErrorKind {
             Self::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
+            Self::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             Self::AuthorizationHeaderMalformed
             | Self::InvalidBucketName

@@ -1352,6 +1352,15 @@ pub enum ServiceError {
     /// Backpressure subsystem is unavailable.
     #[error("service is unavailable")]
     Unavailable,
+    /// The cluster cannot currently satisfy the operation.
+    ///
+    /// This is reported honestly as a retryable condition rather than being
+    /// hidden behind a generic internal error.
+    #[error("cluster is unavailable for this operation: {0}")]
+    ClusterUnavailable(String),
+    /// The write could not reach its required durability.
+    #[error("{0}")]
+    DurabilityNotMet(String),
 }
 
 fn map_metadata(error: MetadataError) -> ServiceError {
@@ -1374,6 +1383,13 @@ fn map_storage(error: StorageError) -> ServiceError {
             ServiceError::MultipartUploadNotFound
         }
         StorageError::Metadata(MetadataError::QuotaExceeded) => ServiceError::QuotaExceeded,
+        StorageError::ClusterUnavailable(reason) => ServiceError::ClusterUnavailable(reason),
+        StorageError::NoHealthyReplica => {
+            ServiceError::ClusterUnavailable(StorageError::NoHealthyReplica.to_string())
+        }
+        error @ StorageError::DurabilityNotMet { .. } => {
+            ServiceError::DurabilityNotMet(error.to_string())
+        }
         error => ServiceError::Storage(error),
     }
 }

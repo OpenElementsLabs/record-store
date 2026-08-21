@@ -5,6 +5,8 @@ members = [
     "apps/oes-server",
     "crates/oes-api",
     "crates/oes-audit",
+    "crates/oes-cluster",
+    "crates/oes-consensus",
     "crates/oes-events",
     "crates/oes-lifecycle",
     "crates/oes-auth",
@@ -13,6 +15,8 @@ members = [
     "crates/oes-metadata",
     "crates/oes-observability",
     "crates/oes-protocol",
+    "crates/oes-replication",
+    "crates/oes-rpc",
     "crates/oes-s3",
     "crates/oes-service",
     "crates/oes-storage",
@@ -44,6 +48,7 @@ hmac = "0.12.1"
 http = "1.3.1"
 http-body-util = "0.1.3"
 md-5 = "0.10.6"
+openraft = { version = "0.9.25", features = ["serde", "storage-v2"] }
 percent-encoding = "2.3.1"
 prost = "0.13.5"
 proptest = "1.9.0"
@@ -57,10 +62,11 @@ sha2 = "0.10.9"
 subtle = "2.6.1"
 tempfile = "3.21.0"
 thiserror = "2.0.16"
-tokio = { version = "1.47.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.47.1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1.17", features = ["net"] }
 tokio-util = { version = "0.7.16", features = ["io", "rt"] }
 toml = "0.9.5"
-tonic = { version = "0.13.1", default-features = false, features = ["codegen"] }
+tonic = { version = "0.13.1", default-features = false, features = ["codegen", "prost", "router", "tls-ring", "transport"] }
 tonic-build = "0.13.1"
 tower = { version = "0.5.2", features = ["util"] }
 tracing = "0.1.41"

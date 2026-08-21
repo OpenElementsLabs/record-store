@@ -58,6 +58,8 @@ pub struct Config {
     pub webhooks: WebhookConfig,
     /// Incremental object expiration settings.
     pub lifecycle: LifecycleConfig,
+    /// Node-local cluster settings.
+    pub cluster: ClusterConfig,
     /// Logging settings.
     pub observability: ObservabilityConfig,
 }
@@ -113,9 +115,43 @@ impl Config {
         if self.server.api_bind.port() == 0 {
             issues.push("server.api_bind port must be greater than zero".to_owned());
         }
-        if self.server.s3_bind == self.server.api_bind {
-            issues.push("server.s3_bind and server.api_bind must be different".to_owned());
+        if self.server.rpc_bind.port() == 0 {
+            issues.push("server.rpc_bind port must be greater than zero".to_owned());
         }
+        let listeners = [
+            ("server.s3_bind", self.server.s3_bind),
+            ("server.api_bind", self.server.api_bind),
+            ("server.rpc_bind", self.server.rpc_bind),
+        ];
+        for left in 0..listeners.len() {
+            for right in left + 1..listeners.len() {
+                if listeners[left].1 == listeners[right].1 {
+                    issues.push(format!(
+                        "{} and {} must be different",
+                        listeners[left].0, listeners[right].0
+                    ));
+                }
+            }
+        }
+        for (name, address) in listeners {
+            if address.port() == ServerConfig::RESERVED_CONSOLE_PORT {
+                issues.push(format!(
+                    "{name} must not use port {}, which is reserved for the web console",
+                    ServerConfig::RESERVED_CONSOLE_PORT
+                ));
+            }
+        }
+        if self
+            .server
+            .rpc_advertise
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty() || value.len() > 253)
+        {
+            issues.push(
+                "server.rpc_advertise must be a non-empty host:port under 253 bytes".to_owned(),
+            );
+        }
+        issues.extend(self.cluster.issues(self.server.mode));
         if !(1..=300).contains(&self.server.shutdown_grace_period_seconds) {
             issues
                 .push("server.shutdown_grace_period_seconds must be between 1 and 300".to_owned());
@@ -278,8 +314,17 @@ impl Config {
         &mut self,
         environment: &HashMap<OsString, OsString>,
     ) -> Result<(), ConfigError> {
+        if let Some(value) = environment_value(environment, "OES_MODE")? {
+            self.server.mode = value.parse()?;
+        }
         if let Some(value) = environment_value(environment, "OES_S3_BIND")? {
             self.server.s3_bind = parse_environment("OES_S3_BIND", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_RPC_BIND")? {
+            self.server.rpc_bind = parse_environment("OES_RPC_BIND", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_RPC_ADVERTISE")? {
+            self.server.rpc_advertise = Some(value.to_owned());
         }
         if let Some(value) = environment_value(environment, "OES_API_BIND")? {
             self.server.api_bind = parse_environment("OES_API_BIND", value)?;
@@ -352,6 +397,61 @@ impl Config {
         if let Some(value) = environment_value(environment, "OES_LIFECYCLE_BATCH_SIZE")? {
             self.lifecycle.batch_size = parse_environment("OES_LIFECYCLE_BATCH_SIZE", value)?;
         }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_SEEDS")? {
+            self.cluster.seeds = value
+                .split(',')
+                .map(str::trim)
+                .filter(|seed| !seed.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_JOIN_TOKEN")? {
+            self.cluster.join_token = Some(SecretValue::new(value));
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_STORAGE_CLASS")? {
+            self.cluster.storage_class = value.to_owned();
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_FAILURE_DOMAIN")? {
+            self.cluster.failure_domain = value.to_owned();
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_S3_ENDPOINT")? {
+            self.cluster.s3_endpoint = Some(value.to_owned());
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_REPLICATION_FACTOR")? {
+            self.cluster.replication_factor =
+                parse_environment("OES_CLUSTER_REPLICATION_FACTOR", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_MOVEMENT_CONCURRENCY")? {
+            self.cluster.movement_concurrency =
+                parse_environment("OES_CLUSTER_MOVEMENT_CONCURRENCY", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "OES_CLUSTER_MOVEMENT_BYTES_PER_SECOND")?
+        {
+            self.cluster.movement_bytes_per_second =
+                parse_environment("OES_CLUSTER_MOVEMENT_BYTES_PER_SECOND", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "OES_CLUSTER_RECONCILE_INTERVAL_SECONDS")?
+        {
+            self.cluster.reconcile_interval_seconds =
+                parse_environment("OES_CLUSTER_RECONCILE_INTERVAL_SECONDS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_TLS_CERTIFICATE")? {
+            self.cluster.tls.certificate_path = Some(PathBuf::from(value));
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_TLS_PRIVATE_KEY")? {
+            self.cluster.tls.private_key_path = Some(PathBuf::from(value));
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_TLS_PEER_CA")? {
+            self.cluster.tls.peer_ca_path = Some(PathBuf::from(value));
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_TLS_CLIENT_CA")? {
+            self.cluster.tls.client_ca_path = Some(PathBuf::from(value));
+        }
+        if let Some(value) = environment_value(environment, "OES_CLUSTER_TLS_SERVER_NAME")? {
+            self.cluster.tls.server_name = Some(value.to_owned());
+        }
         if let Some(value) = environment_value(environment, "OES_LOG")? {
             self.observability.log_filter = value.to_owned();
         }
@@ -362,24 +462,306 @@ impl Config {
     }
 }
 
+/// How this process participates in a deployment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentMode {
+    /// One process owning its own data, with no cluster machinery.
+    ///
+    /// This remains a first-class deployment: a small installation should not
+    /// pay for consensus or replication it does not need.
+    #[default]
+    Standalone,
+    /// A storage node in a cluster: serves S3 traffic and holds replicas.
+    Cluster,
+    /// A control-plane process: serves the management API and holds no replicas.
+    Control,
+}
+
+impl DeploymentMode {
+    /// Returns whether this process stores object replicas.
+    #[must_use]
+    pub const fn stores_replicas(self) -> bool {
+        matches!(self, Self::Standalone | Self::Cluster)
+    }
+
+    /// Returns whether this process serves the S3 API.
+    #[must_use]
+    pub const fn serves_s3(self) -> bool {
+        matches!(self, Self::Standalone | Self::Cluster)
+    }
+
+    /// Returns whether this process participates in a cluster.
+    #[must_use]
+    pub const fn clustered(self) -> bool {
+        matches!(self, Self::Cluster | Self::Control)
+    }
+
+    /// Returns the stable configuration name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standalone => "standalone",
+            Self::Cluster => "cluster",
+            Self::Control => "control",
+        }
+    }
+}
+
+impl Display for DeploymentMode {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for DeploymentMode {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "standalone" => Ok(Self::Standalone),
+            "cluster" => Ok(Self::Cluster),
+            "control" => Ok(Self::Control),
+            other => Err(ConfigError::Validation(format!(
+                "unknown deployment mode '{other}'; expected standalone, cluster, or control"
+            ))),
+        }
+    }
+}
+
 /// Listener and shutdown settings.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
+    /// How this process participates in a deployment.
+    #[serde(default)]
+    pub mode: DeploymentMode,
     /// S3-compatible API listener.
     pub s3_bind: SocketAddr,
     /// Native management API listener.
     pub api_bind: SocketAddr,
+    /// Internal node-to-node RPC listener.
+    ///
+    /// This listener is for cluster traffic only and must not be published.
+    pub rpc_bind: SocketAddr,
+    /// Address peers should use to reach this node's internal listener.
+    ///
+    /// A bind address is not usable as an advertise address behind Docker,
+    /// Kubernetes, or NAT, so the two are configured independently.
+    pub rpc_advertise: Option<String>,
     /// Maximum graceful-shutdown drain time.
     pub shutdown_grace_period_seconds: u64,
+}
+
+impl ServerConfig {
+    /// Port reserved for the future web console. Nothing binds it today.
+    pub const RESERVED_CONSOLE_PORT: u16 = 7_602;
+
+    /// Returns the address peers should use for internal RPC.
+    ///
+    /// Falls back to the bind address, which is only correct when the bind
+    /// address is itself routable from peers.
+    #[must_use]
+    pub fn effective_rpc_advertise(&self) -> String {
+        self.rpc_advertise
+            .clone()
+            .unwrap_or_else(|| self.rpc_bind.to_string())
+    }
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            mode: DeploymentMode::Standalone,
             s3_bind: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 7_600)),
             api_bind: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 7_601)),
+            rpc_bind: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 7_603)),
+            rpc_advertise: None,
             shutdown_grace_period_seconds: 30,
+        }
+    }
+}
+
+/// Transport security for internal cluster traffic.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterTlsConfig {
+    /// PEM certificate chain this node presents to peers.
+    pub certificate_path: Option<PathBuf>,
+    /// PEM private key for the presented certificate.
+    pub private_key_path: Option<PathBuf>,
+    /// PEM authority used to verify peer certificates.
+    pub peer_ca_path: Option<PathBuf>,
+    /// PEM authority used to require and verify peer client certificates.
+    ///
+    /// Setting this turns on mutual TLS in addition to the node credential that
+    /// every internal call already carries.
+    pub client_ca_path: Option<PathBuf>,
+    /// Server name presented during the handshake, when it differs from the
+    /// advertised address.
+    pub server_name: Option<String>,
+}
+
+/// Node-local cluster settings.
+///
+/// Cluster-wide policy such as the replication factor, watermarks, and repair
+/// limits lives in replicated cluster configuration instead, so that every node
+/// agrees on it. Only the values that are genuinely per-process appear here.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterConfig {
+    /// Existing members this node contacts to join.
+    #[serde(default)]
+    pub seeds: Vec<String>,
+    /// Single-use token presented when joining.
+    pub join_token: Option<SecretValue>,
+    /// Storage class this node advertises.
+    pub storage_class: String,
+    /// Failure-domain labels in `key=value,key=value` form.
+    pub failure_domain: String,
+    /// Client-facing S3 endpoint this node advertises, when it has one.
+    pub s3_endpoint: Option<String>,
+    /// Replication factor used when this node initializes a new cluster.
+    pub replication_factor: u8,
+    /// Consensus heartbeat interval in milliseconds.
+    pub consensus_heartbeat_millis: u64,
+    /// Minimum consensus election timeout in milliseconds.
+    pub election_timeout_min_millis: u64,
+    /// Maximum consensus election timeout in milliseconds.
+    pub election_timeout_max_millis: u64,
+    /// Log entries appended before a metadata snapshot is built.
+    pub snapshot_logs_threshold: u64,
+    /// Entries retained after a snapshot, for follower catch-up.
+    pub retained_logs: u64,
+    /// Replica movements this node runs at once.
+    pub movement_concurrency: usize,
+    /// Byte-per-second ceiling for one background replica movement.
+    pub movement_bytes_per_second: u64,
+    /// Seconds between this node's local replica reconciliation passes.
+    pub reconcile_interval_seconds: u64,
+    /// Transport security for internal traffic.
+    #[serde(default)]
+    pub tls: ClusterTlsConfig,
+}
+
+impl ClusterConfig {
+    /// Returns validation problems, given the deployment mode in use.
+    fn issues(&self, mode: DeploymentMode) -> Vec<String> {
+        let mut issues = Vec::new();
+        if !(1..=3).contains(&self.replication_factor) {
+            issues.push("cluster.replication_factor must be between 1 and 3".to_owned());
+        }
+        if self.consensus_heartbeat_millis == 0 || self.consensus_heartbeat_millis > 10_000 {
+            issues.push(
+                "cluster.consensus_heartbeat_millis must be between 1 and 10000".to_owned(),
+            );
+        }
+        if self.election_timeout_min_millis <= self.consensus_heartbeat_millis * 2 {
+            issues.push(
+                "cluster.election_timeout_min_millis must exceed twice the consensus heartbeat"
+                    .to_owned(),
+            );
+        }
+        if self.election_timeout_max_millis <= self.election_timeout_min_millis {
+            issues.push(
+                "cluster.election_timeout_max_millis must exceed election_timeout_min_millis"
+                    .to_owned(),
+            );
+        }
+        if self.snapshot_logs_threshold == 0 {
+            issues.push(
+                "cluster.snapshot_logs_threshold must be greater than zero so the consensus log \
+                 is compacted"
+                    .to_owned(),
+            );
+        }
+        if self.movement_concurrency == 0 || self.movement_concurrency > 256 {
+            issues.push("cluster.movement_concurrency must be between 1 and 256".to_owned());
+        }
+        if self.reconcile_interval_seconds == 0 || self.reconcile_interval_seconds > 86_400 {
+            issues.push(
+                "cluster.reconcile_interval_seconds must be between 1 and 86400".to_owned(),
+            );
+        }
+        if self.storage_class.is_empty() || self.storage_class.len() > 32 {
+            issues.push("cluster.storage_class must contain between 1 and 32 bytes".to_owned());
+        }
+        if !self
+            .storage_class
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            issues.push(
+                "cluster.storage_class may only contain lowercase letters, digits, and hyphens"
+                    .to_owned(),
+            );
+        }
+        for entry in self.failure_domain.split(',') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            if !entry.contains('=') {
+                issues.push(format!(
+                    "cluster.failure_domain entry '{entry}' must use key=value form"
+                ));
+            }
+        }
+        if self.seeds.len() > 32 {
+            issues.push("cluster.seeds must contain at most 32 addresses".to_owned());
+        }
+        for seed in &self.seeds {
+            if seed.trim().is_empty() || seed.len() > 253 {
+                issues.push("cluster.seeds entries must be non-empty host:port values".to_owned());
+            }
+        }
+        if self.tls.certificate_path.is_some() != self.tls.private_key_path.is_some() {
+            issues.push(
+                "cluster.tls.certificate_path and cluster.tls.private_key_path must be configured \
+                 together"
+                    .to_owned(),
+            );
+        }
+        if self.tls.client_ca_path.is_some() && self.tls.certificate_path.is_none() {
+            issues.push(
+                "cluster.tls.client_ca_path requires this node to present its own certificate"
+                    .to_owned(),
+            );
+        }
+        if mode == DeploymentMode::Control && self.seeds.is_empty() {
+            issues.push(
+                "a control-plane process needs cluster.seeds so it can reach the cluster"
+                    .to_owned(),
+            );
+        }
+        if mode.clustered() && self.join_token.is_some() && self.seeds.is_empty() {
+            issues.push(
+                "cluster.join_token requires cluster.seeds so the node knows whom to join"
+                    .to_owned(),
+            );
+        }
+        issues
+    }
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            seeds: Vec::new(),
+            join_token: None,
+            storage_class: "standard".to_owned(),
+            failure_domain: String::new(),
+            s3_endpoint: None,
+            replication_factor: 3,
+            consensus_heartbeat_millis: 250,
+            election_timeout_min_millis: 1_000,
+            election_timeout_max_millis: 2_000,
+            snapshot_logs_threshold: 8_192,
+            retained_logs: 2_048,
+            movement_concurrency: 4,
+            movement_bytes_per_second: 64 * 1024 * 1024,
+            reconcile_interval_seconds: 300,
+            tls: ClusterTlsConfig::default(),
         }
     }
 }
@@ -552,6 +934,7 @@ struct PartialConfig {
     limits: Option<PartialLimitsConfig>,
     webhooks: Option<PartialWebhookConfig>,
     lifecycle: Option<PartialLifecycleConfig>,
+    cluster: Option<PartialClusterConfig>,
     observability: Option<PartialObservabilityConfig>,
 }
 
@@ -575,6 +958,9 @@ impl PartialConfig {
         if let Some(value) = self.lifecycle {
             value.apply(&mut target.lifecycle);
         }
+        if let Some(value) = self.cluster {
+            value.apply(&mut target.cluster);
+        }
         if let Some(value) = self.observability {
             value.apply(&mut target.observability);
         }
@@ -585,21 +971,103 @@ impl PartialConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PartialServerConfig {
+    mode: Option<DeploymentMode>,
     s3_bind: Option<SocketAddr>,
     api_bind: Option<SocketAddr>,
+    rpc_bind: Option<SocketAddr>,
+    rpc_advertise: Option<String>,
     shutdown_grace_period_seconds: Option<u64>,
 }
 
 impl PartialServerConfig {
     fn apply(self, target: &mut ServerConfig) {
+        if let Some(value) = self.mode {
+            target.mode = value;
+        }
         if let Some(value) = self.s3_bind {
             target.s3_bind = value;
         }
         if let Some(value) = self.api_bind {
             target.api_bind = value;
         }
+        if let Some(value) = self.rpc_bind {
+            target.rpc_bind = value;
+        }
+        if let Some(value) = self.rpc_advertise {
+            target.rpc_advertise = Some(value);
+        }
         if let Some(value) = self.shutdown_grace_period_seconds {
             target.shutdown_grace_period_seconds = value;
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartialClusterConfig {
+    seeds: Option<Vec<String>>,
+    join_token: Option<SecretValue>,
+    storage_class: Option<String>,
+    failure_domain: Option<String>,
+    s3_endpoint: Option<String>,
+    replication_factor: Option<u8>,
+    consensus_heartbeat_millis: Option<u64>,
+    election_timeout_min_millis: Option<u64>,
+    election_timeout_max_millis: Option<u64>,
+    snapshot_logs_threshold: Option<u64>,
+    retained_logs: Option<u64>,
+    movement_concurrency: Option<usize>,
+    movement_bytes_per_second: Option<u64>,
+    reconcile_interval_seconds: Option<u64>,
+    tls: Option<ClusterTlsConfig>,
+}
+
+impl PartialClusterConfig {
+    fn apply(self, target: &mut ClusterConfig) {
+        if let Some(value) = self.seeds {
+            target.seeds = value;
+        }
+        if let Some(value) = self.join_token {
+            target.join_token = Some(value);
+        }
+        if let Some(value) = self.storage_class {
+            target.storage_class = value;
+        }
+        if let Some(value) = self.failure_domain {
+            target.failure_domain = value;
+        }
+        if let Some(value) = self.s3_endpoint {
+            target.s3_endpoint = Some(value);
+        }
+        if let Some(value) = self.replication_factor {
+            target.replication_factor = value;
+        }
+        if let Some(value) = self.consensus_heartbeat_millis {
+            target.consensus_heartbeat_millis = value;
+        }
+        if let Some(value) = self.election_timeout_min_millis {
+            target.election_timeout_min_millis = value;
+        }
+        if let Some(value) = self.election_timeout_max_millis {
+            target.election_timeout_max_millis = value;
+        }
+        if let Some(value) = self.snapshot_logs_threshold {
+            target.snapshot_logs_threshold = value;
+        }
+        if let Some(value) = self.retained_logs {
+            target.retained_logs = value;
+        }
+        if let Some(value) = self.movement_concurrency {
+            target.movement_concurrency = value;
+        }
+        if let Some(value) = self.movement_bytes_per_second {
+            target.movement_bytes_per_second = value;
+        }
+        if let Some(value) = self.reconcile_interval_seconds {
+            target.reconcile_interval_seconds = value;
+        }
+        if let Some(value) = self.tls {
+            target.tls = value;
         }
     }
 }
@@ -834,6 +1302,10 @@ mod tests {
         ]
     }
 
+    fn valid_config() -> Config {
+        Config::load_with_environment(None, credentials()).expect("defaults must be valid")
+    }
+
     #[test]
     fn file_and_environment_overlay_defaults_in_order() {
         let directory = tempdir().expect("temporary directory");
@@ -926,5 +1398,95 @@ mod tests {
         ));
         let config = Config::load_with_environment(None, configured).expect("encrypted config");
         assert!(config.storage.encryption_enabled);
+    }
+
+    #[test]
+    fn default_listeners_use_the_documented_oes_ports() {
+        let server = ServerConfig::default();
+        assert_eq!(server.s3_bind.port(), 7_600);
+        assert_eq!(server.api_bind.port(), 7_601);
+        assert_eq!(server.rpc_bind.port(), 7_603);
+        assert_eq!(ServerConfig::RESERVED_CONSOLE_PORT, 7_602);
+        for port in [server.s3_bind.port(), server.api_bind.port(), server.rpc_bind.port()] {
+            assert_ne!(port, 9_000, "OES must not default to another product's port");
+            assert_ne!(port, 9_001, "OES must not default to another product's port");
+        }
+        assert_eq!(server.mode, DeploymentMode::Standalone);
+        assert_eq!(server.effective_rpc_advertise(), server.rpc_bind.to_string());
+    }
+
+    #[test]
+    fn listeners_must_be_distinct_and_avoid_the_reserved_console_port() {
+        let mut config = valid_config();
+        config.server.rpc_bind = config.server.api_bind;
+        assert!(config.validate().is_err());
+
+        let mut config = valid_config();
+        config.server.rpc_bind = "0.0.0.0:7602".parse().expect("address");
+        let error = config
+            .validate()
+            .expect_err("the reserved console port must be refused");
+        assert!(error.to_string().contains("7602"));
+    }
+
+    #[test]
+    fn cluster_settings_are_validated_strictly() {
+        let mut config = valid_config();
+        config.cluster.replication_factor = 4;
+        assert!(config.validate().is_err());
+
+        let mut config = valid_config();
+        config.cluster.storage_class = "NVMe".to_owned();
+        assert!(config.validate().is_err());
+
+        let mut config = valid_config();
+        config.cluster.failure_domain = "rack".to_owned();
+        assert!(config.validate().is_err());
+
+        let mut config = valid_config();
+        config.cluster.election_timeout_min_millis = 100;
+        assert!(config.validate().is_err());
+
+        let mut config = valid_config();
+        config.server.mode = DeploymentMode::Control;
+        let error = config
+            .validate()
+            .expect_err("a control process without seeds cannot reach the cluster");
+        assert!(error.to_string().contains("cluster.seeds"));
+
+        let mut config = valid_config();
+        config.cluster.tls.certificate_path = Some(PathBuf::from("/tmp/cert.pem"));
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn cluster_environment_overrides_are_applied() {
+        let config = Config::load_with_environment(
+            None,
+            [
+                ("OES_ROOT_ACCESS_KEY", "root-access"),
+                ("OES_ROOT_SECRET_KEY", "root-secret-at-least-sixteen"),
+                ("OES_MODE", "cluster"),
+                ("OES_RPC_BIND", "0.0.0.0:17603"),
+                ("OES_RPC_ADVERTISE", "10.0.1.12:17603"),
+                ("OES_CLUSTER_SEEDS", "storage-1:7603, storage-2:7603"),
+                ("OES_CLUSTER_JOIN_TOKEN", "oesjoin.token"),
+                ("OES_CLUSTER_STORAGE_CLASS", "nvme"),
+                ("OES_CLUSTER_FAILURE_DOMAIN", "rack=r1,zone=dc1"),
+                ("OES_CLUSTER_REPLICATION_FACTOR", "2"),
+            ],
+        )
+        .expect("configuration must load");
+        assert_eq!(config.server.mode, DeploymentMode::Cluster);
+        assert_eq!(config.server.rpc_bind.port(), 17_603);
+        assert_eq!(
+            config.server.effective_rpc_advertise(),
+            "10.0.1.12:17603",
+            "an advertise address must not be assumed equal to the bind address"
+        );
+        assert_eq!(config.cluster.seeds.len(), 2);
+        assert_eq!(config.cluster.storage_class, "nvme");
+        assert_eq!(config.cluster.replication_factor, 2);
+        assert!(format!("{:?}", config.cluster.join_token).contains("redacted"));
     }
 }

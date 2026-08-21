@@ -1,7 +1,13 @@
-//! Incremental, restart-safe single-node lifecycle expiration worker.
+//! Incremental, restart-safe lifecycle expiration worker.
+//!
+//! The worker keeps durable per-rule cursors so a restart resumes a scan instead
+//! of repeating it. In a cluster an activation gate restricts scanning to one
+//! node at a time, because expiring the same object from several nodes would
+//! create duplicate delete markers.
 
 use std::{path::Path, sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use chrono::Utc;
 use oes_audit::{AuditEvent, AuditRepository, AuditResult};
 use oes_core::{AuditEventId, LifecycleRule, LifecycleRuleId};
@@ -33,6 +39,13 @@ pub struct LifecycleRunResult {
     pub failures: u64,
 }
 
+/// Decides whether this process may currently run lifecycle scans.
+#[async_trait]
+pub trait LifecycleGate: Send + Sync {
+    /// Returns whether scanning is permitted right now.
+    async fn active(&self) -> bool;
+}
+
 /// Supervised lifecycle engine using durable per-rule cursors.
 #[derive(Clone)]
 pub struct LifecycleWorker {
@@ -42,6 +55,7 @@ pub struct LifecycleWorker {
     audit: Arc<dyn AuditRepository>,
     interval: Duration,
     batch_size: usize,
+    gate: Option<Arc<dyn LifecycleGate>>,
 }
 
 impl LifecycleWorker {
@@ -79,6 +93,7 @@ impl LifecycleWorker {
             audit,
             interval,
             batch_size,
+            gate: None,
         })
     }
 
@@ -96,6 +111,16 @@ impl LifecycleWorker {
     }
 
     /// Runs until cancellation; individual scan failures remain visible and retry later.
+    /// Restricts scanning to when the gate allows it.
+    ///
+    /// A cluster runs one lifecycle scanner at a time: expiring the same object
+    /// from several nodes would create duplicate delete markers and waste work.
+    #[must_use]
+    pub fn with_activation_gate(mut self, gate: Arc<dyn LifecycleGate>) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
     pub async fn run(self, cancellation: CancellationToken) -> Result<(), LifecycleError> {
         let mut interval = tokio::time::interval(self.interval);
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -106,10 +131,17 @@ impl LifecycleWorker {
                     info!("lifecycle worker stopped");
                     return Ok(());
                 }
-                _ = interval.tick() => match self.run_once().await {
+                _ = interval.tick() => {
+                    if let Some(gate) = &self.gate
+                        && !gate.active().await
+                    {
+                        continue;
+                    }
+                    match self.run_once().await {
                     Ok(result) if result.scanned > 0 => info!(scanned = result.scanned, expired = result.expired, failures = result.failures, "lifecycle scan completed"),
                     Ok(_) => {},
                     Err(error) => error!(%error, "lifecycle scan failed"),
+                    }
                 }
             }
         }
