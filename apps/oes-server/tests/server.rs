@@ -72,6 +72,8 @@ async fn starts_serves_operational_routes_and_shuts_down() {
         .expect("system info JSON");
     assert_eq!(info["name"], "oes");
     assert_eq!(info["status"], "ready");
+    assert_eq!(info["mode"], "standalone");
+    assert!(info.get("cluster_id").is_none());
     assert!(info["version"].is_string());
 
     let unauthorized_admin = client
@@ -233,6 +235,17 @@ async fn cluster_mode_bootstraps_persistent_identity_and_exposes_status() {
     assert_eq!(status["replication"]["replication_factor"], 1);
     assert_eq!(status["nodes"].as_array().map(Vec::len), Some(1));
     assert!(status["cluster_id"].is_string());
+
+    let info = reqwest::Client::new()
+        .get(format!("http://{address}/api/v1/system/info"))
+        .send()
+        .await
+        .expect("cluster system info request")
+        .json::<serde_json::Value>()
+        .await
+        .expect("cluster system info JSON");
+    assert_eq!(info["mode"], "cluster");
+    assert_eq!(info["cluster_id"], status["cluster_id"]);
 
     shutdown_tx.send(()).expect("request shutdown");
     timeout(Duration::from_secs(3), server)

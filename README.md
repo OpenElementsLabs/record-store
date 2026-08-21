@@ -256,6 +256,8 @@ Configuration file values overlay defaults, then environment variables take prec
 
 ## Docker
 
+`OES_MODE` is not set above because standalone is the default; no cluster configuration is required to run one node.
+
 ```bash
 docker build -f deploy/docker/Dockerfile -t oes .
 docker run --read-only \
@@ -268,16 +270,23 @@ docker run --read-only \
   -v oes-data:/var/lib/oes oes
 ```
 
-The development Compose file starts `storage-1`, `storage-2`, `storage-3`, a one-shot secure-token bootstrapper, and a management-only `control` process. It publishes only S3 on localhost:7600 and management on localhost:7601; 7603 remains private to the Compose network. Development secrets have explicit local defaults and must not be copied into production:
+The default Compose file (`deploy/docker/compose.yml`) runs one standalone node: no cluster configuration, no internal RPC listener, and no control-plane process. It publishes only S3 on localhost:7600 and management on localhost:7601. Development secrets have explicit local defaults and must not be copied into production:
 
 ```bash
 docker compose -f deploy/docker/compose.yml up --build -d
 docker compose -f deploy/docker/compose.yml ps
-OES_MANAGEMENT_TOKEN=local-development-management-token-change-me \
-  docker compose -f deploy/docker/compose.yml exec control oes cluster status
 ```
 
-The Compose network uses plaintext internal traffic strictly for local development. Configure the cluster TLS fields, preferably mutual TLS, in every real deployment.
+A separate Compose file (`deploy/docker/compose.cluster.yml`) is an explicit, opt-in example of a three-node replicated cluster plus a management-only `control` process. It publishes the same public ports; 7603 remains private to the Compose network. Nothing here is required for the default standalone experience:
+
+```bash
+docker compose -f deploy/docker/compose.cluster.yml up --build -d
+docker compose -f deploy/docker/compose.cluster.yml ps
+OES_MANAGEMENT_TOKEN=local-development-management-token-change-me \
+  docker compose -f deploy/docker/compose.cluster.yml exec control oes cluster status
+```
+
+The Compose network uses plaintext internal traffic strictly for local development. Configure the cluster TLS fields, preferably mutual TLS, in every real cluster deployment.
 
 The runtime image is non-root, supports a read-only root filesystem, declares 7600/7601/7603, publishes only ports selected by the operator, uses the management health endpoint, and performs SIGTERM-aware graceful shutdown across HTTP, Raft, RPC, and background workers.
 

@@ -462,19 +462,35 @@ fn admin_request(builder: reqwest::RequestBuilder) -> Result<reqwest::RequestBui
 }
 
 async fn status(endpoint: &str) -> Result<()> {
-    let response = client()?
-        .get(format!("{}/ready", endpoint.trim_end_matches('/')))
+    let endpoint = endpoint.trim_end_matches('/');
+    let ready_response = client()?
+        .get(format!("{endpoint}/ready"))
         .send()
         .await
         .with_context(|| format!("connect to {endpoint}"))?;
-    if !response.status().is_success() {
-        bail!("server is not ready (HTTP {})", response.status());
+    if !ready_response.status().is_success() {
+        bail!("server is not ready (HTTP {})", ready_response.status());
     }
-    let body: StatusResponse = response.json().await.context("decode readiness response")?;
-    if body.status != "ready" {
+    let ready: StatusResponse = ready_response
+        .json()
+        .await
+        .context("decode readiness response")?;
+    if ready.status != "ready" {
         bail!("server returned unexpected readiness status");
     }
-    println!("ready");
+    let info: serde_json::Value = client()?
+        .get(format!("{endpoint}/api/v1/system/info"))
+        .send()
+        .await
+        .with_context(|| format!("connect to {endpoint}"))?
+        .json()
+        .await
+        .context("decode system info response")?;
+    println!("Mode               {}", display_json_scalar(&info["mode"]));
+    println!("Management API     {endpoint}");
+    if let Some(cluster_id) = info.get("cluster_id") {
+        println!("Cluster ID         {}", display_json_scalar(cluster_id));
+    }
     Ok(())
 }
 

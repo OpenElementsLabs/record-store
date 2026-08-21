@@ -13,6 +13,7 @@ http.workspace = true
 oes-auth = { path = "../oes-auth" }
 oes-audit = { path = "../oes-audit" }
 oes-cluster = { path = "../oes-cluster" }
+oes-config = { path = "../oes-config" }
 oes-consensus = { path = "../oes-consensus" }
 oes-core = { path = "../oes-core" }
 oes-events = { path = "../oes-events" }

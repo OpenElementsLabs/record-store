@@ -279,6 +279,7 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         owner,
         env!("CARGO_PKG_VERSION"),
     )
+    .with_mode(config.server.mode)
     .with_events(Arc::clone(&event_dependency));
     if let Some(dependencies) = &cluster_dependencies {
         management_state = management_state.with_cluster(ClusterManagement::new(
@@ -351,8 +352,12 @@ where
             interface: "management",
             source,
         })?;
+    info!(mode = %config.server.mode, "OES starting");
     info!(address = %config.server.s3_bind, "S3 API listening");
     info!(address = %config.server.api_bind, "management API listening");
+    if !config.server.mode.clustered() {
+        info!("OES started in standalone mode; internal cluster RPC is not listening");
+    }
     runtime.serve(s3_listener, api_listener, shutdown).await
 }
 

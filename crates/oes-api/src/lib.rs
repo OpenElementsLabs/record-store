@@ -21,10 +21,11 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use oes_audit::{AuditEvent, AuditQuery, AuditRepository, AuditResult};
 use oes_auth::{CredentialManager, Policy, PolicyStatement, ServiceAccountInfo};
 use oes_cluster::ClusterOperationKind;
+use oes_config::DeploymentMode;
 use oes_consensus::MetadataConsensus;
 use oes_core::{
-    Bucket, BucketName, BucketQuota, ExpirationDays, LifecycleRule, LifecycleRuleId, NodeId,
-    ObjectKey, ObjectMetadata, OrganizationId, ServiceAccountId, StorageUsage, VersionId,
+    Bucket, BucketName, BucketQuota, ClusterId, ExpirationDays, LifecycleRule, LifecycleRuleId,
+    NodeId, ObjectKey, ObjectMetadata, OrganizationId, ServiceAccountId, StorageUsage, VersionId,
     VersioningState, WebhookId,
 };
 use oes_events::{
@@ -59,6 +60,7 @@ pub struct AppState {
     audit: Arc<dyn AuditRepository>,
     owner: OrganizationId,
     version: &'static str,
+    mode: DeploymentMode,
     management_auth: ManagementAuth,
     events: Option<Arc<dyn EventRepository>>,
     cluster: Option<ClusterManagement>,
@@ -116,10 +118,18 @@ impl AppState {
             audit,
             owner,
             version,
+            mode: DeploymentMode::Standalone,
             management_auth,
             events: None,
             cluster: None,
         }
+    }
+
+    /// Records how this process participates in a deployment.
+    #[must_use]
+    pub const fn with_mode(mut self, mode: DeploymentMode) -> Self {
+        self.mode = mode;
+        self
     }
 
     /// Replaces legacy root Basic authentication with dedicated management tokens.
@@ -530,11 +540,17 @@ async fn system_info(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
 ) -> Result<Json<SystemInfoResponse>, ApiError> {
-    ensure_ready(&state, request_id).await?;
+    ensure_ready(&state, request_id.clone()).await?;
+    let cluster_id = match &state.cluster {
+        Some(_) => Some(collect_cluster_status(&state, request_id).await?.cluster_id),
+        None => None,
+    };
     Ok(Json(SystemInfoResponse {
         name: "oes",
         version: state.version,
         status: "ready",
+        mode: state.mode,
+        cluster_id,
     }))
 }
 
@@ -2016,6 +2032,9 @@ struct SystemInfoResponse {
     name: &'static str,
     version: &'static str,
     status: &'static str,
+    mode: DeploymentMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_id: Option<ClusterId>,
 }
 
 #[derive(Debug, Serialize)]

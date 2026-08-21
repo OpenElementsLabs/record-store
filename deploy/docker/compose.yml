@@ -1,0 +1,32 @@
+services:
+  oes:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    ports:
+      - "7600:7600"
+      - "7601:7601"
+    environment:
+      OES_ROOT_ACCESS_KEY: "${OES_ROOT_ACCESS_KEY:-local-admin}"
+      OES_ROOT_SECRET_KEY: "${OES_ROOT_SECRET_KEY:-local-development-secret-change-me}"
+      OES_CREDENTIAL_MASTER_KEY: "${OES_CREDENTIAL_MASTER_KEY:-local-development-master-key-change-me}"
+      OES_MANAGEMENT_SYSTEM_TOKEN: "${OES_MANAGEMENT_SYSTEM_TOKEN:-local-development-management-token-change-me}"
+      OES_STORAGE_ENCRYPTION_ENABLED: "${OES_STORAGE_ENCRYPTION_ENABLED:-true}"
+      OES_LOG_JSON: "true"
+    volumes:
+      - oes-data:/var/lib/oes
+    healthcheck:
+      test: ["CMD", "oes", "status", "--endpoint", "http://127.0.0.1:7601"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  oes-data:

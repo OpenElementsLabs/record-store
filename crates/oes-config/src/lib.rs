@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const fn default_true() -> bool {
@@ -463,7 +463,7 @@ impl Config {
 }
 
 /// How this process participates in a deployment.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentMode {
     /// One process owning its own data, with no cluster machinery.
