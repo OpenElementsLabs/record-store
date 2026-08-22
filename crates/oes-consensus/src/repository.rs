@@ -323,6 +323,17 @@ impl MetadataRepository for ReplicatedMetadataRepository {
             .map(|_| ())
     }
 
+    async fn bucket_usage(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<oes_core::BucketId, oes_metadata::BucketUsageSummary>,
+        MetadataError,
+    > {
+        // Accounting counters tolerate a locally applied view: they inform
+        // operators, they never decide durability or visibility.
+        self.local.bucket_usage().await
+    }
+
     async fn storage_usage(&self) -> Result<StorageUsage, MetadataError> {
         // Usage counters tolerate a locally applied view: they are monitoring
         // values, never a durability or visibility decision.

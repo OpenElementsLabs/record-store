@@ -371,3 +371,327 @@ async fn a_token_joined_node_enters_the_consensus_group() {
         .expect("first server task")
         .expect("first node clean shutdown");
 }
+
+/// The console-facing surface: session, capabilities, bucket accounting, and the
+/// object browser including streaming transfer in both directions.
+#[tokio::test]
+async fn management_api_serves_the_console_surface() {
+    let directory = tempdir().expect("temporary directory");
+    let mut config = Config::default();
+    config.storage.data_directory = directory.path().join("data");
+    config.server.shutdown_grace_period_seconds = 2;
+    config.auth.root_access_key = Some("test-access".into());
+    config.auth.root_secret_key = Some(SecretValue::new("test-secret-at-least-sixteen"));
+    config.auth.credential_master_key = Some(SecretValue::new(
+        "test-credential-master-key-at-least-32-bytes",
+    ));
+    config.auth.management_system_token = Some(SecretValue::new(
+        "test-system-management-token-32-bytes-long",
+    ));
+    config.auth.management_auditor_token = Some(SecretValue::new(
+        "test-auditor-management-token-32-bytes-long",
+    ));
+
+    let runtime = oes_server::initialize(&config)
+        .await
+        .expect("initialize server");
+    let api_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let address = api_listener.local_addr().expect("listener address");
+    let s3_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind S3 listener");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(runtime.serve(s3_listener, api_listener, async move {
+        let _ = shutdown_rx.await;
+    }));
+
+    let client = reqwest::Client::new();
+    let admin = "test-system-management-token-32-bytes-long";
+    let auditor = "test-auditor-management-token-32-bytes-long";
+    let base = format!("http://{address}");
+
+    // Deployment mode and capabilities are discovered from the backend.
+    let info = client
+        .get(format!("{base}/api/v1/system/info"))
+        .send()
+        .await
+        .expect("system info")
+        .json::<serde_json::Value>()
+        .await
+        .expect("system info JSON");
+    assert_eq!(info["mode"], "standalone");
+    assert_eq!(info["capabilities"]["cluster"], false);
+    assert_eq!(info["capabilities"]["versioning"], true);
+    assert_eq!(info["capabilities"]["object_browser"], true);
+    assert_eq!(info["capabilities"]["erasure_coding"], false);
+
+    // A session tells a client which role it holds and what to offer.
+    let unauthenticated = client
+        .get(format!("{base}/api/v1/auth/session"))
+        .send()
+        .await
+        .expect("anonymous session request");
+    assert_eq!(unauthenticated.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let session = client
+        .get(format!("{base}/api/v1/auth/session"))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("session request")
+        .json::<serde_json::Value>()
+        .await
+        .expect("session JSON");
+    assert_eq!(session["role"], "system_administrator");
+    assert_eq!(session["permissions"]["manage_service_accounts"], true);
+
+    let auditor_session = client
+        .get(format!("{base}/api/v1/auth/session"))
+        .bearer_auth(auditor)
+        .send()
+        .await
+        .expect("auditor session")
+        .json::<serde_json::Value>()
+        .await
+        .expect("auditor session JSON");
+    assert_eq!(auditor_session["role"], "auditor");
+    assert_eq!(auditor_session["permissions"]["manage_objects"], false);
+    assert_eq!(auditor_session["permissions"]["read_audit"], true);
+
+    client
+        .post(format!("{base}/api/v1/buckets"))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({"name": "console-bucket"}))
+        .send()
+        .await
+        .expect("create bucket");
+
+    // Streaming upload through the management API.
+    let payload = b"console upload payload".to_vec();
+    let uploaded = client
+        .put(format!(
+            "{base}/api/v1/buckets/console-bucket/object/reports/2026/q1.txt"
+        ))
+        .bearer_auth(admin)
+        .header("content-type", "text/plain")
+        .body(payload.clone())
+        .send()
+        .await
+        .expect("upload object");
+    assert_eq!(uploaded.status(), reqwest::StatusCode::CREATED);
+    let uploaded = uploaded
+        .json::<serde_json::Value>()
+        .await
+        .expect("upload JSON");
+    assert_eq!(uploaded["key"], "reports/2026/q1.txt");
+    assert_eq!(uploaded["size"], payload.len());
+    // Internal identifiers must never reach a management client.
+    assert!(uploaded.get("id").is_none());
+    assert!(uploaded.get("bucket_id").is_none());
+    assert!(uploaded.get("payload_format").is_none());
+
+    // Bucket accounting arrives with the bucket list, not per bucket.
+    let buckets = client
+        .get(format!("{base}/api/v1/buckets"))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("bucket list")
+        .json::<serde_json::Value>()
+        .await
+        .expect("bucket list JSON");
+    let bucket = buckets
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|entry| entry["name"] == "console-bucket")
+        .expect("bucket present");
+    assert_eq!(bucket["object_count"], 1);
+    assert_eq!(bucket["logical_bytes"], payload.len());
+
+    // Prefix navigation groups keys without inventing directories.
+    let listing = client
+        .get(format!(
+            "{base}/api/v1/buckets/console-bucket/objects?delimiter=/&limit=10"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("object listing")
+        .json::<serde_json::Value>()
+        .await
+        .expect("listing JSON");
+    assert_eq!(listing["prefixes"][0], "reports/");
+    assert_eq!(listing["objects"].as_array().expect("array").len(), 0);
+    assert_eq!(listing["is_truncated"], false);
+
+    let nested = client
+        .get(format!(
+            "{base}/api/v1/buckets/console-bucket/objects?prefix=reports/2026/&delimiter=/&limit=10"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("nested listing")
+        .json::<serde_json::Value>()
+        .await
+        .expect("nested JSON");
+    assert_eq!(nested["objects"][0]["key"], "reports/2026/q1.txt");
+
+    let detail = client
+        .get(format!(
+            "{base}/api/v1/buckets/console-bucket/object/reports/2026/q1.txt"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("object detail")
+        .json::<serde_json::Value>()
+        .await
+        .expect("detail JSON");
+    assert_eq!(detail["content_type"], "text/plain");
+    assert!(
+        detail["checksum"]
+            .as_str()
+            .expect("checksum")
+            .starts_with("sha256:")
+    );
+
+    // Streaming download returns the exact bytes with a safe disposition.
+    let download = client
+        .get(format!(
+            "{base}/api/v1/buckets/console-bucket/object-content/reports/2026/q1.txt"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("download object");
+    assert_eq!(download.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        download
+            .headers()
+            .get("content-disposition")
+            .expect("disposition")
+            .to_str()
+            .expect("ascii"),
+        "attachment; filename=\"q1.txt\""
+    );
+    assert_eq!(download.bytes().await.expect("body").as_ref(), payload);
+
+    // Storage events are a separate feed from the audit trail.
+    let events = client
+        .get(format!("{base}/api/v1/events?limit=10"))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("event list")
+        .json::<serde_json::Value>()
+        .await
+        .expect("event JSON");
+    let names: Vec<&str> = events["events"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|event| event["type"].as_str())
+        .collect();
+    assert!(names.contains(&"object.created"), "events: {names:?}");
+    assert!(names.contains(&"bucket.created"), "events: {names:?}");
+
+    // Version history is exposed once versioning is enabled.
+    let versioning = client
+        .put(format!("{base}/api/v1/buckets/console-bucket/versioning"))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({"versioning": "enabled"}))
+        .send()
+        .await
+        .expect("enable versioning");
+    assert_eq!(versioning.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        versioning
+            .json::<serde_json::Value>()
+            .await
+            .expect("versioning JSON")["versioning"],
+        "enabled"
+    );
+    client
+        .put(format!(
+            "{base}/api/v1/buckets/console-bucket/object/reports/2026/q1.txt"
+        ))
+        .bearer_auth(admin)
+        .body(b"second revision".to_vec())
+        .send()
+        .await
+        .expect("second upload");
+    let versions = client
+        .get(format!(
+            "{base}/api/v1/buckets/console-bucket/object-versions?prefix=reports/&limit=10"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("version listing")
+        .json::<serde_json::Value>()
+        .await
+        .expect("version JSON");
+    let entries = versions["versions"].as_array().expect("array");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries.iter().filter(|v| v["is_latest"] == true).count(), 1);
+
+    // An auditor may read the audit trail but must not browse object bytes.
+    let auditor_objects = client
+        .get(format!(
+            "{base}/api/v1/buckets/console-bucket/objects?limit=10"
+        ))
+        .bearer_auth(auditor)
+        .send()
+        .await
+        .expect("auditor object listing");
+    assert_eq!(auditor_objects.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // Deleting a missing object is reported as a not-found, not a silent success.
+    let missing = client
+        .delete(format!(
+            "{base}/api/v1/buckets/console-bucket/object/absent.txt"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("delete missing object");
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+    let body = missing
+        .json::<serde_json::Value>()
+        .await
+        .expect("error JSON");
+    assert_eq!(body["error"]["code"], "OBJECT_NOT_FOUND");
+    assert!(body["error"]["request_id"].is_string());
+
+    let deleted = client
+        .delete(format!(
+            "{base}/api/v1/buckets/console-bucket/object/reports/2026/q1.txt"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("delete object");
+    assert_eq!(deleted.status(), reqwest::StatusCode::NO_CONTENT);
+
+    // A malformed cursor must be refused rather than crashing the listing.
+    let bad_cursor = client
+        .get(format!(
+            "{base}/api/v1/buckets/console-bucket/objects?continuation_token=not-base64!!"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("malformed cursor");
+    assert_eq!(bad_cursor.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    shutdown_tx.send(()).expect("request shutdown");
+    timeout(Duration::from_secs(5), server)
+        .await
+        .expect("bounded shutdown")
+        .expect("server task")
+        .expect("clean shutdown");
+}

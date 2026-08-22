@@ -28,7 +28,32 @@ const SUBSCRIPTIONS: TableDefinition<&[u8], &[u8]> =
 const PENDING: TableDefinition<&[u8], &[u8]> = TableDefinition::new("webhook_pending_v1");
 const DELIVERY_LOGS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("webhook_delivery_logs_v1");
+/// Time-ordered index over stored events.
+///
+/// Event identifiers are random, so the primary table cannot answer "the most
+/// recent events" without a full scan. This index makes that a bounded range
+/// read instead.
+const EVENTS_BY_TIME: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("storage_events_by_time_v1");
 const MAX_ERROR_SUMMARY: usize = 512;
+
+/// Builds an index key that sorts by time and then by identifier.
+///
+/// The sign bit is flipped so byte ordering matches numeric ordering for
+/// timestamps on both sides of the epoch.
+fn event_time_key(time: DateTime<Utc>, id: EventId) -> Vec<u8> {
+    let mut key = Vec::with_capacity(24);
+    key.extend_from_slice(&((time.timestamp_millis() as u64) ^ (1_u64 << 63)).to_be_bytes());
+    key.extend_from_slice(id.as_uuid().as_bytes());
+    key
+}
+
+/// Builds the exclusive upper bound for a time filter.
+fn upper_time_key(time: DateTime<Utc>) -> Vec<u8> {
+    let mut key = event_time_key(time, EventId::from_uuid(Uuid::max()));
+    key.push(0);
+    key
+}
 
 /// Stable storage-event names intended for integrations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,9 +227,42 @@ impl Default for WebhookConfig {
 }
 
 /// Storage-event interface used by request services and future exporters.
+/// Bounded storage-event query, newest first.
+#[derive(Debug, Clone, Default)]
+pub struct EventQuery {
+    /// Inclusive lower time bound.
+    pub since: Option<DateTime<Utc>>,
+    /// Inclusive upper time bound.
+    pub until: Option<DateTime<Utc>>,
+    /// Exact bucket name filter.
+    pub bucket: Option<String>,
+    /// Exact event-type filter.
+    pub event_type: Option<StorageEventType>,
+    /// Object-key prefix filter.
+    pub object_prefix: Option<String>,
+    /// Cursor from a previous page.
+    pub after: Option<(DateTime<Utc>, EventId)>,
+    /// Maximum events returned.
+    pub limit: usize,
+}
+
+/// A bounded page of storage events.
+#[derive(Debug, Clone, Default)]
+pub struct EventPage {
+    /// Events ordered newest first.
+    pub events: Vec<StorageEvent>,
+    /// Cursor for the next page, when more events match.
+    pub next: Option<(DateTime<Utc>, EventId)>,
+}
+
 #[async_trait]
 pub trait EventRepository: Send + Sync {
     async fn publish(&self, event: &StorageEvent) -> Result<(), EventError>;
+    /// Returns recent storage events, newest first.
+    ///
+    /// Storage events describe what happened to data. They are deliberately kept
+    /// separate from the audit trail, which describes who asked for it.
+    async fn list_events(&self, query: EventQuery) -> Result<EventPage, EventError>;
     async fn create_webhook(
         &self,
         request: CreateWebhookRequest,
@@ -265,6 +323,9 @@ impl RedbEventRepository {
             }
             {
                 write.open_table(DELIVERY_LOGS).map_err(database_error)?;
+            }
+            {
+                write.open_table(EVENTS_BY_TIME).map_err(database_error)?;
             }
             write.commit().map_err(database_error)
         })
@@ -553,6 +614,15 @@ impl EventRepository for RedbEventRepository {
                     .map_err(database_error)?;
             }
             {
+                let mut index = write.open_table(EVENTS_BY_TIME).map_err(database_error)?;
+                index
+                    .insert(
+                        event_time_key(event.time, event.id).as_slice(),
+                        event.id.as_uuid().as_bytes().as_slice(),
+                    )
+                    .map_err(database_error)?;
+            }
+            {
                 let mut queue = write.open_table(PENDING).map_err(database_error)?;
                 for webhook_id in matching {
                     let pending = PendingDelivery {
@@ -571,6 +641,62 @@ impl EventRepository for RedbEventRepository {
                 }
             }
             write.commit().map_err(database_error)
+        })
+        .await?
+    }
+
+    async fn list_events(&self, query: EventQuery) -> Result<EventPage, EventError> {
+        let limit = query.limit.clamp(1, 1_000);
+        let db = Arc::clone(&self.database);
+        tokio::task::spawn_blocking(move || {
+            let read = db.begin_read().map_err(database_error)?;
+            let index = read.open_table(EVENTS_BY_TIME).map_err(database_error)?;
+            let events = read.open_table(EVENTS).map_err(database_error)?;
+            // The index is scanned in reverse so the newest events come first
+            // without loading the whole history.
+            let upper = match query.after {
+                Some((time, id)) => event_time_key(time, id),
+                None => query
+                    .until
+                    .map_or_else(|| vec![u8::MAX; 24], upper_time_key),
+            };
+            let lower = query.since.map_or_else(Vec::new, |since| {
+                event_time_key(since, EventId::from_uuid(Uuid::nil()))
+            });
+            let mut page = EventPage::default();
+            for item in index
+                .range(lower.as_slice()..upper.as_slice())
+                .map_err(database_error)?
+                .rev()
+            {
+                let (_, value) = item.map_err(database_error)?;
+                let Some(stored) = events.get(value.value()).map_err(database_error)? else {
+                    continue;
+                };
+                let event: StorageEvent = serde_json::from_slice(stored.value())?;
+                if query
+                    .bucket
+                    .as_ref()
+                    .is_some_and(|bucket| bucket != &event.bucket)
+                    || query
+                        .event_type
+                        .is_some_and(|kind| kind != event.event_type)
+                    || query.object_prefix.as_ref().is_some_and(|prefix| {
+                        event
+                            .object
+                            .as_ref()
+                            .is_none_or(|key| !key.starts_with(prefix))
+                    })
+                {
+                    continue;
+                }
+                if page.events.len() == limit {
+                    page.next = Some((event.time, event.id));
+                    break;
+                }
+                page.events.push(event);
+            }
+            Ok(page)
         })
         .await?
     }
@@ -904,6 +1030,101 @@ fn is_public_ip(ip: IpAddr) -> bool {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn events_are_listed_newest_first_with_filters_and_a_cursor() {
+        let directory = tempdir().expect("temporary directory");
+        let repository = RedbEventRepository::open(
+            directory.path().join("events.redb"),
+            None,
+            WebhookConfig::default(),
+        )
+        .await
+        .expect("open");
+
+        let base = Utc::now() - chrono::Duration::seconds(600);
+        for index in 0..5_i64 {
+            let mut event = StorageEvent::new(StorageEventType::ObjectCreated, "uploads").object(
+                format!("images/photo-{index}.jpg"),
+                None,
+                Some(index as u64),
+            );
+            event.time = base + chrono::Duration::seconds(index * 10);
+            repository.publish(&event).await.expect("publish");
+        }
+        let mut other = StorageEvent::new(StorageEventType::BucketCreated, "reports");
+        other.time = base + chrono::Duration::seconds(5);
+        repository.publish(&other).await.expect("publish");
+
+        let page = repository
+            .list_events(EventQuery {
+                limit: 100,
+                ..EventQuery::default()
+            })
+            .await
+            .expect("list events");
+        assert_eq!(page.events.len(), 6);
+        assert!(
+            page.events
+                .windows(2)
+                .all(|pair| pair[0].time >= pair[1].time),
+            "events must be ordered newest first"
+        );
+        assert!(page.next.is_none());
+
+        let filtered = repository
+            .list_events(EventQuery {
+                bucket: Some("uploads".into()),
+                event_type: Some(StorageEventType::ObjectCreated),
+                object_prefix: Some("images/photo-1".into()),
+                limit: 100,
+                ..EventQuery::default()
+            })
+            .await
+            .expect("list events");
+        assert_eq!(filtered.events.len(), 1);
+        assert_eq!(
+            filtered.events[0].object.as_deref(),
+            Some("images/photo-1.jpg")
+        );
+
+        // Paging with the returned cursor must continue without repeating.
+        let first = repository
+            .list_events(EventQuery {
+                limit: 2,
+                ..EventQuery::default()
+            })
+            .await
+            .expect("first page");
+        assert_eq!(first.events.len(), 2);
+        let cursor = first.next.expect("a cursor when more events remain");
+        let second = repository
+            .list_events(EventQuery {
+                after: Some(cursor),
+                limit: 2,
+                ..EventQuery::default()
+            })
+            .await
+            .expect("second page");
+        assert_eq!(second.events.len(), 2);
+        let seen: std::collections::BTreeSet<_> = first
+            .events
+            .iter()
+            .chain(second.events.iter())
+            .map(|event| event.id)
+            .collect();
+        assert_eq!(seen.len(), 4, "pages must not overlap");
+
+        let bounded = repository
+            .list_events(EventQuery {
+                since: Some(base + chrono::Duration::seconds(30)),
+                limit: 100,
+                ..EventQuery::default()
+            })
+            .await
+            .expect("bounded");
+        assert_eq!(bounded.events.len(), 2);
+    }
 
     #[tokio::test]
     async fn events_subscriptions_and_delivery_queue_survive_restart() {

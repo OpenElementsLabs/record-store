@@ -614,8 +614,9 @@ async fn service_account(command: ServiceAccountCommand, json: bool) -> Result<(
 async fn bucket_versioning(command: BucketVersioningCommand, json: bool) -> Result<()> {
     let (name, endpoint, state) = match command {
         BucketVersioningCommand::Get { name, endpoint } => (name, endpoint, None),
-        BucketVersioningCommand::Enable { name, endpoint } => (name, endpoint, Some("Enabled")),
-        BucketVersioningCommand::Suspend { name, endpoint } => (name, endpoint, Some("Suspended")),
+        // The wire form is the serialized `VersioningState`, which is snake case.
+        BucketVersioningCommand::Enable { name, endpoint } => (name, endpoint, Some("enabled")),
+        BucketVersioningCommand::Suspend { name, endpoint } => (name, endpoint, Some("suspended")),
     };
     let url = api_url(&endpoint, &format!("/api/v1/buckets/{name}/versioning"));
     let request = if let Some(state) = state {

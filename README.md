@@ -254,6 +254,81 @@ Configuration file values overlay defaults, then environment variables take prec
 | `OES_LOG_JSON` | `observability.json` |
 | `OES_CONFIG_FILE` | server/CLI configuration selection |
 
+## Web console
+
+The console is an administrative interface for OES. It is a client of the
+management API on 7601 and is never required: OES stays fully operable through
+the CLI and the API alone.
+
+```text
+Applications ──────► S3 API        :7600
+Administrators ────► Web console   :7602 ──► Management API :7601
+OES internal ──────► Node RPC      :7603
+```
+
+The browser talks only to the console's own origin. The console server attaches
+the management credential and forwards the request to 7601, so the credential
+lives in an HTTP-only cookie the page cannot read, no CORS configuration is
+needed, and the browser never reaches storage, metadata, consensus, or 7603.
+
+Deployment mode is discovered from `GET /api/v1/system/info`, which reports
+`mode` and a capability set. A standalone deployment shows a storage-management
+interface with no nodes, quorum, replication, repair, or rebalancing; the same
+build exposes those screens when the backend reports cluster mode.
+
+### Develop
+
+Requires Node 24 and a running OES server.
+
+```bash
+cd console
+npm install
+OES_API_URL=http://127.0.0.1:7601 npm run dev   # http://localhost:7602
+```
+
+Sign in with a management role token, for example the value of
+`OES_MANAGEMENT_SYSTEM_TOKEN`. An auditor token signs in to a read-only console.
+
+### Validate
+
+```bash
+cd console
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+```
+
+End-to-end tests drive a real standalone OES server rather than a mock, so
+console and API drift is caught rather than papered over:
+
+```bash
+cd console
+npm run test:e2e:install   # once, downloads Chromium
+npm run test:e2e
+```
+
+### Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `OES_API_URL` | management API base URL, default `http://127.0.0.1:7601` |
+| `OES_CONSOLE_SECURE_COOKIES` | force the session cookie's `Secure` flag; defaults to on in production |
+| `PORT` | console listener, default `7602` |
+
+`OES_API_URL` is read on the server at runtime, so one image works in any
+deployment and no localhost assumption is compiled into the bundle.
+
+Two notes on current behaviour, stated plainly rather than implied:
+
+- Uploads are sent as a single streaming request. The browser streams from disk,
+  so object size is not bounded by page memory, but a failed upload restarts
+  rather than resuming. The upload layer is structured around one seam so a
+  multipart strategy with parallel, resumable parts can be added behind it.
+- `@tanstack/react-table` is pinned to the 8.x line. Version 9 is current, but
+  its compatibility path for this API is marked deprecated and its replacement
+  API is not yet documented; 8.x is the deliberate choice until that settles.
+
 ## Docker
 
 `OES_MODE` is not set above because standalone is the default; no cluster configuration is required to run one node.
@@ -286,6 +361,13 @@ OES_MANAGEMENT_TOKEN=local-development-management-token-change-me \
   docker compose -f deploy/docker/compose.cluster.yml exec control oes cluster status
 ```
 
+A third Compose file (`deploy/docker/compose.console.yml`) runs a standalone node together with the web console. It publishes S3 on 7600, management on 7601, and the console on 7602:
+
+```bash
+docker compose -f deploy/docker/compose.console.yml up --build -d
+# open http://localhost:7602 and sign in with OES_MANAGEMENT_SYSTEM_TOKEN
+```
+
 The Compose network uses plaintext internal traffic strictly for local development. Configure the cluster TLS fields, preferably mutual TLS, in every real cluster deployment.
 
 The runtime image is non-root, supports a read-only root filesystem, declares 7600/7601/7603, publishes only ports selected by the operator, uses the management health endpoint, and performs SIGTERM-aware graceful shutdown across HTTP, Raft, RPC, and background workers.
@@ -312,5 +394,6 @@ crates/oes-observability structured tracing initialization
 crates/oes-protocol   versioned Protobuf internal contracts
 crates/oes-rpc        authenticated Tonic consensus and replica transport
 crates/oes-replication distributed reads/writes, repair, rebalance, and operations
+console/              web console: Next.js, React, Tailwind, TanStack
 deploy/docker/        container and Compose definitions
 ```

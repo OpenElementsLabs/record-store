@@ -142,6 +142,36 @@ struct BucketUsage {
     multipart_bytes: u64,
 }
 
+/// Per-bucket accounting maintained transactionally with every commit.
+///
+/// These counters exist so that listing buckets can report size and object
+/// counts in one request instead of one request per bucket.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketUsageSummary {
+    /// Currently visible objects.
+    pub object_count: u64,
+    /// Bytes referenced by currently visible objects.
+    pub logical_bytes: u64,
+    /// Immutable versions, including current versions.
+    pub version_count: u64,
+    /// Bytes referenced by every immutable version.
+    pub version_bytes: u64,
+    /// Bytes held by durable multipart parts.
+    pub multipart_bytes: u64,
+}
+
+impl From<BucketUsage> for BucketUsageSummary {
+    fn from(value: BucketUsage) -> Self {
+        Self {
+            object_count: value.current_objects,
+            logical_bytes: value.logical_bytes,
+            version_count: value.versions,
+            version_bytes: value.version_bytes,
+            multipart_bytes: value.multipart_bytes,
+        }
+    }
+}
+
 /// Durable metadata boundary used by storage and application services.
 #[async_trait]
 pub trait MetadataRepository: Send + Sync {
@@ -245,6 +275,13 @@ pub trait MetadataRepository: Send + Sync {
     ) -> Result<Vec<LifecycleRule>, MetadataError>;
     async fn delete_lifecycle_rule(&self, id: LifecycleRuleId) -> Result<(), MetadataError>;
     async fn storage_usage(&self) -> Result<StorageUsage, MetadataError>;
+    /// Returns per-bucket accounting for every bucket in one pass.
+    ///
+    /// Callers that render a bucket table need this to avoid issuing one request
+    /// per bucket.
+    async fn bucket_usage(
+        &self,
+    ) -> Result<std::collections::BTreeMap<BucketId, BucketUsageSummary>, MetadataError>;
     async fn pending_cleanup(&self, limit: usize) -> Result<Vec<ObjectId>, MetadataError>;
     async fn complete_cleanup(&self, id: ObjectId) -> Result<(), MetadataError>;
     /// Returns whether any durable object version or multipart part owns a payload.
@@ -932,6 +969,41 @@ impl MetadataRepository for RedbMetadataRepository {
                 physical_bytes: read_counter(&table, PHYSICAL_BYTES)?,
                 temporary_multipart_bytes: read_counter(&table, MULTIPART_BYTES)?,
             })
+        })
+        .await?
+    }
+
+    async fn bucket_usage(
+        &self,
+    ) -> Result<std::collections::BTreeMap<BucketId, BucketUsageSummary>, MetadataError> {
+        let db = Arc::clone(&self.database);
+        tokio::task::spawn_blocking(move || {
+            let read = db
+                .begin_read()
+                .map_err(|e| backend("begin bucket usage", e))?;
+            let table = read
+                .open_table(BUCKET_USAGE)
+                .map_err(|e| backend("open bucket usage", e))?;
+            let mut out = std::collections::BTreeMap::new();
+            for entry in table
+                .iter()
+                .map_err(|e| backend("iterate bucket usage", e))?
+            {
+                let (key, value) = entry.map_err(|e| backend("read bucket usage", e))?;
+                let bytes: [u8; 16] =
+                    key.value()
+                        .try_into()
+                        .map_err(|_| MetadataError::Database {
+                            operation: "decode bucket usage key",
+                            reason: "bucket identifier is malformed".into(),
+                        })?;
+                let usage: BucketUsage = serde_json::from_slice(value.value())?;
+                out.insert(
+                    BucketId::from_uuid(uuid::Uuid::from_bytes(bytes)),
+                    BucketUsageSummary::from(usage),
+                );
+            }
+            Ok(out)
         })
         .await?
     }

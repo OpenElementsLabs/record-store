@@ -17,7 +17,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get},
 };
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use oes_audit::{AuditEvent, AuditQuery, AuditRepository, AuditResult};
 use oes_auth::{CredentialManager, Policy, PolicyStatement, ServiceAccountInfo};
 use oes_cluster::ClusterOperationKind;
@@ -197,6 +200,67 @@ impl AppState {
     }
 }
 
+/// The authenticated management identity, returned to clients after sign-in.
+#[derive(Debug, Clone, Serialize)]
+struct SessionResponse {
+    role: ManagementRole,
+    /// Coarse permissions the role grants.
+    ///
+    /// Clients use these to hide actions that would be refused. They are a
+    /// usability aid only: the API enforces every permission independently.
+    permissions: RolePermissions,
+}
+
+/// What a management role is allowed to do.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct RolePermissions {
+    manage_buckets: bool,
+    manage_objects: bool,
+    manage_service_accounts: bool,
+    manage_policies: bool,
+    manage_webhooks: bool,
+    read_audit: bool,
+    manage_cluster: bool,
+    manage_storage: bool,
+}
+
+impl RolePermissions {
+    const fn of(role: ManagementRole) -> Self {
+        match role {
+            ManagementRole::SystemAdministrator => Self {
+                manage_buckets: true,
+                manage_objects: true,
+                manage_service_accounts: true,
+                manage_policies: true,
+                manage_webhooks: true,
+                read_audit: true,
+                manage_cluster: true,
+                manage_storage: true,
+            },
+            ManagementRole::StorageAdministrator => Self {
+                manage_buckets: true,
+                manage_objects: true,
+                manage_service_accounts: false,
+                manage_policies: false,
+                manage_webhooks: false,
+                read_audit: false,
+                manage_cluster: false,
+                manage_storage: true,
+            },
+            ManagementRole::Auditor => Self {
+                manage_buckets: false,
+                manage_objects: false,
+                manage_service_accounts: false,
+                manage_policies: false,
+                manage_webhooks: false,
+                read_audit: true,
+                manage_cluster: false,
+                manage_storage: false,
+            },
+        }
+    }
+}
+
 /// Coarse management roles kept separate from S3 policy actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -318,7 +382,9 @@ impl ManagementPrincipal {
             }
             ManagementRole::Auditor => {
                 request.method() == axum::http::Method::GET
-                    && (path == "/api/v1/audit/events"
+                    && (path == "/api/v1/auth/session"
+                        || path == "/api/v1/events"
+                        || path == "/api/v1/audit/events"
                         || path == "/api/v1/storage/status"
                         || path == "/api/v1/storage/usage"
                         || path == "/api/v1/storage/inspect"
@@ -346,6 +412,7 @@ impl ManagementPrincipal {
 /// Builds public operational routes and authenticated administrative routes.
 pub fn router(state: AppState) -> Router {
     let administrative = Router::new()
+        .route("/api/v1/auth/session", get(auth_session))
         .route("/api/v1/storage/status", get(storage_status))
         .route("/api/v1/storage/usage", get(storage_usage))
         .route("/api/v1/storage/inspect", get(storage_inspect))
@@ -395,6 +462,29 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/webhook-deliveries", get(list_webhook_deliveries))
         .route("/api/v1/buckets", get(list_buckets).post(create_bucket))
         .route("/api/v1/buckets/{bucket}", delete(delete_bucket))
+        .route("/api/v1/buckets/{bucket}/objects", get(list_bucket_objects))
+        .route(
+            "/api/v1/buckets/{bucket}/object/{*key}",
+            get(get_bucket_object)
+                .delete(delete_bucket_object)
+                .put(upload_bucket_object)
+                // Object bodies are streamed, so the shared small-payload limit
+                // that protects JSON routes must not apply here.
+                .layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/v1/buckets/{bucket}/object-content/{*key}",
+            get(download_bucket_object),
+        )
+        .route(
+            "/api/v1/buckets/{bucket}/object-versions",
+            get(list_bucket_object_versions),
+        )
+        .route(
+            "/api/v1/buckets/{bucket}/object-versions/{*key}",
+            delete(delete_bucket_object_version),
+        )
+        .route("/api/v1/events", get(list_storage_events))
         .route(
             "/api/v1/buckets/{bucket}/versioning",
             get(get_bucket_versioning).put(set_bucket_versioning),
@@ -545,12 +635,14 @@ async fn system_info(
         Some(_) => Some(collect_cluster_status(&state, request_id).await?.cluster_id),
         None => None,
     };
+    let capabilities = Capabilities::detect(&state);
     Ok(Json(SystemInfoResponse {
         name: "oes",
         version: state.version,
         status: "ready",
         mode: state.mode,
         cluster_id,
+        capabilities,
     }))
 }
 
@@ -841,6 +933,379 @@ fn cluster_operation_error(error_value: OperationError, request_id: RequestId) -
     ApiError::new(status, code, error_value.to_string(), request_id)
 }
 
+/// Returns the identity behind the presented management credential.
+///
+/// A console calls this immediately after sign-in: a `401` means the credential
+/// is not usable, and a success tells it which actions to offer.
+async fn auth_session(
+    Extension(principal): Extension<ManagementPrincipal>,
+) -> Json<SessionResponse> {
+    Json(SessionResponse {
+        role: principal.role,
+        permissions: RolePermissions::of(principal.role),
+    })
+}
+
+/// Lists objects under a prefix, one bounded page at a time.
+///
+/// Listing is always paginated: a bucket may hold millions of objects, so no
+/// caller is ever handed the whole keyspace.
+async fn list_bucket_objects(
+    State(state): State<AppState>,
+    Path(bucket): Path<String>,
+    Query(query): Query<ObjectListQuery>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<ObjectListResponse>, ApiError> {
+    let name = parse_bucket_name(&bucket, &request_id)?;
+    if query.limit == 0 || query.limit > 1_000 {
+        return Err(ApiError::bad_request(
+            request_id,
+            "INVALID_LIMIT",
+            "limit must be between 1 and 1000",
+        ));
+    }
+    let start_after = match &query.continuation_token {
+        Some(token) => Some(decode_cursor(token, &request_id)?),
+        None => None,
+    };
+    let result = state
+        .services
+        .objects
+        .list(ServiceListRequest {
+            bucket: name,
+            prefix: query.prefix,
+            delimiter: query.delimiter,
+            maximum_keys: query.limit,
+            start_after,
+        })
+        .await
+        .map_err(|error| service_to_api_error(error, request_id))?;
+    Ok(Json(ObjectListResponse {
+        objects: result
+            .objects
+            .into_iter()
+            .map(ObjectSummary::from)
+            .collect(),
+        prefixes: result.common_prefixes.into_iter().collect(),
+        is_truncated: result.is_truncated,
+        next_continuation_token: result.next_marker.as_deref().map(encode_cursor),
+    }))
+}
+
+/// Returns one object's metadata without transferring its bytes.
+async fn get_bucket_object(
+    State(state): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<ObjectSummary>, ApiError> {
+    let name = parse_bucket_name(&bucket, &request_id)?;
+    let key = parse_object_key(&key, &request_id)?;
+    state
+        .services
+        .objects
+        .head(&name, key)
+        .await
+        .map(|metadata| Json(ObjectSummary::from(metadata)))
+        .map_err(|error| service_to_api_error(error, request_id))
+}
+
+/// Streams an object's bytes to the caller.
+///
+/// The payload is streamed rather than buffered, so object size is bounded by
+/// storage rather than by this process's memory.
+async fn download_bucket_object(
+    State(state): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Response, ApiError> {
+    let name = parse_bucket_name(&bucket, &request_id)?;
+    let key = parse_object_key(&key, &request_id)?;
+    let result = state
+        .services
+        .objects
+        .get(&name, key.clone(), None)
+        .await
+        .map_err(|error| service_to_api_error(error, request_id.clone()))?;
+    let content_type = result
+        .metadata
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_owned());
+    let filename = key
+        .as_str()
+        .rsplit('/')
+        .next()
+        .unwrap_or("download")
+        .to_owned();
+    let mut response = Response::new(axum::body::Body::from_stream(result.body));
+    let headers = response.headers_mut();
+    insert_header(headers, header::CONTENT_TYPE, &content_type);
+    insert_header(
+        headers,
+        header::CONTENT_LENGTH,
+        &result.metadata.size.to_string(),
+    );
+    insert_header(
+        headers,
+        header::ETAG,
+        &format!("\"{}\"", result.metadata.etag.as_str()),
+    );
+    // The filename is quoted and escaped so a key containing quotes cannot
+    // break out of the header value.
+    insert_header(
+        headers,
+        header::CONTENT_DISPOSITION,
+        &format!(
+            "attachment; filename=\"{}\"",
+            filename.replace(['\\', '"'], "_")
+        ),
+    );
+    Ok(response)
+}
+
+/// Streams an uploaded object into storage.
+async fn upload_bucket_object(
+    State(state): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+    request: Request,
+) -> Result<(StatusCode, Json<ObjectSummary>), ApiError> {
+    let name = parse_bucket_name(&bucket, &request_id)?;
+    let object_key = parse_object_key(&key, &request_id)?;
+    let content_type = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let body = request.into_body().into_data_stream();
+    let stream = futures_util::TryStreamExt::map_err(body, std::io::Error::other);
+    let result = state
+        .services
+        .objects
+        .put(oes_service::ServicePutRequest {
+            bucket: name,
+            key: object_key,
+            content_type,
+            custom_metadata: std::collections::BTreeMap::new(),
+            expected_checksum: None,
+            body: oes_storage::upload_stream(stream),
+        })
+        .await
+        .map_err(|error| service_to_api_error(error, request_id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(ObjectSummary::from(result.metadata)),
+    ))
+}
+
+/// Deletes the visible version of an object.
+async fn delete_bucket_object(
+    State(state): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<StatusCode, ApiError> {
+    let name = parse_bucket_name(&bucket, &request_id)?;
+    let key = parse_object_key(&key, &request_id)?;
+    let removed = state
+        .services
+        .objects
+        .delete(&name, key)
+        .await
+        .map_err(|error| service_to_api_error(error, request_id.clone()))?;
+    if removed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "OBJECT_NOT_FOUND",
+            "Object was not found",
+            request_id,
+        ))
+    }
+}
+
+/// Lists the version history under a prefix.
+async fn list_bucket_object_versions(
+    State(state): State<AppState>,
+    Path(bucket): Path<String>,
+    Query(query): Query<ObjectVersionListQuery>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<ObjectVersionListResponse>, ApiError> {
+    let name = parse_bucket_name(&bucket, &request_id)?;
+    if query.limit == 0 || query.limit > 1_000 {
+        return Err(ApiError::bad_request(
+            request_id,
+            "INVALID_LIMIT",
+            "limit must be between 1 and 1000",
+        ));
+    }
+    if query.key_marker.is_some() != query.version_id_marker.is_some() {
+        return Err(ApiError::bad_request(
+            request_id,
+            "INVALID_VERSION_CURSOR",
+            "Both version cursor fields are required",
+        ));
+    }
+    let result = state
+        .services
+        .objects
+        .list_versions(oes_service::ServiceListVersionsRequest {
+            bucket: name,
+            prefix: query.prefix,
+            key_marker: query.key_marker,
+            version_id_marker: query.version_id_marker,
+            maximum_keys: query.limit,
+        })
+        .await
+        .map_err(|error| service_to_api_error(error, request_id))?;
+    Ok(Json(ObjectVersionListResponse {
+        versions: result
+            .versions
+            .into_iter()
+            .map(|listed| {
+                let is_latest = listed.is_latest;
+                match listed.record {
+                    oes_core::ObjectVersionRecord::Object { metadata, is_null } => {
+                        ObjectVersionEntry {
+                            key: metadata.key.to_string(),
+                            version_id: metadata.version_id,
+                            is_latest,
+                            is_delete_marker: false,
+                            is_null,
+                            created_at: metadata.created_at,
+                            size: Some(metadata.size),
+                            etag: Some(metadata.etag.as_str().to_owned()),
+                            checksum: Some(metadata.checksum.to_string()),
+                        }
+                    }
+                    oes_core::ObjectVersionRecord::DeleteMarker { marker, is_null } => {
+                        ObjectVersionEntry {
+                            key: marker.key.to_string(),
+                            version_id: marker.version_id,
+                            is_latest,
+                            is_delete_marker: true,
+                            is_null,
+                            created_at: marker.created_at,
+                            size: None,
+                            etag: None,
+                            checksum: None,
+                        }
+                    }
+                }
+            })
+            .collect(),
+        next_key_marker: result.next_key_marker,
+        next_version_id_marker: result.next_version_id_marker,
+    }))
+}
+
+/// Permanently removes one object version.
+async fn delete_bucket_object_version(
+    State(state): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    Query(query): Query<DeleteVersionQuery>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<StatusCode, ApiError> {
+    let name = parse_bucket_name(&bucket, &request_id)?;
+    let key = parse_object_key(&key, &request_id)?;
+    state
+        .services
+        .objects
+        .delete_version(&name, key, query.version_id)
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+        .map_err(|error| service_to_api_error(error, request_id))
+}
+
+/// Returns recent storage events, newest first.
+///
+/// Storage events record what happened to data. They are intentionally a
+/// different feed from the audit trail, which records who requested it.
+async fn list_storage_events(
+    State(state): State<AppState>,
+    Query(query): Query<EventQueryParameters>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<EventsResponse>, ApiError> {
+    let events = event_repository(&state, &request_id)?;
+    let after = match (query.after_time, query.after_id) {
+        (Some(time), Some(id)) => Some((time, id)),
+        (None, None) => None,
+        _ => {
+            return Err(ApiError::bad_request(
+                request_id,
+                "INVALID_EVENT_CURSOR",
+                "Both event cursor fields are required",
+            ));
+        }
+    };
+    let page = events
+        .list_events(oes_events::EventQuery {
+            since: query.since,
+            until: query.until,
+            bucket: query.bucket,
+            event_type: query.event_type,
+            object_prefix: query.prefix,
+            after,
+            limit: query.limit,
+        })
+        .await
+        .map_err(|error| {
+            error!(%error, request_id = %request_id, "storage event query failed");
+            ApiError::internal(request_id)
+        })?;
+    let (next_time, next_id) = page
+        .next
+        .map_or((None, None), |(time, id)| (Some(time), Some(id)));
+    Ok(Json(EventsResponse {
+        events: page.events,
+        next_time,
+        next_id,
+    }))
+}
+
+fn insert_header(headers: &mut header::HeaderMap, name: HeaderName, value: &str) {
+    if let Ok(value) = HeaderValue::from_str(value) {
+        headers.insert(name, value);
+    }
+}
+
+fn parse_bucket_name(value: &str, request_id: &RequestId) -> Result<BucketName, ApiError> {
+    BucketName::new(value).map_err(|_| {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_BUCKET_NAME",
+            "Invalid bucket name",
+        )
+    })
+}
+
+fn parse_object_key(value: &str, request_id: &RequestId) -> Result<ObjectKey, ApiError> {
+    ObjectKey::new(value).map_err(|_| {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_OBJECT_KEY",
+            "Invalid object key",
+        )
+    })
+}
+
+/// Pagination cursors are opaque so clients cannot build on their internals.
+fn encode_cursor(value: &str) -> String {
+    URL_SAFE_NO_PAD.encode(value.as_bytes())
+}
+
+fn decode_cursor(value: &str, request_id: &RequestId) -> Result<String, ApiError> {
+    let invalid = || {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_CONTINUATION_TOKEN",
+            "Invalid continuation token",
+        )
+    };
+    let decoded = URL_SAFE_NO_PAD.decode(value).map_err(|_| invalid())?;
+    String::from_utf8(decoded).map_err(|_| invalid())
+}
+
 async fn storage_status(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -924,14 +1389,35 @@ async fn storage_repair(
 async fn list_buckets(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
-) -> Result<Json<Vec<Bucket>>, ApiError> {
-    state
+) -> Result<Json<Vec<BucketSummary>>, ApiError> {
+    let buckets = state
         .services
         .buckets
         .list()
         .await
-        .map(Json)
-        .map_err(|error| internal_service_error(error, request_id))
+        .map_err(|error| internal_service_error(error, request_id.clone()))?;
+    // Usage for every bucket is read in one pass so rendering a bucket table
+    // never turns into one request per row.
+    let usage = state.metadata.bucket_usage().await.map_err(|error| {
+        error!(%error, request_id = %request_id, "bucket usage lookup failed");
+        ApiError::internal(request_id)
+    })?;
+    Ok(Json(
+        buckets
+            .into_iter()
+            .map(|bucket| {
+                let counters = usage.get(&bucket.id).copied().unwrap_or_default();
+                BucketSummary {
+                    bucket,
+                    object_count: counters.object_count,
+                    logical_bytes: counters.logical_bytes,
+                    version_count: counters.version_count,
+                    version_bytes: counters.version_bytes,
+                    multipart_bytes: counters.multipart_bytes,
+                }
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1511,27 +1997,20 @@ async fn restore_version(
     Path((bucket, key)): Path<(String, String)>,
     Extension(request_id): Extension<RequestId>,
     Json(input): Json<RestoreVersionRequest>,
-) -> Result<(StatusCode, Json<ObjectMetadata>), ApiError> {
-    let bucket = BucketName::new(bucket).map_err(|_| {
-        ApiError::bad_request(
-            request_id.clone(),
-            "INVALID_BUCKET_NAME",
-            "Invalid bucket name",
-        )
-    })?;
-    let key = ObjectKey::new(key).map_err(|_| {
-        ApiError::bad_request(
-            request_id.clone(),
-            "INVALID_OBJECT_KEY",
-            "Invalid object key",
-        )
-    })?;
+) -> Result<(StatusCode, Json<ObjectSummary>), ApiError> {
+    let bucket = parse_bucket_name(&bucket, &request_id)?;
+    let key = parse_object_key(&key, &request_id)?;
     state
         .services
         .objects
         .restore_version(&bucket, key, input.version_id)
         .await
-        .map(|result| (StatusCode::CREATED, Json(result.metadata)))
+        .map(|result| {
+            (
+                StatusCode::CREATED,
+                Json(ObjectSummary::from(result.metadata)),
+            )
+        })
         .map_err(|error| service_to_api_error(error, request_id))
 }
 
@@ -2035,6 +2514,176 @@ struct SystemInfoResponse {
     mode: DeploymentMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     cluster_id: Option<ClusterId>,
+    capabilities: Capabilities,
+}
+
+/// What this deployment can actually do.
+///
+/// Clients use this instead of inferring behaviour from a version number, so a
+/// build that lacks a capability simply reports it as unavailable.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct Capabilities {
+    /// Cluster membership, replication, repair, and rebalancing are available.
+    cluster: bool,
+    /// Bucket versioning can be enabled and versions can be listed.
+    versioning: bool,
+    /// Signed outbound storage-event webhooks are available.
+    webhooks: bool,
+    /// Storage-event history can be queried.
+    events: bool,
+    /// Metadata-driven object expiration is available.
+    lifecycle: bool,
+    /// Object bytes can be browsed and transferred through this API.
+    object_browser: bool,
+    /// Erasure coding is not implemented; replication is the durability model.
+    erasure_coding: bool,
+}
+
+impl Capabilities {
+    fn detect(state: &AppState) -> Self {
+        Self {
+            cluster: state.cluster.is_some(),
+            versioning: true,
+            webhooks: state.events.is_some(),
+            events: state.events.is_some(),
+            lifecycle: true,
+            object_browser: true,
+            erasure_coding: false,
+        }
+    }
+}
+
+/// A bucket with the accounting a console needs to render a table.
+///
+/// Usage is included here so listing buckets costs one request rather than one
+/// request per bucket.
+#[derive(Debug, Serialize)]
+struct BucketSummary {
+    #[serde(flatten)]
+    bucket: Bucket,
+    object_count: u64,
+    logical_bytes: u64,
+    version_count: u64,
+    version_bytes: u64,
+    multipart_bytes: u64,
+}
+
+/// Object metadata safe to expose to a management client.
+///
+/// Internal payload identifiers and physical representation are deliberately
+/// omitted: where an object physically lives is not a client concern.
+#[derive(Debug, Serialize)]
+struct ObjectSummary {
+    key: String,
+    size: u64,
+    content_type: Option<String>,
+    etag: String,
+    checksum: String,
+    version_id: VersionId,
+    created_at: chrono::DateTime<chrono::Utc>,
+    modified_at: chrono::DateTime<chrono::Utc>,
+    custom_metadata: std::collections::BTreeMap<String, String>,
+}
+
+impl From<ObjectMetadata> for ObjectSummary {
+    fn from(value: ObjectMetadata) -> Self {
+        Self {
+            key: value.key.to_string(),
+            size: value.size,
+            content_type: value.content_type,
+            etag: value.etag.as_str().to_owned(),
+            checksum: value.checksum.to_string(),
+            version_id: value.version_id,
+            created_at: value.created_at,
+            modified_at: value.modified_at,
+            custom_metadata: value.custom_metadata,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ObjectListQuery {
+    #[serde(default)]
+    prefix: String,
+    delimiter: Option<String>,
+    continuation_token: Option<String>,
+    #[serde(default = "default_object_limit")]
+    limit: usize,
+}
+
+const fn default_object_limit() -> usize {
+    100
+}
+
+/// One page of a prefix listing.
+///
+/// Prefixes are logical groupings derived from the delimiter; OES stores no
+/// directories, so they are reported separately from objects rather than being
+/// presented as entries of the same kind.
+#[derive(Debug, Serialize)]
+struct ObjectListResponse {
+    objects: Vec<ObjectSummary>,
+    prefixes: Vec<String>,
+    is_truncated: bool,
+    next_continuation_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ObjectVersionListQuery {
+    #[serde(default)]
+    prefix: String,
+    key_marker: Option<String>,
+    version_id_marker: Option<VersionId>,
+    #[serde(default = "default_object_limit")]
+    limit: usize,
+}
+
+/// One version-history entry.
+#[derive(Debug, Serialize)]
+struct ObjectVersionEntry {
+    key: String,
+    version_id: VersionId,
+    is_latest: bool,
+    is_delete_marker: bool,
+    /// Whether S3 exposes this entry as the special unversioned entry.
+    is_null: bool,
+    created_at: chrono::DateTime<chrono::Utc>,
+    size: Option<u64>,
+    etag: Option<String>,
+    checksum: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ObjectVersionListResponse {
+    versions: Vec<ObjectVersionEntry>,
+    next_key_marker: Option<String>,
+    next_version_id_marker: Option<VersionId>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteVersionQuery {
+    version_id: VersionId,
+}
+
+#[derive(Debug, Deserialize)]
+struct EventQueryParameters {
+    since: Option<chrono::DateTime<chrono::Utc>>,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+    bucket: Option<String>,
+    #[serde(rename = "type")]
+    event_type: Option<oes_events::StorageEventType>,
+    prefix: Option<String>,
+    after_time: Option<chrono::DateTime<chrono::Utc>>,
+    after_id: Option<oes_core::EventId>,
+    #[serde(default = "default_audit_limit")]
+    limit: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct EventsResponse {
+    events: Vec<oes_events::StorageEvent>,
+    next_time: Option<chrono::DateTime<chrono::Utc>>,
+    next_id: Option<oes_core::EventId>,
 }
 
 #[derive(Debug, Serialize)]

@@ -1,0 +1,39 @@
+# The OES web console.
+#
+# The console is a client of the management API, never a second source of truth.
+# It is deliberately a separate image so a headless OES deployment carries no
+# frontend, and so the console can be upgraded independently.
+FROM node:24-bookworm-slim AS deps
+WORKDIR /app
+COPY console/package.json console/package-lock.json ./
+RUN npm ci --ignore-scripts
+
+FROM node:24-bookworm-slim AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY console/ ./
+# The upstream API address is read at runtime, so the build stays deployment
+# agnostic and no localhost assumption is baked into the bundle.
+RUN npm run build
+
+FROM node:24-bookworm-slim AS runtime
+WORKDIR /app
+RUN groupadd --system --gid 10002 console \
+    && useradd --system --uid 10002 --gid console --home-dir /nonexistent --shell /usr/sbin/nologin console
+
+# `output: standalone` emits a self-contained server with only the files needed.
+COPY --from=builder --chown=console:console /app/.next/standalone ./
+COPY --from=builder --chown=console:console /app/.next/static ./.next/static
+COPY --from=builder --chown=console:console /app/public ./public
+
+ENV NODE_ENV=production \
+    PORT=7602 \
+    HOSTNAME=0.0.0.0 \
+    OES_API_URL=http://oes:7601
+
+USER console:console
+EXPOSE 7602
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["node", "-e", "fetch('http://127.0.0.1:7602/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+CMD ["node", "server.js"]

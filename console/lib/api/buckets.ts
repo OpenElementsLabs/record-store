@@ -1,0 +1,35 @@
+import type { Bucket, LifecycleRule, VersioningState } from '@/types/api';
+
+import { request, requestVoid } from './client';
+
+/**
+ * Lists buckets with their accounting.
+ *
+ * Usage arrives with the list, so rendering a bucket table costs one request
+ * regardless of how many buckets exist.
+ */
+export function fetchBuckets(signal?: AbortSignal): Promise<Bucket[]> {
+  return request<Bucket[]>('/v1/buckets', signal ? { signal } : {});
+}
+
+export function createBucket(name: string): Promise<Bucket> {
+  return request<Bucket>('/v1/buckets', { method: 'POST', body: { name } });
+}
+
+export function deleteBucket(name: string): Promise<void> {
+  return requestVoid(`/v1/buckets/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
+export function setBucketVersioning(name: string, versioning: VersioningState): Promise<Bucket> {
+  return request<Bucket>(`/v1/buckets/${encodeURIComponent(name)}/versioning`, {
+    method: 'PUT',
+    body: { versioning },
+  });
+}
+
+export function fetchLifecycleRules(name: string, signal?: AbortSignal): Promise<LifecycleRule[]> {
+  return request<LifecycleRule[]>(
+    `/v1/buckets/${encodeURIComponent(name)}/lifecycle`,
+    signal ? { signal } : {},
+  );
+}
