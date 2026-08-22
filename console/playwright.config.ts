@@ -1,10 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const S3_PORT = testPort('OES_E2E_S3_PORT', 17_600);
-const API_PORT = testPort('OES_E2E_API_PORT', 17_601);
-const CONSOLE_PORT = testPort('OES_E2E_CONSOLE_PORT', 17_602);
-const RPC_PORT = testPort('OES_E2E_RPC_PORT', 17_603);
-const HARNESS_PORT = testPort('OES_E2E_HARNESS_PORT', 17_604);
+const S3_PORT = testPort('OES_E2E_S3_PORT', 47_600);
+const API_PORT = testPort('OES_E2E_API_PORT', 47_601);
+const CONSOLE_PORT = testPort('OES_E2E_CONSOLE_PORT', 47_602);
+const RPC_PORT = testPort('OES_E2E_RPC_PORT', 47_603);
+const HARNESS_PORT = testPort('OES_E2E_HARNESS_PORT', 47_604);
 const CONSOLE_URL = `http://127.0.0.1:${CONSOLE_PORT}`;
 const MANAGEMENT_URL = `http://127.0.0.1:${API_PORT}`;
 const MANAGEMENT_TOKEN = 'e2e-management-system-token-32-bytes-long';
@@ -49,11 +49,12 @@ export default defineConfig({
       },
     },
     {
-      command: `npm run start:e2e -- --port ${CONSOLE_PORT}`,
+      command: 'node e2e/start-console.mjs',
       url: CONSOLE_URL,
       reuseExistingServer: false,
       timeout: 120_000,
       env: {
+        PORT: String(CONSOLE_PORT),
         OES_API_URL: MANAGEMENT_URL,
         OES_CONSOLE_SECURE_COOKIES: 'false',
         NODE_ENV: 'production',

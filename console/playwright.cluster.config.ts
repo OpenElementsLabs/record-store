@@ -39,11 +39,12 @@ export default defineConfig({
       env: { OES_E2E_TOKEN: MANAGEMENT_TOKEN },
     },
     {
-      command: `npm run start:e2e -- --port ${CONSOLE_PORT}`,
+      command: 'node e2e/start-console.mjs',
       url: CONSOLE_URL,
       reuseExistingServer: false,
       timeout: 120_000,
       env: {
+        PORT: String(CONSOLE_PORT),
         OES_API_URL: MANAGEMENT_URL,
         OES_CONSOLE_SECURE_COOKIES: 'false',
         NODE_ENV: 'production',

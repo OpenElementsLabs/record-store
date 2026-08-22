@@ -355,7 +355,9 @@ impl ObjectStore for DistributedObjectStore {
             durability: DurabilityProfile::Replicated(
                 ReplicationProfile::new(
                     placement.desired_replicas,
-                    placement.desired_replicas.min(placement.replicas.len() as u8),
+                    placement
+                        .desired_replicas
+                        .min(placement.replicas.len() as u8),
                 )
                 .map_err(StorageError::InvalidRequest)?,
             ),
@@ -581,7 +583,9 @@ impl ObjectStore for DistributedObjectStore {
             durability: DurabilityProfile::Replicated(
                 ReplicationProfile::new(
                     placement.desired_replicas,
-                    placement.desired_replicas.min(placement.replicas.len() as u8),
+                    placement
+                        .desired_replicas
+                        .min(placement.replicas.len() as u8),
                 )
                 .map_err(StorageError::InvalidRequest)?,
             ),

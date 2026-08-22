@@ -10,19 +10,19 @@ import { fileURLToPath } from 'node:url';
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
 const dataDirectory = mkdtempSync(join(tmpdir(), 'oes-e2e-standalone-'));
 const host = '127.0.0.1';
-const s3Port = port('OES_E2E_S3_PORT', 17_600);
-const apiPort = port('OES_E2E_API_PORT', 17_601);
-const consolePort = port('OES_E2E_CONSOLE_PORT', 17_602);
-const rpcPort = port('OES_E2E_RPC_PORT', 17_603);
-const harnessPort = port('OES_E2E_HARNESS_PORT', 17_604);
+const s3Port = port('OES_E2E_S3_PORT', 47_600);
+const apiPort = port('OES_E2E_API_PORT', 47_601);
+const consolePort = port('OES_E2E_CONSOLE_PORT', 47_602);
+const rpcPort = port('OES_E2E_RPC_PORT', 47_603);
+const harnessPort = port('OES_E2E_HARNESS_PORT', 47_604);
 const managementToken = process.env.OES_E2E_TOKEN ?? 'e2e-management-system-token-32-bytes-long';
 
 await Promise.all([
-  assertPortFree(s3Port, 'S3'),
-  assertPortFree(apiPort, 'management'),
-  assertPortFree(consolePort, 'console'),
-  assertPortFree(rpcPort, 'RPC'),
-  assertPortFree(harnessPort, 'harness readiness'),
+  assertPortFree(s3Port, 'S3', 'OES_E2E_S3_PORT'),
+  assertPortFree(apiPort, 'management', 'OES_E2E_API_PORT'),
+  assertPortFree(consolePort, 'console', 'OES_E2E_CONSOLE_PORT'),
+  assertPortFree(rpcPort, 'RPC', 'OES_E2E_RPC_PORT'),
+  assertPortFree(harnessPort, 'harness readiness', 'OES_E2E_HARNESS_PORT'),
 ]);
 
 const server = spawn('cargo', ['run', '--quiet', '--bin', 'oes-server'], {
@@ -71,14 +71,16 @@ function port(name, fallback) {
   return value;
 }
 
-function assertPortFree(value, label) {
+function assertPortFree(value, label, variable) {
   return new Promise((resolve, reject) => {
     const probe = createTcpServer();
     probe.unref();
     probe.once('error', (error) => {
       reject(
         new Error(
-          `${label} E2E port ${host}:${value} is already occupied; refusing to adopt an unknown service (${error.code ?? error.message})`,
+          `${label} E2E port ${host}:${value} is already occupied; refusing to adopt an ` +
+            `unknown service (${error.code ?? error.message}). Set ${variable} to a free ` +
+            `port to move this listener.`,
         ),
       );
     });

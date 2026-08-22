@@ -16,8 +16,8 @@ use std::{
 use futures_util::StreamExt;
 use md5::{Digest as _, Md5};
 use oes_core::{
-    ByteRange, Checksum, ETag, ErasureProfile, ResolvedByteRange, ShardId, ShardIndex,
-    ShardKind, ShardState, StripeId,
+    ByteRange, Checksum, ETag, ErasureProfile, ResolvedByteRange, ShardId, ShardIndex, ShardKind,
+    ShardState, StripeId,
 };
 use oes_storage::UploadStream;
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
@@ -276,7 +276,12 @@ impl ErasureCodec for ReedSolomonSimdCodec {
                 available: 0,
             })?
             .len();
-        if shard_size == 0 || shards.iter().flatten().any(|shard| shard.len() != shard_size) {
+        if shard_size == 0
+            || shards
+                .iter()
+                .flatten()
+                .any(|shard| shard.len() != shard_size)
+        {
             return Err(ErasureError::InvalidInput(
                 "available shards must have one non-zero size".into(),
             ));
@@ -342,10 +347,7 @@ fn codec_error(error: impl std::fmt::Display) -> ErasureError {
     ErasureError::Codec(error.to_string())
 }
 
-fn validate_data_shards(
-    profile: ErasureProfile,
-    data: &[Vec<u8>],
-) -> Result<(), ErasureError> {
+fn validate_data_shards(profile: ErasureProfile, data: &[Vec<u8>]) -> Result<(), ErasureError> {
     if data.len() != usize::from(profile.data_shards()) {
         return Err(ErasureError::InvalidInput(format!(
             "received {} data shards, expected {}",
@@ -495,13 +497,13 @@ impl ErasureEngine {
                     .ok_or_else(|| ErasureError::InvalidInput("object size overflow".into()))?;
                 remaining = &remaining[take..];
                 if pending.len() == self.stripe_data_bytes {
-                    let bytes = std::mem::replace(
-                        &mut pending,
-                        Vec::with_capacity(self.stripe_data_bytes),
-                    );
+                    let bytes =
+                        std::mem::replace(&mut pending, Vec::with_capacity(self.stripe_data_bytes));
                     let offset = logical_size
                         .checked_sub(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
-                        .ok_or_else(|| ErasureError::InvalidInput("stripe offset underflow".into()))?;
+                        .ok_or_else(|| {
+                            ErasureError::InvalidInput("stripe offset underflow".into())
+                        })?;
                     let stripe = self.encode_one(profile, ordinal, offset, bytes).await?;
                     manifests.push(stripe.manifest.clone());
                     consume(stripe).await?;
@@ -593,9 +595,7 @@ impl ErasureEngine {
                     Ordering::Relaxed,
                 );
                 if decoded.reconstructed {
-                    self.metrics
-                        .reconstructions
-                        .fetch_add(1, Ordering::Relaxed);
+                    self.metrics.reconstructions.fetch_add(1, Ordering::Relaxed);
                     self.metrics
                         .degraded_objects
                         .fetch_add(1, Ordering::Relaxed);
@@ -888,7 +888,12 @@ mod tests {
     async fn reconstructs_data_and_parity_loss_up_to_m() {
         let engine = ErasureEngine::with_codec(Arc::new(ReedSolomonSimdCodec), 1, 4096);
         let stripe = engine
-            .encode_one(profile(4, 3), 0, 0, (0_u8..=250).cycle().take(3000).collect())
+            .encode_one(
+                profile(4, 3),
+                0,
+                0,
+                (0_u8..=250).cycle().take(3000).collect(),
+            )
             .await
             .expect("encode");
         let original = engine
@@ -964,9 +969,7 @@ mod tests {
         let mut wrong_id = available(&stripe);
         wrong_id[0].id = ShardId::new();
         assert!(matches!(
-            engine
-                .decode_one(stripe.manifest.clone(), wrong_id)
-                .await,
+            engine.decode_one(stripe.manifest.clone(), wrong_id).await,
             Err(ErasureError::InvalidShardIdentity(_))
         ));
         let mut wrong_stripe = available(&stripe);
@@ -987,8 +990,8 @@ mod tests {
 
     #[test]
     fn range_planning_targets_only_intersecting_stripes() {
-        let (_, within) = plan_range(ByteRange::new(3, 4).expect("range"), 30, 10)
-            .expect("within stripe");
+        let (_, within) =
+            plan_range(ByteRange::new(3, 4).expect("range"), 30, 10).expect("within stripe");
         assert_eq!(
             within,
             vec![StripeRange {
@@ -997,13 +1000,13 @@ mod tests {
                 length: 4
             }]
         );
-        let (_, crossing) = plan_range(ByteRange::new(8, 15).expect("range"), 30, 10)
-            .expect("crossing");
+        let (_, crossing) =
+            plan_range(ByteRange::new(8, 15).expect("range"), 30, 10).expect("crossing");
         assert_eq!(crossing.len(), 3);
         assert_eq!(crossing[0].length, 2);
         assert_eq!(crossing[2].length, 3);
-        let (resolved, end) = plan_range(ByteRange::new(25, 50).expect("range"), 30, 10)
-            .expect("end range");
+        let (resolved, end) =
+            plan_range(ByteRange::new(25, 50).expect("range"), 30, 10).expect("end range");
         assert_eq!(resolved.length, 5);
         assert_eq!(end.len(), 1);
         assert!(plan_range(ByteRange::new(30, 1).expect("range"), 30, 10).is_err());

@@ -7,7 +7,7 @@
     "dev": "next dev --port 7602",
     "build": "next build",
     "start": "next start --port 7602",
-    "start:e2e": "next start",
+    "start:e2e": "node e2e/start-console.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
