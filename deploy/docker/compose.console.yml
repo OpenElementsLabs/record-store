@@ -24,6 +24,7 @@ services:
       OES_MANAGEMENT_SYSTEM_TOKEN: "${OES_MANAGEMENT_SYSTEM_TOKEN:-local-development-management-token-change-me}"
       OES_MANAGEMENT_STORAGE_TOKEN: "${OES_MANAGEMENT_STORAGE_TOKEN:-local-development-storage-token-change-me}"
       OES_MANAGEMENT_AUDITOR_TOKEN: "${OES_MANAGEMENT_AUDITOR_TOKEN:-local-development-auditor-token-change-me}"
+      OES_METRICS_SCRAPE_TOKEN: "${OES_METRICS_SCRAPE_TOKEN:-local-development-metrics-token-change-me}"
       OES_STORAGE_ENCRYPTION_ENABLED: "${OES_STORAGE_ENCRYPTION_ENABLED:-true}"
       OES_ROOT_S3_ENABLED: "${OES_ROOT_S3_ENABLED:-true}"
       OES_LOG_JSON: "${OES_LOG_JSON:-true}"

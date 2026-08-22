@@ -409,6 +409,9 @@ async fn bootstrap_cluster(
 fn cluster_config(config: &Config) -> oes_cluster::ClusterConfig {
     let mut cluster = oes_cluster::ClusterConfig::default();
     cluster.replication_factor = config.cluster.replication_factor;
+    cluster.watermarks.low_percent = config.cluster.capacity_low_watermark_percent;
+    cluster.watermarks.high_percent = config.cluster.capacity_high_watermark_percent;
+    cluster.watermarks.critical_percent = config.cluster.capacity_critical_watermark_percent;
     cluster.repair.movement.maximum_concurrent_tasks =
         u32::try_from(config.cluster.movement_concurrency).unwrap_or(u32::MAX);
     cluster.repair.movement.maximum_bytes_per_second = config.cluster.movement_bytes_per_second;
@@ -886,6 +889,28 @@ mod tests {
         let first_storage = Arc::clone(&first.storage);
         let first_process = supervise(first.process);
 
+        // The test exercises replica durability, not the host running the test's
+        // production disk-pressure policy. CI and developer machines may already
+        // be above the default 90% high watermark or have less than the default
+        // 1 GiB safety margin, which would make placement fail for an unrelated
+        // environmental reason. Keep a real measured capacity while making the
+        // tiny test payload's reservation deterministic.
+        let mut cluster_config = first_context
+            .config()
+            .await
+            .expect("read the initial cluster configuration");
+        cluster_config.watermarks = oes_cluster::CapacityWatermarks {
+            low_percent: 98,
+            high_percent: 99,
+            critical_percent: 100,
+        };
+        cluster_config.capacity_safety_margin_bytes = 0;
+        cluster_config.unknown_upload_size_reservation_bytes = 1;
+        first_operations
+            .set_config(cluster_config)
+            .await
+            .expect("configure deterministic test capacity policy");
+
         let second_token = first_operations
             .issue_join_token(300, "second RF3 test node".into())
             .await
@@ -925,6 +950,7 @@ mod tests {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            durability_policy: None,
         };
         first_metadata
             .create_bucket(&bucket)

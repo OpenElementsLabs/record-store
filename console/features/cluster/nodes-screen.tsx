@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createColumnHelper } from '@tanstack/react-table';
 import { MoreHorizontal } from 'lucide-react';
+import Link from 'next/link';
 import * as React from 'react';
 import { toast } from 'sonner';
 
@@ -120,9 +121,13 @@ export function NodesScreen() {
           header: 'Node',
           cell: ({ row }) => (
             <div className="space-y-0.5">
-              <p className="font-mono text-xs text-ink" title={row.original.node_id}>
+              <Link
+                className="font-mono text-xs text-accent hover:underline"
+                href={`/cluster/nodes/${encodeURIComponent(row.original.node_id)}`}
+                title={row.original.node_id}
+              >
                 {shortenIdentifier(row.original.node_id, 8)}
-              </p>
+              </Link>
               <p className="text-xs text-ink-subtle">{row.original.rpc_address}</p>
             </div>
           ),

@@ -50,14 +50,16 @@ function originAllowed(request: Request): boolean {
     // Same-origin `fetch` from a browser always sends `Origin` for mutations.
     return false;
   }
-  // The comparison uses the host the client actually addressed rather than the
-  // framework's reconstructed request URL, which is not a faithful reflection of
-  // it. `x-forwarded-host` is honoured so the check still works when the console
-  // is served behind a reverse proxy.
-  const host = request.headers.get('x-forwarded-host') ?? request.headers.get('host');
+  // Compare the complete external origin. A host-only comparison would accept
+  // an HTTPS page presented as HTTP (or vice versa) behind a reverse proxy.
+  const forwardedHost = request.headers.get('x-forwarded-host')?.split(',', 1)[0]?.trim();
+  const host = forwardedHost || request.headers.get('host');
   if (!host) return false;
+  const forwardedProtocol = request.headers.get('x-forwarded-proto')?.split(',', 1)[0]?.trim();
+  const protocol = forwardedProtocol || new URL(request.url).protocol.slice(0, -1);
+  if (protocol !== 'http' && protocol !== 'https') return false;
   try {
-    return new URL(origin).host === host;
+    return new URL(origin).origin === new URL(`${protocol}://${host}`).origin;
   } catch {
     return false;
   }

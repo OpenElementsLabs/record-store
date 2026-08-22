@@ -18,6 +18,9 @@ async fn starts_serves_operational_routes_and_shuts_down() {
     config.auth.management_auditor_token = Some(SecretValue::new(
         "test-auditor-management-token-32-bytes-long",
     ));
+    config.auth.metrics_scrape_token = Some(SecretValue::new(
+        "test-dedicated-metrics-scrape-token-32-bytes-long",
+    ));
 
     let runtime = oes_server::initialize(&config)
         .await
@@ -62,11 +65,19 @@ async fn starts_serves_operational_routes_and_shuts_down() {
         .expect("readiness request");
     assert_eq!(ready.status(), reqwest::StatusCode::OK);
 
-    let info = client
+    let anonymous_info = client
         .get(format!("http://{address}/api/v1/system/info"))
         .send()
         .await
-        .expect("system info request")
+        .expect("anonymous system info request");
+    assert_eq!(anonymous_info.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let info = client
+        .get(format!("http://{address}/api/v1/system/info"))
+        .bearer_auth("test-auditor-management-token-32-bytes-long")
+        .send()
+        .await
+        .expect("authenticated system info request")
         .json::<serde_json::Value>()
         .await
         .expect("system info JSON");
@@ -75,6 +86,40 @@ async fn starts_serves_operational_routes_and_shuts_down() {
     assert_eq!(info["mode"], "standalone");
     assert!(info.get("cluster_id").is_none());
     assert!(info["version"].is_string());
+
+    let missing_metrics_token = client
+        .get(format!("http://{address}/metrics"))
+        .send()
+        .await
+        .expect("metrics request without token");
+    assert_eq!(
+        missing_metrics_token.status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let invalid_metrics_token = client
+        .get(format!("http://{address}/metrics"))
+        .bearer_auth("test-system-management-token-32-bytes-long")
+        .send()
+        .await
+        .expect("metrics request with management token");
+    assert_eq!(
+        invalid_metrics_token.status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let metrics = client
+        .get(format!("http://{address}/metrics"))
+        .bearer_auth("test-dedicated-metrics-scrape-token-32-bytes-long")
+        .send()
+        .await
+        .expect("metrics request with scrape token");
+    assert_eq!(metrics.status(), reqwest::StatusCode::OK);
+    assert!(
+        metrics
+            .text()
+            .await
+            .expect("metrics body")
+            .contains("oes_requests_total")
+    );
 
     let unauthorized_admin = client
         .get(format!("http://{address}/api/v1/buckets"))
@@ -238,6 +283,7 @@ async fn cluster_mode_bootstraps_persistent_identity_and_exposes_status() {
 
     let info = reqwest::Client::new()
         .get(format!("http://{address}/api/v1/system/info"))
+        .bearer_auth("test-system-management-token-32-bytes-long")
         .send()
         .await
         .expect("cluster system info request")
@@ -415,6 +461,7 @@ async fn management_api_serves_the_console_surface() {
     // Deployment mode and capabilities are discovered from the backend.
     let info = client
         .get(format!("{base}/api/v1/system/info"))
+        .bearer_auth(admin)
         .send()
         .await
         .expect("system info")
@@ -467,6 +514,50 @@ async fn management_api_serves_the_console_surface() {
         .send()
         .await
         .expect("create bucket");
+
+    // Lifecycle rules have an owned console consumer and explicit delete behavior.
+    let lifecycle = client
+        .post(format!("{base}/api/v1/buckets/console-bucket/lifecycle"))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({
+            "prefix": "reports/",
+            "enabled": true,
+            "expiration": 30,
+            "noncurrent_version_expiration": 7
+        }))
+        .send()
+        .await
+        .expect("create lifecycle rule");
+    assert_eq!(lifecycle.status(), reqwest::StatusCode::CREATED);
+    let lifecycle = lifecycle
+        .json::<serde_json::Value>()
+        .await
+        .expect("lifecycle rule JSON");
+    let lifecycle_id = lifecycle["id"].as_str().expect("lifecycle rule ID");
+    let lifecycle_rules = client
+        .get(format!("{base}/api/v1/buckets/console-bucket/lifecycle"))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("list lifecycle rules")
+        .json::<serde_json::Value>()
+        .await
+        .expect("lifecycle list JSON");
+    assert_eq!(lifecycle_rules[0]["id"], lifecycle_id);
+    let deleted_lifecycle = client
+        .delete(format!("{base}/api/v1/lifecycle-rules/{lifecycle_id}"))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("delete lifecycle rule");
+    assert_eq!(deleted_lifecycle.status(), reqwest::StatusCode::NO_CONTENT);
+    let missing_lifecycle = client
+        .delete(format!("{base}/api/v1/lifecycle-rules/{lifecycle_id}"))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("delete missing lifecycle rule");
+    assert_eq!(missing_lifecycle.status(), reqwest::StatusCode::BAD_REQUEST);
 
     // Streaming upload through the management API.
     let payload = b"console upload payload".to_vec();

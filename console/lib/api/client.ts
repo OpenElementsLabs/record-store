@@ -15,7 +15,7 @@ export const API_BASE = '/api/oes';
 export type QueryValue = string | number | boolean | null | undefined;
 
 export type RequestOptions = {
-  readonly method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   readonly query?: Readonly<Record<string, QueryValue>>;
   readonly body?: unknown;
   readonly signal?: AbortSignal;

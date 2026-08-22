@@ -1354,6 +1354,7 @@ fn decode_migrating_object(bytes: &[u8]) -> Result<ObjectMetadata, MetadataError
         size: old.size,
         checksum: old.checksum,
         payload_format: oes_core::PayloadFormat::Plaintext,
+        durability: oes_core::DurabilityProfile::Single,
         etag,
         content_type: old.content_type,
         custom_metadata: old.custom_metadata,
@@ -2988,6 +2989,7 @@ mod tests {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            durability_policy: None,
         }
     }
     fn object(bucket: BucketId, key: &str, size: u64) -> ObjectMetadata {
@@ -3000,6 +3002,7 @@ mod tests {
             size,
             checksum: Checksum::sha256([1; 32]),
             payload_format: oes_core::PayloadFormat::Plaintext,
+            durability: oes_core::DurabilityProfile::Single,
             etag: ETag::from_md5([2; 16]),
             content_type: None,
             custom_metadata: BTreeMap::new(),

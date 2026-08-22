@@ -17,6 +17,9 @@ shutdown_grace_period_seconds = 30
 # storage_class = "standard"
 # failure_domain = ""
 # replication_factor = 3
+# capacity_low_watermark_percent = 80
+# capacity_high_watermark_percent = 90
+# capacity_critical_watermark_percent = 95
 # consensus_heartbeat_millis = 250
 # election_timeout_min_millis = 1000
 # election_timeout_max_millis = 2000
@@ -48,6 +51,8 @@ encryption_enabled = false # requires a stable OES_CREDENTIAL_MASTER_KEY
 # Set OES_MANAGEMENT_SYSTEM_TOKEN to a distinct 32+ byte bearer token. Optional
 # storage-administrator and auditor tokens can be supplied with their matching
 # OES_MANAGEMENT_* environment variables.
+# Set OES_METRICS_SCRAPE_TOKEN to an independent 32+ byte token to enable
+# authenticated Prometheus scraping. Metrics stay closed when it is absent.
 root_s3_enabled = true # disable after attaching policies to service accounts
 
 [limits]

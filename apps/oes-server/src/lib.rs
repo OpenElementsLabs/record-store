@@ -11,7 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use oes_api::{AppState, ClusterManagement, ManagementAuth};
+use oes_api::{AppState, ClusterManagement, ManagementAuth, MetricsAuth};
 use oes_audit::{AuditError, AuditRepository, RedbAuditRepository};
 use oes_auth::{Authorizer, CredentialManager, CredentialStoreError, SigningCredentialProvider};
 use oes_config::Config;
@@ -307,6 +307,12 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         warn!(
             "dedicated management token is not configured; legacy root Basic authentication remains enabled"
         );
+    }
+    if let Some(token) = &config.auth.metrics_scrape_token {
+        management_state = management_state
+            .with_metrics_auth(MetricsAuth::bearer_token(token.expose().as_bytes()));
+    } else {
+        warn!("metrics scrape token is not configured; the metrics endpoint remains closed");
     }
     let management = oes_api::router(management_state);
     let authorizer: Arc<dyn Authorizer> = credentials.clone();

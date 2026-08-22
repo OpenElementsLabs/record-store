@@ -7,11 +7,13 @@
     "dev": "next dev --port 7602",
     "build": "next build",
     "start": "next start --port 7602",
+    "start:e2e": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:cluster": "playwright test --config playwright.cluster.config.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:e2e:install": "playwright install chromium"

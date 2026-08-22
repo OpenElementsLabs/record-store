@@ -225,6 +225,7 @@ impl Config {
                 "auth.management_auditor_token",
                 &self.auth.management_auditor_token,
             ),
+            ("auth.metrics_scrape_token", &self.auth.metrics_scrape_token),
         ] {
             if token.as_ref().is_some_and(|value| {
                 !(32..=1024).contains(&value.expose().len())
@@ -257,6 +258,16 @@ impl Config {
                     issues.push("management role tokens must be distinct".to_owned());
                 }
             }
+        }
+        if let Some(metrics_token) = &self.auth.metrics_scrape_token
+            && management_tokens
+                .iter()
+                .flatten()
+                .any(|management_token| *management_token == metrics_token)
+        {
+            issues.push(
+                "auth.metrics_scrape_token must be distinct from management role tokens".to_owned(),
+            );
         }
         if self.limits.maximum_concurrent_operations == 0 {
             issues
@@ -364,6 +375,9 @@ impl Config {
         if let Some(value) = environment_value(environment, "OES_MANAGEMENT_AUDITOR_TOKEN")? {
             self.auth.management_auditor_token = Some(SecretValue::new(value));
         }
+        if let Some(value) = environment_value(environment, "OES_METRICS_SCRAPE_TOKEN")? {
+            self.auth.metrics_scrape_token = Some(SecretValue::new(value));
+        }
         if let Some(value) = environment_value(environment, "OES_MAX_CONCURRENT_OPERATIONS")? {
             self.limits.maximum_concurrent_operations =
                 parse_environment("OES_MAX_CONCURRENT_OPERATIONS", value)?;
@@ -420,6 +434,25 @@ impl Config {
         if let Some(value) = environment_value(environment, "OES_CLUSTER_REPLICATION_FACTOR")? {
             self.cluster.replication_factor =
                 parse_environment("OES_CLUSTER_REPLICATION_FACTOR", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "OES_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT")?
+        {
+            self.cluster.capacity_low_watermark_percent =
+                parse_environment("OES_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "OES_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT")?
+        {
+            self.cluster.capacity_high_watermark_percent =
+                parse_environment("OES_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT", value)?;
+        }
+        if let Some(value) = environment_value(
+            environment,
+            "OES_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT",
+        )? {
+            self.cluster.capacity_critical_watermark_percent =
+                parse_environment("OES_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT", value)?;
         }
         if let Some(value) = environment_value(environment, "OES_CLUSTER_MOVEMENT_CONCURRENCY")? {
             self.cluster.movement_concurrency =
@@ -623,6 +656,12 @@ pub struct ClusterConfig {
     pub s3_endpoint: Option<String>,
     /// Replication factor used when this node initializes a new cluster.
     pub replication_factor: u8,
+    /// Low-capacity watermark used when this node initializes a new cluster.
+    pub capacity_low_watermark_percent: u32,
+    /// High-capacity watermark used when this node initializes a new cluster.
+    pub capacity_high_watermark_percent: u32,
+    /// Critical-capacity watermark used when this node initializes a new cluster.
+    pub capacity_critical_watermark_percent: u32,
     /// Consensus heartbeat interval in milliseconds.
     pub consensus_heartbeat_millis: u64,
     /// Minimum consensus election timeout in milliseconds.
@@ -650,6 +689,16 @@ impl ClusterConfig {
         let mut issues = Vec::new();
         if !(1..=3).contains(&self.replication_factor) {
             issues.push("cluster.replication_factor must be between 1 and 3".to_owned());
+        }
+        if self.capacity_low_watermark_percent == 0
+            || self.capacity_low_watermark_percent >= self.capacity_high_watermark_percent
+            || self.capacity_high_watermark_percent >= self.capacity_critical_watermark_percent
+            || self.capacity_critical_watermark_percent > 100
+        {
+            issues.push(
+                "cluster capacity watermarks must satisfy 0 < low < high < critical <= 100"
+                    .to_owned(),
+            );
         }
         if self.consensus_heartbeat_millis == 0 || self.consensus_heartbeat_millis > 10_000 {
             issues
@@ -751,6 +800,9 @@ impl Default for ClusterConfig {
             failure_domain: String::new(),
             s3_endpoint: None,
             replication_factor: 3,
+            capacity_low_watermark_percent: 80,
+            capacity_high_watermark_percent: 90,
+            capacity_critical_watermark_percent: 95,
             consensus_heartbeat_millis: 250,
             election_timeout_min_millis: 1_000,
             election_timeout_max_millis: 2_000,
@@ -816,6 +868,8 @@ pub struct AuthConfig {
     pub management_storage_token: Option<SecretValue>,
     /// Bearer token granting the read-only auditor management role.
     pub management_auditor_token: Option<SecretValue>,
+    /// Dedicated bearer token accepted only by the Prometheus scrape endpoint.
+    pub metrics_scrape_token: Option<SecretValue>,
 }
 
 impl Default for AuthConfig {
@@ -828,6 +882,7 @@ impl Default for AuthConfig {
             management_system_token: None,
             management_storage_token: None,
             management_auditor_token: None,
+            metrics_scrape_token: None,
         }
     }
 }
@@ -1009,6 +1064,9 @@ struct PartialClusterConfig {
     failure_domain: Option<String>,
     s3_endpoint: Option<String>,
     replication_factor: Option<u8>,
+    capacity_low_watermark_percent: Option<u32>,
+    capacity_high_watermark_percent: Option<u32>,
+    capacity_critical_watermark_percent: Option<u32>,
     consensus_heartbeat_millis: Option<u64>,
     election_timeout_min_millis: Option<u64>,
     election_timeout_max_millis: Option<u64>,
@@ -1039,6 +1097,15 @@ impl PartialClusterConfig {
         }
         if let Some(value) = self.replication_factor {
             target.replication_factor = value;
+        }
+        if let Some(value) = self.capacity_low_watermark_percent {
+            target.capacity_low_watermark_percent = value;
+        }
+        if let Some(value) = self.capacity_high_watermark_percent {
+            target.capacity_high_watermark_percent = value;
+        }
+        if let Some(value) = self.capacity_critical_watermark_percent {
+            target.capacity_critical_watermark_percent = value;
         }
         if let Some(value) = self.consensus_heartbeat_millis {
             target.consensus_heartbeat_millis = value;
@@ -1102,6 +1169,7 @@ struct PartialAuthConfig {
     management_system_token: Option<SecretValue>,
     management_storage_token: Option<SecretValue>,
     management_auditor_token: Option<SecretValue>,
+    metrics_scrape_token: Option<SecretValue>,
 }
 
 impl PartialAuthConfig {
@@ -1126,6 +1194,9 @@ impl PartialAuthConfig {
         }
         if let Some(value) = self.management_auditor_token {
             target.management_auditor_token = Some(value);
+        }
+        if let Some(value) = self.metrics_scrape_token {
+            target.metrics_scrape_token = Some(value);
         }
     }
 }
@@ -1353,6 +1424,42 @@ mod tests {
     }
 
     #[test]
+    fn metrics_use_a_dedicated_validated_secret() {
+        let mut environment = credentials().to_vec();
+        environment.push((
+            "OES_METRICS_SCRAPE_TOKEN",
+            "dedicated-test-metrics-token-at-least-32-bytes",
+        ));
+        let config =
+            Config::load_with_environment(None, environment).expect("metrics token configuration");
+        assert_eq!(
+            config
+                .auth
+                .metrics_scrape_token
+                .as_ref()
+                .expect("configured metrics token")
+                .expose(),
+            "dedicated-test-metrics-token-at-least-32-bytes"
+        );
+
+        let mut duplicate = credentials().to_vec();
+        duplicate.extend([
+            (
+                "OES_MANAGEMENT_SYSTEM_TOKEN",
+                "one-shared-token-that-is-at-least-32-bytes",
+            ),
+            (
+                "OES_METRICS_SCRAPE_TOKEN",
+                "one-shared-token-that-is-at-least-32-bytes",
+            ),
+        ]);
+        assert!(matches!(
+            Config::load_with_environment(None, duplicate),
+            Err(ConfigError::Validation(message)) if message.contains("metrics_scrape_token")
+        ));
+    }
+
+    #[test]
     fn unknown_file_fields_and_invalid_environment_are_rejected() {
         let directory = tempdir().expect("temporary directory");
         let path = directory.path().join("oes.toml");
@@ -1485,6 +1592,9 @@ mod tests {
                 ("OES_CLUSTER_STORAGE_CLASS", "nvme"),
                 ("OES_CLUSTER_FAILURE_DOMAIN", "rack=r1,zone=dc1"),
                 ("OES_CLUSTER_REPLICATION_FACTOR", "2"),
+                ("OES_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT", "70"),
+                ("OES_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT", "80"),
+                ("OES_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT", "90"),
             ],
         )
         .expect("configuration must load");
@@ -1498,6 +1608,9 @@ mod tests {
         assert_eq!(config.cluster.seeds.len(), 2);
         assert_eq!(config.cluster.storage_class, "nvme");
         assert_eq!(config.cluster.replication_factor, 2);
+        assert_eq!(config.cluster.capacity_low_watermark_percent, 70);
+        assert_eq!(config.cluster.capacity_high_watermark_percent, 80);
+        assert_eq!(config.cluster.capacity_critical_watermark_percent, 90);
         assert!(format!("{:?}", config.cluster.join_token).contains("redacted"));
     }
 }

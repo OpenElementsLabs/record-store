@@ -4,21 +4,39 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as React from 'react';
 import { toast } from 'sonner';
 
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { ErrorState } from '@/components/error-state';
 import { MetricCard } from '@/components/metric-card';
 import { PageHeader } from '@/components/page-header';
 import { StatusBadge } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Field } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ObjectBrowser } from '@/features/objects/object-browser';
 import { ObjectVersions } from '@/features/objects/object-versions';
 import { useCapabilities, usePermissions } from '@/features/system/deployment';
 import { queryKeys } from '@/hooks/use-system';
-import { fetchBuckets, fetchLifecycleRules, setBucketVersioning } from '@/lib/api/buckets';
+import {
+  createLifecycleRule,
+  deleteLifecycleRule,
+  fetchBuckets,
+  fetchLifecycleRules,
+  setBucketVersioning,
+} from '@/lib/api/buckets';
 import { formatBytes, formatCount, formatDateTime } from '@/lib/format';
-import type { VersioningState } from '@/types/api';
+import type { LifecycleRule, VersioningState } from '@/types/api';
 
 /**
  * One bucket, with only the sections this deployment actually supports.
@@ -179,53 +197,203 @@ function VersioningSection({
 }
 
 function LifecycleSection({ bucket }: { readonly bucket: string }) {
+  const client = useQueryClient();
+  const permissions = usePermissions();
+  const [creating, setCreating] = React.useState(false);
+  const [pendingDelete, setPendingDelete] = React.useState<LifecycleRule | null>(null);
   const rules = useQuery({
     queryKey: queryKeys.bucketLifecycle(bucket),
     queryFn: ({ signal }) => fetchLifecycleRules(bucket, signal),
   });
+  const removal = useMutation({
+    mutationFn: (id: string) => deleteLifecycleRule(id),
+    onSuccess: async () => {
+      toast.success('Lifecycle rule deleted');
+      setPendingDelete(null);
+      await client.invalidateQueries({ queryKey: queryKeys.bucketLifecycle(bucket) });
+    },
+  });
 
   return (
-    <Card>
-      <CardHeader className="flex-col items-start">
-        <CardTitle>Lifecycle rules</CardTitle>
-        <CardDescription>
-          Rules expire objects and non-current versions by age. They are evaluated by a background
-          worker on the server.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {rules.isError ? (
-          <ErrorState error={rules.error} onRetry={() => void rules.refetch()} />
-        ) : rules.isPending ? (
-          <Skeleton className="h-16 w-full" />
-        ) : rules.data.length === 0 ? (
-          <p className="text-sm text-ink-muted">
-            No lifecycle rules are configured for this bucket.
-          </p>
-        ) : (
-          <ul className="space-y-2">
-            {rules.data.map((rule) => (
-              <li
-                key={rule.id}
-                className="flex flex-wrap items-center gap-3 rounded-[--radius-control] border border-border px-3 py-2"
-              >
-                <StatusBadge
-                  level={rule.enabled ? 'healthy' : 'disabled'}
-                  label={rule.enabled ? 'Enabled' : 'Disabled'}
-                />
-                <span className="font-mono text-xs text-ink">{rule.prefix || '(all keys)'}</span>
-                <span className="text-xs text-ink-muted">
-                  {rule.expiration ? `Expire after ${rule.expiration} day(s)` : null}
-                  {rule.expiration && rule.noncurrent_version_expiration ? ' · ' : null}
-                  {rule.noncurrent_version_expiration
-                    ? `Non-current versions after ${rule.noncurrent_version_expiration} day(s)`
-                    : null}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
+    <>
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>Lifecycle rules</CardTitle>
+            <CardDescription>
+              Rules expire objects and non-current versions by age. They are evaluated by a
+              background worker on the server.
+            </CardDescription>
+          </div>
+          {permissions.manage_buckets ? (
+            <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+              Create rule
+            </Button>
+          ) : null}
+        </CardHeader>
+        <CardContent>
+          {rules.isError ? (
+            <ErrorState error={rules.error} onRetry={() => void rules.refetch()} />
+          ) : rules.isPending ? (
+            <Skeleton className="h-16 w-full" />
+          ) : rules.data.length === 0 ? (
+            <p className="text-sm text-ink-muted">
+              No lifecycle rules are configured for this bucket.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {rules.data.map((rule) => (
+                <li
+                  key={rule.id}
+                  className="flex flex-wrap items-center gap-3 rounded-[--radius-control] border border-border px-3 py-2"
+                >
+                  <StatusBadge
+                    level={rule.enabled ? 'healthy' : 'disabled'}
+                    label={rule.enabled ? 'Enabled' : 'Disabled'}
+                  />
+                  <span className="font-mono text-xs text-ink">{rule.prefix || '(all keys)'}</span>
+                  <span className="min-w-0 flex-1 text-xs text-ink-muted">
+                    {rule.expiration ? `Expire after ${rule.expiration} day(s)` : null}
+                    {rule.expiration && rule.noncurrent_version_expiration ? ' · ' : null}
+                    {rule.noncurrent_version_expiration
+                      ? `Non-current versions after ${rule.noncurrent_version_expiration} day(s)`
+                      : null}
+                  </span>
+                  {permissions.manage_buckets ? (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      aria-label={`Delete lifecycle rule ${rule.prefix || 'all keys'}`}
+                      onClick={() => setPendingDelete(rule)}
+                    >
+                      Delete
+                    </Button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      <CreateLifecycleRuleDialog
+        bucket={bucket}
+        open={creating}
+        onOpenChange={setCreating}
+        onCreated={async () => {
+          setCreating(false);
+          await client.invalidateQueries({ queryKey: queryKeys.bucketLifecycle(bucket) });
+        }}
+      />
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+            removal.reset();
+          }
+        }}
+        title="Delete lifecycle rule?"
+        description={pendingDelete?.prefix || 'All keys'}
+        consequence="Objects will no longer expire under this rule. Already expired objects are not restored."
+        confirmLabel="Delete rule"
+        pending={removal.isPending}
+        error={removal.error}
+        onConfirm={() => {
+          if (pendingDelete) removal.mutate(pendingDelete.id);
+        }}
+      />
+    </>
   );
+}
+
+function CreateLifecycleRuleDialog({
+  bucket,
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  bucket: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCreated: () => Promise<void>;
+}) {
+  const [prefix, setPrefix] = React.useState('');
+  const [expiration, setExpiration] = React.useState('');
+  const [noncurrentExpiration, setNoncurrentExpiration] = React.useState('');
+  const valid = positive(expiration) !== null || positive(noncurrentExpiration) !== null;
+  const mutation = useMutation({
+    mutationFn: () =>
+      createLifecycleRule(bucket, {
+        prefix: prefix.trim(),
+        enabled: true,
+        expiration: positive(expiration),
+        noncurrent_version_expiration: positive(noncurrentExpiration),
+      }),
+    onSuccess: async () => {
+      toast.success('Lifecycle rule created');
+      setPrefix('');
+      setExpiration('');
+      setNoncurrentExpiration('');
+      await onCreated();
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Create lifecycle rule</DialogTitle>
+          <DialogDescription>
+            Set at least one positive expiration age. An empty prefix applies to all keys.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (valid) mutation.mutate();
+          }}
+        >
+          <DialogBody>
+            <Field label="Key prefix" htmlFor="lifecycle-prefix" hint="Optional.">
+              <Input value={prefix} onChange={(event) => setPrefix(event.target.value)} />
+            </Field>
+            <Field label="Expire current objects after days" htmlFor="lifecycle-expiration">
+              <Input
+                type="number"
+                min="1"
+                value={expiration}
+                onChange={(event) => setExpiration(event.target.value)}
+              />
+            </Field>
+            <Field
+              label="Expire non-current versions after days"
+              htmlFor="lifecycle-noncurrent-expiration"
+            >
+              <Input
+                type="number"
+                min="1"
+                value={noncurrentExpiration}
+                onChange={(event) => setNoncurrentExpiration(event.target.value)}
+              />
+            </Field>
+            {mutation.error ? <ErrorState error={mutation.error} /> : null}
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" disabled={!valid || mutation.isPending}>
+              {mutation.isPending ? 'Creating…' : 'Create rule'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function positive(value: string): number | null {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
 }

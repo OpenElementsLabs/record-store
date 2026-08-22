@@ -325,6 +325,7 @@ fn bucket(name: &str) -> Bucket {
         created_at: Utc::now(),
         versioning: VersioningState::Disabled,
         quota: BucketQuota::default(),
+        durability_policy: None,
     }
 }
 

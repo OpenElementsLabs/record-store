@@ -178,6 +178,7 @@ impl BucketService {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            durability_policy: None,
         };
         self.metadata
             .create_bucket(&bucket)

@@ -33,3 +33,22 @@ export function fetchLifecycleRules(name: string, signal?: AbortSignal): Promise
     signal ? { signal } : {},
   );
 }
+
+export function createLifecycleRule(
+  name: string,
+  input: {
+    readonly prefix: string;
+    readonly enabled: boolean;
+    readonly expiration: number | null;
+    readonly noncurrent_version_expiration: number | null;
+  },
+): Promise<LifecycleRule> {
+  return request<LifecycleRule>(`/v1/buckets/${encodeURIComponent(name)}/lifecycle`, {
+    method: 'POST',
+    body: input,
+  });
+}
+
+export function deleteLifecycleRule(id: string): Promise<void> {
+  return requestVoid(`/v1/lifecycle-rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}

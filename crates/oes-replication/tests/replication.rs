@@ -21,7 +21,8 @@ use chrono::Utc;
 use futures_util::StreamExt;
 use oes_cluster::{
     CapacityAwarePlacement, ClusterCommand, ClusterConfig, ClusterIdentity, FailureDomain,
-    NodeCapacity, NodeRegistration, NodeState, NodeVersions, StorageClass, WriteAcknowledgement,
+    NodeCapacity, NodeRegistration, NodeState, NodeVersions, ReplicaState, ReplicaTaskState,
+    StorageClass, WriteAcknowledgement,
 };
 use oes_consensus::{
     ClusterStore, ClusterWrite, ConsensusSettings, MetadataConsensus, ReplicatedClusterStore,
@@ -32,7 +33,10 @@ use oes_core::{
     OrganizationId, PayloadFormat, VersioningState,
 };
 use oes_metadata::MetadataRepository;
-use oes_replication::{ClusterContext, DistributedObjectStore, DistributedSettings};
+use oes_replication::{
+    ClusterContext, DistributedObjectStore, DistributedSettings, TaskExecutor,
+    tasks::MovementLimits,
+};
 use oes_rpc::{
     ConsensusNetwork, PeerHeaders, PeerPool, RemoteReadStream, RemoteReplicaVerification,
     RemoteReplicaWrite, ReplicaTarget, ReplicaTransport, RpcClientError, RpcClientSettings,
@@ -307,9 +311,10 @@ impl ReplicaTransport for FakeTransport {
 
 /// A single-node view of a cluster whose peers are faked.
 struct Harness {
-    _directory: tempfile::TempDir,
+    directory: tempfile::TempDir,
     store: DistributedObjectStore,
     context: Arc<ClusterContext>,
+    consensus: Arc<MetadataConsensus>,
     transport: Arc<FakeTransport>,
     peers: Vec<NodeId>,
     bucket_id: BucketId,
@@ -432,6 +437,7 @@ impl Harness {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            durability_policy: None,
         };
         metadata
             .create_bucket(&bucket)
@@ -454,9 +460,10 @@ impl Harness {
             DistributedSettings::new(PayloadFormat::Plaintext),
         );
         Self {
-            _directory: directory,
+            directory,
             store,
             context,
+            consensus,
             transport,
             peers: peer_ids,
             bucket_id: bucket.id,
@@ -749,6 +756,132 @@ async fn a_timed_out_replica_does_not_hold_up_a_satisfied_write() {
         .await
         .expect("a timed-out peer must not prevent a satisfied threshold");
     assert_eq!(result.metadata.size, payload.len() as u64);
+}
+
+#[tokio::test]
+async fn an_under_replicated_write_queues_and_completes_an_executable_repair() {
+    let harness = Harness::with_behaviour(
+        2,
+        3,
+        WriteAcknowledgement::Count(2),
+        BTreeMap::from([(1, Peer::Unavailable)]),
+    )
+    .await;
+    let put = harness
+        .put("repair-me", b"repairable payload")
+        .await
+        .expect("the configured two acknowledgements are durable");
+
+    harness
+        .context
+        .cluster
+        .refresh_durability_counters()
+        .await
+        .expect("refresh durability status");
+    assert_eq!(
+        harness
+            .context
+            .cluster
+            .usage()
+            .await
+            .expect("read degraded usage")
+            .under_replicated_payloads,
+        1,
+    );
+    let tasks = harness
+        .context
+        .cluster
+        .queued_tasks(10)
+        .await
+        .expect("read repair queue");
+    assert_eq!(tasks.tasks.len(), 1);
+    let task = &tasks.tasks[0];
+    let target = task
+        .target_node
+        .expect("a queued repair must name the node that can execute it");
+    assert_eq!(target, harness.peers[1]);
+
+    let target_metadata: Arc<dyn MetadataRepository> =
+        Arc::new(harness.consensus.state().metadata().clone());
+    let target_store = Arc::new(
+        LocalFilesystemStore::open(
+            harness.directory.path().join("repair-target"),
+            harness.directory.path().join("repair-target-tmp"),
+            target_metadata,
+        )
+        .await
+        .expect("open the repair target store"),
+    );
+    let target_context = Arc::new(ClusterContext {
+        node_id: target,
+        cluster: Arc::new(ReplicatedClusterStore::new(Arc::clone(&harness.consensus)))
+            as Arc<dyn ClusterStore>,
+        metadata: Arc::new(ReplicatedMetadataRepository::new(Arc::clone(
+            &harness.consensus,
+        ))),
+        local: target_store.clone() as Arc<dyn ReplicaStore>,
+        transport: harness.transport.clone(),
+        placement: Arc::new(CapacityAwarePlacement::new(Some(target))),
+        consensus: Some(Arc::clone(&harness.consensus)),
+    });
+    let executor = TaskExecutor::new(target_context, PayloadFormat::Plaintext);
+    assert_eq!(
+        executor
+            .run_once(MovementLimits {
+                bytes_per_second: 0,
+                ..MovementLimits::default()
+            })
+            .await,
+        1,
+        "the target node must claim and finish the queued repair",
+    );
+
+    let completed = harness
+        .context
+        .cluster
+        .task(task.id)
+        .await
+        .expect("read completed task")
+        .expect("repair task still exists");
+    assert!(matches!(
+        completed.state,
+        ReplicaTaskState::Completed { .. }
+    ));
+    let placement = harness
+        .context
+        .placement_for(put.metadata.id)
+        .await
+        .expect("read repaired placement")
+        .expect("placement exists");
+    assert_eq!(placement.replicas.len(), 3);
+    assert!(
+        placement
+            .replica(target)
+            .is_some_and(|replica| replica.state == ReplicaState::Healthy)
+    );
+    assert!(
+        target_store
+            .stat_replica(put.metadata.id)
+            .await
+            .expect("inspect repaired bytes")
+            .is_some()
+    );
+    harness
+        .context
+        .cluster
+        .refresh_durability_counters()
+        .await
+        .expect("refresh repaired status");
+    assert_eq!(
+        harness
+            .context
+            .cluster
+            .usage()
+            .await
+            .expect("read repaired usage")
+            .under_replicated_payloads,
+        0,
+    );
 }
 
 // ---------------------------------------------------------------------------

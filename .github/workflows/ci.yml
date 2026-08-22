@@ -33,3 +33,106 @@ jobs:
       - name: Build release binaries
         run: cargo build --workspace --release --locked
 
+  console:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Install console dependencies
+        working-directory: console
+        run: npm ci
+
+      - name: Check console formatting
+        working-directory: console
+        run: npm run format:check
+
+      - name: Lint console
+        working-directory: console
+        run: npm run lint
+
+      - name: Type-check console
+        working-directory: console
+        run: npm run typecheck
+
+      - name: Test console
+        working-directory: console
+        run: npm test
+
+      - name: Build console
+        working-directory: console
+        run: npm run build
+
+  console-e2e:
+    runs-on: ubuntu-latest
+    needs: [verify, console]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Install console dependencies
+        working-directory: console
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: console
+        run: npx playwright install --with-deps chromium
+
+      - name: Build console
+        working-directory: console
+        run: npm run build
+
+      - name: Run standalone E2E
+        working-directory: console
+        run: npm run test:e2e
+
+      - name: Run real-cluster E2E
+        working-directory: console
+        run: npm run test:e2e:cluster
+
+  s3-compatibility:
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tests/compatibility/go/go.mod
+          cache-dependency-path: tests/compatibility/go/go.sum
+
+      - name: Run boto3, AWS SDK for JavaScript, and AWS SDK for Go compatibility
+        run: tests/compatibility/run.sh
+
+  rust-security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: taiki-e/install-action@cargo-audit
+
+      - name: Audit Rust dependencies
+        run: tests/rust-audit.sh

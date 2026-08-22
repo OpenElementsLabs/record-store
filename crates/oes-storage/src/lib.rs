@@ -903,6 +903,7 @@ impl ObjectStore for LocalFilesystemStore {
             size: written.size,
             checksum: actual_checksum,
             payload_format: written.payload_format,
+            durability: oes_core::DurabilityProfile::Single,
             etag,
             content_type: request.content_type,
             custom_metadata: request.custom_metadata,
@@ -2603,6 +2604,7 @@ mod tests {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            durability_policy: None,
         };
         metadata
             .create_bucket(&bucket)

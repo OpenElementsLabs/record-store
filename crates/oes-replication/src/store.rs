@@ -18,8 +18,8 @@ use oes_cluster::{
 };
 use oes_consensus::ClusterWrite;
 use oes_core::{
-    CoreError, ETag, MultipartUploadState, ObjectId, ObjectMetadata, ObjectVersionRecord,
-    PayloadFormat, UploadedPart, VersionId,
+    CoreError, DurabilityProfile, ETag, MultipartUploadState, ObjectId, ObjectMetadata,
+    ObjectVersionRecord, PayloadFormat, ReplicationProfile, UploadedPart, VersionId,
 };
 use oes_metadata::{
     DeleteObjectResult, MetadataCommand, MetadataError, NewDeleteMarker, ObjectCommitResult,
@@ -217,13 +217,51 @@ impl DistributedObjectStore {
         if healthy >= desired {
             return;
         }
+        let topology = match self.context.topology().await {
+            Ok(topology) => topology,
+            Err(error) => {
+                warn!(
+                    object = %placement.object_id,
+                    %error,
+                    "could not plan repair for an under-replicated object"
+                );
+                return;
+            }
+        };
+        let request = ObjectPlacementRequest::new(
+            placement.object_id,
+            placement.desired_replicas,
+            1,
+            placement.storage_class.clone(),
+        )
+        .with_size_hint(Some(placement.size))
+        .with_existing_nodes(placement.replicas.iter().map(|replica| replica.node_id));
+        let target = match self.context.placement.place(&request, &topology) {
+            Ok(plan) => plan.targets.first().map(|target| target.node_id),
+            Err(error) => {
+                warn!(
+                    object = %placement.object_id,
+                    %error,
+                    "no repair destination is currently eligible"
+                );
+                None
+            }
+        };
+        let Some(target) = target else {
+            // The leader's incremental repair scan will try again after topology
+            // or capacity changes. Never enqueue a task that no node can claim:
+            // the active-task dedupe key would otherwise prevent a later,
+            // executable repair from replacing it.
+            return;
+        };
         let task = oes_cluster::ReplicaTask::queued(
             placement.object_id,
             ReplicaTaskKind::Repair,
             ReplicaTaskPriority::classify(ReplicaTaskKind::Repair, healthy, desired),
             placement.size,
             Utc::now(),
-        );
+        )
+        .with_target(Some(target));
         if let Err(error) = self
             .context
             .commit(ClusterWrite::cluster(ClusterCommand::EnqueueTask {
@@ -314,6 +352,13 @@ impl ObjectStore for DistributedObjectStore {
             size: outcome.size,
             checksum: outcome.checksum.clone(),
             payload_format: self.settings.payload_format,
+            durability: DurabilityProfile::Replicated(
+                ReplicationProfile::new(
+                    placement.desired_replicas,
+                    placement.desired_replicas.min(placement.replicas.len() as u8),
+                )
+                .map_err(StorageError::InvalidRequest)?,
+            ),
             etag: request.protocol_etag.unwrap_or(outcome.etag),
             content_type: request.content_type,
             custom_metadata: request.custom_metadata,
@@ -533,6 +578,13 @@ impl ObjectStore for DistributedObjectStore {
             size: outcome.size,
             checksum: outcome.checksum.clone(),
             payload_format: self.settings.payload_format,
+            durability: DurabilityProfile::Replicated(
+                ReplicationProfile::new(
+                    placement.desired_replicas,
+                    placement.desired_replicas.min(placement.replicas.len() as u8),
+                )
+                .map_err(StorageError::InvalidRequest)?,
+            ),
             etag: protocol_etag,
             content_type: persisted.content_type,
             custom_metadata: persisted.custom_metadata,

@@ -65,6 +65,7 @@ pub struct AppState {
     version: &'static str,
     mode: DeploymentMode,
     management_auth: ManagementAuth,
+    metrics_auth: MetricsAuth,
     events: Option<Arc<dyn EventRepository>>,
     cluster: Option<ClusterManagement>,
 }
@@ -123,6 +124,7 @@ impl AppState {
             version,
             mode: DeploymentMode::Standalone,
             management_auth,
+            metrics_auth: MetricsAuth::disabled(),
             events: None,
             cluster: None,
         }
@@ -139,6 +141,13 @@ impl AppState {
     #[must_use]
     pub fn with_management_auth(mut self, management_auth: ManagementAuth) -> Self {
         self.management_auth = management_auth;
+        self
+    }
+
+    /// Enables Prometheus scraping with a credential independent of management roles.
+    #[must_use]
+    pub fn with_metrics_auth(mut self, metrics_auth: MetricsAuth) -> Self {
+        self.metrics_auth = metrics_auth;
         self
     }
 
@@ -286,6 +295,45 @@ pub struct ManagementAuth {
     legacy_root: Option<Arc<CredentialManager>>,
 }
 
+/// Authentication dedicated to the Prometheus scrape endpoint.
+///
+/// Metrics are closed when no token is configured. The scrape credential has
+/// no authority on management routes.
+#[derive(Clone)]
+pub struct MetricsAuth {
+    digest: Option<[u8; 32]>,
+}
+
+impl MetricsAuth {
+    /// Creates an enabled metrics authenticator from one bearer token.
+    #[must_use]
+    pub fn bearer_token(token: &[u8]) -> Self {
+        Self {
+            digest: Some(Sha256::digest(token).into()),
+        }
+    }
+
+    const fn disabled() -> Self {
+        Self { digest: None }
+    }
+
+    fn authenticate(&self, request: &Request) -> bool {
+        let Some(expected) = self.digest else {
+            return false;
+        };
+        let Some(token) = request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+        else {
+            return false;
+        };
+        let actual: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        bool::from(expected.ct_eq(&actual))
+    }
+}
+
 impl ManagementAuth {
     /// Creates a token set. At least the system-administrator token is expected
     /// for a production deployment; optional role tokens can be omitted.
@@ -383,6 +431,7 @@ impl ManagementPrincipal {
             ManagementRole::Auditor => {
                 request.method() == axum::http::Method::GET
                     && (path == "/api/v1/auth/session"
+                        || path == "/api/v1/system/info"
                         || path == "/api/v1/events"
                         || path == "/api/v1/audit/events"
                         || path == "/api/v1/storage/status"
@@ -393,7 +442,6 @@ impl ManagementPrincipal {
                         || path == "/api/v1/webhook-deliveries"
                         || path.starts_with("/api/v1/cluster")
                         || path.starts_with("/api/v1/nodes")
-                        || path.starts_with("/api/v1/replication")
                         || path.starts_with("/api/v1/repair")
                         || path.starts_with("/api/v1/rebalance"))
             }
@@ -412,6 +460,7 @@ impl ManagementPrincipal {
 /// Builds public operational routes and authenticated administrative routes.
 pub fn router(state: AppState) -> Router {
     let administrative = Router::new()
+        .route("/api/v1/system/info", get(system_info))
         .route("/api/v1/auth/session", get(auth_session))
         .route("/api/v1/storage/status", get(storage_status))
         .route("/api/v1/storage/usage", get(storage_usage))
@@ -444,7 +493,6 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/nodes/{id}/decommission",
             axum::routing::post(decommission_cluster_node),
         )
-        .route("/api/v1/replication/status", get(replication_status))
         .route("/api/v1/repair/status", get(repair_status))
         .route("/api/v1/rebalance", axum::routing::post(start_rebalance))
         .route("/api/v1/rebalance/status", get(rebalance_status))
@@ -546,12 +594,18 @@ pub fn router(state: AppState) -> Router {
             state.management_auth.clone(),
             require_management,
         ));
+    let operational_metrics =
+        Router::new()
+            .route("/metrics", get(metrics))
+            .route_layer(middleware::from_fn_with_state(
+                state.metrics_auth.clone(),
+                require_metrics,
+            ));
 
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
-        .route("/api/v1/system/info", get(system_info))
-        .route("/metrics", get(metrics))
+        .merge(operational_metrics)
         .merge(administrative)
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(1024 * 1024))
@@ -612,6 +666,22 @@ async fn require_management(
     let mut response = next.run(request).await;
     response.extensions_mut().insert(principal);
     response
+}
+
+async fn require_metrics(
+    State(authentication): State<MetricsAuth>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !authentication.authenticate(&request) {
+        let request_id = request
+            .extensions()
+            .get::<RequestId>()
+            .cloned()
+            .unwrap_or_else(RequestId::new);
+        return ApiError::unauthorized(request_id).into_response();
+    }
+    next.run(request).await
 }
 
 async fn health() -> Json<StatusResponse> {
@@ -778,17 +848,6 @@ async fn decommission_cluster_node(
         .await
         .map_err(|error| cluster_operation_error(error, request_id))?;
     Ok(Json(operation))
-}
-
-async fn replication_status(
-    State(state): State<AppState>,
-    Extension(request_id): Extension<RequestId>,
-) -> Result<Json<oes_replication::ReplicationStatus>, ApiError> {
-    Ok(Json(
-        collect_cluster_status(&state, request_id)
-            .await?
-            .replication,
-    ))
 }
 
 async fn repair_status(

@@ -364,6 +364,7 @@ mod tests {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            durability_policy: None,
         };
         metadata.create_bucket(&bucket).await.expect("bucket");
         let key = ObjectKey::new("expired.txt").expect("key");
@@ -376,6 +377,7 @@ mod tests {
                 size: 0,
                 checksum: Checksum::sha256([0_u8; 32]),
                 payload_format: oes_core::PayloadFormat::Plaintext,
+                durability: oes_core::DurabilityProfile::Single,
                 etag: ETag::from_md5([0_u8; 16]),
                 content_type: None,
                 custom_metadata: BTreeMap::new(),

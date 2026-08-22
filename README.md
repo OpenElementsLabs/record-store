@@ -77,6 +77,17 @@ cargo test --workspace --all-features --locked
 cargo build --workspace --release --locked
 ```
 
+Dependency security is checked with `tests/rust-audit.sh`. The 2026-08-22
+review upgraded `quick-xml` to 0.41.0 for RUSTSEC-2026-0194 and
+RUSTSEC-2026-0195. One unscored RustSec advisory, RUSTSEC-2026-0235, is
+narrowly excepted: `rkyv` 0.7.46 appears in `Cargo.lock` only as an inactive
+optional serialization backend of `rust_decimal` through
+`openraft -> byte-unit`. OES does not compile or process rkyv archives. The
+audit script first proves that `cargo tree -e features -i rkyv@0.7.46` is empty
+and fails if it becomes reachable; all other advisories remain fatal. Remove
+the exception when the upstream dependency chain moves to rkyv 0.8.17 or
+removes the optional backend.
+
 Storage microbenchmarks are reproducible with `cargo bench -p oes-storage --bench storage`.
 
 Real-client compatibility checks exercise boto3, AWS SDK for JavaScript v3, and AWS SDK for Go against an ephemeral encrypted OES data directory on the fixed listeners. They cover bucket/object I/O, listing, multipart completion, presigned requests, ranges, versioning, historical reads, and copy behavior:
@@ -135,7 +146,10 @@ Set `OES_ROOT_S3_ENABLED=false` after service-account policies are established t
 
 ### Management API and CLI
 
-Public operational routes are `GET /health`, `GET /ready`, `GET /api/v1/system/info`, and `GET /metrics`. Administrative routes under `/api/v1` use dedicated bearer tokens. Set `OES_MANAGEMENT_TOKEN` in the CLI environment to the configured system, storage, or auditor token.
+Only `GET /health` and `GET /ready` are public. System information is part of
+the authenticated management plane, and `GET /metrics` accepts only the
+dedicated `OES_METRICS_SCRAPE_TOKEN`. Set `OES_MANAGEMENT_TOKEN` in the CLI
+environment to the configured system, storage, or auditor token.
 
 If no system token is configured, legacy root Basic authentication remains available for development compatibility and OES emits a warning. Management roles are separate from S3 policies: system administrators have full access, storage administrators manage storage/buckets/integrity/lifecycle, and auditors have read-only access to audit and operational metadata.
 
@@ -226,6 +240,9 @@ Configuration file values overlay defaults, then environment variables take prec
 | `OES_CLUSTER_MOVEMENT_CONCURRENCY` | node-local movement concurrency |
 | `OES_CLUSTER_MOVEMENT_BYTES_PER_SECOND` | movement bandwidth ceiling |
 | `OES_CLUSTER_RECONCILE_INTERVAL_SECONDS` | returning-node reconciliation interval |
+| `OES_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT` | initial cluster low-capacity watermark |
+| `OES_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT` | initial cluster high-capacity watermark |
+| `OES_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT` | initial cluster critical-capacity watermark |
 | `OES_CLUSTER_TLS_CERTIFICATE` | internal TLS certificate chain |
 | `OES_CLUSTER_TLS_PRIVATE_KEY` | internal TLS private key |
 | `OES_CLUSTER_TLS_PEER_CA` | internal peer trust root |
@@ -241,6 +258,7 @@ Configuration file values overlay defaults, then environment variables take prec
 | `OES_MANAGEMENT_SYSTEM_TOKEN` | `auth.management_system_token` |
 | `OES_MANAGEMENT_STORAGE_TOKEN` | `auth.management_storage_token` |
 | `OES_MANAGEMENT_AUDITOR_TOKEN` | `auth.management_auditor_token` |
+| `OES_METRICS_SCRAPE_TOKEN` | `auth.metrics_scrape_token` |
 | `OES_MAX_CONCURRENT_OPERATIONS` | `limits.maximum_concurrent_operations` |
 | `OES_MAX_HEADER_BYTES` | `limits.maximum_header_bytes` |
 | `OES_WEBHOOK_ALLOW_HTTP` | `webhooks.allow_http` |
@@ -271,7 +289,7 @@ the management credential and forwards the request to 7601, so the credential
 lives in an HTTP-only cookie the page cannot read, no CORS configuration is
 needed, and the browser never reaches storage, metadata, consensus, or 7603.
 
-Deployment mode is discovered from `GET /api/v1/system/info`, which reports
+After sign-in, deployment mode is discovered from `GET /api/v1/system/info`, which reports
 `mode` and a capability set. A standalone deployment shows a storage-management
 interface with no nodes, quorum, replication, repair, or rebalancing; the same
 build exposes those screens when the backend reports cluster mode.

@@ -1,31 +1,28 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const S3_PORT = testPort('OES_E2E_S3_PORT', 17_600);
-const API_PORT = testPort('OES_E2E_API_PORT', 17_601);
-const CONSOLE_PORT = testPort('OES_E2E_CONSOLE_PORT', 17_602);
-const RPC_PORT = testPort('OES_E2E_RPC_PORT', 17_603);
-const HARNESS_PORT = testPort('OES_E2E_HARNESS_PORT', 17_604);
+const CONSOLE_PORT = testPort('OES_CLUSTER_E2E_CONSOLE_PORT', 18_602);
+const API_PORT = testPort('OES_CLUSTER_E2E_NODE_1_API_PORT', 18_601);
+const HARNESS_PORT = testPort('OES_CLUSTER_E2E_HARNESS_PORT', 18_604);
 const CONSOLE_URL = `http://127.0.0.1:${CONSOLE_PORT}`;
 const MANAGEMENT_URL = `http://127.0.0.1:${API_PORT}`;
 const MANAGEMENT_TOKEN = 'e2e-management-system-token-32-bytes-long';
 
-// Test workers and global setup inherit these authoritative endpoints.
 process.env.OES_E2E_MANAGEMENT_URL = MANAGEMENT_URL;
 process.env.OES_E2E_CONSOLE_URL = CONSOLE_URL;
-process.env.OES_E2E_EXPECTED_MODE = 'standalone';
+process.env.OES_E2E_EXPECTED_MODE = 'cluster';
 process.env.OES_E2E_TOKEN = MANAGEMENT_TOKEN;
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['cluster.spec.ts'],
+  testMatch: ['cluster.spec.ts'],
   globalSetup: './e2e/global-setup.ts',
   fullyParallel: false,
   workers: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
+  reporter: 'list',
   timeout: 60_000,
-  expect: { timeout: 10_000 },
+  expect: { timeout: 15_000 },
   use: {
     baseURL: CONSOLE_URL,
     trace: 'retain-on-failure',
@@ -33,20 +30,13 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'node e2e/start-oes.mjs',
+      command: 'node e2e/start-cluster.mjs',
       url: `http://127.0.0.1:${HARNESS_PORT}/ready`,
       reuseExistingServer: false,
       timeout: 600_000,
       stdout: 'pipe',
       stderr: 'pipe',
-      env: {
-        OES_E2E_S3_PORT: String(S3_PORT),
-        OES_E2E_API_PORT: String(API_PORT),
-        OES_E2E_CONSOLE_PORT: String(CONSOLE_PORT),
-        OES_E2E_RPC_PORT: String(RPC_PORT),
-        OES_E2E_HARNESS_PORT: String(HARNESS_PORT),
-        OES_E2E_TOKEN: MANAGEMENT_TOKEN,
-      },
+      env: { OES_E2E_TOKEN: MANAGEMENT_TOKEN },
     },
     {
       command: `npm run start:e2e -- --port ${CONSOLE_PORT}`,
@@ -60,7 +50,7 @@ export default defineConfig({
       },
     },
   ],
-  metadata: { managementToken: MANAGEMENT_TOKEN, mode: 'standalone' },
+  metadata: { managementToken: MANAGEMENT_TOKEN, mode: 'cluster' },
 });
 
 function testPort(name: string, fallback: number): number {
