@@ -338,6 +338,8 @@ it without touching the queue, progress, retry, or cancellation UI above it.
 
 `OES_MODE` is not set above because standalone is the default; no cluster configuration is required to run one node.
 
+Compose variables may be kept in a repo-root `.env` file (which Git ignores) and loaded explicitly with `--env-file .env`. Use `deploy/docker/compose.console.yml` for one standalone OES node plus the console, or `deploy/docker/compose.yml` for the same node without the console.
+
 ```bash
 docker build -f deploy/docker/Dockerfile -t oes .
 docker run --read-only \
@@ -357,11 +359,12 @@ docker compose -f deploy/docker/compose.yml up --build -d
 docker compose -f deploy/docker/compose.yml ps
 ```
 
-A separate Compose file (`deploy/docker/compose.cluster.yml`) is an explicit, opt-in example of a three-node replicated cluster plus a management-only `control` process. It publishes the same public ports; 7603 remains private to the Compose network. Nothing here is required for the default standalone experience:
+A separate Compose file (`deploy/docker/compose.cluster.yml`) is an explicit, opt-in example of a three-node replicated cluster, a management-only `control` process, and the web console. It publishes S3 on 7600, management on 7601, and the console on 7602; 7603 remains private to the Compose network. Nothing here is required for the default standalone experience:
 
 ```bash
 docker compose -f deploy/docker/compose.cluster.yml up --build -d
 docker compose -f deploy/docker/compose.cluster.yml ps
+# open http://localhost:7602 and sign in with OES_MANAGEMENT_SYSTEM_TOKEN
 OES_MANAGEMENT_TOKEN=local-development-management-token-change-me \
   docker compose -f deploy/docker/compose.cluster.yml exec control oes cluster status
 ```
@@ -369,7 +372,7 @@ OES_MANAGEMENT_TOKEN=local-development-management-token-change-me \
 A third Compose file (`deploy/docker/compose.console.yml`) runs a standalone node together with the web console. It publishes S3 on 7600, management on 7601, and the console on 7602:
 
 ```bash
-docker compose -f deploy/docker/compose.console.yml up --build -d
+docker compose --env-file .env -f deploy/docker/compose.console.yml up --build -d
 # open http://localhost:7602 and sign in with OES_MANAGEMENT_SYSTEM_TOKEN
 ```
 

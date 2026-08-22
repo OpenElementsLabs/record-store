@@ -3,11 +3,13 @@ x-oes-environment: &oes-environment
   OES_ROOT_SECRET_KEY: "${OES_ROOT_SECRET_KEY:-local-development-secret-change-me}"
   OES_CREDENTIAL_MASTER_KEY: "${OES_CREDENTIAL_MASTER_KEY:-local-development-master-key-change-me}"
   OES_MANAGEMENT_SYSTEM_TOKEN: "${OES_MANAGEMENT_SYSTEM_TOKEN:-local-development-management-token-change-me}"
+  OES_MANAGEMENT_STORAGE_TOKEN: "${OES_MANAGEMENT_STORAGE_TOKEN:-local-development-storage-token-change-me}"
+  OES_MANAGEMENT_AUDITOR_TOKEN: "${OES_MANAGEMENT_AUDITOR_TOKEN:-local-development-auditor-token-change-me}"
   OES_STORAGE_ENCRYPTION_ENABLED: "${OES_STORAGE_ENCRYPTION_ENABLED:-true}"
-  OES_ROOT_S3_ENABLED: "true"
+  OES_ROOT_S3_ENABLED: "${OES_ROOT_S3_ENABLED:-true}"
   OES_RPC_BIND: "0.0.0.0:7603"
   OES_CLUSTER_REPLICATION_FACTOR: "3"
-  OES_LOG_JSON: "true"
+  OES_LOG_JSON: "${OES_LOG_JSON:-true}"
 
 x-oes-node: &oes-node
   build:
@@ -116,6 +118,27 @@ services:
     volumes:
       - control-data:/var/lib/oes
       - join-tokens:/join:ro
+
+  console:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.console
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    depends_on:
+      control:
+        condition: service_healthy
+    ports:
+      - "7602:7602"
+    environment:
+      # Browser requests stay same-origin; the console server reaches the
+      # management-only control process over the private Compose network.
+      OES_API_URL: "http://control:7601"
+      OES_CONSOLE_SECURE_COOKIES: "${OES_CONSOLE_SECURE_COOKIES:-false}"
 
 volumes:
   storage-1-data:
