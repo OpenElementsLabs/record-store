@@ -12,7 +12,9 @@ test.describe('authentication', () => {
     await page.getByLabel('Management token').fill('not-a-valid-management-token-value');
     await page.getByRole('button', { name: 'Sign in' }).click();
 
-    await expect(page.getByRole('alert')).toContainText(/not accepted/i);
+    // Scoped to the form's own alert: the framework injects a route announcer
+    // with the same role on every page.
+    await expect(page.locator('#management-token-error')).toContainText(/not accepted/i);
     await expect(page).toHaveURL(/\/login/);
     // No session cookie may exist after a refused sign-in.
     const cookies = await page.context().cookies();

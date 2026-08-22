@@ -1,13 +1,13 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ColumnDef } from '@tanstack/react-table';
+import { createColumnHelper } from '@tanstack/react-table';
 import { MoreHorizontal } from 'lucide-react';
 import * as React from 'react';
 import { toast } from 'sonner';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
-import { DataTable } from '@/components/data-table';
+import { DataTable, type DataTableFeatures } from '@/components/data-table';
 import { EmptyState } from '@/components/empty-state';
 import { ErrorState } from '@/components/error-state';
 import { PageHeader } from '@/components/page-header';
@@ -64,6 +64,8 @@ type PendingAction =
   | { readonly kind: 'maintenance'; readonly node: ClusterNode }
   | { readonly kind: 'decommission'; readonly node: ClusterNode };
 
+const column = createColumnHelper<DataTableFeatures, ClusterNode>();
+
 export function NodesScreen() {
   const client = useQueryClient();
   const permissions = usePermissions();
@@ -110,138 +112,132 @@ export function NodesScreen() {
       toast.error(error instanceof ApiError ? error.message : 'Could not resume the node'),
   });
 
-  const columns = React.useMemo<ColumnDef<ClusterNode, unknown>[]>(
-    () => [
-      {
-        id: 'node',
-        header: 'Node',
-        accessorFn: (row) => row.node_id,
-        cell: ({ row }) => (
-          <div className="space-y-0.5">
-            <p className="font-mono text-xs text-ink" title={row.original.node_id}>
-              {shortenIdentifier(row.original.node_id, 8)}
-            </p>
-            <p className="text-xs text-ink-subtle">{row.original.rpc_address}</p>
-          </div>
-        ),
-      },
-      {
-        id: 'state',
-        header: 'Status',
-        accessorFn: (row) => row.state,
-        cell: ({ row }) => (
-          <div className="space-y-1">
-            <StatusBadge
-              level={levelFor(row.original.state)}
-              label={capitalise(row.original.state)}
-            />
-            {row.original.state_reason ? (
-              <p className="max-w-48 text-xs text-ink-subtle">{row.original.state_reason}</p>
-            ) : null}
-          </div>
-        ),
-      },
-      {
-        id: 'capacity',
-        header: 'Used',
-        accessorFn: (row) => row.utilization_percent,
-        cell: ({ row }) => (
-          <div className="w-32 space-y-1">
-            <p className="text-xs tabular-nums text-ink">
-              {formatBytes(row.original.capacity_bytes - row.original.available_bytes)} of{' '}
-              {formatBytes(row.original.capacity_bytes)}
-            </p>
-            <UsageBar
-              used={row.original.capacity_bytes - row.original.available_bytes}
-              total={row.original.capacity_bytes}
-              label={`Utilisation for ${row.original.node_id}`}
-            />
-          </div>
-        ),
-      },
-      {
-        id: 'replicas',
-        header: 'Replicas',
-        accessorFn: (row) => row.replicas,
-        cell: ({ row }) => (
-          <span className="tabular-nums text-xs">{formatCount(row.original.replicas)}</span>
-        ),
-      },
-      {
-        id: 'topology',
-        header: 'Topology',
-        accessorFn: (row) => row.storage_class,
-        cell: ({ row }) => (
-          <div className="flex flex-wrap gap-1">
-            <Badge tone="neutral">{row.original.storage_class}</Badge>
-            {Object.entries(row.original.failure_domain).map(([key, value]) => (
-              <Badge key={key} tone="neutral" className="font-mono">
-                {key}={value}
-              </Badge>
-            ))}
-            {row.original.metadata_voter ? <Badge tone="accent">voter</Badge> : null}
-          </div>
-        ),
-      },
-      {
-        id: 'version',
-        header: 'Version',
-        accessorFn: (row) => row.software_version,
-        cell: ({ row }) => (
-          <div className="space-y-0.5">
-            <p className="font-mono text-xs text-ink">{row.original.software_version}</p>
-            <p className="text-xs text-ink-subtle">
-              seen {formatRelativeTime(row.original.last_heartbeat_at)}
-            </p>
-          </div>
-        ),
-      },
-      {
-        id: 'actions',
-        header: () => <span className="sr-only">Actions</span>,
-        enableSorting: false,
-        cell: ({ row }) => {
-          if (!permissions.manage_cluster) return null;
-          const node = row.original;
-          const resumable = node.state === 'draining' || node.state === 'maintenance';
-          return (
-            <div className="flex justify-end">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Actions for node ${node.node_id}`}
-                  >
-                    <MoreHorizontal aria-hidden />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent>
-                  <DropdownMenuItem onSelect={() => setPending({ kind: 'drain', node })}>
-                    Drain node
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setPending({ kind: 'maintenance', node })}>
-                    Enter maintenance
-                  </DropdownMenuItem>
-                  {resumable ? (
-                    <DropdownMenuItem onSelect={() => resume.mutate(node)}>
-                      Resume node
-                    </DropdownMenuItem>
-                  ) : null}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    destructive
-                    onSelect={() => setPending({ kind: 'decommission', node })}
-                  >
-                    Decommission node
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+  const columns = React.useMemo(
+    () =>
+      column.columns([
+        column.accessor((row) => row.node_id, {
+          id: 'node',
+          header: 'Node',
+          cell: ({ row }) => (
+            <div className="space-y-0.5">
+              <p className="font-mono text-xs text-ink" title={row.original.node_id}>
+                {shortenIdentifier(row.original.node_id, 8)}
+              </p>
+              <p className="text-xs text-ink-subtle">{row.original.rpc_address}</p>
             </div>
-          );
-        },
-      },
-    ],
+          ),
+        }),
+        column.accessor((row) => row.state, {
+          id: 'state',
+          header: 'Status',
+          cell: ({ row }) => (
+            <div className="space-y-1">
+              <StatusBadge
+                level={levelFor(row.original.state)}
+                label={capitalise(row.original.state)}
+              />
+              {row.original.state_reason ? (
+                <p className="max-w-48 text-xs text-ink-subtle">{row.original.state_reason}</p>
+              ) : null}
+            </div>
+          ),
+        }),
+        column.accessor((row) => row.utilization_percent, {
+          id: 'capacity',
+          header: 'Used',
+          cell: ({ row }) => (
+            <div className="w-32 space-y-1">
+              <p className="text-xs tabular-nums text-ink">
+                {formatBytes(row.original.capacity_bytes - row.original.available_bytes)} of{' '}
+                {formatBytes(row.original.capacity_bytes)}
+              </p>
+              <UsageBar
+                used={row.original.capacity_bytes - row.original.available_bytes}
+                total={row.original.capacity_bytes}
+                label={`Utilisation for ${row.original.node_id}`}
+              />
+            </div>
+          ),
+        }),
+        column.accessor((row) => row.replicas, {
+          id: 'replicas',
+          header: 'Replicas',
+          cell: ({ getValue }) => (
+            <span className="tabular-nums text-xs">{formatCount(getValue())}</span>
+          ),
+        }),
+        column.accessor((row) => row.storage_class, {
+          id: 'topology',
+          header: 'Topology',
+          cell: ({ row }) => (
+            <div className="flex flex-wrap gap-1">
+              <Badge tone="neutral">{row.original.storage_class}</Badge>
+              {Object.entries(row.original.failure_domain).map(([key, value]) => (
+                <Badge key={key} tone="neutral" className="font-mono">
+                  {key}={value}
+                </Badge>
+              ))}
+              {row.original.metadata_voter ? <Badge tone="accent">voter</Badge> : null}
+            </div>
+          ),
+        }),
+        column.accessor((row) => row.software_version, {
+          id: 'version',
+          header: 'Version',
+          cell: ({ row }) => (
+            <div className="space-y-0.5">
+              <p className="font-mono text-xs text-ink">{row.original.software_version}</p>
+              <p className="text-xs text-ink-subtle">
+                seen {formatRelativeTime(row.original.last_heartbeat_at)}
+              </p>
+            </div>
+          ),
+        }),
+        column.display({
+          id: 'actions',
+          header: () => <span className="sr-only">Actions</span>,
+          cell: ({ row }) => {
+            if (!permissions.manage_cluster) return null;
+            const node = row.original;
+            const resumable = node.state === 'draining' || node.state === 'maintenance';
+            return (
+              <div className="flex justify-end">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Actions for node ${node.node_id}`}
+                    >
+                      <MoreHorizontal aria-hidden />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent>
+                    <DropdownMenuItem onSelect={() => setPending({ kind: 'drain', node })}>
+                      Drain node
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setPending({ kind: 'maintenance', node })}>
+                      Enter maintenance
+                    </DropdownMenuItem>
+                    {resumable ? (
+                      <DropdownMenuItem onSelect={() => resume.mutate(node)}>
+                        Resume node
+                      </DropdownMenuItem>
+                    ) : null}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      destructive
+                      onSelect={() => setPending({ kind: 'decommission', node })}
+                    >
+                      Decommission node
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            );
+          },
+        }),
+      ]),
     [permissions.manage_cluster, resume],
   );
 

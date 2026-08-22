@@ -18,13 +18,28 @@ const securityHeaders = [
   },
 ];
 
+/**
+ * The policy for API responses, which are payloads rather than pages.
+ *
+ * `sandbox` is deliberately absent: object downloads are served from this path
+ * with `Content-Disposition: attachment`, and sandboxing a navigation response
+ * can suppress the download the operator asked for.
+ */
+const apiPolicy = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   // The console is deployed as a container image alongside the OES server.
   output: 'standalone',
   async headers() {
-    return [{ source: '/:path*', headers: securityHeaders }];
+    return [
+      { source: '/:path*', headers: securityHeaders },
+      // API responses are data, never documents, so they are not routed through
+      // the nonce middleware. They still carry a policy: if one is ever opened
+      // directly, it may load nothing at all.
+      { source: '/api/:path*', headers: [{ key: 'Content-Security-Policy', value: apiPolicy }] },
+    ];
   },
 };
 

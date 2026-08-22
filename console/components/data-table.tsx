@@ -1,12 +1,18 @@
 'use client';
 
 import {
-  type ColumnDef,
+  createSortedRowModel,
+  rowSortingFeature,
+  sortFn_alphanumeric,
+  sortFn_basic,
+  sortFn_datetime,
+  sortFn_text,
+  tableFeatures,
+  useTable,
+  type RowData,
+  type SortDirection,
   type SortingState,
-  flexRender,
-  getCoreRowModel,
-  getSortedRowModel,
-  useReactTable,
+  type TableOptions,
 } from '@tanstack/react-table';
 import { ArrowDown, ArrowUp, ChevronsUpDown } from 'lucide-react';
 import * as React from 'react';
@@ -24,25 +30,73 @@ import {
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 
-export type DataTableProps<TData> = {
+/**
+ * The feature set every console table is built from.
+ *
+ * Only sorting is registered, and that is deliberate. Without
+ * `rowPaginationFeature` the table has no way to slice its input, so a screen
+ * that pages on the server cannot accidentally end up paginating one loaded
+ * page in the browser. Filtering is likewise absent: the one screen that
+ * filters narrows the array it passes in, so the rows on screen are always the
+ * rows the screen asked for.
+ */
+export const dataTableFeatures = tableFeatures({
+  rowSortingFeature,
+  sortedRowModel: createSortedRowModel(),
+  // Registered individually rather than through the whole `sortFns` registry so
+  // only these comparators are bundled. `sortFn: 'auto'` resolves among them.
+  sortFns: {
+    alphanumeric: sortFn_alphanumeric,
+    basic: sortFn_basic,
+    datetime: sortFn_datetime,
+    text: sortFn_text,
+  },
+});
+
+/** The concrete feature registry, for typing columns against this table. */
+export type DataTableFeatures = typeof dataTableFeatures;
+
+/**
+ * Columns for the shared table.
+ *
+ * Build these with `createColumnHelper<DataTableFeatures, TRow>()` so each
+ * accessor keeps its own value type instead of widening to a single one.
+ */
+export type DataTableColumns<TData extends RowData> = TableOptions<
+  DataTableFeatures,
+  TData
+>['columns'];
+
+export type DataTableProps<TData extends RowData> = {
+  /** One page of rows, already in the order they should appear. */
   readonly data: readonly TData[];
-  readonly columns: readonly ColumnDef<TData, unknown>[];
+  readonly columns: DataTableColumns<TData>;
   /** Stable row identity, so rows are not re-keyed by index on reorder. */
   readonly rowId: (row: TData) => string;
   readonly loading?: boolean;
   readonly empty?: React.ReactNode;
   readonly onRowClick?: (row: TData) => void;
   readonly initialSorting?: SortingState;
+  /**
+   * Set when `data` is one server-ordered page. Client sorting is then skipped
+   * rather than reordering the loaded page, which would look like sorting the
+   * whole dataset while only touching the rows in hand.
+   */
+  readonly serverOrdered?: boolean;
 };
+
+/** A stable empty page, so a missing query result does not invalidate the row model. */
+const NO_ROWS: readonly never[] = [];
 
 /**
  * The shared table for operational lists.
  *
- * Sorting is client side, which is appropriate for the bounded lists that use it
- * (buckets, accounts, policies, nodes). Screens whose data is genuinely large —
- * objects, audit, events — page on the server and pass one page at a time.
+ * It renders exactly the rows it is given. Client-side sorting serves the
+ * bounded lists that use it — buckets, service accounts, nodes — and is turned
+ * off with `serverOrdered` for cursor-paged screens, where order belongs to the
+ * backend.
  */
-export function DataTable<TData>({
+export function DataTable<TData extends RowData>({
   data,
   columns,
   rowId,
@@ -50,20 +104,19 @@ export function DataTable<TData>({
   empty,
   onRowClick,
   initialSorting = [],
+  serverOrdered = false,
 }: DataTableProps<TData>) {
   const [sorting, setSorting] = React.useState<SortingState>(initialSorting);
 
-  // The table library is not React Compiler compatible, so this component is
-  // skipped by the compiler. Behaviour is unaffected; only auto-memoisation is.
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({
-    data: data as TData[],
-    columns: columns as ColumnDef<TData, unknown>[],
+  const table = useTable({
+    features: dataTableFeatures,
+    columns,
+    data: data.length > 0 ? data : NO_ROWS,
     state: { sorting },
     onSortingChange: setSorting,
     getRowId: (row) => rowId(row),
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
+    manualSorting: serverOrdered,
+    enableSorting: !serverOrdered,
   });
 
   if (loading && data.length === 0) {
@@ -92,7 +145,7 @@ export function DataTable<TData>({
                         onClick={header.column.getToggleSortingHandler()}
                         className="inline-flex items-center gap-1 hover:text-ink"
                       >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
+                        <table.FlexRender header={header} />
                         {direction === 'asc' ? (
                           <ArrowUp aria-hidden className="size-3" />
                         ) : direction === 'desc' ? (
@@ -102,7 +155,7 @@ export function DataTable<TData>({
                         )}
                       </button>
                     ) : (
-                      flexRender(header.column.columnDef.header, header.getContext())
+                      <table.FlexRender header={header} />
                     )}
                   </TableHead>
                 );
@@ -117,9 +170,9 @@ export function DataTable<TData>({
               className={cn(onRowClick && 'cursor-pointer')}
               onClick={onRowClick ? () => onRowClick(row.original) : undefined}
             >
-              {row.getVisibleCells().map((cell) => (
+              {row.getAllCells().map((cell) => (
                 <TableCell key={cell.id}>
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  <table.FlexRender cell={cell} />
                 </TableCell>
               ))}
             </TableRow>
@@ -130,7 +183,7 @@ export function DataTable<TData>({
   );
 }
 
-function ariaSort(direction: false | 'asc' | 'desc'): 'ascending' | 'descending' | undefined {
+function ariaSort(direction: false | SortDirection): 'ascending' | 'descending' | undefined {
   if (direction === 'asc') return 'ascending';
   if (direction === 'desc') return 'descending';
   return undefined;

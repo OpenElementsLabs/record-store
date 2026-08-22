@@ -93,6 +93,53 @@ describe('ObjectBrowser', () => {
     expect(String(push.mock.calls[0]?.[0])).toContain('cursor=next-1');
   });
 
+  it('sends the cursor from the URL, so a page survives a reload', async () => {
+    searchParams = new URLSearchParams('cursor=page-2&limit=100');
+    fetchMock.mockResolvedValue(jsonResponse(page()));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByText('report.pdf');
+
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('continuation_token=page-2');
+    expect(url).toContain('limit=100');
+  });
+
+  it('drops the cursor when the page size changes', async () => {
+    searchParams = new URLSearchParams('cursor=page-2');
+    fetchMock.mockResolvedValue(jsonResponse(page({ next_continuation_token: 'next-1' })));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByText('report.pdf');
+
+    await userEvent.selectOptions(screen.getByLabelText(/rows per page/i), '100');
+
+    // A cursor names a position within one page size, so it cannot be carried
+    // over to a differently sized listing.
+    const target = String(push.mock.calls[0]?.[0]);
+    expect(target).toContain('limit=100');
+    expect(target).not.toContain('cursor');
+  });
+
+  it('renders one server page without implying it is the whole bucket', async () => {
+    const objects = Array.from({ length: 50 }, (_, index) => ({
+      ...page().objects[0]!,
+      key: `documents/file-${String(index).padStart(3, '0')}.bin`,
+    }));
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        page({ objects, prefixes: [], is_truncated: true, next_continuation_token: 'next-1' }),
+      ),
+    );
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByText('file-000.bin');
+
+    // Exactly the fetched page is shown, and the row count is never presented
+    // as a total: a bucket can hold millions of keys the console has not seen.
+    const [, ...rows] = within(screen.getByRole('table')).getAllByRole('row');
+    expect(rows).toHaveLength(50);
+    expect(screen.queryByText(/50 objects|of 50|1-50/)).toBeNull();
+    expect(screen.getByRole('button', { name: /next page/i }).hasAttribute('disabled')).toBe(false);
+  });
+
   it('disables paging when the listing is complete', async () => {
     fetchMock.mockResolvedValue(jsonResponse(page()));
     renderWithProviders(<ObjectBrowser bucket="uploads" />);

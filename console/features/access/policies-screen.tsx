@@ -5,6 +5,7 @@ import { Plus, TriangleAlert, X } from 'lucide-react';
 import * as React from 'react';
 import { toast } from 'sonner';
 
+import { isBroad, resourceProblem } from '@/features/access/policy-resource';
 import { EmptyState } from '@/components/empty-state';
 import { ErrorDetails, ErrorState } from '@/components/error-state';
 import { PageHeader } from '@/components/page-header';
@@ -38,11 +39,6 @@ const ACTIONS: readonly PolicyAction[] = [
   's3:DeleteObjectVersion',
   's3:ManageBucket',
 ];
-
-/** Whether a resource pattern grants more than a single bucket. */
-function isBroad(resource: string): boolean {
-  return resource === '*' || resource.startsWith('*');
-}
 
 export function PoliciesScreen() {
   const [creating, setCreating] = React.useState(false);
@@ -185,6 +181,7 @@ function CreatePolicyForm({ onOpenChange }: { readonly onOpenChange: (open: bool
   const [actions, setActions] = React.useState<readonly PolicyAction[]>(['s3:GetObject']);
   const [resources, setResources] = React.useState<readonly string[]>(['bucket:uploads/*']);
   const [resourceDraft, setResourceDraft] = React.useState('');
+  const [resourceError, setResourceError] = React.useState<string | null>(null);
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -305,26 +302,42 @@ function CreatePolicyForm({ onOpenChange }: { readonly onOpenChange: (open: bool
                 value={resourceDraft}
                 placeholder="bucket:uploads/*"
                 aria-label="Resource pattern"
-                onChange={(event) => setResourceDraft(event.target.value)}
+                aria-invalid={resourceError !== null}
+                aria-describedby={resourceError ? 'resource-error' : undefined}
+                onChange={(event) => {
+                  setResourceDraft(event.target.value);
+                  setResourceError(null);
+                }}
               />
               <Button
                 onClick={() => {
                   const value = resourceDraft.trim();
                   if (value.length === 0 || resources.includes(value)) return;
+                  const problem = resourceProblem(value);
+                  if (problem) {
+                    setResourceError(problem);
+                    return;
+                  }
                   setResources((current) => [...current, value]);
                   setResourceDraft('');
+                  setResourceError(null);
                 }}
               >
                 Add
               </Button>
             </div>
+            {resourceError ? (
+              <p id="resource-error" role="alert" className="text-xs text-danger">
+                {resourceError}
+              </p>
+            ) : null}
           </fieldset>
 
           {grantsBroadAccess ? (
             <div className="flex items-start gap-2 rounded-[--radius-control] border border-warn/40 bg-warn-soft px-3 py-2">
               <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warn" />
               <p className="text-xs text-ink">
-                This policy allows access across every matching resource. Confirm that is intended
+                This policy reaches every bucket that matches, not one. Confirm that is intended
                 before attaching it to an account.
               </p>
             </div>

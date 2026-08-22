@@ -1,13 +1,13 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ColumnDef } from '@tanstack/react-table';
+import { createColumnHelper } from '@tanstack/react-table';
 import { KeyRound, MoreHorizontal, Plus } from 'lucide-react';
 import * as React from 'react';
 import { toast } from 'sonner';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
-import { DataTable } from '@/components/data-table';
+import { DataTable, type DataTableFeatures } from '@/components/data-table';
 import { EmptyState } from '@/components/empty-state';
 import { ErrorDetails, ErrorState } from '@/components/error-state';
 import { PageHeader } from '@/components/page-header';
@@ -44,6 +44,8 @@ import {
 import { ApiError } from '@/lib/api/error';
 import { formatDate, formatDateTime } from '@/lib/format';
 import type { IssuedCredential, ServiceAccountInfo } from '@/types/api';
+
+const column = createColumnHelper<DataTableFeatures, ServiceAccountInfo>();
 
 export function ServiceAccountsScreen() {
   const client = useQueryClient();
@@ -88,115 +90,108 @@ export function ServiceAccountsScreen() {
     },
   });
 
-  const columns = React.useMemo<ColumnDef<ServiceAccountInfo, unknown>[]>(
-    () => [
-      {
-        id: 'name',
-        header: 'Name',
-        accessorFn: (row) => row.account.name,
-        cell: ({ row }) => (
-          <div className="space-y-0.5">
-            <p className="font-medium text-ink">{row.original.account.name}</p>
-            {row.original.account.description ? (
-              <p className="text-xs text-ink-muted">{row.original.account.description}</p>
-            ) : null}
-          </div>
-        ),
-      },
-      {
-        id: 'status',
-        header: 'Status',
-        accessorFn: (row) => (row.account.disabled ? 'disabled' : 'active'),
-        cell: ({ row }) =>
-          row.original.account.disabled ? (
-            <StatusBadge level="disabled" label="Disabled" />
-          ) : (
-            <StatusBadge level="healthy" label="Active" />
+  const columns = React.useMemo(
+    () =>
+      column.columns([
+        column.accessor((row) => row.account.name, {
+          id: 'name',
+          header: 'Name',
+          cell: ({ row }) => (
+            <div className="space-y-0.5">
+              <p className="font-medium text-ink">{row.original.account.name}</p>
+              {row.original.account.description ? (
+                <p className="text-xs text-ink-muted">{row.original.account.description}</p>
+              ) : null}
+            </div>
           ),
-      },
-      {
-        id: 'credentials',
-        header: 'Credentials',
-        accessorFn: (row) => row.credentials.length,
-        cell: ({ row }) => {
-          const active = row.original.credentials.filter((item) => !item.disabled).length;
-          return (
-            <span className="text-xs text-ink-muted">
-              {active} active
-              {row.original.credentials.length > active
-                ? ` · ${row.original.credentials.length - active} disabled`
-                : ''}
-            </span>
-          );
-        },
-      },
-      {
-        id: 'policies',
-        header: 'Policies',
-        accessorFn: (row) => row.policy_bindings.length,
-        cell: ({ row }) => (
-          <span className="tabular-nums text-xs text-ink-muted">
-            {row.original.policy_bindings.length}
-          </span>
-        ),
-      },
-      {
-        id: 'created',
-        header: 'Created',
-        accessorFn: (row) => row.account.created_at,
-        cell: ({ row }) => (
-          <time
-            dateTime={row.original.account.created_at}
-            title={formatDateTime(row.original.account.created_at)}
-            className="text-xs text-ink-muted"
-          >
-            {formatDate(row.original.account.created_at)}
-          </time>
-        ),
-      },
-      {
-        id: 'actions',
-        header: () => <span className="sr-only">Actions</span>,
-        enableSorting: false,
-        cell: ({ row }) => (
-          <div className="flex justify-end">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={`Actions for ${row.original.account.name}`}
-                >
-                  <MoreHorizontal aria-hidden />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <DropdownMenuItem
-                  onSelect={() => rotation.mutate(row.original.account.id)}
-                  disabled={rotation.isPending}
-                >
-                  <KeyRound aria-hidden /> Rotate credential
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() =>
-                    status.mutate({
-                      id: row.original.account.id,
-                      enabled: row.original.account.disabled,
-                    })
-                  }
-                >
-                  {row.original.account.disabled ? 'Enable account' : 'Disable account'}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem destructive onSelect={() => setPendingDelete(row.original)}>
-                  Delete account
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        ),
-      },
-    ],
+        }),
+        column.accessor((row) => (row.account.disabled ? 'disabled' : 'active'), {
+          id: 'status',
+          header: 'Status',
+          cell: ({ row }) =>
+            row.original.account.disabled ? (
+              <StatusBadge level="disabled" label="Disabled" />
+            ) : (
+              <StatusBadge level="healthy" label="Active" />
+            ),
+        }),
+        column.accessor((row) => row.credentials.length, {
+          id: 'credentials',
+          header: 'Credentials',
+          cell: ({ row }) => {
+            const active = row.original.credentials.filter((item) => !item.disabled).length;
+            return (
+              <span className="text-xs text-ink-muted">
+                {active} active
+                {row.original.credentials.length > active
+                  ? ` · ${row.original.credentials.length - active} disabled`
+                  : ''}
+              </span>
+            );
+          },
+        }),
+        column.accessor((row) => row.policy_bindings.length, {
+          id: 'policies',
+          header: 'Policies',
+          cell: ({ getValue }) => (
+            <span className="tabular-nums text-xs text-ink-muted">{getValue()}</span>
+          ),
+        }),
+        column.accessor((row) => row.account.created_at, {
+          id: 'created',
+          header: 'Created',
+          cell: ({ getValue }) => (
+            <time
+              dateTime={getValue()}
+              title={formatDateTime(getValue())}
+              className="text-xs text-ink-muted"
+            >
+              {formatDate(getValue())}
+            </time>
+          ),
+        }),
+        column.display({
+          id: 'actions',
+          header: () => <span className="sr-only">Actions</span>,
+          cell: ({ row }) => (
+            <div className="flex justify-end">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Actions for ${row.original.account.name}`}
+                  >
+                    <MoreHorizontal aria-hidden />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem
+                    onSelect={() => rotation.mutate(row.original.account.id)}
+                    disabled={rotation.isPending}
+                  >
+                    <KeyRound aria-hidden /> Rotate credential
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      status.mutate({
+                        id: row.original.account.id,
+                        enabled: row.original.account.disabled,
+                      })
+                    }
+                  >
+                    {row.original.account.disabled ? 'Enable account' : 'Disable account'}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem destructive onSelect={() => setPendingDelete(row.original)}>
+                    Delete account
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          ),
+        }),
+      ]),
     [rotation, status],
   );
 

@@ -20,7 +20,7 @@ test.describe('standalone deployment', () => {
 
   test('the overview shows real storage figures', async ({ signedIn }) => {
     await expect(signedIn.getByText('Stored data')).toBeVisible();
-    await expect(signedIn.getByText('Objects')).toBeVisible();
+    await expect(signedIn.getByText('Objects', { exact: true })).toBeVisible();
     await expect(signedIn.getByText('Disk capacity')).toBeVisible();
     // Figures come from the API, so none of them may be a placeholder dash.
     await expect(signedIn.getByText('Stored data').locator('..')).not.toContainText('—');

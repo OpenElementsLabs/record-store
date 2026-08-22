@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ColumnDef } from '@tanstack/react-table';
+import { createColumnHelper } from '@tanstack/react-table';
 import { MoreHorizontal, Plus, Search } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -9,7 +9,7 @@ import * as React from 'react';
 import { toast } from 'sonner';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
-import { DataTable } from '@/components/data-table';
+import { DataTable, type DataTableFeatures } from '@/components/data-table';
 import { EmptyState } from '@/components/empty-state';
 import { ErrorState } from '@/components/error-state';
 import { PageHeader } from '@/components/page-header';
@@ -29,6 +29,8 @@ import { queryKeys } from '@/hooks/use-system';
 import { deleteBucket, fetchBuckets } from '@/lib/api/buckets';
 import { formatBytes, formatCount, formatDate } from '@/lib/format';
 import type { Bucket } from '@/types/api';
+
+const column = createColumnHelper<DataTableFeatures, Bucket>();
 
 export function BucketsScreen() {
   const router = useRouter();
@@ -64,90 +66,87 @@ export function BucketsScreen() {
     return all.filter((bucket) => bucket.name.toLowerCase().includes(needle));
   }, [buckets.data, filter]);
 
-  const columns = React.useMemo<ColumnDef<Bucket, unknown>[]>(
-    () => [
-      {
-        accessorKey: 'name',
-        header: 'Name',
-        cell: ({ row }) => (
-          <Link
-            href={`/buckets/${encodeURIComponent(row.original.name)}`}
-            className="font-medium text-ink hover:underline"
-            onClick={(event) => event.stopPropagation()}
-          >
-            {row.original.name}
-          </Link>
-        ),
-      },
-      {
-        accessorKey: 'object_count',
-        header: 'Objects',
-        cell: ({ row }) => (
-          <span className="tabular-nums">{formatCount(row.original.object_count)}</span>
-        ),
-      },
-      {
-        accessorKey: 'logical_bytes',
-        header: 'Size',
-        cell: ({ row }) => (
-          <span className="tabular-nums">{formatBytes(row.original.logical_bytes)}</span>
-        ),
-      },
-      {
-        accessorKey: 'versioning',
-        header: 'Versioning',
-        cell: ({ row }) => {
-          const state = row.original.versioning;
-          return (
-            <StatusBadge
-              level={
-                state === 'enabled' ? 'healthy' : state === 'suspended' ? 'paused' : 'disabled'
-              }
-              label={
-                state === 'enabled' ? 'Enabled' : state === 'suspended' ? 'Suspended' : 'Disabled'
-              }
-            />
-          );
-        },
-      },
-      {
-        accessorKey: 'created_at',
-        header: 'Created',
-        cell: ({ row }) => (
-          <time dateTime={row.original.created_at} title={row.original.created_at}>
-            {formatDate(row.original.created_at)}
-          </time>
-        ),
-      },
-      {
-        id: 'actions',
-        header: () => <span className="sr-only">Actions</span>,
-        enableSorting: false,
-        cell: ({ row }) => (
-          <div className="flex justify-end" onClick={(event) => event.stopPropagation()}>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" aria-label={`Actions for ${row.original.name}`}>
-                  <MoreHorizontal aria-hidden />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <DropdownMenuItem
-                  onSelect={() => router.push(`/buckets/${encodeURIComponent(row.original.name)}`)}
-                >
-                  Browse objects
-                </DropdownMenuItem>
-                {permissions.manage_buckets ? (
-                  <DropdownMenuItem destructive onSelect={() => setPendingDelete(row.original)}>
-                    Delete bucket
+  const columns = React.useMemo(
+    () =>
+      column.columns([
+        column.accessor('name', {
+          header: 'Name',
+          cell: ({ row }) => (
+            <Link
+              href={`/buckets/${encodeURIComponent(row.original.name)}`}
+              className="font-medium text-ink hover:underline"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {row.original.name}
+            </Link>
+          ),
+        }),
+        column.accessor('object_count', {
+          header: 'Objects',
+          cell: ({ getValue }) => <span className="tabular-nums">{formatCount(getValue())}</span>,
+        }),
+        column.accessor('logical_bytes', {
+          header: 'Size',
+          cell: ({ getValue }) => <span className="tabular-nums">{formatBytes(getValue())}</span>,
+        }),
+        column.accessor('versioning', {
+          header: 'Versioning',
+          cell: ({ getValue }) => {
+            const state = getValue();
+            return (
+              <StatusBadge
+                level={
+                  state === 'enabled' ? 'healthy' : state === 'suspended' ? 'paused' : 'disabled'
+                }
+                label={
+                  state === 'enabled' ? 'Enabled' : state === 'suspended' ? 'Suspended' : 'Disabled'
+                }
+              />
+            );
+          },
+        }),
+        column.accessor('created_at', {
+          header: 'Created',
+          cell: ({ getValue }) => (
+            <time dateTime={getValue()} title={getValue()}>
+              {formatDate(getValue())}
+            </time>
+          ),
+        }),
+        column.display({
+          id: 'actions',
+          header: () => <span className="sr-only">Actions</span>,
+          cell: ({ row }) => (
+            <div className="flex justify-end" onClick={(event) => event.stopPropagation()}>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Actions for ${row.original.name}`}
+                  >
+                    <MoreHorizontal aria-hidden />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      router.push(`/buckets/${encodeURIComponent(row.original.name)}`)
+                    }
+                  >
+                    Browse objects
                   </DropdownMenuItem>
-                ) : null}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        ),
-      },
-    ],
+                  {permissions.manage_buckets ? (
+                    <DropdownMenuItem destructive onSelect={() => setPendingDelete(row.original)}>
+                      Delete bucket
+                    </DropdownMenuItem>
+                  ) : null}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          ),
+        }),
+      ]),
     [permissions.manage_buckets, router],
   );
 

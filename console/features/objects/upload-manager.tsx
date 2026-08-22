@@ -2,41 +2,60 @@
 
 import * as React from 'react';
 
-import { objectUploadUrl } from '@/lib/api/objects';
+import {
+  singleRequestUpload,
+  type UploadHandle,
+  type UploadTransport,
+} from '@/features/objects/upload-transport';
 
 /** Where an upload has got to. */
-export type UploadState = 'queued' | 'uploading' | 'done' | 'error' | 'cancelled';
+export type UploadState = 'queued' | 'uploading' | 'done' | 'failed' | 'cancelled';
 
 export type UploadTask = {
   readonly id: string;
   readonly bucket: string;
   readonly key: string;
   readonly name: string;
+  /** The size the browser reports for the file. */
   readonly size: number;
   readonly state: UploadState;
-  /** Bytes the browser has handed to the network. */
+  /** Bytes the transport has handed to the network. */
   readonly sent: number;
-  readonly error: string | null;
+  /**
+   * The total the transport is reporting, or `null` until it reports one.
+   *
+   * Kept separate from `size` so the UI can say "Uploading" rather than show a
+   * percentage of a total nothing has confirmed.
+   */
+  readonly total: number | null;
+  /** Why the upload stopped, when it failed. */
+  readonly reason: string | null;
+  /** Whether the same file is still in hand and can be sent again from the start. */
+  readonly retryable: boolean;
 };
 
-type Controller = { abort: () => void };
+/** What the queue needs to run one transfer, held outside React state. */
+type QueuedUpload = { readonly bucket: string; readonly key: string; readonly file: File };
 
 /**
  * Runs object uploads.
  *
- * The `File` is handed to the browser as the request body, so the bytes stream
- * from disk to the network and never pass through JavaScript memory. Progress is
- * read from `XMLHttpRequest`, which is the only transport that reports upload
- * progress reliably across browsers.
+ * This owns the queue, the per-file state the UI renders, cancellation, and
+ * retry. It owns no part of the transfer itself: that is the injected
+ * `UploadTransport`, which is the seam a future multipart strategy would
+ * replace. Everything here — and everything in `UploadPanel` above it — is
+ * written against progress reports and outcomes rather than against the fact
+ * that today's transport happens to use a single request.
  *
- * Files are sent one at a time so a directory drop cannot saturate the link, and
- * the design keeps a single seam — this hook — for a future multipart strategy
- * that would split large files into parallel, resumable parts.
+ * Files are sent one at a time, so a directory drop cannot saturate the link.
+ * A retried upload starts from the first byte, because the transport cannot
+ * resume; nothing here pretends otherwise.
  */
-export function useUploadManager() {
+export function useUploadManager(transport: UploadTransport = singleRequestUpload) {
   const [tasks, setTasks] = React.useState<readonly UploadTask[]>([]);
-  const controllers = React.useRef(new Map<string, Controller>());
-  const queue = React.useRef<UploadTask[]>([]);
+  const handles = React.useRef(new Map<string, UploadHandle>());
+  const pending = React.useRef(new Map<string, QueuedUpload>());
+  const queue = React.useRef<string[]>([]);
   const running = React.useRef(false);
   const onSettled = React.useRef<(() => void) | null>(null);
 
@@ -45,60 +64,49 @@ export function useUploadManager() {
   }, []);
 
   const send = React.useCallback(
-    (task: UploadTask, file: File) =>
+    (id: string, item: QueuedUpload) =>
       new Promise<void>((resolve) => {
-        const request = new XMLHttpRequest();
-        controllers.current.set(task.id, { abort: () => request.abort() });
-        request.open('PUT', objectUploadUrl(task.bucket, task.key), true);
-        request.withCredentials = true;
-        if (file.type) request.setRequestHeader('content-type', file.type);
-
-        // Progress events fire far more often than the UI needs, so updates are
-        // throttled to whole percent to avoid re-rendering on every chunk.
-        let lastPercent = -1;
-        request.upload.onprogress = (event) => {
-          if (!event.lengthComputable) return;
-          const percent = Math.floor((event.loaded / event.total) * 100);
-          if (percent === lastPercent) return;
-          lastPercent = percent;
-          update(task.id, { sent: event.loaded, state: 'uploading' });
-        };
-        request.onload = () => {
-          controllers.current.delete(task.id);
-          if (request.status >= 200 && request.status < 300) {
-            update(task.id, { state: 'done', sent: task.size, error: null });
-          } else {
-            update(task.id, { state: 'error', error: describeFailure(request) });
-          }
-          resolve();
-        };
-        request.onerror = () => {
-          controllers.current.delete(task.id);
-          update(task.id, { state: 'error', error: 'The upload connection failed.' });
-          resolve();
-        };
-        request.onabort = () => {
-          controllers.current.delete(task.id);
-          update(task.id, { state: 'cancelled', error: null });
-          resolve();
-        };
-        request.send(file);
+        const handle = transport(
+          { bucket: item.bucket, key: item.key, file: item.file },
+          {
+            onProgress: ({ sent, total }) => update(id, { state: 'uploading', sent, total }),
+            onSettled: (result) => {
+              handles.current.delete(id);
+              if (result.status === 'done') {
+                // The file handle is only needed for a retry, and there is none.
+                pending.current.delete(id);
+                update(id, { state: 'done', reason: null, retryable: false });
+              } else if (result.status === 'cancelled') {
+                update(id, { state: 'cancelled', reason: null, retryable: true });
+              } else {
+                update(id, { state: 'failed', reason: result.reason, retryable: true });
+              }
+              resolve();
+            },
+          },
+        );
+        handles.current.set(id, handle);
       }),
-    [update],
+    [transport, update],
   );
 
+  /**
+   * Drains the queue.
+   *
+   * The queue holds ids and the files are held beside it, so the loop never
+   * reads a rendered snapshot of `tasks` to decide what to send next.
+   */
   const pump = React.useCallback(async () => {
     if (running.current) return;
     running.current = true;
     try {
       for (;;) {
-        const next = queue.current.shift();
-        if (!next) break;
-        const file = files.current.get(next.id);
-        if (!file) continue;
-        update(next.id, { state: 'uploading' });
-        await send(next, file);
-        files.current.delete(next.id);
+        const id = queue.current.shift();
+        if (id === undefined) break;
+        const item = pending.current.get(id);
+        if (!item) continue;
+        update(id, { state: 'uploading', sent: 0, total: null, reason: null });
+        await send(id, item);
       }
     } finally {
       running.current = false;
@@ -106,14 +114,12 @@ export function useUploadManager() {
     }
   }, [send, update]);
 
-  const files = React.useRef(new Map<string, File>());
-
   /** Queues files under a prefix, deriving each key from the file name. */
   const enqueue = React.useCallback(
     (bucket: string, prefix: string, incoming: readonly File[]) => {
       const created: UploadTask[] = incoming.map((file) => {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        files.current.set(id, file);
+        pending.current.set(id, { bucket, key: `${prefix}${file.name}`, file });
         return {
           id,
           bucket,
@@ -122,31 +128,57 @@ export function useUploadManager() {
           size: file.size,
           state: 'queued',
           sent: 0,
-          error: null,
+          total: null,
+          reason: null,
+          retryable: false,
         };
       });
       setTasks((current) => [...created, ...current]);
-      queue.current.push(...created);
+      queue.current.push(...created.map((task) => task.id));
       void pump();
     },
     [pump],
   );
 
+  /**
+   * Sends a settled upload again, from the first byte.
+   *
+   * No part of an interrupted transfer survives, which is why the control that
+   * calls this says as much.
+   */
+  const retry = React.useCallback(
+    (id: string) => {
+      if (!pending.current.has(id)) return;
+      update(id, { state: 'queued', sent: 0, total: null, reason: null, retryable: false });
+      queue.current.push(id);
+      void pump();
+    },
+    [pump, update],
+  );
+
   const cancel = React.useCallback((id: string) => {
-    controllers.current.get(id)?.abort();
-    queue.current = queue.current.filter((task) => task.id !== id);
-    files.current.delete(id);
+    // A running transfer settles through its transport's abort path; a queued
+    // one never starts, so it is marked here.
+    handles.current.get(id)?.abort();
+    queue.current = queue.current.filter((queued) => queued !== id);
     setTasks((current) =>
       current.map((task) =>
-        task.id === id && task.state === 'queued' ? { ...task, state: 'cancelled' } : task,
+        task.id === id && task.state === 'queued'
+          ? { ...task, state: 'cancelled', retryable: pending.current.has(id) }
+          : task,
       ),
     );
   }, []);
 
   const clearFinished = React.useCallback(() => {
-    setTasks((current) =>
-      current.filter((task) => task.state === 'uploading' || task.state === 'queued'),
-    );
+    setTasks((current) => {
+      const kept = current.filter((task) => task.state === 'uploading' || task.state === 'queued');
+      const keptIds = new Set(kept.map((task) => task.id));
+      for (const id of [...pending.current.keys()]) {
+        if (!keptIds.has(id)) pending.current.delete(id);
+      }
+      return kept;
+    });
   }, []);
 
   const setSettledHandler = React.useCallback((handler: (() => void) | null) => {
@@ -155,18 +187,5 @@ export function useUploadManager() {
 
   const active = tasks.some((task) => task.state === 'queued' || task.state === 'uploading');
 
-  return { tasks, enqueue, cancel, clearFinished, active, setSettledHandler };
-}
-
-function describeFailure(request: XMLHttpRequest): string {
-  try {
-    const body = JSON.parse(request.responseText) as { error?: { message?: string } };
-    if (body.error?.message) return body.error.message;
-  } catch {
-    // A non-JSON body means an intermediary answered; fall through.
-  }
-  if (request.status === 401) return 'Your session has expired. Sign in again.';
-  if (request.status === 403) return 'Your role does not permit uploads.';
-  if (request.status === 507) return 'The bucket quota would be exceeded.';
-  return `The upload failed with status ${request.status}.`;
+  return { tasks, enqueue, cancel, retry, clearFinished, active, setSettledHandler };
 }

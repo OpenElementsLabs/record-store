@@ -38,7 +38,12 @@ export function middleware(request: NextRequest): NextResponse {
 
 export const config = {
   matcher: [
-    // Static assets need no policy header and benefit from being skipped.
-    '/((?!_next/static|_next/image|favicon.ico).*)',
+    // Documents only. Static assets need no policy header, and `/api` routes
+    // must not pass through here at all: this middleware re-issues the request,
+    // which caps how large a body may be, and an object upload streaming
+    // through `/api/oes` would be silently truncated at that cap. API responses
+    // are data rather than documents, so they get their own policy from
+    // `next.config.ts` instead of a nonce from here.
+    '/((?!api/|_next/static|_next/image|favicon.ico).*)',
   ],
 };

@@ -319,15 +319,20 @@ npm run test:e2e
 `OES_API_URL` is read on the server at runtime, so one image works in any
 deployment and no localhost assumption is compiled into the bundle.
 
-Two notes on current behaviour, stated plainly rather than implied:
+### Object uploads
 
-- Uploads are sent as a single streaming request. The browser streams from disk,
-  so object size is not bounded by page memory, but a failed upload restarts
-  rather than resuming. The upload layer is structured around one seam so a
-  multipart strategy with parallel, resumable parts can be added behind it.
-- `@tanstack/react-table` is pinned to the 8.x line. Version 9 is current, but
-  its compatibility path for this API is marked deprecated and its replacement
-  API is not yet documented; 8.x is the deliberate choice until that settles.
+The browser sends an object as one streaming `PUT`. The `File` handle itself is
+the request body, so bytes travel from disk to the network without passing
+through the page's heap; object size is not bounded by browser memory.
+
+There is no resume. An interrupted upload fails and has to be sent again from
+the first byte, and the console states that rather than implying otherwise.
+Resumable browser uploads need multipart operations the management API does not
+expose yet: presigned part URLs, so control requests go to 7601 while part
+bodies go straight to the S3 API on 7600 and no long-lived secret reaches the
+page. The transport is one injected function in
+`console/features/objects/upload-transport.ts`, so such a strategy can replace
+it without touching the queue, progress, retry, or cancellation UI above it.
 
 ## Docker
 

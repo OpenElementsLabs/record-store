@@ -153,6 +153,7 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
       <UploadPanel
         tasks={uploads.tasks}
         onCancel={uploads.cancel}
+        onRetry={uploads.retry}
         onClear={uploads.clearFinished}
       />
 

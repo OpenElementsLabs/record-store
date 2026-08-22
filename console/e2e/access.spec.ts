@@ -66,10 +66,12 @@ test.describe('access management', () => {
 
     const dialog = page.getByRole('dialog');
     await dialog.getByLabel('Name').fill(`e2e-policy-${Date.now().toString(36)}`);
-    await dialog.getByLabel('Resource pattern').fill('*');
+    // `bucket:*` is the broadest resource the API accepts; a bare `*` is not a
+    // valid pattern at all.
+    await dialog.getByLabel('Resource pattern').fill('bucket:*');
     await dialog.getByRole('button', { name: 'Add' }).click();
 
-    await expect(dialog).toContainText(/allows access across every matching resource/i);
+    await expect(dialog).toContainText(/reaches every bucket that matches/i);
     await dialog.getByRole('button', { name: 'Create policy' }).click();
     await expect(page.getByText('Broad access').first()).toBeVisible();
   });
