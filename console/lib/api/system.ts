@@ -1,4 +1,4 @@
-import type { Session, StorageStatus, StorageUsage, SystemInfo } from '@/types/api';
+import type { Session, StorageStatus, StorageUsage, SystemInfo, SystemMetrics } from '@/types/api';
 
 import { request } from './client';
 
@@ -23,4 +23,9 @@ export function fetchStorageUsage(signal?: AbortSignal): Promise<StorageUsage> {
 
 export function fetchStorageStatus(signal?: AbortSignal): Promise<StorageStatus> {
   return request<StorageStatus>('/v1/storage/status', signal ? { signal } : {});
+}
+
+/** Reads current metric values through the management plane. */
+export function fetchSystemMetrics(signal?: AbortSignal): Promise<SystemMetrics> {
+  return request<SystemMetrics>('/v1/system/metrics', signal ? { signal } : {});
 }

@@ -786,3 +786,312 @@ async fn management_api_serves_the_console_surface() {
         .expect("server task")
         .expect("clean shutdown");
 }
+
+/// The management plane and the scrape plane must expose the same numbers.
+///
+/// The console cannot read `/metrics`, so it reads the same values from
+/// `/api/v1/system/metrics`. If those ever diverge, the console would be
+/// reporting something Prometheus disagrees with.
+#[tokio::test]
+async fn metrics_are_served_to_both_planes_with_separate_credentials() {
+    let directory = tempdir().expect("temporary directory");
+    let mut config = Config::default();
+    config.storage.data_directory = directory.path().join("data");
+    config.server.shutdown_grace_period_seconds = 2;
+    config.auth.root_access_key = Some("test-access".into());
+    config.auth.root_secret_key = Some(SecretValue::new("test-secret-at-least-sixteen"));
+    config.auth.credential_master_key = Some(SecretValue::new(
+        "test-credential-master-key-at-least-32-bytes",
+    ));
+    config.auth.management_system_token = Some(SecretValue::new(
+        "test-system-management-token-32-bytes-long",
+    ));
+    config.auth.metrics_scrape_token = Some(SecretValue::new(
+        "test-metrics-scrape-token-32-bytes-long-x",
+    ));
+
+    let runtime = oes_server::initialize(&config)
+        .await
+        .expect("initialize server");
+    let api_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let address = api_listener.local_addr().expect("listener address");
+    let s3_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind S3 listener");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(runtime.serve(s3_listener, api_listener, async move {
+        let _ = shutdown_rx.await;
+    }));
+
+    let client = reqwest::Client::new();
+    let admin = "test-system-management-token-32-bytes-long";
+    let scrape = "test-metrics-scrape-token-32-bytes-long-x";
+    let base = format!("http://{address}");
+
+    // Neither credential opens the other plane.
+    let cross = client
+        .get(format!("{base}/metrics"))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("scrape with a management token");
+    assert_eq!(cross.status(), 401, "a management token must not scrape");
+    let cross = client
+        .get(format!("{base}/api/v1/system/metrics"))
+        .bearer_auth(scrape)
+        .send()
+        .await
+        .expect("management read with a scrape token");
+    assert_eq!(
+        cross.status(),
+        401,
+        "a scrape token must not read the management plane"
+    );
+
+    let anonymous = client
+        .get(format!("{base}/api/v1/system/metrics"))
+        .send()
+        .await
+        .expect("anonymous management metrics");
+    assert_eq!(anonymous.status(), 401);
+
+    let json = client
+        .get(format!("{base}/api/v1/system/metrics"))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("management metrics")
+        .json::<serde_json::Value>()
+        .await
+        .expect("management metrics JSON");
+    let exposition = client
+        .get(format!("{base}/metrics"))
+        .bearer_auth(scrape)
+        .send()
+        .await
+        .expect("prometheus metrics")
+        .text()
+        .await
+        .expect("prometheus body");
+
+    // Standalone reports no cluster section rather than zeroes that would read
+    // as a broken cluster.
+    assert!(
+        json.get("cluster").is_none(),
+        "standalone must not report cluster metrics: {json}"
+    );
+
+    for (field, metric) in [
+        ("object_count", "oes_objects_total"),
+        ("bucket_count", "oes_buckets_total"),
+        ("version_count", "oes_versions_total"),
+        ("logical_bytes", "oes_storage_logical_bytes"),
+        ("physical_bytes", "oes_storage_physical_bytes"),
+    ] {
+        let value = json["storage"][field]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{field} is a number"));
+        assert!(
+            exposition.contains(&format!("{metric} {value}\n")),
+            "{metric} must match the JSON field {field} ({value}); body was:\n{exposition}"
+        );
+    }
+    for (field, metric) in [
+        ("requests", "oes_requests_total"),
+        ("errors", "oes_errors_total"),
+        ("upload_bytes", "oes_upload_bytes_total"),
+        ("download_bytes", "oes_download_bytes_total"),
+    ] {
+        let value = json[field]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{field} is a number"));
+        assert!(
+            exposition.contains(&format!("{metric} {value}\n")),
+            "{metric} must match the JSON field {field} ({value})"
+        );
+    }
+
+    let _ = shutdown_tx.send(());
+    let _ = timeout(Duration::from_secs(10), server).await;
+}
+
+/// Server-side copy through the management plane.
+///
+/// The console offers copy, so the bytes must move inside OES rather than being
+/// downloaded and re-uploaded by the browser.
+#[tokio::test]
+async fn management_api_copies_objects_server_side() {
+    let directory = tempdir().expect("temporary directory");
+    let mut config = Config::default();
+    config.storage.data_directory = directory.path().join("data");
+    config.server.shutdown_grace_period_seconds = 2;
+    config.auth.root_access_key = Some("test-access".into());
+    config.auth.root_secret_key = Some(SecretValue::new("test-secret-at-least-sixteen"));
+    config.auth.credential_master_key = Some(SecretValue::new(
+        "test-credential-master-key-at-least-32-bytes",
+    ));
+    config.auth.management_system_token = Some(SecretValue::new(
+        "test-system-management-token-32-bytes-long",
+    ));
+    config.auth.management_auditor_token = Some(SecretValue::new(
+        "test-auditor-management-token-32-bytes-long",
+    ));
+
+    let runtime = oes_server::initialize(&config)
+        .await
+        .expect("initialize server");
+    let api_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let address = api_listener.local_addr().expect("listener address");
+    let s3_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind S3 listener");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(runtime.serve(s3_listener, api_listener, async move {
+        let _ = shutdown_rx.await;
+    }));
+
+    let client = reqwest::Client::new();
+    let admin = "test-system-management-token-32-bytes-long";
+    let auditor = "test-auditor-management-token-32-bytes-long";
+    let base = format!("http://{address}");
+
+    for name in ["copy-source", "copy-target"] {
+        let created = client
+            .post(format!("{base}/api/v1/buckets"))
+            .bearer_auth(admin)
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await
+            .expect("create bucket");
+        assert_eq!(created.status(), 201, "creating {name}");
+    }
+
+    let payload = "copy me exactly";
+    let uploaded = client
+        .put(format!(
+            "{base}/api/v1/buckets/copy-source/object/nested/report.txt"
+        ))
+        .bearer_auth(admin)
+        .header("content-type", "text/plain")
+        .body(payload)
+        .send()
+        .await
+        .expect("upload the source object");
+    assert_eq!(uploaded.status(), 201);
+    let source: serde_json::Value = uploaded.json().await.expect("source JSON");
+
+    // An auditor must not be able to create an object by copying one.
+    let refused = client
+        .post(format!(
+            "{base}/api/v1/buckets/copy-target/object-copy/copied/report.txt"
+        ))
+        .bearer_auth(auditor)
+        .json(&serde_json::json!({
+            "source_bucket": "copy-source",
+            "source_key": "nested/report.txt"
+        }))
+        .send()
+        .await
+        .expect("auditor copy attempt");
+    assert_eq!(refused.status(), 403);
+
+    let copied = client
+        .post(format!(
+            "{base}/api/v1/buckets/copy-target/object-copy/copied/report.txt"
+        ))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({
+            "source_bucket": "copy-source",
+            "source_key": "nested/report.txt"
+        }))
+        .send()
+        .await
+        .expect("copy the object");
+    assert_eq!(copied.status(), 201);
+    let destination: serde_json::Value = copied.json().await.expect("copy JSON");
+
+    // The copy is byte-identical, which the checksum proves, and it is a
+    // distinct object version rather than a second reference to the source.
+    assert_eq!(destination["checksum"], source["checksum"]);
+    assert_eq!(destination["size"], source["size"]);
+    assert_eq!(destination["key"], "copied/report.txt");
+    assert_ne!(destination["version_id"], source["version_id"]);
+    // Internal identifiers must not leak through the management surface.
+    assert!(destination.get("id").is_none());
+    assert!(destination.get("payload_format").is_none());
+
+    let served = client
+        .get(format!(
+            "{base}/api/v1/buckets/copy-target/object-content/copied/report.txt"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("download the copy")
+        .text()
+        .await
+        .expect("copy body");
+    assert_eq!(served, payload);
+
+    // The source is untouched by the copy.
+    let source_still_there = client
+        .get(format!(
+            "{base}/api/v1/buckets/copy-source/object-content/nested/report.txt"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("download the source")
+        .text()
+        .await
+        .expect("source body");
+    assert_eq!(source_still_there, payload);
+
+    // A missing source is a not-found, not a partially created destination.
+    let missing = client
+        .post(format!(
+            "{base}/api/v1/buckets/copy-target/object-copy/orphan.txt"
+        ))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({
+            "source_bucket": "copy-source",
+            "source_key": "does/not/exist.txt"
+        }))
+        .send()
+        .await
+        .expect("copy a missing object");
+    assert_eq!(missing.status(), 404);
+    let body: serde_json::Value = missing.json().await.expect("error JSON");
+    assert_eq!(body["error"]["code"], "OBJECT_NOT_FOUND");
+
+    // Every object route reports a missing key as not-found. These once fell
+    // through to a 500 because the service error had no mapping.
+    for path in [
+        "api/v1/buckets/copy-source/object/does/not/exist.txt",
+        "api/v1/buckets/copy-source/object-content/does/not/exist.txt",
+    ] {
+        let response = client
+            .get(format!("{base}/{path}"))
+            .bearer_auth(admin)
+            .send()
+            .await
+            .expect("read a missing object");
+        assert_eq!(response.status(), 404, "GET {path}");
+    }
+    let verified = client
+        .post(format!(
+            "{base}/api/v1/verify/objects/copy-source/does/not/exist.txt"
+        ))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("verify a missing object");
+    assert_eq!(verified.status(), 404);
+
+    let _ = shutdown_tx.send(());
+    let _ = timeout(Duration::from_secs(10), server).await;
+}

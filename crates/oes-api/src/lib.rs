@@ -461,6 +461,7 @@ impl ManagementPrincipal {
 pub fn router(state: AppState) -> Router {
     let administrative = Router::new()
         .route("/api/v1/system/info", get(system_info))
+        .route("/api/v1/system/metrics", get(system_metrics))
         .route("/api/v1/auth/session", get(auth_session))
         .route("/api/v1/storage/status", get(storage_status))
         .route("/api/v1/storage/usage", get(storage_usage))
@@ -581,6 +582,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/restore/{bucket}/{*key}",
             axum::routing::post(restore_version),
+        )
+        .route(
+            "/api/v1/buckets/{bucket}/object-copy/{*key}",
+            axum::routing::post(copy_object),
         )
         .route(
             "/api/v1/verify/objects/{bucket}/{*key}",
@@ -2073,6 +2078,66 @@ async fn restore_version(
         .map_err(|error| service_to_api_error(error, request_id))
 }
 
+#[derive(Debug, Deserialize)]
+struct CopyObjectRequest {
+    /// Bucket the bytes are read from.
+    source_bucket: String,
+    /// Key the bytes are read from.
+    source_key: String,
+    /// Optional historical version to copy instead of the current one.
+    #[serde(default)]
+    source_version_id: Option<VersionId>,
+    /// Replacement media type. Supplying any replacement field replaces the
+    /// source's metadata rather than carrying it across.
+    #[serde(default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    custom_metadata: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// Copies an object server side.
+///
+/// The path names the destination, because that is what the request creates.
+/// Bytes are streamed by the service layer and never buffered here, so copying
+/// a large object costs the API process nothing beyond the transfer itself.
+async fn copy_object(
+    State(state): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+    Json(input): Json<CopyObjectRequest>,
+) -> Result<(StatusCode, Json<ObjectSummary>), ApiError> {
+    let destination_bucket = parse_bucket_name(&bucket, &request_id)?;
+    let destination_key = parse_object_key(&key, &request_id)?;
+    let source_bucket = parse_bucket_name(&input.source_bucket, &request_id)?;
+    let source_key = parse_object_key(&input.source_key, &request_id)?;
+    let replaces_metadata = input.content_type.is_some() || input.custom_metadata.is_some();
+    state
+        .services
+        .objects
+        .copy(oes_service::ServiceCopyRequest {
+            source_bucket,
+            source_key,
+            source_version_id: input.source_version_id,
+            destination_bucket,
+            destination_key,
+            metadata_directive: if replaces_metadata {
+                oes_service::CopyMetadataDirective::Replace
+            } else {
+                oes_service::CopyMetadataDirective::Copy
+            },
+            content_type: input.content_type,
+            replacement_metadata: input.custom_metadata.unwrap_or_default(),
+        })
+        .await
+        .map(|result| {
+            (
+                StatusCode::CREATED,
+                Json(ObjectSummary::from(result.metadata)),
+            )
+        })
+        .map_err(|error| service_to_api_error(error, request_id))
+}
+
 async fn verify_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
@@ -2159,57 +2224,69 @@ async fn verify_bucket(
     }))
 }
 
-async fn metrics(
-    State(state): State<AppState>,
-    Extension(request_id): Extension<RequestId>,
-) -> Result<Response, ApiError> {
+/// Everything both metric representations are built from.
+///
+/// Gathering once and rendering twice is what keeps the Prometheus exposition
+/// and the console's JSON view from drifting apart. Prometheus scrapes with a
+/// dedicated credential; the console reads the same numbers with a management
+/// token, because it must never hold the scrape token.
+#[derive(Debug, Serialize)]
+struct MetricsSnapshot {
+    /// Requests served since this process started.
+    requests: u64,
+    /// Requests that failed since this process started.
+    errors: u64,
+    /// Bytes accepted from clients since this process started.
+    upload_bytes: u64,
+    /// Bytes served to clients since this process started.
+    download_bytes: u64,
+    storage: StorageMetrics,
+    /// Present only in cluster mode, so a standalone console shows no cluster
+    /// figures rather than zeroes that look like a broken cluster.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster: Option<ClusterMetrics>,
+}
+
+#[derive(Debug, Serialize)]
+struct StorageMetrics {
+    object_count: u64,
+    bucket_count: u64,
+    version_count: u64,
+    logical_bytes: u64,
+    physical_bytes: u64,
+    multipart_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ClusterMetrics {
+    nodes: u64,
+    healthy: bool,
+    quorum_writable: bool,
+    under_replicated_objects: u64,
+    /// Repair tasks currently running. Exposed to Prometheus under the older
+    /// name `oes_replication_queue_depth`, which is kept for existing scrapers.
+    repair_active_tasks: u64,
+    node_capacity_bytes: u64,
+    node_used_bytes: u64,
+    node_available_bytes: u64,
+    logical_bytes: u64,
+    physical_bytes: u64,
+}
+
+/// Collects the current metric values.
+async fn gather_metrics(
+    state: &AppState,
+    request_id: &RequestId,
+) -> Result<MetricsSnapshot, ApiError> {
     let metrics = state.services.metrics.snapshot();
     let usage = state
         .services
         .objects
         .usage()
         .await
-        .map_err(|error| internal_service_error(error, request_id))?;
-    let mut body = format!(
-        concat!(
-            "# TYPE oes_s3_requests_total counter\n",
-            "oes_s3_requests_total {}\n",
-            "# TYPE oes_requests_total counter\n",
-            "oes_requests_total {}\n",
-            "# TYPE oes_errors_total counter\n",
-            "oes_errors_total {}\n",
-            "# TYPE oes_objects_total gauge\n",
-            "oes_objects_total {}\n",
-            "# TYPE oes_storage_bytes gauge\n",
-            "oes_storage_bytes {}\n",
-            "# TYPE oes_versions_total gauge\n",
-            "oes_versions_total {}\n",
-            "# TYPE oes_buckets_total gauge\n",
-            "oes_buckets_total {}\n",
-            "# TYPE oes_storage_logical_bytes gauge\n",
-            "oes_storage_logical_bytes {}\n",
-            "# TYPE oes_storage_physical_bytes gauge\n",
-            "oes_storage_physical_bytes {}\n",
-            "# TYPE oes_multipart_bytes gauge\n",
-            "oes_multipart_bytes {}\n",
-            "# TYPE oes_upload_bytes_total counter\n",
-            "oes_upload_bytes_total {}\n",
-            "# TYPE oes_download_bytes_total counter\n",
-            "oes_download_bytes_total {}\n"
-        ),
-        metrics.requests,
-        metrics.requests,
-        metrics.errors,
-        usage.object_count,
-        usage.bytes_used,
-        usage.version_count,
-        usage.bucket_count,
-        usage.bytes_used,
-        usage.physical_bytes,
-        usage.temporary_multipart_bytes,
-        metrics.upload_bytes,
-        metrics.download_bytes,
-    );
+        .map_err(|error| internal_service_error(error, request_id.clone()))?;
+
+    let mut cluster_metrics = None;
     if let Some(cluster) = &state.cluster {
         match cluster.status().await {
             Ok(status) => {
@@ -2219,50 +2296,143 @@ async fn metrics(
                     .find(|node| node.node_id == cluster.context.node_id);
                 let capacity = local.map_or(0, |node| node.capacity_bytes);
                 let available = local.map_or(0, |node| node.available_bytes);
-                let used = capacity.saturating_sub(available);
-                let healthy = u8::from(status.health == oes_cluster::ClusterHealth::Healthy);
-                let quorum = u8::from(status.metadata.status.writable);
-                body.push_str(&format!(
-                    concat!(
-                        "# TYPE oes_node_capacity_bytes gauge\n",
-                        "oes_node_capacity_bytes {capacity}\n",
-                        "# TYPE oes_node_used_bytes gauge\n",
-                        "oes_node_used_bytes {used}\n",
-                        "# TYPE oes_node_available_bytes gauge\n",
-                        "oes_node_available_bytes {available}\n",
-                        "# TYPE oes_node_health gauge\n",
-                        "oes_node_health {healthy}\n",
-                        "# TYPE oes_cluster_nodes gauge\n",
-                        "oes_cluster_nodes {nodes}\n",
-                        "# TYPE oes_under_replicated_objects gauge\n",
-                        "oes_under_replicated_objects {under_replicated}\n",
-                        "# TYPE oes_replication_queue_depth gauge\n",
-                        "oes_replication_queue_depth {queue}\n",
-                        "# TYPE oes_metadata_quorum_health gauge\n",
-                        "oes_metadata_quorum_health {quorum}\n",
-                        "# TYPE oes_cluster_logical_bytes gauge\n",
-                        "oes_cluster_logical_bytes {logical}\n",
-                        "# TYPE oes_cluster_physical_bytes gauge\n",
-                        "oes_cluster_physical_bytes {physical}\n"
-                    ),
-                    capacity = capacity,
-                    used = used,
-                    available = available,
-                    healthy = healthy,
-                    nodes = status.nodes.len(),
-                    under_replicated = status.replication.under_replicated_payloads,
-                    queue = status.repair.active_tasks,
-                    logical = status.replication.logical_bytes,
-                    physical = status.replication.physical_bytes,
-                    quorum = quorum,
-                ));
+                cluster_metrics = Some(ClusterMetrics {
+                    nodes: status.nodes.len() as u64,
+                    healthy: status.health == oes_cluster::ClusterHealth::Healthy,
+                    quorum_writable: status.metadata.status.writable,
+                    under_replicated_objects: status.replication.under_replicated_payloads,
+                    repair_active_tasks: status.repair.active_tasks,
+                    node_capacity_bytes: capacity,
+                    node_used_bytes: capacity.saturating_sub(available),
+                    node_available_bytes: available,
+                    logical_bytes: status.replication.logical_bytes,
+                    physical_bytes: status.replication.physical_bytes,
+                });
             }
             Err(error) => {
+                // A cluster read failure must not fail the whole scrape; the
+                // process-level counters are still worth reporting.
                 error!(%error, "cluster metrics snapshot could not be collected");
             }
         }
     }
-    Ok(([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response())
+
+    Ok(MetricsSnapshot {
+        requests: metrics.requests,
+        errors: metrics.errors,
+        upload_bytes: metrics.upload_bytes,
+        download_bytes: metrics.download_bytes,
+        storage: StorageMetrics {
+            object_count: usage.object_count,
+            bucket_count: usage.bucket_count,
+            version_count: usage.version_count,
+            logical_bytes: usage.bytes_used,
+            physical_bytes: usage.physical_bytes,
+            multipart_bytes: usage.temporary_multipart_bytes,
+        },
+        cluster: cluster_metrics,
+    })
+}
+
+/// Renders one snapshot as Prometheus text exposition.
+fn prometheus_exposition(snapshot: &MetricsSnapshot) -> String {
+    let mut body = String::new();
+    let mut gauge = |name: &str, kind: &str, value: u64| {
+        body.push_str(&format!("# TYPE {name} {kind}\n{name} {value}\n"));
+    };
+    gauge("oes_s3_requests_total", "counter", snapshot.requests);
+    gauge("oes_requests_total", "counter", snapshot.requests);
+    gauge("oes_errors_total", "counter", snapshot.errors);
+    gauge("oes_objects_total", "gauge", snapshot.storage.object_count);
+    gauge("oes_storage_bytes", "gauge", snapshot.storage.logical_bytes);
+    gauge(
+        "oes_versions_total",
+        "gauge",
+        snapshot.storage.version_count,
+    );
+    gauge("oes_buckets_total", "gauge", snapshot.storage.bucket_count);
+    gauge(
+        "oes_storage_logical_bytes",
+        "gauge",
+        snapshot.storage.logical_bytes,
+    );
+    gauge(
+        "oes_storage_physical_bytes",
+        "gauge",
+        snapshot.storage.physical_bytes,
+    );
+    gauge(
+        "oes_multipart_bytes",
+        "gauge",
+        snapshot.storage.multipart_bytes,
+    );
+    gauge("oes_upload_bytes_total", "counter", snapshot.upload_bytes);
+    gauge(
+        "oes_download_bytes_total",
+        "counter",
+        snapshot.download_bytes,
+    );
+    if let Some(cluster) = &snapshot.cluster {
+        gauge(
+            "oes_node_capacity_bytes",
+            "gauge",
+            cluster.node_capacity_bytes,
+        );
+        gauge("oes_node_used_bytes", "gauge", cluster.node_used_bytes);
+        gauge(
+            "oes_node_available_bytes",
+            "gauge",
+            cluster.node_available_bytes,
+        );
+        gauge("oes_node_health", "gauge", u64::from(cluster.healthy));
+        gauge("oes_cluster_nodes", "gauge", cluster.nodes);
+        gauge(
+            "oes_under_replicated_objects",
+            "gauge",
+            cluster.under_replicated_objects,
+        );
+        gauge(
+            "oes_replication_queue_depth",
+            "gauge",
+            cluster.repair_active_tasks,
+        );
+        gauge(
+            "oes_metadata_quorum_health",
+            "gauge",
+            u64::from(cluster.quorum_writable),
+        );
+        gauge("oes_cluster_logical_bytes", "gauge", cluster.logical_bytes);
+        gauge(
+            "oes_cluster_physical_bytes",
+            "gauge",
+            cluster.physical_bytes,
+        );
+    }
+    body
+}
+
+async fn metrics(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Response, ApiError> {
+    let snapshot = gather_metrics(&state, &request_id).await?;
+    Ok((
+        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        prometheus_exposition(&snapshot),
+    )
+        .into_response())
+}
+
+/// Serves the same metric values as JSON for the management plane.
+///
+/// The console cannot read `/metrics`: that endpoint takes the dedicated scrape
+/// credential, which the console deliberately does not hold. This route carries
+/// the same numbers behind management authentication instead.
+async fn system_metrics(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<MetricsSnapshot>, ApiError> {
+    gather_metrics(&state, &request_id).await.map(Json)
 }
 
 async fn create_webhook(
@@ -2881,6 +3051,27 @@ fn service_to_api_error(error: ServiceError, request_id: RequestId) -> ApiError 
             StatusCode::CONFLICT,
             "BUCKET_NOT_EMPTY",
             "Bucket is not empty",
+            request_id,
+        ),
+        ServiceError::ObjectNotFound => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "OBJECT_NOT_FOUND",
+            "Object was not found",
+            request_id,
+        ),
+        // A delete marker is a real version that deliberately hides the object.
+        // Reporting it distinctly from a missing key tells the caller history
+        // exists and can be restored.
+        ServiceError::DeleteMarker(_) => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "OBJECT_DELETED",
+            "The object's current version is a delete marker",
+            request_id,
+        ),
+        ServiceError::MultipartUploadNotFound => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "MULTIPART_UPLOAD_NOT_FOUND",
+            "Multipart upload was not found",
             request_id,
         ),
         ServiceError::QuotaExceeded => ApiError::new(

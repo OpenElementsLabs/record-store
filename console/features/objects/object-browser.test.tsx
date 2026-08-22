@@ -3,7 +3,13 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ObjectBrowser } from './object-browser';
-import { auditorPermissions, jsonResponse, renderWithProviders, session } from '@/test/render';
+import {
+  auditorPermissions,
+  errorBody,
+  jsonResponse,
+  renderWithProviders,
+  session,
+} from '@/test/render';
 import type { ObjectListPage } from '@/types/api';
 
 const push = vi.fn();
@@ -213,5 +219,111 @@ describe('ObjectBrowser', () => {
       const call = fetchMock.mock.calls.find(([, init]) => init?.method === 'DELETE');
       expect(String(call?.[0])).toContain('/object/documents/report.pdf');
     });
+  });
+
+  it('copies an object server side rather than through the browser', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(page()));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByText('report.pdf');
+
+    await userEvent.click(screen.getByRole('button', { name: /actions for report\.pdf/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /copy to/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    // The suggested key keeps the extension so the copy keeps its file type.
+    expect((within(dialog).getByLabelText('Destination key') as HTMLInputElement).value).toBe(
+      'documents/report-copy.pdf',
+    );
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Copy object' }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes('/object-copy/'));
+      expect(call).toBeTruthy();
+      expect(String(call?.[0])).toContain('/buckets/uploads/object-copy/documents/report-copy.pdf');
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        source_bucket: 'uploads',
+        source_key: 'documents/report.pdf',
+      });
+    });
+  });
+
+  it('refuses to copy an object over itself', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(page()));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByText('report.pdf');
+
+    await userEvent.click(screen.getByRole('button', { name: /actions for report\.pdf/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /copy to/i }));
+    const dialog = await screen.findByRole('dialog');
+
+    const key = within(dialog).getByLabelText('Destination key');
+    await userEvent.clear(key);
+    await userEvent.type(key, 'documents/report.pdf');
+
+    expect(within(dialog).getByRole('alert').textContent).toMatch(/cannot be copied over itself/);
+    expect(
+      within(dialog).getByRole('button', { name: 'Copy object' }).hasAttribute('disabled'),
+    ).toBe(true);
+  });
+
+  it('deletes a selection one key at a time and reports partial failure', async () => {
+    const objects = ['a.txt', 'b.txt', 'c.txt'].map((key) => ({
+      ...page().objects[0]!,
+      key: `documents/${key}`,
+    }));
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        return String(url).includes('b.txt')
+          ? Promise.resolve(jsonResponse(errorBody('OBJECT_LOCKED', 'Object is locked', 'r1'), 409))
+          : Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return Promise.resolve(jsonResponse(page({ objects, prefixes: [] })));
+    });
+
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByText('a.txt');
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /select all objects/i }));
+    expect(screen.getByText('3 selected')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: /delete selected/i }));
+
+    // One request per key, because the API deletes a single key at a time.
+    await waitFor(() => {
+      const deletes = fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE');
+      expect(deletes).toHaveLength(3);
+    });
+    // The failure is named rather than the batch being reported as successful.
+    const report = (await screen.findByText(/1 could not be deleted/)).closest('div');
+    // Scoped to the report: b.txt also appears in the table behind it.
+    expect(report?.textContent).toContain('b.txt');
+    expect(report?.textContent).toContain('Object is locked');
+    // The successful two are not listed as failures.
+    expect(report?.textContent).not.toContain('a.txt');
+  });
+
+  it('drops a selection when the listing location changes', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(page()));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByText('report.pdf');
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /select report\.pdf/i }));
+    expect(screen.getByText('1 selected')).toBeTruthy();
+
+    // A selection made on one page must not survive into another.
+    await userEvent.click(screen.getByRole('button', { name: 'documents' }));
+    expect(screen.queryByText('1 selected')).toBeNull();
+  });
+
+  it('offers no selection or copy to a role that cannot change objects', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(page()));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />, {
+      session: session(auditorPermissions),
+    });
+    await screen.findByText('report.pdf');
+
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /actions for report\.pdf/i }));
+    expect(screen.queryByRole('menuitem', { name: /copy to/i })).toBeNull();
   });
 });

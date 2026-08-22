@@ -1,4 +1,4 @@
-import type { Bucket, LifecycleRule, VersioningState } from '@/types/api';
+import type { Bucket, BucketQuota, LifecycleRule, VersioningState } from '@/types/api';
 
 import { request, requestVoid } from './client';
 
@@ -24,6 +24,19 @@ export function setBucketVersioning(name: string, versioning: VersioningState): 
   return request<Bucket>(`/v1/buckets/${encodeURIComponent(name)}/versioning`, {
     method: 'PUT',
     body: { versioning },
+  });
+}
+
+/**
+ * Replaces a bucket's quota.
+ *
+ * Both limits are sent together because the backend stores them as one value;
+ * sending a partial quota would silently reset the other half.
+ */
+export function setBucketQuota(name: string, quota: BucketQuota): Promise<Bucket> {
+  return request<Bucket>(`/v1/buckets/${encodeURIComponent(name)}/quota`, {
+    method: 'PUT',
+    body: { quota },
   });
 }
 

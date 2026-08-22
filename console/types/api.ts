@@ -95,6 +95,73 @@ export type StorageStatus = {
   readonly temporary_upload_bytes: number;
 };
 
+/**
+ * What a storage consistency scan found.
+ *
+ * `metadata_without_data` is the serious category: an object OES believes it
+ * has whose bytes are gone. The other categories are reclaimable space rather
+ * than lost data.
+ */
+/**
+ * Point-in-time metric values from the management plane.
+ *
+ * These are the same numbers Prometheus scrapes, served behind management
+ * authentication because the console never holds the scrape credential.
+ * Counters are process-lifetime totals, not rates.
+ */
+export type SystemMetrics = {
+  readonly requests: number;
+  readonly errors: number;
+  readonly upload_bytes: number;
+  readonly download_bytes: number;
+  readonly storage: {
+    readonly object_count: number;
+    readonly bucket_count: number;
+    readonly version_count: number;
+    readonly logical_bytes: number;
+    readonly physical_bytes: number;
+    readonly multipart_bytes: number;
+  };
+  /** Absent in standalone deployments. */
+  readonly cluster?: {
+    readonly nodes: number;
+    readonly healthy: boolean;
+    readonly quorum_writable: boolean;
+    readonly under_replicated_objects: number;
+    readonly repair_active_tasks: number;
+    readonly node_capacity_bytes: number;
+    readonly node_used_bytes: number;
+    readonly node_available_bytes: number;
+    readonly logical_bytes: number;
+    readonly physical_bytes: number;
+  };
+};
+
+export type StorageInspection = {
+  readonly metadata_payloads_scanned: number;
+  readonly data_payloads_scanned: number;
+  readonly metadata_without_data: number;
+  readonly data_without_metadata: number;
+  readonly unknown_data_entries: number;
+  readonly recognized_temporary_entries: number;
+  readonly unknown_temporary_entries: number;
+  /** Whether the scan stopped at its entry limit rather than completing. */
+  readonly truncated: boolean;
+  readonly missing_payload_samples: readonly string[];
+  readonly orphan_payload_samples: readonly string[];
+};
+
+export type StorageRepairResult = {
+  readonly inspection: StorageInspection;
+  readonly removed_orphan_payloads: number;
+  readonly dry_run: boolean;
+};
+
+export type BucketVerification = {
+  readonly verified_objects: number;
+  readonly failures: number;
+};
+
 export type ObjectSummary = {
   readonly key: string;
   readonly size: number;

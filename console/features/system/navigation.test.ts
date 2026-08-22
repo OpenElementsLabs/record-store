@@ -44,6 +44,11 @@ function hrefs(sections: readonly { items: readonly { href: string }[] }[]): str
   return sections.flatMap((section) => section.items.map((item) => item.href));
 }
 
+/** Every nav label, flattened across sections. */
+function labelsOf(sections: readonly { readonly items: readonly { readonly label: string }[] }[]) {
+  return sections.flatMap((section) => section.items.map((item) => item.label));
+}
+
 describe('buildNavigation', () => {
   it('hides every cluster concept in standalone mode', () => {
     const sections = buildNavigation({
@@ -116,5 +121,23 @@ describe('isActive', () => {
     expect(isActive(item, '/buckets')).toBe(true);
     expect(isActive(item, '/buckets/uploads')).toBe(true);
     expect(isActive(item, '/bucketsomething')).toBe(false);
+  });
+
+  it('gates integrity behind the storage-administration permission', () => {
+    const forAdmin = buildNavigation({
+      clusterEnabled: false,
+      capabilities: allCapabilities,
+      permissions: admin,
+    });
+    expect(labelsOf(forAdmin)).toContain('Integrity');
+
+    // An auditor can read the audit trail but must not be offered an operation
+    // that deletes payload files.
+    const forAuditor = buildNavigation({
+      clusterEnabled: false,
+      capabilities: allCapabilities,
+      permissions: auditor,
+    });
+    expect(labelsOf(forAuditor)).not.toContain('Integrity');
   });
 });

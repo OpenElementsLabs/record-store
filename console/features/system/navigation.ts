@@ -37,6 +37,14 @@ export function buildNavigation(input: NavigationInput): readonly NavSection[] {
     },
   ];
 
+  // Integrity reads the storage catalog and can reclaim orphaned payloads, so
+  // it belongs to the storage-administration role rather than to everyone.
+  const data: NavItem[] = [];
+  if (permissions.manage_storage) {
+    data.push({ href: '/integrity', label: 'Integrity', prefix: '/integrity' });
+  }
+  if (data.length > 0) sections.push({ title: 'Data management', items: data });
+
   const access: NavItem[] = [];
   if (permissions.manage_service_accounts) {
     access.push({
@@ -72,7 +80,11 @@ export function buildNavigation(input: NavigationInput): readonly NavSection[] {
     });
   }
 
-  sections.push({ title: 'System', items: [{ href: '/system', label: 'Health' }] });
+  const system: NavItem[] = [{ href: '/system', label: 'Health' }];
+  // Metrics read the same counters Prometheus scrapes, through the management
+  // plane, so they are available to every role that can reach the console.
+  system.push({ href: '/metrics', label: 'Metrics', prefix: '/metrics' });
+  sections.push({ title: 'System', items: system });
   return sections;
 }
 

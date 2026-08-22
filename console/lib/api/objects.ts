@@ -75,6 +75,37 @@ export function fetchObjectVersions(
   );
 }
 
+/**
+ * Copies an object server side.
+ *
+ * The bytes never travel through the browser: OES streams them internally, so
+ * copying a large object costs the console nothing. Supplying `contentType` or
+ * `customMetadata` replaces the source's metadata instead of carrying it over.
+ */
+export function copyObject(params: {
+  readonly sourceBucket: string;
+  readonly sourceKey: string;
+  readonly sourceVersionId?: string | null;
+  readonly destinationBucket: string;
+  readonly destinationKey: string;
+  readonly contentType?: string;
+  readonly customMetadata?: Readonly<Record<string, string>>;
+}): Promise<ObjectSummary> {
+  return request<ObjectSummary>(
+    `/v1/buckets/${encodeURIComponent(params.destinationBucket)}/object-copy/${encodeObjectKey(params.destinationKey)}`,
+    {
+      method: 'POST',
+      body: {
+        source_bucket: params.sourceBucket,
+        source_key: params.sourceKey,
+        ...(params.sourceVersionId ? { source_version_id: params.sourceVersionId } : {}),
+        ...(params.contentType ? { content_type: params.contentType } : {}),
+        ...(params.customMetadata ? { custom_metadata: params.customMetadata } : {}),
+      },
+    },
+  );
+}
+
 /** Permanently removes one version. This cannot be undone. */
 export function deleteObjectVersion(bucket: string, key: string, versionId: string): Promise<void> {
   return requestVoid(

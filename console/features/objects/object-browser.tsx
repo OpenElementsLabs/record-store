@@ -4,10 +4,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronLeft,
   ChevronRight,
+  Copy,
   Download,
   File as FileIcon,
   Folder,
   MoreHorizontal,
+  Trash2,
   Upload,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -21,6 +23,7 @@ import { EmptyState } from '@/components/empty-state';
 import { ErrorState } from '@/components/error-state';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,16 +40,32 @@ import {
   TableRow,
   TableShell,
 } from '@/components/ui/table';
+import { CopyObjectDialog } from '@/features/objects/copy-object-dialog';
 import { UploadPanel } from '@/features/objects/upload-panel';
 import { useUploadManager } from '@/features/objects/upload-manager';
 import { usePermissions } from '@/features/system/deployment';
 import { queryKeys } from '@/hooks/use-system';
+import { ApiError } from '@/lib/api/error';
 import { deleteObject, fetchObjects, objectContentUrl } from '@/lib/api/objects';
-import { formatBytes, formatDateTime, keyBasename, keySegments } from '@/lib/format';
+import { formatBytes, formatCount, formatDateTime, keyBasename, keySegments } from '@/lib/format';
 import { mergeSearch, readInt, readString } from '@/lib/search-params';
 import type { ObjectSummary } from '@/types/api';
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
+
+/**
+ * How far a batch delete has got.
+ *
+ * The management API deletes one key per request, so a batch is a sequence of
+ * independent deletions. It can therefore partly succeed, and the UI reports
+ * exactly which keys failed rather than implying the whole batch was atomic.
+ */
+type BatchProgress = {
+  readonly total: number;
+  readonly completed: number;
+  readonly failed: readonly { readonly key: string; readonly reason: string }[];
+  readonly running: boolean;
+};
 
 /**
  * Browses a bucket by logical prefix.
@@ -68,6 +87,11 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
   const cursor = readString(params, 'cursor', '') || null;
 
   const [pendingDelete, setPendingDelete] = React.useState<ObjectSummary | null>(null);
+  const [copying, setCopying] = React.useState<string | null>(null);
+  // Selection is keyed by object key and cleared whenever the listing location
+  // changes, which only happens through `navigate`.
+  const [selected, setSelected] = React.useState<readonly string[]>([]);
+  const [batch, setBatch] = React.useState<BatchProgress | null>(null);
   const dropRef = React.useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = React.useState(false);
 
@@ -76,6 +100,19 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
     queryFn: ({ signal }) =>
       fetchObjects({ bucket, prefix, delimiter: '/', continuationToken: cursor, limit }, signal),
   });
+
+  const pageKeys = React.useMemo(
+    () => (listing.data?.objects ?? []).map((object) => object.key),
+    [listing.data],
+  );
+  // Keys that vanished from the listing (deleted elsewhere, or a refetch) must
+  // not stay selected and be acted on later.
+  const selectedOnPage = React.useMemo(
+    () => selected.filter((key) => pageKeys.includes(key)),
+    [selected, pageKeys],
+  );
+  const selectable = permissions.manage_objects && pageKeys.length > 0;
+  const allSelected = pageKeys.length > 0 && selectedOnPage.length === pageKeys.length;
 
   const uploads = useUploadManager();
 
@@ -99,7 +136,46 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
     },
   });
 
+  /**
+   * Deletes the selected keys one at a time.
+   *
+   * Sequential rather than parallel: the API takes one key per call, and firing
+   * hundreds of concurrent deletes would be a self-inflicted load spike. Each
+   * failure is recorded and the run continues, so one bad key does not strand
+   * the rest.
+   */
+  async function runBatchDelete(keys: readonly string[]) {
+    setBatch({ total: keys.length, completed: 0, failed: [], running: true });
+    const failed: { key: string; reason: string }[] = [];
+    let completed = 0;
+    for (const key of keys) {
+      try {
+        await deleteObject(bucket, key);
+      } catch (error) {
+        failed.push({
+          key,
+          reason: error instanceof ApiError ? error.message : 'The request failed.',
+        });
+      }
+      completed += 1;
+      setBatch({ total: keys.length, completed, failed: [...failed], running: true });
+    }
+    setBatch({ total: keys.length, completed, failed, running: false });
+    setSelected([]);
+    if (failed.length === 0) {
+      toast.success(`Deleted ${formatCount(keys.length)} objects`);
+    } else {
+      toast.error(
+        `${formatCount(failed.length)} of ${formatCount(keys.length)} objects could not be deleted`,
+      );
+    }
+    await client.invalidateQueries({ queryKey: ['buckets', bucket, 'objects'] });
+    await client.invalidateQueries({ queryKey: queryKeys.buckets });
+  }
+
   function navigate(updates: Record<string, string | number | null>) {
+    // A selection belongs to the page it was made on.
+    setSelected([]);
     router.push(`${pathname}${mergeSearch(params, updates)}`);
   }
 
@@ -186,6 +262,17 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
+                  {selectable ? (
+                    <TableHead className="w-8">
+                      <Checkbox
+                        aria-label="Select all objects on this page"
+                        checked={
+                          allSelected ? true : selectedOnPage.length > 0 ? 'indeterminate' : false
+                        }
+                        onCheckedChange={(next) => setSelected(next === true ? pageKeys : [])}
+                      />
+                    </TableHead>
+                  ) : null}
                   <TableHead>Name</TableHead>
                   <TableHead>Size</TableHead>
                   <TableHead>Type</TableHead>
@@ -198,6 +285,7 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
               <TableBody>
                 {listing.data.prefixes.map((entry) => (
                   <TableRow key={`prefix:${entry}`}>
+                    {selectable ? <TableCell /> : null}
                     <TableCell colSpan={4}>
                       <button
                         type="button"
@@ -213,6 +301,21 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
                 ))}
                 {listing.data.objects.map((object) => (
                   <TableRow key={object.key}>
+                    {selectable ? (
+                      <TableCell>
+                        <Checkbox
+                          aria-label={`Select ${keyBasename(object.key)}`}
+                          checked={selectedOnPage.includes(object.key)}
+                          onCheckedChange={(next) =>
+                            setSelected((current) =>
+                              next === true
+                                ? [...current, object.key]
+                                : current.filter((key) => key !== object.key),
+                            )
+                          }
+                        />
+                      </TableCell>
+                    ) : null}
                     <TableCell>
                       <Link
                         href={`/buckets/${encodeURIComponent(bucket)}/objects/${object.key
@@ -257,6 +360,11 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
                               </a>
                             </DropdownMenuItem>
                             {permissions.manage_objects ? (
+                              <DropdownMenuItem onSelect={() => setCopying(object.key)}>
+                                <Copy aria-hidden /> Copy to…
+                              </DropdownMenuItem>
+                            ) : null}
+                            {permissions.manage_objects ? (
                               <DropdownMenuItem
                                 destructive
                                 onSelect={() => setPendingDelete(object)}
@@ -276,6 +384,18 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
         )}
       </Card>
 
+      {selectedOnPage.length > 0 || (batch !== null && batch.failed.length > 0) ? (
+        <SelectionBar
+          count={selectedOnPage.length}
+          batch={batch}
+          onClear={() => {
+            setSelected([]);
+            setBatch(null);
+          }}
+          onDelete={() => void runBatchDelete(selectedOnPage)}
+        />
+      ) : null}
+
       <Pagination
         limit={limit}
         hasCursor={cursor !== null}
@@ -283,6 +403,13 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
         onLimit={(next) => navigate({ limit: next, cursor: null })}
         onNext={(next) => navigate({ cursor: next })}
         onFirst={() => navigate({ cursor: null })}
+      />
+
+      <CopyObjectDialog
+        bucket={bucket}
+        objectKey={copying}
+        open={copying !== null}
+        onOpenChange={(next) => setCopying(next ? copying : null)}
       />
 
       <ConfirmDialog
@@ -373,4 +500,65 @@ function normalisePrefix(value: string): string {
 function trailingSegment(prefix: string): string {
   const segments = keySegments(prefix);
   return segments.length > 0 ? (segments[segments.length - 1] as string) : prefix;
+}
+
+/**
+ * Actions for the current selection.
+ *
+ * It reports progress against a real total and names the keys that failed,
+ * because a partly-completed batch is a normal outcome when each deletion is
+ * its own request.
+ */
+function SelectionBar({
+  count,
+  batch,
+  onClear,
+  onDelete,
+}: {
+  readonly count: number;
+  readonly batch: BatchProgress | null;
+  readonly onClear: () => void;
+  readonly onDelete: () => void;
+}) {
+  const running = batch?.running ?? false;
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+        <p className="text-sm text-ink" role="status">
+          {running && batch
+            ? `Deleting ${formatCount(batch.completed)} of ${formatCount(batch.total)}…`
+            : count > 0
+              ? `${formatCount(count)} selected`
+              : batch
+                ? `Deleted ${formatCount(batch.completed - batch.failed.length)} of ${formatCount(batch.total)}`
+                : ''}
+        </p>
+        <div className="ml-auto flex items-center gap-2">
+          <Button size="sm" variant="ghost" onClick={onClear} disabled={running}>
+            {count > 0 ? 'Clear' : 'Dismiss'}
+          </Button>
+          {count > 0 ? (
+            <Button size="sm" variant="danger" onClick={onDelete} disabled={running}>
+              <Trash2 aria-hidden />
+              Delete selected
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      {batch && !batch.running && batch.failed.length > 0 ? (
+        <div className="border-t border-border px-4 py-3">
+          <p className="text-xs font-medium text-danger">
+            {formatCount(batch.failed.length)} could not be deleted
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {batch.failed.map((failure) => (
+              <li key={failure.key} className="text-xs text-ink-muted">
+                <span className="font-mono">{keyBasename(failure.key)}</span> — {failure.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </Card>
+  );
 }

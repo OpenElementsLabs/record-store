@@ -11,10 +11,12 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useClusterEnabled, useDeployment } from '@/features/system/deployment';
+import { AttentionPanel } from '@/features/overview/attention-panel';
 import { RecentActivity } from '@/features/overview/recent-activity';
 import { queryKeys, useStorageStatus, useStorageUsage } from '@/hooks/use-system';
 import { fetchClusterHealth } from '@/lib/api/cluster';
-import { formatBytes, formatBytesOf, formatCount } from '@/lib/format';
+import { fetchSystemMetrics } from '@/lib/api/system';
+import { formatBytes, formatBytesOf, formatCount, formatRatio } from '@/lib/format';
 
 /**
  * The operational landing screen.
@@ -38,6 +40,8 @@ export function OverviewScreen() {
             : 'Health and capacity for this OES server.'
         }
       />
+
+      <AttentionPanel />
 
       {clusterEnabled ? <ClusterHealthPanel /> : <StandaloneHealthPanel />}
 
@@ -105,6 +109,8 @@ export function OverviewScreen() {
         </div>
       )}
 
+      <TrafficPanel />
+
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <RecentActivity />
@@ -126,6 +132,61 @@ export function OverviewScreen() {
         </Card>
       </div>
     </>
+  );
+}
+
+/**
+ * Traffic counters since this server started.
+ *
+ * These are cumulative totals, and they are labelled as such. OES exposes
+ * counters, not windowed rates, so presenting a "requests per second" here
+ * would be a number the backend never measured.
+ */
+function TrafficPanel() {
+  const metrics = useQuery({
+    queryKey: queryKeys.systemMetrics,
+    queryFn: ({ signal }) => fetchSystemMetrics(signal),
+    refetchInterval: 30_000,
+  });
+
+  if (metrics.isError) {
+    return (
+      <Card>
+        <ErrorState error={metrics.error} onRetry={() => void metrics.refetch()} />
+      </Card>
+    );
+  }
+
+  const data = metrics.data;
+  const errorRatio = data && data.requests > 0 ? data.errors / data.requests : null;
+
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <MetricCard
+        label="Requests served"
+        value={data ? formatCount(data.requests) : <Skeleton className="h-7 w-20" />}
+        detail="Since this server started"
+      />
+      <MetricCard
+        label="Failed requests"
+        value={data ? formatCount(data.errors) : <Skeleton className="h-7 w-16" />}
+        detail={
+          data && errorRatio !== null
+            ? `${formatRatio(data.errors, data.requests)} of requests`
+            : 'Since this server started'
+        }
+      />
+      <MetricCard
+        label="Uploaded"
+        value={data ? formatBytes(data.upload_bytes) : <Skeleton className="h-7 w-24" />}
+        detail="Bytes accepted from clients"
+      />
+      <MetricCard
+        label="Downloaded"
+        value={data ? formatBytes(data.download_bytes) : <Skeleton className="h-7 w-24" />}
+        detail="Bytes served to clients"
+      />
+    </div>
   );
 }
 

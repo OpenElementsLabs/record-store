@@ -24,6 +24,7 @@ import { Input } from '@/components/ui/input';
 import { Field } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { QuotaSection } from '@/features/buckets/quota-section';
 import { ObjectBrowser } from '@/features/objects/object-browser';
 import { ObjectVersions } from '@/features/objects/object-versions';
 import { useCapabilities, usePermissions } from '@/features/system/deployment';
@@ -120,7 +121,10 @@ export function BucketDetail({ bucket }: { readonly bucket: string }) {
         ) : null}
 
         <TabsContent value="settings">
-          <VersioningSection bucket={bucket} current={record?.versioning ?? null} />
+          <div className="space-y-4">
+            <VersioningSection bucket={bucket} current={record?.versioning ?? null} />
+            <QuotaSection record={record ?? null} />
+          </div>
         </TabsContent>
       </Tabs>
     </>
