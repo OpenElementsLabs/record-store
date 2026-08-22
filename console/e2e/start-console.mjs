@@ -15,10 +15,19 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const standalone = join(root, '.next', 'standalone');
 
-await cp(join(root, '.next', 'static'), join(standalone, '.next', 'static'), {
-  recursive: true,
-});
-await cp(join(root, 'public'), join(standalone, 'public'), { recursive: true });
+const copyIfPresent = async (source, destination) => {
+  try {
+    await cp(source, destination, { recursive: true });
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return;
+    }
+    throw error;
+  }
+};
+
+await copyIfPresent(join(root, '.next', 'static'), join(standalone, '.next', 'static'));
+await copyIfPresent(join(root, 'public'), join(standalone, 'public'));
 
 const server = spawn('node', ['server.js'], {
   cwd: standalone,
