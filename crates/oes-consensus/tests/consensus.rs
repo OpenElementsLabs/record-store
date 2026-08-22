@@ -414,6 +414,54 @@ async fn a_single_member_group_commits_and_survives_restart() {
     assert_eq!(stored.id, record.id);
 }
 
+/// The consistency boundary that cluster startup depends on.
+///
+/// A joining node's registration is committed by the leader, remotely. Reading
+/// the local catalog straight afterwards races the replication and application
+/// of that commit, which surfaced as a spurious `NodeNotRegistered` during
+/// three-node startup. After a read barrier the registration must be visible in
+/// the follower's own applied state on the *first* read.
+#[tokio::test]
+async fn a_read_barrier_makes_a_leader_commit_visible_to_a_follower_immediately() {
+    let mut harness = Harness::new();
+    let leader = bootstrap(&mut harness, &[1, 2, 3]).await;
+
+    let node = registration();
+    let node_id = node.node_id;
+    leader
+        .write(ClusterWrite::cluster(ClusterCommand::RegisterNode {
+            registration: Box::new(node),
+            at: Utc::now(),
+        }))
+        .await
+        .expect("register the joining node");
+
+    let follower = harness
+        .members
+        .lock()
+        .expect("member registry")
+        .get(&3)
+        .map(Arc::clone)
+        .expect("follower is running");
+    follower
+        .ensure_read_consistency()
+        .await
+        .expect("establish the read barrier");
+
+    // Exactly one read. Polling here would hide the race this guards against:
+    // the point is that the barrier alone is sufficient.
+    let stored = follower
+        .state()
+        .cluster()
+        .node(node_id)
+        .await
+        .expect("read the cluster catalog");
+    assert!(
+        stored.is_some(),
+        "a read barrier must make the leader's commit visible to the follower's applied state",
+    );
+}
+
 #[tokio::test]
 async fn writes_replicate_to_every_member() {
     let mut harness = Harness::new();

@@ -418,6 +418,36 @@ fn cluster_config(config: &Config) -> oes_cluster::ClusterConfig {
     cluster
 }
 
+/// How long startup waits for its own registration to become locally visible.
+///
+/// This bounds a wait on real conditions — leadership knowledge, then the
+/// leader's read index — so a genuinely unreachable quorum fails startup
+/// instead of hanging. It matches the consensus operation timeout.
+const MEMBERSHIP_BARRIER_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Blocks until this node's applied state includes every committed write.
+///
+/// A joining node's registration is committed by the leader, remotely. Reading
+/// the local catalog straight afterwards races the replication and application
+/// of that commit, which surfaced as a spurious `NodeNotRegistered` during
+/// three-node startup. Waiting for the leader's read index establishes a real
+/// consistency boundary: it is a condition wait, not a delay or a retry.
+async fn establish_membership_read_barrier(
+    context: &ClusterContext,
+) -> Result<(), ClusterStartupError> {
+    let Some(consensus) = context.consensus.as_deref() else {
+        // Standalone has no replicated state, so a local read is already current.
+        return Ok(());
+    };
+    // The barrier asks the leader for its read index, so the leader has to be
+    // known first; a node that has only just been added does not know it yet.
+    consensus
+        .wait_for_leader(MEMBERSHIP_BARRIER_TIMEOUT)
+        .await?;
+    consensus.ensure_read_consistency().await?;
+    Ok(())
+}
+
 async fn update_local_membership(
     context: &ClusterContext,
     identity: &NodeIdentity,
@@ -425,6 +455,7 @@ async fn update_local_membership(
     config: &Config,
     profile: &NodeProfile,
 ) -> Result<(), ClusterStartupError> {
+    establish_membership_read_barrier(context).await?;
     let node = context.cluster.node(identity.node_id).await?;
     let Some(node) = node else {
         return Err(ClusterStartupError::NodeNotRegistered(
