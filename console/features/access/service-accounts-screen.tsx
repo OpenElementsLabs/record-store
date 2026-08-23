@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createColumnHelper } from '@tanstack/react-table';
 import { Clock, KeyRound, MoreHorizontal, Plus } from 'lucide-react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import * as React from 'react';
 import { toast } from 'sonner';
@@ -119,7 +120,12 @@ export function ServiceAccountsScreen() {
           header: 'Name',
           cell: ({ row }) => (
             <div className="space-y-0.5">
-              <p className="font-medium text-ink">{row.original.account.name}</p>
+              <Link
+                href={`/service-accounts/${encodeURIComponent(row.original.account.id)}`}
+                className="font-medium text-ink hover:underline"
+              >
+                {row.original.account.name}
+              </Link>
               {row.original.account.description ? (
                 <p className="text-xs text-ink-muted">{row.original.account.description}</p>
               ) : null}

@@ -17,20 +17,16 @@ import { cn } from '@/lib/utils';
  * a second permission model: its commands come from the same navigation the
  * sidebar renders.
  */
-export function CommandPalette({ sections }: { readonly sections: readonly NavSection[] }) {
-  const [open, setOpen] = React.useState(false);
+export function CommandPalette({
+  sections,
+  open,
+  onOpenChange,
+}: {
+  readonly sections: readonly NavSection[];
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+}) {
   const permissions = usePermissions();
-
-  React.useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault();
-        setOpen((current) => !current);
-      }
-    }
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
 
   const commands = React.useMemo(
     () => buildCommands(sections, permissions),
@@ -38,12 +34,50 @@ export function CommandPalette({ sections }: { readonly sections: readonly NavSe
   );
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="p-0">
         {/* Mounted only while open, so the query and selection start fresh. */}
-        <PaletteBody commands={commands} onClose={() => setOpen(false)} />
+        <PaletteBody commands={commands} onClose={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Whether this browser uses the Command key.
+ *
+ * Read after hydration through an external store with a non-Mac server
+ * snapshot, so the markup the server produced and the markup the client
+ * produces agree on the first paint and the label corrects itself afterwards.
+ */
+export function useCommandKey(): boolean {
+  return React.useSyncExternalStore(
+    () => () => {},
+    () => /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent),
+    () => false,
+  );
+}
+
+/**
+ * The visible way in to the palette.
+ *
+ * A keyboard shortcut nobody is told about is not a feature, so the shortcut is
+ * printed on the control that opens it.
+ */
+export function CommandTrigger({ onOpen }: { readonly onOpen: () => void }) {
+  const command = useCommandKey();
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex h-8 items-center gap-2 rounded-[--radius-control] border border-border bg-surface-muted px-2.5 text-xs text-ink-muted hover:border-border-strong hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <Search aria-hidden className="size-3.5" />
+      <span>Search</span>
+      <kbd className="ml-2 hidden rounded border border-border-strong px-1 py-px font-sans text-[0.6875rem] text-ink-subtle sm:inline">
+        {command ? '⌘' : 'Ctrl '}K
+      </kbd>
+    </button>
   );
 }
 

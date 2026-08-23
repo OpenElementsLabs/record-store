@@ -2,7 +2,7 @@ import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CommandPalette } from './command-palette';
+import { CommandPalette, CommandTrigger } from './command-palette';
 import { auditorPermissions, renderWithProviders, session } from '@/test/render';
 import type { NavSection } from '@/features/system/navigation';
 
@@ -21,19 +21,24 @@ const sections: readonly NavSection[] = [
 beforeEach(() => push.mockClear());
 afterEach(() => vi.clearAllMocks());
 
+/**
+ * The palette is controlled by the shell, so tests drive it open directly.
+ * Opening it by keyboard is the shell's behaviour and is covered there.
+ */
 async function openPalette() {
-  renderWithProviders(<CommandPalette sections={sections} />);
-  await userEvent.keyboard('{Meta>}k{/Meta}');
+  renderWithProviders(<CommandPalette sections={sections} open onOpenChange={() => {}} />);
   return screen.findByRole('dialog');
 }
 
 describe('CommandPalette', () => {
-  it('stays closed until the shortcut is pressed', () => {
-    renderWithProviders(<CommandPalette sections={sections} />);
+  it('renders nothing while closed', () => {
+    renderWithProviders(
+      <CommandPalette sections={sections} open={false} onOpenChange={() => {}} />,
+    );
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('opens on the keyboard shortcut', async () => {
+  it('offers a search input when open', async () => {
     await openPalette();
     expect(screen.getByLabelText('Search commands')).toBeTruthy();
   });
@@ -87,10 +92,9 @@ describe('CommandPalette', () => {
   });
 
   it('offers no action an auditor cannot perform', async () => {
-    renderWithProviders(<CommandPalette sections={sections} />, {
+    renderWithProviders(<CommandPalette sections={sections} open onOpenChange={() => {}} />, {
       session: session(auditorPermissions),
     });
-    await userEvent.keyboard('{Control>}k{/Control}');
     await screen.findByRole('dialog');
 
     // The palette must never be a route around role gating.
@@ -104,5 +108,23 @@ describe('CommandPalette', () => {
 
     const labels = screen.getAllByRole('option').map((option) => option.textContent ?? '');
     expect(labels.some((label) => label.includes('Create bucket'))).toBe(true);
+  });
+});
+
+describe('CommandTrigger', () => {
+  it('prints the shortcut so the palette is discoverable', () => {
+    renderWithProviders(<CommandTrigger onOpen={() => {}} />);
+
+    // A shortcut nobody is told about is not a feature.
+    const trigger = screen.getByRole('button', { name: /Search/ });
+    expect(trigger.textContent).toMatch(/K$/);
+  });
+
+  it('opens the palette when clicked', async () => {
+    const onOpen = vi.fn();
+    renderWithProviders(<CommandTrigger onOpen={onOpen} />);
+
+    await userEvent.click(screen.getByRole('button', { name: /Search/ }));
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 });

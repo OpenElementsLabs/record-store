@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import * as React from 'react';
 
-import { CommandPalette } from '@/components/command-palette';
+import { CommandPalette, CommandTrigger } from '@/components/command-palette';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -42,6 +42,20 @@ export function AppShell({
 }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const [paletteOpen, setPaletteOpen] = React.useState(false);
+
+  // The shortcut lives with the state it toggles rather than inside the dialog,
+  // so the visible trigger and the keyboard both drive one source of truth.
+  React.useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setPaletteOpen((current) => !current);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const sections = React.useMemo(
     () =>
@@ -59,7 +73,7 @@ export function AppShell({
         Inside the provider so the palette sees the same role and capabilities
         the sidebar does, and cannot offer a screen the sidebar hides.
       */}
-      <CommandPalette sections={sections} />
+      <CommandPalette sections={sections} open={paletteOpen} onOpenChange={setPaletteOpen} />
       <div className="min-h-screen lg:grid lg:grid-cols-[15rem_1fr]">
         <a
           href="#main"
@@ -100,6 +114,7 @@ export function AppShell({
             deployment={deployment}
             onOpenNavigation={() => setMobileOpen(true)}
             mobileOpen={mobileOpen}
+            onOpenPalette={() => setPaletteOpen(true)}
           />
           <main id="main" className="min-w-0 flex-1 px-4 py-6 sm:px-6">
             <div className="mx-auto max-w-7xl space-y-6">{children}</div>
@@ -181,10 +196,12 @@ function TopBar({
   deployment,
   onOpenNavigation,
   mobileOpen,
+  onOpenPalette,
 }: {
   readonly deployment: Deployment;
   readonly onOpenNavigation: () => void;
   readonly mobileOpen: boolean;
+  readonly onOpenPalette: () => void;
 }) {
   const router = useRouter();
   const [signingOut, setSigningOut] = React.useState(false);
@@ -211,7 +228,9 @@ function TopBar({
         {mobileOpen ? <X aria-hidden /> : <Menu aria-hidden />}
       </Button>
 
-      <div className="min-w-0 flex-1" />
+      <div className="min-w-0 flex-1">
+        <CommandTrigger onOpen={onOpenPalette} />
+      </div>
 
       <div className="flex items-center gap-2">
         <ThemeToggle />
