@@ -12,8 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
-    "test:e2e:cluster": "playwright test --config playwright.cluster.config.ts",
+    "test:e2e": "npm run build && playwright test",
+    "test:e2e:cluster": "npm run build && playwright test --config playwright.cluster.config.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:e2e:install": "playwright install chromium"

@@ -5,10 +5,12 @@ import * as React from 'react';
 import { toast } from 'sonner';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
+import { EmptyState } from '@/components/empty-state';
 import { ErrorState } from '@/components/error-state';
 import { MetricCard } from '@/components/metric-card';
 import { PageHeader } from '@/components/page-header';
 import { StatusBadge } from '@/components/status-badge';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -24,6 +26,7 @@ import { Input } from '@/components/ui/input';
 import { Field } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { isBroad } from '@/features/access/policy-resource';
 import { QuotaSection } from '@/features/buckets/quota-section';
 import { ObjectBrowser } from '@/features/objects/object-browser';
 import { ObjectVersions } from '@/features/objects/object-versions';
@@ -39,8 +42,11 @@ import {
   updateLifecycleRule,
 } from '@/lib/api/buckets';
 import { formatBytes, formatCount, formatDateTime } from '@/lib/format';
+import { fetchPolicies } from '@/lib/api/access';
+import { verifyBucket } from '@/lib/api/integrity';
+import { fetchStorageEvents } from '@/lib/api/observability';
 import { describeLifecycleRule } from '@/lib/lifecycle-summary';
-import type { LifecycleRule, VersioningState } from '@/types/api';
+import type { Bucket, LifecycleRule, VersioningState } from '@/types/api';
 
 /**
  * One bucket, with only the sections this deployment actually supports.
@@ -97,25 +103,45 @@ export function BucketDetail({ bucket }: { readonly bucket: string }) {
         </div>
       )}
 
+      {/*
+        Overview leads the tab strip because it describes the bucket, but Objects
+        is the landing tab: opening a bucket almost always means wanting to see
+        what is in it, not its configuration summary.
+      */}
       <Tabs defaultValue="objects">
         <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="objects">Objects</TabsTrigger>
-          {capabilities.versioning && versioned ? (
-            <TabsTrigger value="versions">Versions</TabsTrigger>
+          {capabilities.versioning ? (
+            <TabsTrigger value="versioning">Versioning</TabsTrigger>
           ) : null}
+          <TabsTrigger value="quota">Quota</TabsTrigger>
           {capabilities.lifecycle ? <TabsTrigger value="lifecycle">Lifecycle</TabsTrigger> : null}
-          <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="access">Access</TabsTrigger>
+          {capabilities.events ? <TabsTrigger value="activity">Activity</TabsTrigger> : null}
+          <TabsTrigger value="integrity">Integrity</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="overview">
+          <BucketOverview bucket={bucket} record={record ?? null} />
+        </TabsContent>
 
         <TabsContent value="objects">
           <ObjectBrowser bucket={bucket} />
         </TabsContent>
 
-        {capabilities.versioning && versioned ? (
-          <TabsContent value="versions">
-            <ObjectVersions bucket={bucket} />
+        {capabilities.versioning ? (
+          <TabsContent value="versioning">
+            <div className="space-y-4">
+              <VersioningSection bucket={bucket} current={record?.versioning ?? null} />
+              {versioned ? <ObjectVersions bucket={bucket} /> : null}
+            </div>
           </TabsContent>
         ) : null}
+
+        <TabsContent value="quota">
+          <QuotaSection record={record ?? null} />
+        </TabsContent>
 
         {capabilities.lifecycle ? (
           <TabsContent value="lifecycle">
@@ -123,15 +149,304 @@ export function BucketDetail({ bucket }: { readonly bucket: string }) {
           </TabsContent>
         ) : null}
 
-        <TabsContent value="settings">
-          <div className="space-y-4">
-            <VersioningSection bucket={bucket} current={record?.versioning ?? null} />
-            <QuotaSection record={record ?? null} />
-          </div>
+        <TabsContent value="access">
+          <BucketAccess bucket={bucket} />
+        </TabsContent>
+
+        {capabilities.events ? (
+          <TabsContent value="activity">
+            <BucketActivity bucket={bucket} />
+          </TabsContent>
+        ) : null}
+
+        <TabsContent value="integrity">
+          <BucketIntegrity bucket={bucket} />
         </TabsContent>
       </Tabs>
     </>
   );
+}
+
+/** What this bucket holds and how it is configured, on one screen. */
+function BucketOverview({
+  bucket,
+  record,
+}: {
+  readonly bucket: string;
+  readonly record: Bucket | null;
+}) {
+  const capabilities = useCapabilities();
+  const rules = useQuery({
+    queryKey: queryKeys.bucketLifecycle(bucket),
+    queryFn: ({ signal }) => fetchLifecycleRules(bucket, signal),
+    enabled: capabilities.lifecycle,
+  });
+
+  const quota = record?.quota;
+  const active = (rules.data ?? []).filter((rule) => rule.enabled);
+
+  return (
+    <Card>
+      <CardHeader className="flex-col items-start">
+        <CardTitle>Bucket</CardTitle>
+        <CardDescription>
+          Configuration and accounting for {bucket}. Figures come with the bucket listing, so
+          reading this page costs one request.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-x-8 gap-y-3 sm:grid-cols-2">
+        <Detail label="Name" value={bucket} />
+        <Detail label="Created" value={record ? formatDateTime(record.created_at) : null} />
+        <Detail label="Objects" value={record ? formatCount(record.object_count) : null} />
+        <Detail label="Logical size" value={record ? formatBytes(record.logical_bytes) : null} />
+        <Detail
+          label="Versions retained"
+          value={
+            record
+              ? `${formatCount(record.version_count)} (${formatBytes(record.version_bytes)})`
+              : null
+          }
+        />
+        <Detail
+          label="Incomplete uploads"
+          value={record ? formatBytes(record.multipart_bytes) : null}
+        />
+        <Detail label="Versioning" value={record ? capitalise(record.versioning) : null} />
+        <Detail
+          label="Storage quota"
+          value={
+            quota
+              ? quota.bytes.mode === 'limit'
+                ? formatBytes(quota.bytes.bytes)
+                : 'Unlimited'
+              : null
+          }
+        />
+        <Detail
+          label="Object quota"
+          value={
+            quota
+              ? quota.objects.mode === 'limit'
+                ? formatCount(quota.objects.objects)
+                : 'Unlimited'
+              : null
+          }
+        />
+        {capabilities.lifecycle ? (
+          <Detail
+            label="Lifecycle"
+            value={
+              rules.isPending
+                ? null
+                : active.length === 0
+                  ? 'No active rules'
+                  : `${formatCount(active.length)} active rule${active.length === 1 ? '' : 's'}`
+            }
+          />
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Policies that can reach this bucket.
+ *
+ * OES scopes authorization by resource pattern, not by an access list attached
+ * to the bucket. This therefore shows which policies match this bucket rather
+ * than pretending the bucket owns a permission list of its own.
+ */
+function BucketAccess({ bucket }: { readonly bucket: string }) {
+  const policies = useQuery({
+    queryKey: queryKeys.policies,
+    queryFn: ({ signal }) => fetchPolicies(signal),
+  });
+
+  const matching = (policies.data ?? [])
+    .map((policy) => ({
+      policy,
+      resources: policy.statements
+        .flatMap((statement) => statement.resources)
+        .filter((resource) => resourceReachesBucket(resource, bucket)),
+    }))
+    .filter((entry) => entry.resources.length > 0);
+
+  return (
+    <Card>
+      <CardHeader className="flex-col items-start">
+        <CardTitle>Access</CardTitle>
+        <CardDescription>
+          Policies whose resource patterns match this bucket. Authorization is decided by the
+          backend on every request; this is a view of the rules, not a cache of decisions.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {policies.isError ? (
+          <ErrorState error={policies.error} onRetry={() => void policies.refetch()} />
+        ) : policies.isPending ? (
+          <Skeleton className="h-16 w-full" />
+        ) : matching.length === 0 ? (
+          <EmptyState
+            title="No policy reaches this bucket"
+            description="No policy resource pattern matches this bucket, so only the root credential can access it."
+          />
+        ) : (
+          <ul className="space-y-2">
+            {matching.map(({ policy, resources }) => (
+              <li
+                key={policy.id}
+                className="space-y-1 rounded-[--radius-control] border border-border px-3 py-2"
+              >
+                <p className="text-sm font-medium text-ink">{policy.name}</p>
+                <ul className="flex flex-wrap gap-1.5">
+                  {resources.map((resource) => (
+                    <li key={resource}>
+                      <Badge tone={isBroad(resource) ? 'warn' : 'neutral'} className="font-mono">
+                        {resource}
+                      </Badge>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Whether a policy resource pattern can reach this bucket. */
+export function resourceReachesBucket(resource: string, bucket: string): boolean {
+  if (!resource.startsWith('bucket:')) return false;
+  const target = resource.slice('bucket:'.length);
+  if (target.endsWith('*')) {
+    const stem = target.slice(0, -1);
+    // `bucket:up*` reaches every bucket whose name starts with "up".
+    return bucket.startsWith(stem) || `${bucket}/`.startsWith(stem);
+  }
+  // An exact pattern names either the bucket or one key inside it.
+  return target === bucket || target.startsWith(`${bucket}/`);
+}
+
+/** Storage events for this bucket, newest first. */
+function BucketActivity({ bucket }: { readonly bucket: string }) {
+  const events = useQuery({
+    queryKey: queryKeys.events(`bucket:${bucket}`),
+    queryFn: ({ signal }) => fetchStorageEvents({ bucket, limit: 25 }, signal),
+  });
+
+  return (
+    <Card>
+      <CardHeader className="flex-col items-start">
+        <CardTitle>Activity</CardTitle>
+        <CardDescription>
+          Recent storage events for this bucket. This is data activity, not the security audit
+          trail.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {events.isError ? (
+          <ErrorState error={events.error} onRetry={() => void events.refetch()} />
+        ) : events.isPending ? (
+          <Skeleton className="h-20 w-full" />
+        ) : events.data.events.length === 0 ? (
+          <EmptyState
+            title="No recorded activity"
+            description="No storage events have been recorded for this bucket yet."
+          />
+        ) : (
+          <ul className="divide-y divide-border">
+            {events.data.events.map((event) => (
+              <li key={event.id} className="flex flex-wrap items-baseline gap-x-3 py-2">
+                <Badge tone="neutral">{event.type}</Badge>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-muted">
+                  {event.object ?? '—'}
+                </span>
+                <time dateTime={event.time} className="text-xs text-ink-subtle">
+                  {formatDateTime(event.time)}
+                </time>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Verifies every object in the bucket.
+ *
+ * This reads all of the bucket's bytes, so the cost is stated up front rather
+ * than discovered. Verification detects a mismatch; it cannot repair one.
+ */
+function BucketIntegrity({ bucket }: { readonly bucket: string }) {
+  const permissions = usePermissions();
+  const verification = useMutation({
+    mutationFn: () => verifyBucket(bucket),
+    onSuccess: (result) => {
+      if (result.failures === 0) {
+        toast.success(`${formatCount(result.verified_objects)} objects verified`);
+      } else {
+        toast.error(`${formatCount(result.failures)} objects failed verification`);
+      }
+    },
+  });
+
+  return (
+    <Card>
+      <CardHeader className="flex-col items-start">
+        <CardTitle>Integrity</CardTitle>
+        <CardDescription>
+          Re-reads and re-hashes every object in this bucket, comparing each against the checksum
+          recorded when it was stored.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {permissions.manage_storage ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={verification.isPending}
+            onClick={() => verification.mutate()}
+          >
+            {verification.isPending ? 'Verifying…' : 'Verify bucket'}
+          </Button>
+        ) : (
+          <p className="text-xs text-ink-muted">Your role does not permit running verification.</p>
+        )}
+        {verification.error ? <ErrorState error={verification.error} /> : null}
+        {verification.data ? (
+          <p
+            className={verification.data.failures === 0 ? 'text-sm text-ok' : 'text-sm text-danger'}
+            role="status"
+          >
+            {verification.data.failures === 0
+              ? `All ${formatCount(verification.data.verified_objects)} objects match their recorded checksums.`
+              : `${formatCount(verification.data.failures)} of ${formatCount(verification.data.verified_objects)} objects did not match. A checksum detects damage; it cannot repair it.`}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function Detail({ label, value }: { readonly label: string; readonly value: string | null }) {
+  return (
+    <div className="min-w-0 space-y-0.5">
+      <p className="text-xs font-medium text-ink-muted">{label}</p>
+      {value === null ? (
+        <Skeleton className="h-5 w-24" />
+      ) : (
+        <p className="break-all text-sm text-ink">{value}</p>
+      )}
+    </div>
+  );
+}
+
+function capitalise(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function VersioningSection({

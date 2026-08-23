@@ -130,11 +130,12 @@ test.describe('storage workflows', () => {
     await page.getByRole('button', { name: 'Create bucket' }).click();
     await page.getByRole('link', { name: bucket }).click();
 
-    // The tab only exists after versioning is turned on.
-    await expect(page.getByRole('tab', { name: 'Versions' })).toHaveCount(0);
-    await page.getByRole('tab', { name: 'Settings' }).click();
+    // Versioning is its own tab; the history below it appears once versioning
+    // is actually on, so an empty history is not shown as if it were a feature
+    // that had failed.
+    await page.getByRole('tab', { name: 'Versioning' }).click();
     await page.getByRole('button', { name: 'Enable versioning' }).click();
-    await expect(page.getByRole('tab', { name: 'Versions' })).toBeVisible();
+    await expect(page.getByText('Enabled')).toBeVisible();
 
     await page.getByRole('tab', { name: 'Objects' }).click();
     for (const body of ['first revision', 'second revision']) {
@@ -146,7 +147,7 @@ test.describe('storage workflows', () => {
       await expect(page.getByRole('link', { name: /doc\.txt/ })).toBeVisible({ timeout: 20_000 });
     }
 
-    await page.getByRole('tab', { name: 'Versions' }).click();
+    await page.getByRole('tab', { name: 'Versioning' }).click();
     await expect(page.getByText('Current')).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: 'doc.txt' })).toHaveCount(2);
   });
