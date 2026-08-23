@@ -14,10 +14,16 @@
     ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 
   --color-canvas: oklch(0.99 0.002 250);
+  --color-background: var(--color-canvas);
   --color-surface: oklch(1 0 0);
+  --color-surface-subtle: oklch(0.975 0.003 250);
+  --color-surface-elevated: oklch(0.99 0.003 250);
   --color-surface-muted: oklch(0.975 0.003 250);
   --color-border: oklch(0.9 0.005 250);
   --color-border-strong: oklch(0.83 0.008 250);
+  --color-foreground: oklch(0.22 0.012 255);
+  --color-foreground-muted: oklch(0.5 0.012 255);
+  --color-foreground-subtle: oklch(0.62 0.01 255);
   --color-ink: oklch(0.22 0.012 255);
   --color-ink-muted: oklch(0.5 0.012 255);
   --color-ink-subtle: oklch(0.62 0.01 255);
@@ -26,6 +32,8 @@
   --color-accent-hover: oklch(0.46 0.15 250);
   --color-accent-ink: oklch(0.99 0 0);
   --color-accent-soft: oklch(0.95 0.03 250);
+  --color-focus-ring: var(--color-accent);
+  --color-selection: var(--color-accent-soft);
 
   --color-ok: oklch(0.55 0.13 152);
   --color-ok-soft: oklch(0.95 0.04 152);
@@ -37,8 +45,8 @@
   --color-info: oklch(0.55 0.11 240);
   --color-info-soft: oklch(0.95 0.03 240);
 
-  --radius-control: 0.375rem;
-  --radius-panel: 0.5rem;
+  --radius-control: 0.5rem;
+  --radius-panel: 0.75rem;
 }
 
 /*
@@ -49,10 +57,16 @@
 
 .dark {
   --color-canvas: oklch(0.17 0.008 255);
+  --color-background: var(--color-canvas);
   --color-surface: oklch(0.21 0.009 255);
+  --color-surface-subtle: oklch(0.25 0.009 255);
+  --color-surface-elevated: oklch(0.24 0.009 255);
   --color-surface-muted: oklch(0.25 0.009 255);
   --color-border: oklch(0.3 0.01 255);
   --color-border-strong: oklch(0.38 0.012 255);
+  --color-foreground: oklch(0.95 0.004 250);
+  --color-foreground-muted: oklch(0.73 0.008 250);
+  --color-foreground-subtle: oklch(0.62 0.008 250);
   --color-ink: oklch(0.95 0.004 250);
   --color-ink-muted: oklch(0.73 0.008 250);
   --color-ink-subtle: oklch(0.62 0.008 250);
@@ -61,6 +75,8 @@
   --color-accent-hover: oklch(0.75 0.12 250);
   --color-accent-ink: oklch(0.17 0.01 255);
   --color-accent-soft: oklch(0.28 0.05 250);
+  --color-focus-ring: var(--color-accent);
+  --color-selection: var(--color-accent-soft);
 
   --color-ok: oklch(0.72 0.14 152);
   --color-ok-soft: oklch(0.27 0.05 152);
