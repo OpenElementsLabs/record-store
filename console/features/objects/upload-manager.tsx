@@ -38,6 +38,16 @@ export type UploadTask = {
 type QueuedUpload = { readonly bucket: string; readonly key: string; readonly file: File };
 
 /**
+ * How many transfers run at once.
+ *
+ * Browsers allow roughly six connections per origin, and the console needs some
+ * of those for its own API calls while an upload is running. Three keeps a
+ * directory drop moving without starving the rest of the page, and the bound
+ * exists so a thousand-file selection cannot open a thousand requests.
+ */
+export const UPLOAD_CONCURRENCY = 3;
+
+/**
  * Runs object uploads.
  *
  * This owns the queue, the per-file state the UI renders, cancellation, and
@@ -47,16 +57,20 @@ type QueuedUpload = { readonly bucket: string; readonly key: string; readonly fi
  * written against progress reports and outcomes rather than against the fact
  * that today's transport happens to use a single request.
  *
- * Files are sent one at a time, so a directory drop cannot saturate the link.
- * A retried upload starts from the first byte, because the transport cannot
- * resume; nothing here pretends otherwise.
+ * Transfers run up to `concurrency` at a time, so a directory drop makes
+ * progress without opening an unbounded number of connections. A retried upload
+ * starts from the first byte, because the transport cannot resume; nothing here
+ * pretends otherwise.
  */
-export function useUploadManager(transport: UploadTransport = singleRequestUpload) {
+export function useUploadManager(
+  transport: UploadTransport = singleRequestUpload,
+  concurrency: number = UPLOAD_CONCURRENCY,
+) {
   const [tasks, setTasks] = React.useState<readonly UploadTask[]>([]);
   const handles = React.useRef(new Map<string, UploadHandle>());
   const pending = React.useRef(new Map<string, QueuedUpload>());
   const queue = React.useRef<string[]>([]);
-  const running = React.useRef(false);
+  const running = React.useRef(0);
   const onSettled = React.useRef<(() => void) | null>(null);
 
   const update = React.useCallback((id: string, patch: Partial<UploadTask>) => {
@@ -96,9 +110,13 @@ export function useUploadManager(transport: UploadTransport = singleRequestUploa
    * The queue holds ids and the files are held beside it, so the loop never
    * reads a rendered snapshot of `tasks` to decide what to send next.
    */
-  const pump = React.useCallback(async () => {
-    if (running.current) return;
-    running.current = true;
+  /**
+   * One worker, taking the next queued upload until the queue is empty.
+   *
+   * The queue holds ids and the files are held beside it, so a worker never
+   * reads a rendered snapshot of `tasks` to decide what to send next.
+   */
+  const drain = React.useCallback(async () => {
     try {
       for (;;) {
         const id = queue.current.shift();
@@ -109,10 +127,19 @@ export function useUploadManager(transport: UploadTransport = singleRequestUploa
         await send(id, item);
       }
     } finally {
-      running.current = false;
-      onSettled.current?.();
+      running.current -= 1;
+      // The last worker to finish is the one that drained the queue.
+      if (running.current === 0) onSettled.current?.();
     }
   }, [send, update]);
+
+  /** Starts workers up to the concurrency bound. */
+  const pump = React.useCallback(() => {
+    while (running.current < concurrency && queue.current.length > 0) {
+      running.current += 1;
+      void drain();
+    }
+  }, [concurrency, drain]);
 
   /** Queues files under a prefix, deriving each key from the file name. */
   const enqueue = React.useCallback(
@@ -135,7 +162,7 @@ export function useUploadManager(transport: UploadTransport = singleRequestUploa
       });
       setTasks((current) => [...created, ...current]);
       queue.current.push(...created.map((task) => task.id));
-      void pump();
+      pump();
     },
     [pump],
   );
@@ -151,7 +178,7 @@ export function useUploadManager(transport: UploadTransport = singleRequestUploa
       if (!pending.current.has(id)) return;
       update(id, { state: 'queued', sent: 0, total: null, reason: null, retryable: false });
       queue.current.push(id);
-      void pump();
+      pump();
     },
     [pump, update],
   );

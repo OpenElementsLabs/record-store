@@ -1095,3 +1095,128 @@ async fn management_api_copies_objects_server_side() {
     let _ = shutdown_tx.send(());
     let _ = timeout(Duration::from_secs(10), server).await;
 }
+
+/// Lifecycle rules can be edited and disabled, not only created and deleted.
+#[tokio::test]
+async fn management_api_updates_lifecycle_rules() {
+    let directory = tempdir().expect("temporary directory");
+    let mut config = Config::default();
+    config.storage.data_directory = directory.path().join("data");
+    config.server.shutdown_grace_period_seconds = 2;
+    config.auth.root_access_key = Some("test-access".into());
+    config.auth.root_secret_key = Some(SecretValue::new("test-secret-at-least-sixteen"));
+    config.auth.credential_master_key = Some(SecretValue::new(
+        "test-credential-master-key-at-least-32-bytes",
+    ));
+    config.auth.management_system_token = Some(SecretValue::new(
+        "test-system-management-token-32-bytes-long",
+    ));
+
+    let runtime = oes_server::initialize(&config)
+        .await
+        .expect("initialize server");
+    let api_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let address = api_listener.local_addr().expect("listener address");
+    let s3_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind S3 listener");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(runtime.serve(s3_listener, api_listener, async move {
+        let _ = shutdown_rx.await;
+    }));
+
+    let client = reqwest::Client::new();
+    let admin = "test-system-management-token-32-bytes-long";
+    let base = format!("http://{address}");
+
+    for name in ["lifecycle-a", "lifecycle-b"] {
+        let created = client
+            .post(format!("{base}/api/v1/buckets"))
+            .bearer_auth(admin)
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await
+            .expect("create bucket");
+        assert_eq!(created.status(), 201);
+    }
+
+    let created: serde_json::Value = client
+        .post(format!("{base}/api/v1/buckets/lifecycle-a/lifecycle"))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({ "prefix": "backups/", "expiration": 90 }))
+        .send()
+        .await
+        .expect("create rule")
+        .json()
+        .await
+        .expect("rule JSON");
+    let rule_id = created["id"].as_str().expect("rule id").to_owned();
+    assert_eq!(created["enabled"], true);
+
+    // Editing replaces the whole rule, and an explicit null clears a field.
+    let updated: serde_json::Value = client
+        .put(format!(
+            "{base}/api/v1/buckets/lifecycle-a/lifecycle/{rule_id}"
+        ))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({
+            "prefix": "archive/",
+            "enabled": false,
+            "expiration": null,
+            "noncurrent_version_expiration": 30
+        }))
+        .send()
+        .await
+        .expect("update rule")
+        .json()
+        .await
+        .expect("updated JSON");
+    assert_eq!(updated["prefix"], "archive/");
+    assert_eq!(updated["enabled"], false);
+    assert!(updated["expiration"].is_null());
+    assert_eq!(updated["noncurrent_version_expiration"], 30);
+    // Identity and creation time survive an edit; only `updated_at` moves.
+    assert_eq!(updated["id"], created["id"]);
+    assert_eq!(updated["created_at"], created["created_at"]);
+
+    let listed: serde_json::Value = client
+        .get(format!("{base}/api/v1/buckets/lifecycle-a/lifecycle"))
+        .bearer_auth(admin)
+        .send()
+        .await
+        .expect("list rules")
+        .json()
+        .await
+        .expect("list JSON");
+    assert_eq!(listed.as_array().expect("array").len(), 1);
+    assert_eq!(listed[0]["prefix"], "archive/");
+
+    // A rule identifier from one bucket cannot be used to edit another's.
+    let cross = client
+        .put(format!(
+            "{base}/api/v1/buckets/lifecycle-b/lifecycle/{rule_id}"
+        ))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({ "prefix": "", "enabled": true, "expiration": 5 }))
+        .send()
+        .await
+        .expect("cross-bucket update");
+    assert_eq!(cross.status(), 404);
+
+    // A rule with no action at all is refused rather than silently stored.
+    let empty = client
+        .put(format!(
+            "{base}/api/v1/buckets/lifecycle-a/lifecycle/{rule_id}"
+        ))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({ "prefix": "archive/", "enabled": true }))
+        .send()
+        .await
+        .expect("empty rule update");
+    assert_eq!(empty.status(), 400);
+
+    let _ = shutdown_tx.send(());
+    let _ = timeout(Duration::from_secs(10), server).await;
+}

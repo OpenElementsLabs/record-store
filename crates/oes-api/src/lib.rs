@@ -547,6 +547,10 @@ pub fn router(state: AppState) -> Router {
             get(list_lifecycle_rules).post(create_lifecycle_rule),
         )
         .route(
+            "/api/v1/buckets/{bucket}/lifecycle/{rule_id}",
+            axum::routing::put(update_lifecycle_rule),
+        )
+        .route(
             "/api/v1/lifecycle-rules/{id}",
             delete(delete_lifecycle_rule),
         )
@@ -1943,6 +1947,94 @@ async fn list_lifecycle_rules(
             error!(%error, request_id = %request_id, "lifecycle rule listing failed");
             ApiError::internal(request_id)
         })
+}
+
+/// A complete replacement for one lifecycle rule.
+///
+/// Every field is sent, so clearing an expiration is expressed as an explicit
+/// null rather than being indistinguishable from "leave this alone". The console
+/// already holds the whole rule from the listing, so there is nothing to gain
+/// from a partial update and a real ambiguity to avoid.
+#[derive(Debug, Deserialize)]
+struct UpdateLifecycleRuleRequest {
+    prefix: String,
+    enabled: bool,
+    #[serde(default)]
+    expiration: Option<ExpirationDays>,
+    #[serde(default)]
+    noncurrent_version_expiration: Option<ExpirationDays>,
+}
+
+/// Replaces one lifecycle rule belonging to a bucket.
+///
+/// The rule is addressed through its bucket so a rule identifier from one bucket
+/// cannot be used to edit another's, and so the lookup stays bounded by that
+/// bucket's rule count.
+async fn update_lifecycle_rule(
+    State(state): State<AppState>,
+    Path((bucket, rule_id)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+    Json(input): Json<UpdateLifecycleRuleRequest>,
+) -> Result<Json<LifecycleRule>, ApiError> {
+    let name = parse_bucket_name(&bucket, &request_id)?;
+    let rule_id = LifecycleRuleId::from_str(&rule_id).map_err(|_| {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_LIFECYCLE_RULE_ID",
+            "Invalid lifecycle rule ID",
+        )
+    })?;
+    let bucket = state
+        .services
+        .buckets
+        .head(&name)
+        .await
+        .map_err(|error| service_to_api_error(error, request_id.clone()))?;
+    let existing = state
+        .metadata
+        .list_lifecycle_rules(Some(bucket.id))
+        .await
+        .map_err(|error| {
+            error!(%error, request_id = %request_id, "lifecycle rule listing failed");
+            ApiError::internal(request_id.clone())
+        })?
+        .into_iter()
+        .find(|rule| rule.id == rule_id)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "LIFECYCLE_RULE_NOT_FOUND",
+                "Lifecycle rule was not found in this bucket",
+                request_id.clone(),
+            )
+        })?;
+
+    let updated = LifecycleRule {
+        id: existing.id,
+        bucket_id: existing.bucket_id,
+        prefix: input.prefix,
+        enabled: input.enabled,
+        expiration: input.expiration,
+        noncurrent_version_expiration: input.noncurrent_version_expiration,
+        created_at: existing.created_at,
+        updated_at: chrono::Utc::now(),
+    };
+    updated.validate().map_err(|_| {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_LIFECYCLE_RULE",
+            "Lifecycle rule is invalid",
+        )
+    })?;
+    state
+        .metadata
+        .put_lifecycle_rule(&updated)
+        .await
+        .map_err(|error| {
+            error!(%error, request_id = %request_id, "lifecycle rule update failed");
+            ApiError::internal(request_id)
+        })?;
+    Ok(Json(updated))
 }
 
 async fn delete_lifecycle_rule(

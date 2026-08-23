@@ -47,14 +47,28 @@ import type { ObjectVersionEntry } from '@/types/api';
  * Delete markers are shown as first-class entries rather than hidden, because
  * their presence is what explains why a key appears absent.
  */
-export function ObjectVersions({ bucket }: { readonly bucket: string }) {
+export function ObjectVersions({
+  bucket,
+  prefixOverride,
+}: {
+  readonly bucket: string;
+  /**
+   * Restricts the list to one key.
+   *
+   * Object detail embeds this list for a single object, where the prefix comes
+   * from the route rather than from a filter the operator typed.
+   */
+  readonly prefixOverride?: string;
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
   const client = useQueryClient();
   const permissions = usePermissions();
 
-  const prefix = readString(params, 'vprefix', '');
+  // A caller-supplied scope wins over the URL filter: object detail is already
+  // looking at one key, so a stale filter must not widen the list.
+  const prefix = prefixOverride ?? readString(params, 'vprefix', '');
   const [draft, setDraft] = React.useState(prefix);
   const [pendingDelete, setPendingDelete] = React.useState<ObjectVersionEntry | null>(null);
 

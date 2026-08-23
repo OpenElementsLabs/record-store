@@ -1,6 +1,6 @@
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useUploadManager } from './upload-manager';
 import { UploadPanel } from './upload-panel';
@@ -27,11 +27,16 @@ function recordingTransport() {
 function Harness({
   transport,
   files,
+  concurrency = 1,
+  onSettled,
 }: {
   readonly transport: UploadTransport;
   readonly files: readonly File[];
+  readonly concurrency?: number;
+  readonly onSettled?: () => void;
 }) {
-  const uploads = useUploadManager(transport);
+  const uploads = useUploadManager(transport, concurrency);
+  if (onSettled) uploads.setSettledHandler(onSettled);
   return (
     <>
       <button type="button" onClick={() => uploads.enqueue('uploads', 'docs/', files)}>
@@ -187,18 +192,61 @@ describe('useUploadManager', () => {
     expect(harness.attempts).toHaveLength(2);
   });
 
-  it('uploads one file at a time so a directory drop cannot saturate the link', async () => {
-    await add([file('one.txt'), file('two.txt')]);
+  it('runs transfers in parallel up to the concurrency bound', async () => {
+    const files = ['one.txt', 'two.txt', 'three.txt', 'four.txt', 'five.txt'].map((name) =>
+      file(name),
+    );
+    render(<Harness transport={harness.transport} files={files} concurrency={3} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Add files' }));
 
-    expect(harness.attempts).toHaveLength(1);
-    expect(harness.attempts[0]?.request.key).toBe('docs/one.txt');
+    // Three start immediately; the remaining two wait for a slot rather than
+    // opening their own connections.
+    expect(harness.attempts).toHaveLength(3);
+    expect(harness.attempts.map((attempt) => attempt.request.key)).toEqual([
+      'docs/one.txt',
+      'docs/two.txt',
+      'docs/three.txt',
+    ]);
 
-    // The queue advances only once the previous transfer has settled.
     await act(async () => {
       harness.attempts[0]?.observer.onSettled({ status: 'done' });
     });
+    // One finished, so exactly one more starts.
+    expect(harness.attempts).toHaveLength(4);
+    expect(harness.attempts[3]?.request.key).toBe('docs/four.txt');
+  });
+
+  it('never exceeds the bound however many files are dropped', async () => {
+    const files = Array.from({ length: 40 }, (_, index) => file(`f${index}.txt`));
+    render(<Harness transport={harness.transport} files={files} concurrency={2} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Add files' }));
+
     expect(harness.attempts).toHaveLength(2);
-    expect(harness.attempts[1]?.request.key).toBe('docs/two.txt');
+  });
+
+  it('reports the queue as drained only once every transfer has settled', async () => {
+    const settled = vi.fn();
+    render(
+      <Harness
+        transport={harness.transport}
+        files={[file('one.txt'), file('two.txt')]}
+        concurrency={2}
+        onSettled={settled}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Add files' }));
+    expect(harness.attempts).toHaveLength(2);
+
+    await act(async () => {
+      harness.attempts[0]?.observer.onSettled({ status: 'done' });
+    });
+    // One worker is still transferring, so the queue is not drained.
+    expect(settled).not.toHaveBeenCalled();
+
+    await act(async () => {
+      harness.attempts[1]?.observer.onSettled({ status: 'done' });
+    });
+    expect(settled).toHaveBeenCalledTimes(1);
   });
 
   it('drops settled rows on request and keeps the ones still running', async () => {

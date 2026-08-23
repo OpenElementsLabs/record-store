@@ -29,14 +29,17 @@ import { ObjectBrowser } from '@/features/objects/object-browser';
 import { ObjectVersions } from '@/features/objects/object-versions';
 import { useCapabilities, usePermissions } from '@/features/system/deployment';
 import { queryKeys } from '@/hooks/use-system';
+import { ApiError } from '@/lib/api/error';
 import {
   createLifecycleRule,
   deleteLifecycleRule,
   fetchBuckets,
   fetchLifecycleRules,
   setBucketVersioning,
+  updateLifecycleRule,
 } from '@/lib/api/buckets';
 import { formatBytes, formatCount, formatDateTime } from '@/lib/format';
+import { describeLifecycleRule } from '@/lib/lifecycle-summary';
 import type { LifecycleRule, VersioningState } from '@/types/api';
 
 /**
@@ -204,6 +207,23 @@ function LifecycleSection({ bucket }: { readonly bucket: string }) {
   const client = useQueryClient();
   const permissions = usePermissions();
   const [creating, setCreating] = React.useState(false);
+  const [editing, setEditing] = React.useState<LifecycleRule | null>(null);
+
+  const toggle = useMutation({
+    mutationFn: (rule: LifecycleRule) =>
+      updateLifecycleRule(bucket, rule.id, {
+        prefix: rule.prefix,
+        enabled: !rule.enabled,
+        expiration: rule.expiration,
+        noncurrent_version_expiration: rule.noncurrent_version_expiration,
+      }),
+    onSuccess: async (updated) => {
+      toast.success(updated.enabled ? 'Lifecycle rule enabled' : 'Lifecycle rule disabled');
+      await client.invalidateQueries({ queryKey: queryKeys.bucketLifecycle(bucket) });
+    },
+    onError: (error) =>
+      toast.error(error instanceof ApiError ? error.message : 'Could not change the rule'),
+  });
   const [pendingDelete, setPendingDelete] = React.useState<LifecycleRule | null>(null);
   const rules = useQuery({
     queryKey: queryKeys.bucketLifecycle(bucket),
@@ -255,23 +275,37 @@ function LifecycleSection({ bucket }: { readonly bucket: string }) {
                     level={rule.enabled ? 'healthy' : 'disabled'}
                     label={rule.enabled ? 'Enabled' : 'Disabled'}
                   />
-                  <span className="font-mono text-xs text-ink">{rule.prefix || '(all keys)'}</span>
                   <span className="min-w-0 flex-1 text-xs text-ink-muted">
-                    {rule.expiration ? `Expire after ${rule.expiration} day(s)` : null}
-                    {rule.expiration && rule.noncurrent_version_expiration ? ' · ' : null}
-                    {rule.noncurrent_version_expiration
-                      ? `Non-current versions after ${rule.noncurrent_version_expiration} day(s)`
-                      : null}
+                    {describeLifecycleRule(rule)}
                   </span>
                   {permissions.manage_buckets ? (
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      aria-label={`Delete lifecycle rule ${rule.prefix || 'all keys'}`}
-                      onClick={() => setPendingDelete(rule)}
-                    >
-                      Delete
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        aria-label={`${rule.enabled ? 'Disable' : 'Enable'} lifecycle rule ${rule.prefix || 'all keys'}`}
+                        disabled={toggle.isPending}
+                        onClick={() => toggle.mutate(rule)}
+                      >
+                        {rule.enabled ? 'Disable' : 'Enable'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        aria-label={`Edit lifecycle rule ${rule.prefix || 'all keys'}`}
+                        onClick={() => setEditing(rule)}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        aria-label={`Delete lifecycle rule ${rule.prefix || 'all keys'}`}
+                        onClick={() => setPendingDelete(rule)}
+                      >
+                        Delete
+                      </Button>
+                    </div>
                   ) : null}
                 </li>
               ))}
@@ -280,12 +314,19 @@ function LifecycleSection({ bucket }: { readonly bucket: string }) {
         </CardContent>
       </Card>
 
-      <CreateLifecycleRuleDialog
+      <LifecycleRuleDialog
         bucket={bucket}
-        open={creating}
-        onOpenChange={setCreating}
-        onCreated={async () => {
+        rule={editing}
+        open={creating || editing !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCreating(false);
+            setEditing(null);
+          }
+        }}
+        onSaved={async () => {
           setCreating(false);
+          setEditing(null);
           await client.invalidateQueries({ queryKey: queryKeys.bucketLifecycle(bucket) });
         }}
       />
@@ -311,89 +352,143 @@ function LifecycleSection({ bucket }: { readonly bucket: string }) {
   );
 }
 
-function CreateLifecycleRuleDialog({
+/**
+ * Creates or edits one lifecycle rule.
+ *
+ * Both use the same form because they set the same fields. The dialog's state
+ * is seeded from the rule and lives inside `DialogContent`, which only mounts
+ * while open, so switching rules starts from the right values without an effect
+ * copying props into state.
+ */
+function LifecycleRuleDialog({
   bucket,
+  rule,
   open,
   onOpenChange,
-  onCreated,
+  onSaved,
 }: {
-  bucket: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onCreated: () => Promise<void>;
+  readonly bucket: string;
+  readonly rule: LifecycleRule | null;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly onSaved: () => Promise<void>;
 }) {
-  const [prefix, setPrefix] = React.useState('');
-  const [expiration, setExpiration] = React.useState('');
-  const [noncurrentExpiration, setNoncurrentExpiration] = React.useState('');
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <LifecycleRuleForm
+          key={rule?.id ?? 'new'}
+          bucket={bucket}
+          rule={rule}
+          onOpenChange={onOpenChange}
+          onSaved={onSaved}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function LifecycleRuleForm({
+  bucket,
+  rule,
+  onOpenChange,
+  onSaved,
+}: {
+  readonly bucket: string;
+  readonly rule: LifecycleRule | null;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly onSaved: () => Promise<void>;
+}) {
+  const [prefix, setPrefix] = React.useState(rule?.prefix ?? '');
+  const [expiration, setExpiration] = React.useState(
+    rule?.expiration === null || rule?.expiration === undefined ? '' : String(rule.expiration),
+  );
+  const [noncurrentExpiration, setNoncurrentExpiration] = React.useState(
+    rule?.noncurrent_version_expiration === null ||
+      rule?.noncurrent_version_expiration === undefined
+      ? ''
+      : String(rule.noncurrent_version_expiration),
+  );
   const valid = positive(expiration) !== null || positive(noncurrentExpiration) !== null;
   const mutation = useMutation({
-    mutationFn: () =>
-      createLifecycleRule(bucket, {
+    mutationFn: () => {
+      const input = {
         prefix: prefix.trim(),
-        enabled: true,
+        enabled: rule?.enabled ?? true,
         expiration: positive(expiration),
         noncurrent_version_expiration: positive(noncurrentExpiration),
-      }),
+      };
+      return rule
+        ? updateLifecycleRule(bucket, rule.id, input)
+        : createLifecycleRule(bucket, input);
+    },
     onSuccess: async () => {
-      toast.success('Lifecycle rule created');
-      setPrefix('');
-      setExpiration('');
-      setNoncurrentExpiration('');
-      await onCreated();
+      toast.success(rule ? 'Lifecycle rule updated' : 'Lifecycle rule created');
+      await onSaved();
     },
   });
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Create lifecycle rule</DialogTitle>
-          <DialogDescription>
-            Set at least one positive expiration age. An empty prefix applies to all keys.
-          </DialogDescription>
-        </DialogHeader>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (valid) mutation.mutate();
-          }}
-        >
-          <DialogBody>
-            <Field label="Key prefix" htmlFor="lifecycle-prefix" hint="Optional.">
-              <Input value={prefix} onChange={(event) => setPrefix(event.target.value)} />
-            </Field>
-            <Field label="Expire current objects after days" htmlFor="lifecycle-expiration">
-              <Input
-                type="number"
-                min="1"
-                value={expiration}
-                onChange={(event) => setExpiration(event.target.value)}
-              />
-            </Field>
-            <Field
-              label="Expire non-current versions after days"
-              htmlFor="lifecycle-noncurrent-expiration"
-            >
-              <Input
-                type="number"
-                min="1"
-                value={noncurrentExpiration}
-                onChange={(event) => setNoncurrentExpiration(event.target.value)}
-              />
-            </Field>
-            {mutation.error ? <ErrorState error={mutation.error} /> : null}
-          </DialogBody>
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" disabled={!valid || mutation.isPending}>
-              {mutation.isPending ? 'Creating…' : 'Create rule'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <>
+      <DialogHeader>
+        <DialogTitle>{rule ? 'Edit lifecycle rule' : 'Create lifecycle rule'}</DialogTitle>
+        <DialogDescription>
+          Set at least one positive expiration age. An empty prefix applies to all keys.
+        </DialogDescription>
+      </DialogHeader>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (valid) mutation.mutate();
+        }}
+      >
+        <DialogBody>
+          <Field label="Key prefix" htmlFor="lifecycle-prefix" hint="Optional.">
+            <Input
+              id="lifecycle-prefix"
+              value={prefix}
+              onChange={(event) => setPrefix(event.target.value)}
+            />
+          </Field>
+          <Field label="Expire current objects after days" htmlFor="lifecycle-expiration">
+            <Input
+              id="lifecycle-expiration"
+              type="number"
+              min="1"
+              value={expiration}
+              onChange={(event) => setExpiration(event.target.value)}
+            />
+          </Field>
+          <Field
+            label="Expire non-current versions after days"
+            htmlFor="lifecycle-noncurrent-expiration"
+          >
+            <Input
+              id="lifecycle-noncurrent-expiration"
+              type="number"
+              min="1"
+              value={noncurrentExpiration}
+              onChange={(event) => setNoncurrentExpiration(event.target.value)}
+            />
+          </Field>
+          {mutation.error ? <ErrorState error={mutation.error} /> : null}
+        </DialogBody>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={!valid || mutation.isPending}>
+            {mutation.isPending
+              ? rule
+                ? 'Saving…'
+                : 'Creating…'
+              : rule
+                ? 'Save rule'
+                : 'Create rule'}
+          </Button>
+        </DialogFooter>
+      </form>
+    </>
   );
 }
 

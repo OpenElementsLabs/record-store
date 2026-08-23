@@ -62,6 +62,29 @@ export function createLifecycleRule(
   });
 }
 
+/**
+ * Replaces one lifecycle rule.
+ *
+ * The whole rule is sent, so clearing an expiration is an explicit null rather
+ * than an omission the backend would have to guess about. Enabling or disabling
+ * a rule is the same operation with `enabled` flipped.
+ */
+export function updateLifecycleRule(
+  bucket: string,
+  ruleId: string,
+  input: {
+    readonly prefix: string;
+    readonly enabled: boolean;
+    readonly expiration: number | null;
+    readonly noncurrent_version_expiration: number | null;
+  },
+): Promise<LifecycleRule> {
+  return request<LifecycleRule>(
+    `/v1/buckets/${encodeURIComponent(bucket)}/lifecycle/${encodeURIComponent(ruleId)}`,
+    { method: 'PUT', body: input },
+  );
+}
+
 export function deleteLifecycleRule(id: string): Promise<void> {
   return requestVoid(`/v1/lifecycle-rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
