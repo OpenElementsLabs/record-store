@@ -19,7 +19,7 @@ export function DropdownMenuContent({
         align={align}
         sideOffset={4}
         className={cn(
-          'z-50 min-w-44 overflow-hidden rounded-[--radius-panel] border border-border bg-surface-elevated p-1 shadow-md',
+          'z-50 min-w-44 overflow-hidden rounded-xl border border-border bg-surface-elevated p-1 shadow-md',
           className,
         )}
         {...props}
@@ -36,7 +36,7 @@ export function DropdownMenuItem({
   return (
     <DropdownMenuPrimitive.Item
       className={cn(
-        'flex cursor-default select-none items-center gap-2 rounded-[--radius-control] px-2 py-1.5 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:size-4',
+        'flex cursor-default select-none items-center gap-2 rounded-control px-2 py-1.5 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:size-4',
         destructive
           ? 'text-danger data-[highlighted]:bg-danger-soft'
           : 'text-ink data-[highlighted]:bg-surface-muted',

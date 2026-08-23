@@ -82,11 +82,11 @@ export function CommandTrigger({ onOpen }: { readonly onOpen: () => void }) {
     <button
       type="button"
       onClick={onOpen}
-      className="flex h-8 items-center gap-2 rounded-[--radius-control] border border-border bg-surface-muted px-2.5 type-meta hover:border-border-strong hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      className="flex h-8 items-center gap-2 rounded-control border border-border bg-surface-muted px-2.5 type-meta hover:border-border-strong hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       <Search aria-hidden className="size-3.5" />
       <span>Search</span>
-      <kbd className="ml-2 hidden rounded-[--radius-control] border border-border-strong px-1 py-px font-sans text-[0.6875rem] text-ink-subtle sm:inline">
+      <kbd className="ml-2 hidden rounded-control border border-border-strong px-1 py-px font-sans text-[0.6875rem] text-ink-subtle sm:inline">
         {command ? '⌘' : 'Ctrl '}K
       </kbd>
     </button>

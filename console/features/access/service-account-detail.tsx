@@ -70,6 +70,7 @@ export function ServiceAccountDetail({ accountId }: { readonly accountId: string
         ]}
       />
       <PageHeader
+        eyebrow="Service account"
         title={info?.account.name ?? 'Service account'}
         description={info?.account.description || 'A workload identity for the S3 API.'}
         actions={
@@ -353,10 +354,7 @@ function Policies({ info }: { readonly info: ServiceAccountInfo | null }) {
         ) : (
           <ul className="space-y-2">
             {attached.map((policy) => (
-              <li
-                key={policy.id}
-                className="rounded-[--radius-control] border border-border px-3 py-2"
-              >
+              <li key={policy.id} className="rounded-control border border-border px-3 py-2">
                 <p className="text-sm font-medium text-ink">{policy.name}</p>
                 <ul className="mt-1 flex flex-wrap gap-1.5">
                   {policy.statements

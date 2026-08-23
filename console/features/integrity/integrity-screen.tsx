@@ -332,7 +332,7 @@ function VerifyCard() {
                 id="verify-bucket"
                 value={bucket}
                 onChange={(event) => setBucket(event.target.value)}
-                className="h-9 min-w-48 rounded-[--radius-control] border border-border-strong bg-surface px-2 type-body"
+                className="h-9 min-w-48 rounded-control border border-border-strong bg-surface px-2 type-body"
               >
                 <option value="">Select a bucket…</option>
                 {available.map((entry) => (

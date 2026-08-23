@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import * as React from 'react';
 
+import { BrandMark } from '@/components/brand-mark';
 import { CommandPalette, CommandTrigger } from '@/components/command-palette';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Badge } from '@/components/ui/badge';
@@ -82,7 +83,7 @@ export function AppShell({
       >
         <a
           href="#main"
-          className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-[--radius-control] focus:bg-surface focus:px-3 focus:py-2 focus:text-sm"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-control focus:border focus:border-border focus:bg-surface-elevated focus:px-3 focus:py-2 focus:text-sm"
         >
           Skip to content
         </a>
@@ -197,11 +198,11 @@ function Sidebar({
         <Link
           href="/"
           onClick={onNavigate}
-          className="flex min-w-0 items-baseline gap-2"
+          className="flex min-w-0 items-center gap-2.5 rounded-control"
           aria-label="OES console home"
         >
-          <span className="text-base font-semibold tracking-tight text-ink">OES</span>
-          {collapsed ? null : <span className="type-meta">Console</span>}
+          <BrandMark className="size-8" />
+          {collapsed ? null : <span className="type-wordmark truncate">OES</span>}
         </Link>
         {onToggleCollapsed && !collapsed ? (
           <Button
@@ -257,7 +258,7 @@ function Sidebar({
                       aria-current={active ? 'page' : undefined}
                       title={collapsed ? item.label : undefined}
                       className={cn(
-                        'relative flex items-center gap-2.5 rounded-[--radius-control] text-sm',
+                        'relative flex items-center gap-2.5 rounded-control text-sm',
                         collapsed ? 'justify-center px-2 py-2' : 'px-2 py-1.5',
                         active
                           ? 'bg-accent-soft font-medium text-accent'

@@ -20,7 +20,7 @@ export function Checkbox({
   return (
     <CheckboxPrimitive.Root
       className={cn(
-        'peer size-4 shrink-0 rounded-[--radius-control] border border-border-strong bg-surface',
+        'peer size-4 shrink-0 rounded-xs border border-border-strong bg-surface',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1',
         'disabled:cursor-not-allowed disabled:opacity-50',
         'data-[state=checked]:border-accent data-[state=checked]:bg-accent',

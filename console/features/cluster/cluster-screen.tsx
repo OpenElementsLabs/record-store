@@ -199,7 +199,7 @@ export function ClusterScreen() {
                 {data.operations.map((operation) => (
                   <li
                     key={operation.id}
-                    className="space-y-1 rounded-[--radius-control] border border-border px-3 py-2"
+                    className="space-y-1 rounded-control border border-border px-3 py-2"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium text-ink">

@@ -109,7 +109,7 @@ export function EventsScreen() {
               id="event-type"
               name="type"
               defaultValue={filters.type ?? ''}
-              className="h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-2 type-body"
+              className="h-9 w-full rounded-control border border-border-strong bg-surface px-2 type-body"
             >
               <option value="">Any</option>
               {EVENT_TYPES.map((type) => (

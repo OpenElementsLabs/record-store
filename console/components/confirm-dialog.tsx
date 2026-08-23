@@ -85,7 +85,7 @@ function ConfirmBody({
       </DialogHeader>
       <DialogBody>
         {consequence ? (
-          <div className="flex items-start gap-2 rounded-[--radius-control] border border-danger/40 bg-danger-soft px-3 py-2">
+          <div className="flex items-start gap-2 rounded-control border border-danger/40 bg-danger-soft px-3 py-2">
             <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-danger" />
             <p className="text-xs text-ink">{consequence}</p>
           </div>

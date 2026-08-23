@@ -302,7 +302,7 @@ function BackgroundWorkers() {
             {tasks.map(([name, task]) => (
               <li
                 key={name}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-[--radius-control] border border-border px-3 py-2"
+                className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-border px-3 py-2"
               >
                 <span className="font-mono text-xs text-ink">{name}</span>
                 <WorkerStatus task={task} />

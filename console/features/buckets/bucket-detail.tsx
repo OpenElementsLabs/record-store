@@ -67,6 +67,7 @@ export function BucketDetail({ bucket }: { readonly bucket: string }) {
   return (
     <>
       <PageHeader
+        eyebrow="Bucket"
         title={bucket}
         description="Objects, version history, and settings for this bucket."
       />
@@ -295,7 +296,7 @@ function BucketAccess({ bucket }: { readonly bucket: string }) {
             {matching.map(({ policy, resources }) => (
               <li
                 key={policy.id}
-                className="space-y-1 rounded-[--radius-control] border border-border px-3 py-2"
+                className="space-y-1 rounded-control border border-border px-3 py-2"
               >
                 <p className="text-sm font-medium text-ink">{policy.name}</p>
                 <ul className="flex flex-wrap gap-1.5">
@@ -582,7 +583,7 @@ function LifecycleSection({ bucket }: { readonly bucket: string }) {
               {rules.data.map((rule) => (
                 <li
                   key={rule.id}
-                  className="flex flex-wrap items-center gap-3 rounded-[--radius-control] border border-border px-3 py-2"
+                  className="flex flex-wrap items-center gap-3 rounded-control border border-border px-3 py-2"
                 >
                   <StatusBadge
                     level={rule.enabled ? 'healthy' : 'disabled'}

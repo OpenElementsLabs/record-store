@@ -41,7 +41,7 @@ export function SecretReveal({
         </div>
       </div>
       <p
-        className="break-all rounded-[--radius-control] border border-border bg-surface-muted px-3 py-2 font-mono text-xs text-ink"
+        className="break-all rounded-control border border-border bg-surface-muted px-3 py-2 font-mono text-xs text-ink"
         data-testid="secret-value"
       >
         {revealed ? value : '•'.repeat(Math.min(value.length, 48))}
@@ -54,7 +54,7 @@ export function SecretReveal({
 /** The standing warning shown next to a one-time secret. */
 export function SecretOnceWarning({ what }: { readonly what: string }) {
   return (
-    <div className="flex items-start gap-2 rounded-[--radius-control] border border-warn/40 bg-warn-soft px-3 py-2">
+    <div className="flex items-start gap-2 rounded-control border border-warn/40 bg-warn-soft px-3 py-2">
       <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warn" />
       <p className="text-xs text-ink">
         This {what} will not be shown again. Copy it now and store it somewhere safe.

@@ -75,7 +75,7 @@ export function ChartTooltipContent({
   if (!active || !payload || payload.length === 0) return null;
 
   return (
-    <div className="rounded-[--radius-control] border border-border bg-surface-elevated px-2.5 py-2 shadow-md">
+    <div className="rounded-control border border-border bg-surface-elevated px-2.5 py-2 shadow-md">
       {typeof label === 'string' ? <p className="type-meta-subtle">{label}</p> : null}
       <ul className="space-y-0.5">
         {payload.map((entry) => {

@@ -225,7 +225,7 @@ function PolicyBindings({ policy }: { readonly policy: Policy }) {
             value={attaching}
             disabled={busy}
             onChange={(event) => setAttaching(event.target.value)}
-            className="h-8 rounded-[--radius-control] border border-border-strong bg-surface px-2 text-xs text-ink"
+            className="h-8 rounded-control border border-border-strong bg-surface px-2 text-xs text-ink"
           >
             <option value="">Attach to…</option>
             {unbound.map((account) => (
@@ -251,7 +251,7 @@ function PolicyBindings({ policy }: { readonly policy: Policy }) {
 function StatementView({ statement }: { readonly statement: PolicyStatement }) {
   const broad = statement.resources.some(isBroad);
   return (
-    <div className="space-y-2 rounded-[--radius-control] border border-border p-3">
+    <div className="space-y-2 rounded-control border border-border p-3">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone={statement.effect === 'allow' ? 'ok' : 'danger'}>
           {statement.effect === 'allow' ? 'Allow' : 'Deny'}
@@ -267,7 +267,7 @@ function StatementView({ statement }: { readonly statement: PolicyStatement }) {
         {statement.actions.map((action) => (
           <span
             key={action}
-            className="rounded-[--radius-control] border border-border bg-surface-muted px-1.5 py-0.5 font-mono text-[0.6875rem] text-ink-muted"
+            className="rounded-control border border-border bg-surface-muted px-1.5 py-0.5 font-mono text-[0.6875rem] text-ink-muted"
           >
             {action}
           </span>
@@ -469,7 +469,7 @@ function CreatePolicyForm({ onOpenChange }: { readonly onOpenChange: (open: bool
           </fieldset>
 
           {grantsBroadAccess ? (
-            <div className="flex items-start gap-2 rounded-[--radius-control] border border-warn/40 bg-warn-soft px-3 py-2">
+            <div className="flex items-start gap-2 rounded-control border border-warn/40 bg-warn-soft px-3 py-2">
               <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warn" />
               <p className="text-xs text-ink">
                 This policy reaches every bucket that matches, not one. Confirm that is intended

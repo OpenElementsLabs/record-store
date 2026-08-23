@@ -218,7 +218,7 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
                 event.target.value = '';
               }}
             />
-            <span className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-[--radius-control] bg-accent px-4 text-sm font-medium text-accent-ink hover:bg-accent-hover">
+            <span className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-control bg-accent px-4 text-sm font-medium text-accent-ink hover:bg-accent-hover">
               <Upload aria-hidden className="size-4" />
               Upload files
             </span>
@@ -460,7 +460,7 @@ function Pagination({
         <select
           value={limit}
           onChange={(event) => onLimit(Number(event.target.value))}
-          className="h-8 rounded-[--radius-control] border border-border-strong bg-surface px-2 text-xs text-ink"
+          className="h-8 rounded-control border border-border-strong bg-surface px-2 text-xs text-ink"
         >
           {PAGE_SIZE_OPTIONS.map((option) => (
             <option key={option} value={option}>

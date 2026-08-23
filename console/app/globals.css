@@ -34,6 +34,24 @@
   --color-foreground: oklch(0.22 0.012 255);
   --color-foreground-muted: oklch(0.5 0.012 255);
   --color-foreground-subtle: oklch(0.62 0.01 255);
+  /* shadcn-conventional aliases over the OES palette, so components written
+     against either vocabulary resolve to the same colours. */
+  --color-card: var(--color-surface);
+  --color-card-foreground: var(--color-foreground);
+  --color-popover: var(--color-surface-elevated);
+  --color-popover-foreground: var(--color-foreground);
+  --color-muted: var(--color-surface-muted);
+  --color-muted-foreground: var(--color-foreground-muted);
+  --color-secondary: var(--color-surface-muted);
+  --color-secondary-foreground: var(--color-foreground);
+  --color-primary: var(--color-accent);
+  --color-primary-hover: var(--color-accent-hover);
+  --color-primary-foreground: var(--color-accent-ink);
+  --color-destructive: var(--color-danger);
+  --color-destructive-foreground: oklch(0.99 0 0);
+  --color-input: var(--color-border-strong);
+  --color-ring: var(--color-focus-ring);
+
   --color-ink: oklch(0.22 0.012 255);
   --color-ink-muted: oklch(0.5 0.012 255);
   --color-ink-subtle: oklch(0.62 0.01 255);
@@ -44,8 +62,6 @@
   --color-accent-soft: oklch(0.95 0.03 250);
   /* Named so focus styling is a decision recorded in one place rather than the
      accent colour reused by coincidence. */
-  --color-focus-ring: oklch(0.52 0.14 250);
-  --color-selection: oklch(0.9 0.05 250);
   --color-focus-ring: var(--color-accent);
   --color-selection: var(--color-accent-soft);
 
@@ -60,7 +76,15 @@
   --color-info-soft: oklch(0.95 0.03 240);
 
   --radius-control: 0.5rem;
-  --radius-panel: 0.75rem;
+  --radius-panel: 1rem;
+  --radius-xs: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+  /* For things nested inside an already-rounded control, where matching the
+     parent radius would look inflated. */
+  --radius-inner: 0.375rem;
 }
 
 /*
@@ -81,6 +105,22 @@
   --color-foreground: oklch(0.95 0.004 250);
   --color-foreground-muted: oklch(0.73 0.008 250);
   --color-foreground-subtle: oklch(0.62 0.008 250);
+  --color-card: var(--color-surface);
+  --color-card-foreground: var(--color-foreground);
+  --color-popover: var(--color-surface-elevated);
+  --color-popover-foreground: var(--color-foreground);
+  --color-muted: var(--color-surface-muted);
+  --color-muted-foreground: var(--color-foreground-muted);
+  --color-secondary: var(--color-surface-muted);
+  --color-secondary-foreground: var(--color-foreground);
+  --color-primary: var(--color-accent);
+  --color-primary-hover: var(--color-accent-hover);
+  --color-primary-foreground: var(--color-accent-ink);
+  --color-destructive: var(--color-danger);
+  --color-destructive-foreground: oklch(0.99 0 0);
+  --color-input: var(--color-border-strong);
+  --color-ring: var(--color-focus-ring);
+
   --color-ink: oklch(0.95 0.004 250);
   --color-ink-muted: oklch(0.73 0.008 250);
   --color-ink-subtle: oklch(0.62 0.008 250);
@@ -191,11 +231,22 @@
  * Naming the roles makes the hierarchy a decision instead of an accident, and
  * keeps a console compact without shouting.
  */
-@utility type-page-title {
-  font-size: 1.25rem;
-  line-height: 1.75rem;
+@utility type-display {
+  font-size: 1.875rem;
+  line-height: 2.25rem;
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.04em;
+  color: var(--color-foreground);
+  text-wrap: balance;
+}
+
+@utility type-page-title {
+  font-size: 1.375rem;
+  line-height: 1.875rem;
+  font-weight: 600;
+  /* The tight tracking the login sets at display size, eased off for the
+     smaller page titles so the letters stay separable. */
+  letter-spacing: -0.03em;
   color: var(--color-ink);
   text-wrap: balance;
 }
@@ -240,13 +291,37 @@
 }
 
 /* Section headings inside the sidebar and toolbars: small, spaced, quiet. */
+/*
+ * The login's eyebrow: monospaced, widely tracked, uppercase. Two colours,
+ * because the same treatment does two jobs — quiet section labels in the
+ * sidebar, and one accented line above a page title.
+ */
 @utility type-eyebrow {
+  font-family: var(--font-mono);
   font-size: 0.6875rem;
   line-height: 1rem;
   font-weight: 500;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--color-ink-subtle);
+  color: var(--color-foreground-subtle);
+}
+
+@utility type-eyebrow-accent {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+}
+
+@utility type-wordmark {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--color-foreground);
 }
 
 /*

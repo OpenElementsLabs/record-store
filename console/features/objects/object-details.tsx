@@ -77,6 +77,7 @@ export function ObjectDetails({
     <>
       <Breadcrumbs items={crumbs} />
       <PageHeader
+        eyebrow="Object"
         title={keyBasename(objectKey)}
         description={objectKey}
         actions={

@@ -5,7 +5,7 @@ export function Skeleton({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
       aria-hidden
-      className={cn('animate-pulse rounded-[--radius-control] bg-surface-muted', className)}
+      className={cn('animate-pulse rounded-control bg-surface-muted', className)}
       {...props}
     />
   );

@@ -166,7 +166,7 @@ function QuotaForm({ record }: { readonly record: Bucket }) {
                       onChange={(event) =>
                         setBytes({ ...bytes, unit: event.target.value as ByteUnit })
                       }
-                      className="h-9 rounded-[--radius-control] border border-border-strong bg-surface px-2 type-body"
+                      className="h-9 rounded-control border border-border-strong bg-surface px-2 type-body"
                     >
                       {BYTE_UNITS.map((unit) => (
                         <option key={unit} value={unit}>

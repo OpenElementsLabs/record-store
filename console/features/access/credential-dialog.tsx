@@ -76,7 +76,7 @@ function CredentialBody({
               <span className="type-label">Access key ID</span>
               <CopyButton value={issued.credential.key_id} label="access key ID" />
             </div>
-            <p className="break-all rounded-[--radius-control] border border-border bg-surface-muted px-3 py-2 font-mono text-xs text-ink">
+            <p className="break-all rounded-control border border-border bg-surface-muted px-3 py-2 font-mono text-xs text-ink">
               {issued.credential.key_id}
             </p>
           </div>

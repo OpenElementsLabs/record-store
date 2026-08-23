@@ -113,7 +113,7 @@ export function AuditScreen() {
               id="audit-result"
               name="result"
               defaultValue={filters.result ?? ''}
-              className="h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-2 type-body"
+              className="h-9 w-full rounded-control border border-border-strong bg-surface px-2 type-body"
             >
               <option value="">Any</option>
               {RESULTS.map((result) => (

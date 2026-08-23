@@ -122,7 +122,7 @@ function CopyForm({
               id="copy-bucket"
               value={destinationBucket}
               onChange={(event) => setDestinationBucket(event.target.value)}
-              className="h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-2 type-body"
+              className="h-9 w-full rounded-control border border-border-strong bg-surface px-2 type-body"
             >
               {(buckets.data ?? [{ id: bucket, name: bucket }]).map((entry) => (
                 <option key={entry.id} value={entry.name}>
