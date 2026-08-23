@@ -17,6 +17,10 @@ export type AuditFilters = {
   readonly operation?: string | null;
   readonly resource?: string | null;
   readonly result?: AuditResult | null;
+  /** Exact client address recorded on the event. */
+  readonly sourceIp?: string | null;
+  /** Exact request identifier, for following one operation end to end. */
+  readonly requestId?: string | null;
   readonly afterTime?: string | null;
   readonly afterId?: string | null;
   readonly limit?: number;
@@ -37,6 +41,8 @@ export function fetchAuditEvents(filters: AuditFilters, signal?: AbortSignal): P
       operation: filters.operation,
       resource: filters.resource,
       result: filters.result,
+      source_ip: filters.sourceIp,
+      request_id: filters.requestId,
       after_time: filters.afterTime,
       after_id: filters.afterId,
       limit: filters.limit ?? 50,

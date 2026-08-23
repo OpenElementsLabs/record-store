@@ -37,6 +37,11 @@ pub struct AuditEvent {
 }
 
 /// Bounded audit query. All filters are exact except resource prefix.
+///
+/// Filtering narrows a bounded scan over the time range rather than consulting
+/// an index, so every filter costs the same: a comparison per scanned event.
+/// The scan is capped, and a caller that needs fewer results should narrow the
+/// time range rather than relying on a filter to make the scan cheaper.
 #[derive(Debug, Clone, Default)]
 pub struct AuditQuery {
     pub since: Option<DateTime<Utc>>,
@@ -45,6 +50,10 @@ pub struct AuditQuery {
     pub operation: Option<String>,
     pub resource_prefix: Option<String>,
     pub result: Option<AuditResult>,
+    /// Exact client address, as recorded on the event.
+    pub source_ip: Option<String>,
+    /// Exact request identifier, for tracing one operation end to end.
+    pub request_id: Option<String>,
     pub after: Option<(DateTime<Utc>, AuditEventId)>,
     pub limit: usize,
 }
@@ -192,6 +201,16 @@ impl AuditRepository for RedbAuditRepository {
                         .as_ref()
                         .is_some_and(|value| !event.resource.starts_with(value))
                     || query.result.is_some_and(|value| value != event.result)
+                    // Both of these are exact matches: an address or a request
+                    // id is looked up because it is already known, not browsed.
+                    || query
+                        .source_ip
+                        .as_ref()
+                        .is_some_and(|value| Some(value) != event.source_ip.as_ref())
+                    || query
+                        .request_id
+                        .as_ref()
+                        .is_some_and(|value| Some(value) != event.request_id.as_ref())
                 {
                     continue;
                 }
@@ -274,5 +293,89 @@ mod tests {
             .await
             .expect("query");
         assert_eq!(page.events, vec![event]);
+    }
+
+    #[tokio::test]
+    async fn source_ip_and_request_id_narrow_a_query() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let repository = RedbAuditRepository::open(directory.path().join("audit.redb"))
+            .await
+            .expect("open audit");
+
+        let base = Utc::now();
+        for (index, (ip, request)) in [
+            (Some("10.0.0.1"), Some("req-a")),
+            (Some("10.0.0.2"), Some("req-a")),
+            (Some("10.0.0.1"), Some("req-b")),
+            (None, None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            repository
+                .append(&AuditEvent {
+                    event_id: AuditEventId::new(),
+                    timestamp: base + chrono::Duration::seconds(index as i64),
+                    request_id: request.map(str::to_owned),
+                    principal: "ingest".into(),
+                    credential_id: None,
+                    source_ip: ip.map(str::to_owned),
+                    operation: "PutObject".into(),
+                    resource: "uploads/a".into(),
+                    result: AuditResult::Success,
+                    metadata: BTreeMap::new(),
+                })
+                .await
+                .expect("append");
+        }
+
+        let by_address = repository
+            .query(AuditQuery {
+                source_ip: Some("10.0.0.1".into()),
+                limit: 50,
+                ..AuditQuery::default()
+            })
+            .await
+            .expect("query by address");
+        assert_eq!(by_address.events.len(), 2);
+        assert!(
+            by_address
+                .events
+                .iter()
+                .all(|event| event.source_ip.as_deref() == Some("10.0.0.1"))
+        );
+
+        let by_request = repository
+            .query(AuditQuery {
+                request_id: Some("req-a".into()),
+                limit: 50,
+                ..AuditQuery::default()
+            })
+            .await
+            .expect("query by request");
+        assert_eq!(by_request.events.len(), 2);
+
+        // Both together are an intersection, not a union.
+        let both = repository
+            .query(AuditQuery {
+                source_ip: Some("10.0.0.1".into()),
+                request_id: Some("req-a".into()),
+                limit: 50,
+                ..AuditQuery::default()
+            })
+            .await
+            .expect("query by both");
+        assert_eq!(both.events.len(), 1);
+
+        // An event that recorded neither field must not match a filter on it.
+        let missing = repository
+            .query(AuditQuery {
+                source_ip: Some("10.0.0.9".into()),
+                limit: 50,
+                ..AuditQuery::default()
+            })
+            .await
+            .expect("query for an absent address");
+        assert!(missing.events.is_empty());
     }
 }

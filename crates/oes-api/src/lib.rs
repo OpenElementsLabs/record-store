@@ -2657,6 +2657,8 @@ struct AuditQueryParameters {
     operation: Option<String>,
     resource: Option<String>,
     result: Option<AuditResult>,
+    source_ip: Option<String>,
+    request_id: Option<String>,
     after_time: Option<chrono::DateTime<chrono::Utc>>,
     after_id: Option<oes_core::AuditEventId>,
     #[serde(default = "default_audit_limit")]
@@ -2699,6 +2701,8 @@ async fn list_audit_events(
             operation: query.operation,
             resource_prefix: query.resource,
             result: query.result,
+            source_ip: query.source_ip,
+            request_id: query.request_id,
             after,
             limit: query.limit,
         })
