@@ -8,10 +8,20 @@
  * by an icon and a text label, so colour is never the only signal.
  */
 @theme {
+  /*
+   * Geist, with a real fallback stack behind it.
+   *
+   * It was designed for developer tooling: a tall x-height that stays legible at
+   * the small sizes a dense console lives at, and a mono companion whose digits
+   * align in a table. The fallbacks matter because the variable is also read
+   * before hydration.
+   */
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
   --font-mono:
-    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+    var(--font-geist-mono), ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
 
   --color-canvas: oklch(0.99 0.002 250);
   --color-background: var(--color-canvas);
@@ -255,4 +265,21 @@
 
 ::selection {
   background: var(--color-selection);
+}
+
+/*
+ * Motion.
+ *
+ * One duration and one easing for everything that responds to a pointer, so
+ * hovers across the console feel like one product rather than a collection of
+ * components. Everything here is suppressed by the reduced-motion block above.
+ */
+@theme {
+  --ease-out-quiet: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@utility transition-quiet {
+  transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease-out-quiet);
 }

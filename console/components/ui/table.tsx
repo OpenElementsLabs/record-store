@@ -27,7 +27,7 @@ export function TableBody({ className, ...props }: React.ComponentProps<'tbody'>
 }
 
 export function TableRow({ className, ...props }: React.ComponentProps<'tr'>) {
-  return <tr className={cn('hover:bg-surface-muted/60', className)} {...props} />;
+  return <tr className={cn('transition-quiet hover:bg-surface-muted/60', className)} {...props} />;
 }
 
 export function TableHead({ className, ...props }: React.ComponentProps<'th'>) {

@@ -5,7 +5,7 @@ import { RefreshCw } from 'lucide-react';
 import { ErrorState } from '@/components/error-state';
 import { MetricCard, UsageBar } from '@/components/metric-card';
 import { PageHeader } from '@/components/page-header';
-import { Sparkline } from '@/components/sparkline';
+import { RateChart } from '@/features/system/rate-chart';
 import { StatusBadge } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -248,7 +248,14 @@ function RateCard({
       }
       footer={
         rate === null ? undefined : (
-          <Sparkline values={rate.series} label={`${label} trend`} tone={tone} />
+          <RateChart
+            series={rate.series}
+            label={label}
+            tone={tone}
+            format={(value) =>
+              bytes ? `${formatBytes(value)}${unit}` : `${value.toFixed(2)} ${unit}`
+            }
+          />
         )
       }
     />

@@ -1,3 +1,5 @@
+import { GeistMono } from 'geist/font/mono';
+import { GeistSans } from 'geist/font/sans';
 import type { Metadata, Viewport } from 'next';
 import { headers } from 'next/headers';
 
@@ -21,7 +23,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // framework tag its own scripts so the policy never needs inline script.
   const nonce = (await headers()).get('x-nonce') ?? undefined;
   return (
-    <html lang="en" suppressHydrationWarning>
+    // Geist ships its own files, so the typeface is self-hosted: no external
+    // font request to allow through the content policy, and no flash of a
+    // fallback face on first paint.
+    <html
+      lang="en"
+      className={`${GeistSans.variable} ${GeistMono.variable}`}
+      suppressHydrationWarning
+    >
       <head>
         <script
           nonce={nonce}

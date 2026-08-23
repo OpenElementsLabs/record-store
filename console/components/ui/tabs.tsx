@@ -23,7 +23,7 @@ export function TabsTrigger({
   return (
     <TabsPrimitive.Trigger
       className={cn(
-        'border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ink-muted hover:text-ink data-[state=active]:border-accent data-[state=active]:text-ink',
+        'border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ink-muted transition-quiet hover:text-ink data-[state=active]:border-accent data-[state=active]:text-ink',
         className,
       )}
       {...props}

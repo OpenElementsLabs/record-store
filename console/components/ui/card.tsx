@@ -5,7 +5,10 @@ import { cn } from '@/lib/utils';
 export function Card({ className, ...props }: React.ComponentProps<'section'>) {
   return (
     <section
-      className={cn('rounded-[--radius-panel] border border-border bg-surface', className)}
+      className={cn(
+        'rounded-[--radius-panel] border border-border bg-surface transition-quiet',
+        className,
+      )}
       {...props}
     />
   );
