@@ -35,7 +35,7 @@ export function HealthScreen() {
       />
 
       <Card>
-        <CardContent className="grid gap-4 pt-4 sm:grid-cols-2 lg:grid-cols-4">
+        <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Detail label="Status">
             {status.isPending ? (
               <StatusPending />
@@ -46,7 +46,7 @@ export function HealthScreen() {
             )}
           </Detail>
           <Detail label="Mode">
-            <span className="text-sm text-ink">
+            <span className="type-body">
               {info.mode === 'cluster'
                 ? 'Cluster'
                 : info.mode === 'control'
@@ -55,7 +55,7 @@ export function HealthScreen() {
             </span>
           </Detail>
           <Detail label="Version">
-            <span className="font-mono text-sm text-ink">{info.version}</span>
+            <span className="font-mono type-body">{info.version}</span>
           </Detail>
           <Detail label="Metadata">
             {status.isError ? (
@@ -247,8 +247,8 @@ function Subsystems() {
           {rows.map((row) => (
             <li key={row.name} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2.5">
               <div className="min-w-0 flex-1">
-                <p className="text-sm text-ink">{row.name}</p>
-                <p className="text-xs text-ink-muted">{row.detail}</p>
+                <p className="type-body">{row.name}</p>
+                <p className="type-meta">{row.detail}</p>
               </div>
               {row.state === 'unknown' ? (
                 <StatusPending />
@@ -321,7 +321,7 @@ function WorkerStatus({ task }: { readonly task: BackgroundTaskStatus }) {
       <span className="flex items-center gap-2">
         <StatusBadge level="healthy" label="Running" />
         {task.last_pass_at ? (
-          <span className="text-xs text-ink-subtle">
+          <span className="type-meta-subtle">
             last pass {formatRelativeTime(task.last_pass_at)}
           </span>
         ) : null}

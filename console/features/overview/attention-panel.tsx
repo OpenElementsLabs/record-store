@@ -135,7 +135,7 @@ export function AttentionPanel() {
   if (loading) {
     return (
       <Card>
-        <CardContent className="py-4">
+        <CardContent>
           <Skeleton className="h-10 w-full" />
         </CardContent>
       </Card>
@@ -145,7 +145,7 @@ export function AttentionPanel() {
   if (findings.length === 0) {
     return (
       <Card>
-        <CardContent className="flex items-center gap-2 py-3.5">
+        <CardContent className="flex items-center gap-2 py-3">
           <CircleCheck aria-hidden className="size-4 shrink-0 text-ok" />
           <p className="text-sm text-ink-muted">Nothing needs attention.</p>
         </CardContent>
@@ -169,7 +169,7 @@ export function AttentionPanel() {
             <span className="sr-only">
               {finding.severity === 'critical' ? 'Critical: ' : 'Warning: '}
             </span>
-            <p className="min-w-0 flex-1 text-sm text-ink">{finding.message}</p>
+            <p className="min-w-0 flex-1 type-body">{finding.message}</p>
             <Link
               href={finding.href}
               className="shrink-0 text-xs font-medium text-accent hover:underline"

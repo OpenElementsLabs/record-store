@@ -23,7 +23,7 @@ export function MetricCard({
     <Card className="p-4">
       <p className="text-xs font-medium text-ink-muted">{label}</p>
       <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-ink">{value}</p>
-      {detail ? <p className="mt-0.5 text-xs text-ink-muted">{detail}</p> : null}
+      {detail ? <p className="mt-0.5 type-meta">{detail}</p> : null}
       {footer ? <div className="mt-3">{footer}</div> : null}
     </Card>
   );
@@ -58,7 +58,7 @@ export function UsageBar({
       >
         <div className={`h-full ${tone}`} style={{ width: `${percent}%` }} />
       </div>
-      <p className="text-xs text-ink-subtle">{percent}% used</p>
+      <p className="type-meta-subtle">{percent}% used</p>
     </div>
   );
 }

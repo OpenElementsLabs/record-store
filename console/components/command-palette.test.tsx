@@ -1,3 +1,4 @@
+import { Circle } from 'lucide-react';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,9 +14,12 @@ vi.mock('next/navigation', () => ({
 }));
 
 const sections: readonly NavSection[] = [
-  { title: 'Overview', items: [{ href: '/', label: 'Overview' }] },
-  { title: 'Storage', items: [{ href: '/buckets', label: 'Buckets' }] },
-  { title: 'Access', items: [{ href: '/service-accounts', label: 'Service accounts' }] },
+  { title: 'Overview', items: [{ href: '/', label: 'Overview', icon: Circle }] },
+  { title: 'Storage', items: [{ href: '/buckets', label: 'Buckets', icon: Circle }] },
+  {
+    title: 'Access',
+    items: [{ href: '/service-accounts', label: 'Service accounts', icon: Circle }],
+  },
 ];
 
 beforeEach(() => push.mockClear());

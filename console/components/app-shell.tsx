@@ -1,6 +1,6 @@
 'use client';
 
-import { LogOut, Menu, X } from 'lucide-react';
+import { LogOut, Menu, PanelLeftClose, PanelLeftOpen, UserRound, X } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import * as React from 'react';
@@ -43,16 +43,10 @@ export function AppShell({
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
-  const [collapsed, setCollapsed] = React.useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem('oes-sidebar-collapsed') === 'true';
-  });
-
-  React.useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('oes-sidebar-collapsed', String(collapsed));
-    }
-  }, [collapsed]);
+  // Reading storage in a `useState` initializer diverges between the server
+  // render and hydration, so the preference comes from an external store with an
+  // explicit server snapshot instead.
+  const [collapsed, setCollapsed] = useCollapsed();
 
   // The shortcut lives with the state it toggles rather than inside the dialog,
   // so the visible trigger and the keyboard both drive one source of truth.
@@ -88,7 +82,7 @@ export function AppShell({
       >
         <a
           href="#main"
-          className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-surface focus:px-3 focus:py-2 focus:text-sm"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-[--radius-control] focus:bg-surface focus:px-3 focus:py-2 focus:text-sm"
         >
           Skip to content
         </a>
@@ -98,7 +92,7 @@ export function AppShell({
           pathname={pathname}
           deployment={deployment}
           collapsed={collapsed}
-          onToggleCollapsed={() => setCollapsed((current) => !current)}
+          onToggleCollapsed={() => setCollapsed(!collapsed)}
           className="hidden lg:flex"
         />
 
@@ -123,11 +117,9 @@ export function AppShell({
 
         <div className="flex min-w-0 flex-col">
           <TopBar
-            deployment={deployment}
             onOpenNavigation={() => setMobileOpen(true)}
             mobileOpen={mobileOpen}
             onOpenPalette={() => setPaletteOpen(true)}
-            onToggleSidebar={() => setCollapsed((current) => !current)}
           />
           <main id="main" className="min-w-0 flex-1 px-4 py-6 sm:px-6">
             <div className="mx-auto max-w-7xl space-y-6">{children}</div>
@@ -138,118 +130,154 @@ export function AppShell({
   );
 }
 
+/** Where the collapsed preference is remembered. */
+const COLLAPSE_KEY = 'oes.sidebar.collapsed';
+
+/**
+ * Reads the stored collapse preference.
+ *
+ * Through an external store with a server snapshot of "expanded", so the markup
+ * the server sends and the first client paint agree, and a private window that
+ * refuses storage simply gets the default rather than throwing.
+ */
+function useCollapsed(): readonly [boolean, (collapsed: boolean) => void] {
+  const [override, setOverride] = React.useState<boolean | null>(null);
+  const stored = React.useSyncExternalStore(
+    () => () => {},
+    () => {
+      try {
+        return window.localStorage.getItem(COLLAPSE_KEY) === '1';
+      } catch {
+        return false;
+      }
+    },
+    () => false,
+  );
+  const collapsed = override ?? stored;
+  return [
+    collapsed,
+    (next: boolean) => {
+      setOverride(next);
+      try {
+        window.localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0');
+      } catch {
+        // A preference that cannot be stored is still honoured for this session.
+      }
+    },
+  ];
+}
+
 function Sidebar({
   sections,
   pathname,
   deployment,
-  collapsed,
   className,
   onNavigate,
+  collapsed = false,
   onToggleCollapsed,
 }: {
   readonly sections: ReturnType<typeof buildNavigation>;
   readonly pathname: string;
   readonly deployment: Deployment;
-  readonly collapsed?: boolean;
   readonly className?: string;
   readonly onNavigate?: () => void;
+  readonly collapsed?: boolean;
   readonly onToggleCollapsed?: () => void;
 }) {
   return (
     <nav
       aria-label="Console sections"
       className={cn(
-        'flex-col gap-5 overflow-y-auto border-r border-border bg-surface/90 px-3 py-4 shadow-[inset_-1px_0_0_rgba(148,163,184,0.12)] backdrop-blur lg:sticky lg:top-0 lg:h-screen',
-        collapsed ? 'items-center px-2' : 'items-stretch',
+        'flex-col overflow-y-auto border-r border-border bg-surface lg:sticky lg:top-0 lg:h-screen',
+        collapsed ? 'px-2 py-3' : 'px-3 py-3',
         className,
       )}
     >
-      <div className={cn('flex items-center gap-2 px-2', collapsed && 'justify-center')}>
+      <div className={cn('flex items-center gap-2', collapsed ? 'justify-center' : 'px-2')}>
         <Link
           href="/"
-          className={cn(
-            'flex items-center gap-2 rounded-[--radius-control] px-1.5 py-1.5 text-left hover:bg-surface-muted',
-            collapsed ? 'justify-center' : '',
-          )}
           onClick={onNavigate}
-          aria-label="OES Console"
-          title="OES Console"
+          className="flex min-w-0 items-baseline gap-2"
+          aria-label="OES console home"
         >
-          <span className="flex size-6 items-center justify-center rounded-md bg-accent text-xs font-semibold text-accent-ink">
-            O
-          </span>
-          {!collapsed ? (
-            <span className="flex items-baseline gap-1.5">
-              <span className="text-base font-semibold tracking-tight text-ink">OES</span>
-              <span className="text-[0.65rem] uppercase tracking-[0.12em] text-ink-subtle">
-                Console
-              </span>
-            </span>
-          ) : null}
+          <span className="text-base font-semibold tracking-tight text-ink">OES</span>
+          {collapsed ? null : <span className="type-meta">Console</span>}
         </Link>
-        {!collapsed && onToggleCollapsed ? (
+        {onToggleCollapsed && !collapsed ? (
           <Button
-            type="button"
             variant="ghost"
             size="icon"
-            className="ml-auto size-8"
+            className="ml-auto hidden lg:inline-flex"
             aria-label="Collapse navigation"
             onClick={onToggleCollapsed}
           >
-            <X aria-hidden className="size-4" />
+            <PanelLeftClose aria-hidden />
           </Button>
         ) : null}
       </div>
 
-      {!collapsed ? (
-        <p className="px-2 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+      {collapsed ? null : (
+        <p className="mt-1 px-2 type-meta">
           {deployment.info.mode === 'cluster' ? 'Cluster' : 'Standalone'} ·{' '}
           {deployment.info.version}
         </p>
+      )}
+
+      {onToggleCollapsed && collapsed ? (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="mt-2 hidden self-center lg:inline-flex"
+          aria-label="Expand navigation"
+          onClick={onToggleCollapsed}
+        >
+          <PanelLeftOpen aria-hidden />
+        </Button>
       ) : null}
 
-      <div className="flex flex-col gap-5">
+      <div className="mt-5 flex flex-1 flex-col gap-4">
         {sections.map((section) => (
-          <div key={section.title} className={cn('space-y-1', collapsed && 'w-full')}>
-            {!collapsed ? (
-              <p className="px-2 text-[0.6875rem] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-                {section.title}
-              </p>
-            ) : null}
-            <ul className={cn('space-y-0.5', collapsed && 'flex flex-col items-center')}>
+          <div key={section.title} className="space-y-1">
+            {collapsed ? (
+              // A separator instead of a heading: a truncated word is worse
+              // than none, and the grouping is still legible.
+              <div className="mx-2 border-t border-border" aria-hidden />
+            ) : (
+              <p className="px-2 type-eyebrow">{section.title}</p>
+            )}
+            <ul className="space-y-0.5">
               {section.items.map((item) => {
                 const active = isActive(item, pathname);
-                const shortLabel = item.label
-                  .split(/\s+/)
-                  .map((part) => part[0])
-                  .join('')
-                  .slice(0, 2)
-                  .toUpperCase();
+                const Icon = item.icon;
                 return (
-                  <li key={item.href} className="w-full">
+                  <li key={item.href}>
                     <Link
                       href={item.href}
                       onClick={onNavigate}
                       aria-current={active ? 'page' : undefined}
-                      aria-label={item.label}
                       title={collapsed ? item.label : undefined}
                       className={cn(
-                        'flex items-center rounded-[--radius-control] text-sm transition-colors',
-                        collapsed ? 'h-10 w-10 justify-center self-center' : 'gap-2 px-2 py-1.5',
+                        'relative flex items-center gap-2.5 rounded-[--radius-control] text-sm',
+                        collapsed ? 'justify-center px-2 py-2' : 'px-2 py-1.5',
                         active
-                          ? 'bg-accent-soft font-medium text-accent ring-1 ring-inset ring-accent/20'
+                          ? 'bg-accent-soft font-medium text-accent'
                           : 'text-ink-muted hover:bg-surface-muted hover:text-ink',
                       )}
                     >
-                      <span
-                        className={cn(
-                          'flex size-5 items-center justify-center rounded-md text-[0.55rem] font-semibold',
-                          active ? 'bg-accent text-accent-ink' : 'bg-surface-muted text-ink-subtle',
-                        )}
-                      >
-                        {collapsed ? shortLabel || '•' : item.label.slice(0, 1).toUpperCase()}
-                      </span>
-                      {!collapsed ? <span className="truncate">{item.label}</span> : null}
+                      {/* An accent rail as well as the tint, so the active item
+                          is not signalled by colour alone. */}
+                      {active ? (
+                        <span
+                          aria-hidden
+                          className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-accent"
+                        />
+                      ) : null}
+                      <Icon aria-hidden className="size-4 shrink-0" />
+                      {collapsed ? (
+                        <span className="sr-only">{item.label}</span>
+                      ) : (
+                        <span className="truncate">{item.label}</span>
+                      )}
                     </Link>
                   </li>
                 );
@@ -258,25 +286,67 @@ function Sidebar({
           </div>
         ))}
       </div>
+
+      <div className={cn('mt-4 border-t border-border pt-3', collapsed ? '' : 'px-1')}>
+        <AccountMenu deployment={deployment} collapsed={collapsed} />
+      </div>
     </nav>
   );
 }
 
 function TopBar({
-  deployment,
   onOpenNavigation,
   mobileOpen,
   onOpenPalette,
-  onToggleSidebar,
 }: {
-  readonly deployment: Deployment;
   readonly onOpenNavigation: () => void;
   readonly mobileOpen: boolean;
   readonly onOpenPalette: () => void;
-  readonly onToggleSidebar?: () => void;
+}) {
+  return (
+    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-surface/90 px-4 backdrop-blur-sm sm:px-6">
+      <Button
+        variant="ghost"
+        size="icon"
+        className="lg:hidden"
+        onClick={onOpenNavigation}
+        aria-label="Open navigation"
+        aria-expanded={mobileOpen}
+      >
+        {mobileOpen ? <X aria-hidden /> : <Menu aria-hidden />}
+      </Button>
+
+      {/*
+        Deliberately sparse. Page-specific actions belong in the page header, so
+        the only things here are the two that apply everywhere: finding something
+        and choosing a theme.
+      */}
+      <div className="min-w-0 flex-1">
+        <CommandTrigger onOpen={onOpenPalette} />
+      </div>
+
+      <ThemeToggle />
+    </header>
+  );
+}
+
+/**
+ * The signed-in role and the way out.
+ *
+ * At the foot of the sidebar rather than the top bar: it is the least-used
+ * control in the console, and putting it beside the navigation keeps the top bar
+ * for things that act on the current page.
+ */
+function AccountMenu({
+  deployment,
+  collapsed,
+}: {
+  readonly deployment: Deployment;
+  readonly collapsed: boolean;
 }) {
   const router = useRouter();
   const [signingOut, setSigningOut] = React.useState(false);
+  const role = ROLE_LABEL[deployment.session.role] ?? deployment.session.role;
 
   async function signOut() {
     setSigningOut(true);
@@ -288,60 +358,29 @@ function TopBar({
   }
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b border-border bg-surface/90 px-4 backdrop-blur-sm sm:px-6">
-      <div className="flex items-center gap-2">
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          size="icon"
-          className="lg:hidden"
-          onClick={onOpenNavigation}
-          aria-label="Open navigation"
-          aria-expanded={mobileOpen}
+          size={collapsed ? 'icon' : 'sm'}
+          className={collapsed ? 'w-full' : 'w-full justify-start gap-2'}
+          aria-label={`Account: ${role}`}
         >
-          {mobileOpen ? <X aria-hidden /> : <Menu aria-hidden />}
+          <UserRound aria-hidden className="size-4 shrink-0" />
+          {collapsed ? null : <span className="truncate text-sm">{role}</span>}
         </Button>
-        {onToggleSidebar ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="hidden lg:inline-flex"
-            onClick={onToggleSidebar}
-            aria-label="Toggle navigation"
-          >
-            <Menu aria-hidden />
-          </Button>
-        ) : null}
-      </div>
-
-      <div className="min-w-0 flex-1">
-        <CommandTrigger onOpen={onOpenPalette} />
-      </div>
-
-      <div className="flex items-center gap-2">
-        <ThemeToggle />
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="secondary" size="sm">
-              <span className="max-w-40 truncate">
-                {ROLE_LABEL[deployment.session.role] ?? deployment.session.role}
-              </span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            <DropdownMenuLabel>Signed in</DropdownMenuLabel>
-            <div className="px-2 pb-2">
-              <Badge tone="accent">
-                {ROLE_LABEL[deployment.session.role] ?? deployment.session.role}
-              </Badge>
-            </div>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={signOut} disabled={signingOut}>
-              <LogOut aria-hidden />
-              {signingOut ? 'Signing out…' : 'Sign out'}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-    </header>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="top">
+        <DropdownMenuLabel>Signed in</DropdownMenuLabel>
+        <div className="px-2 pb-2">
+          <Badge tone="accent">{role}</Badge>
+        </div>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={signOut} disabled={signingOut}>
+          <LogOut aria-hidden />
+          {signingOut ? 'Signing out…' : 'Sign out'}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

@@ -97,4 +97,44 @@ describe('AppShell', () => {
     shell({ session: session(auditorPermissions) });
     expect(screen.getAllByText('System administrator').length).toBeGreaterThan(0);
   });
+
+  it('gives every navigation item an icon so a collapsed sidebar stays usable', () => {
+    shell();
+    const link = screen.getByRole('link', { name: 'Buckets' });
+    expect(link.querySelector('svg')).toBeTruthy();
+  });
+
+  it('collapses and expands the sidebar, remembering the choice', async () => {
+    shell();
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
+
+    // Collapsed labels stay in the accessible tree even though they are hidden.
+    expect(screen.getByRole('button', { name: 'Expand navigation' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Buckets' })).toBeTruthy();
+    expect(window.localStorage.getItem('oes.sidebar.collapsed')).toBe('1');
+  });
+
+  it('puts the account menu in the sidebar, not the top bar', async () => {
+    shell();
+    await userEvent.click(screen.getByRole('button', { name: /^Account:/ }));
+
+    expect(await screen.findByRole('menuitem', { name: /sign out/i })).toBeTruthy();
+  });
+
+  it('keeps the top bar to controls that apply everywhere', () => {
+    shell();
+    // Page-specific actions belong in page headers; the top bar carries search
+    // and theme only.
+    const header = screen.getByRole('banner');
+    expect(header.textContent).toMatch(/Search/);
+    expect(header.querySelector('[aria-label^="Account:"]')).toBeNull();
+  });
+
+  it('marks the active item with more than colour', () => {
+    shell();
+    const active = screen.getByRole('link', { name: 'Buckets' });
+    // An accent rail accompanies the tint, so the state survives a colour-blind
+    // or high-contrast rendering.
+    expect(active.querySelector('span[aria-hidden]')).toBeTruthy();
+  });
 });

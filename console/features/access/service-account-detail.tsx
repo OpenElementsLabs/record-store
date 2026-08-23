@@ -270,7 +270,7 @@ function Credentials({
                     <TableCell>
                       <Lifetime credential={credential} />
                     </TableCell>
-                    <TableCell className="text-xs text-ink-muted">
+                    <TableCell className="type-meta">
                       <time dateTime={credential.created_at}>
                         {formatDateTime(credential.created_at)}
                       </time>
@@ -409,11 +409,9 @@ function Activity({ name }: { readonly name: string | null }) {
             {events.data.events.map((event) => (
               <li key={event.event_id} className="flex flex-wrap items-baseline gap-x-3 py-2">
                 <span className="font-mono text-xs text-ink">{event.operation}</span>
-                <span className="min-w-0 flex-1 truncate text-xs text-ink-muted">
-                  {event.resource}
-                </span>
+                <span className="min-w-0 flex-1 truncate type-meta">{event.resource}</span>
                 <Badge tone={event.result === 'success' ? 'neutral' : 'warn'}>{event.result}</Badge>
-                <time dateTime={event.timestamp} className="text-xs text-ink-subtle">
+                <time dateTime={event.timestamp} className="type-meta-subtle">
                   {formatDateTime(event.timestamp)}
                 </time>
               </li>
@@ -441,7 +439,7 @@ function Detail({
         (value === null || value === undefined ? (
           <Skeleton className="h-5 w-24" />
         ) : (
-          <p className="break-all text-sm text-ink">{value}</p>
+          <p className="break-all type-body">{value}</p>
         ))}
     </div>
   );

@@ -127,7 +127,7 @@ export function ServiceAccountsScreen() {
                 {row.original.account.name}
               </Link>
               {row.original.account.description ? (
-                <p className="text-xs text-ink-muted">{row.original.account.description}</p>
+                <p className="type-meta">{row.original.account.description}</p>
               ) : null}
             </div>
           ),
@@ -156,7 +156,7 @@ export function ServiceAccountsScreen() {
               .filter((remaining): remaining is number => remaining !== null)
               .sort((left, right) => left - right)[0];
             return (
-              <span className="text-xs text-ink-muted">
+              <span className="type-meta">
                 {live.length} active
                 {disabled > 0 ? ` · ${disabled} disabled` : ''}
                 {soonest === undefined ? null : (
@@ -174,19 +174,13 @@ export function ServiceAccountsScreen() {
         column.accessor((row) => row.policy_bindings.length, {
           id: 'policies',
           header: 'Policies',
-          cell: ({ getValue }) => (
-            <span className="tabular-nums text-xs text-ink-muted">{getValue()}</span>
-          ),
+          cell: ({ getValue }) => <span className="tabular-nums type-meta">{getValue()}</span>,
         }),
         column.accessor((row) => row.account.created_at, {
           id: 'created',
           header: 'Created',
           cell: ({ getValue }) => (
-            <time
-              dateTime={getValue()}
-              title={formatDateTime(getValue())}
-              className="text-xs text-ink-muted"
-            >
+            <time dateTime={getValue()} title={formatDateTime(getValue())} className="type-meta">
               {formatDate(getValue())}
             </time>
           ),

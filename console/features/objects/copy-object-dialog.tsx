@@ -112,8 +112,8 @@ function CopyForm({
       >
         <DialogBody className="space-y-4">
           <div className="space-y-1">
-            <p className="text-xs font-medium text-ink">Source</p>
-            <p className="break-all font-mono text-xs text-ink-muted">
+            <p className="type-label">Source</p>
+            <p className="break-all font-mono type-meta">
               {bucket}/{objectKey}
             </p>
           </div>
@@ -122,7 +122,7 @@ function CopyForm({
               id="copy-bucket"
               value={destinationBucket}
               onChange={(event) => setDestinationBucket(event.target.value)}
-              className="h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-2 text-sm text-ink"
+              className="h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-2 type-body"
             >
               {(buckets.data ?? [{ id: bucket, name: bucket }]).map((entry) => (
                 <option key={entry.id} value={entry.name}>

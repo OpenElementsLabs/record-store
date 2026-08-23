@@ -96,7 +96,7 @@ function StatusCard({
   if (!inspection) {
     return (
       <Card>
-        <CardContent className="py-6">
+        <CardContent>
           <Skeleton className="h-16 w-full" />
         </CardContent>
       </Card>
@@ -111,7 +111,7 @@ function StatusCard({
 
   return (
     <Card>
-      <CardContent className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start">
+      <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-start">
         <StatusIcon severity={severity} />
         <div className="space-y-1.5">
           <p className="text-sm font-medium text-ink">{headline}</p>
@@ -225,7 +225,7 @@ function FindingsCard({ inspection }: { readonly inspection: StorageInspection |
                   >
                     {formatCount(row.value)}
                   </dd>
-                  <p className="text-xs text-ink-subtle">{row.hint}</p>
+                  <p className="type-meta-subtle">{row.hint}</p>
                 </div>
               ))}
             </dl>
@@ -332,7 +332,7 @@ function VerifyCard() {
                 id="verify-bucket"
                 value={bucket}
                 onChange={(event) => setBucket(event.target.value)}
-                className="h-9 min-w-48 rounded-[--radius-control] border border-border-strong bg-surface px-2 text-sm text-ink"
+                className="h-9 min-w-48 rounded-[--radius-control] border border-border-strong bg-surface px-2 type-body"
               >
                 <option value="">Select a bucket…</option>
                 {available.map((entry) => (
@@ -417,7 +417,7 @@ function ReclaimCard({ clustered }: { readonly clustered: boolean }) {
               : `${formatCount(previewed.inspection.data_without_metadata)} orphaned payloads would be removed.`}
           </p>
         ) : (
-          <p className="text-xs text-ink-subtle">
+          <p className="type-meta-subtle">
             Preview first: it reports what would be removed without removing it.
           </p>
         )}

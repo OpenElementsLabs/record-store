@@ -55,7 +55,7 @@ export function RecentActivity() {
               <Badge tone="neutral" className="shrink-0 font-mono">
                 {event.type}
               </Badge>
-              <span className="min-w-0 flex-1 truncate text-sm text-ink">
+              <span className="min-w-0 flex-1 truncate type-body">
                 {event.object ? `${event.bucket}/${event.object}` : event.bucket}
               </span>
               {event.size !== null ? (
@@ -63,11 +63,7 @@ export function RecentActivity() {
                   {formatBytes(event.size)}
                 </span>
               ) : null}
-              <time
-                dateTime={event.time}
-                className="shrink-0 text-xs text-ink-subtle"
-                title={event.time}
-              >
+              <time dateTime={event.time} className="shrink-0 type-meta-subtle" title={event.time}>
                 {formatRelativeTime(event.time)}
               </time>
             </li>

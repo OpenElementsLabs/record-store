@@ -1,3 +1,4 @@
+import { Circle } from 'lucide-react';
 import { describe, expect, it } from 'vitest';
 
 import { buildCommands, buildEntityCommands, matchCommands } from './commands';
@@ -5,8 +6,11 @@ import type { NavSection } from '@/features/system/navigation';
 import type { RolePermissions } from '@/types/api';
 
 const sections: readonly NavSection[] = [
-  { title: 'Storage', items: [{ href: '/buckets', label: 'Buckets' }] },
-  { title: 'Access', items: [{ href: '/service-accounts', label: 'Service accounts' }] },
+  { title: 'Storage', items: [{ href: '/buckets', label: 'Buckets', icon: Circle }] },
+  {
+    title: 'Access',
+    items: [{ href: '/service-accounts', label: 'Service accounts', icon: Circle }],
+  },
 ];
 
 const admin: RolePermissions = {

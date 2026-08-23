@@ -65,7 +65,7 @@ export function DurabilityScreen() {
       ) : (
         <div className="space-y-4">
           <Card>
-            <CardContent className="flex flex-wrap items-center gap-6 py-4">
+            <CardContent className="flex flex-wrap items-center gap-6">
               <div className="space-y-1">
                 <p className="text-xs font-medium text-ink-muted">Data health</p>
                 {status.data ? (
@@ -79,7 +79,7 @@ export function DurabilityScreen() {
               </div>
               <div className="space-y-1">
                 <p className="text-xs font-medium text-ink-muted">Configured copies</p>
-                <p className="text-sm text-ink">
+                <p className="type-body">
                   {replication
                     ? `${replication.replication_factor} replicas, ${replication.required_acknowledgements} acknowledged before a write succeeds`
                     : '—'}
@@ -137,7 +137,7 @@ export function DurabilityScreen() {
 
           {replication && replication.unavailable_payloads > 0 ? (
             <Card>
-              <CardContent className="py-4">
+              <CardContent>
                 <p className="text-sm text-danger">
                   {formatCount(replication.unavailable_payloads)} payloads have no readable copy.
                   Repair cannot rebuild these from redundancy, because there is none left to read.
@@ -187,7 +187,7 @@ export function DurabilityScreen() {
                 figures here would make the screen look more capable than the
                 data behind it.
               */}
-              <p className="mt-3 text-xs text-ink-subtle">
+              <p className="mt-3 type-meta-subtle">
                 OES reports repair as queue counts. Per-job detail and throughput are not exposed by
                 the management API.
               </p>

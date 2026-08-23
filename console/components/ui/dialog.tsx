@@ -26,7 +26,7 @@ export function DialogContent({
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40" />
       <DialogPrimitive.Content
         className={cn(
-          'fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-[--radius-panel] border border-border bg-surface shadow-lg',
+          'fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-[--radius-panel] border border-border bg-surface-elevated shadow-lg',
           className,
         )}
         {...props}
@@ -60,9 +60,7 @@ export function DialogDescription({
   className,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Description>) {
-  return (
-    <DialogPrimitive.Description className={cn('text-xs text-ink-muted', className)} {...props} />
-  );
+  return <DialogPrimitive.Description className={cn('type-meta', className)} {...props} />;
 }
 
 export function DialogBody({ className, ...props }: React.ComponentProps<'div'>) {

@@ -1,3 +1,22 @@
+import type { LucideIcon } from 'lucide-react';
+import {
+  Activity,
+  Boxes,
+  Database,
+  FileStack,
+  Gauge,
+  HeartPulse,
+  KeyRound,
+  LayoutDashboard,
+  Network,
+  ScrollText,
+  Scale,
+  ShieldCheck,
+  Server,
+  Shuffle,
+  Webhook,
+} from 'lucide-react';
+
 import type { Capabilities, RolePermissions } from '@/types/api';
 
 /** One navigable screen. */
@@ -6,6 +25,13 @@ export type NavItem = {
   readonly label: string;
   /** Matches nested routes, so a child page keeps its parent highlighted. */
   readonly prefix?: string;
+  /**
+   * The item's icon.
+   *
+   * Required rather than optional: a collapsed sidebar shows nothing but icons,
+   * so an item without one would simply disappear.
+   */
+  readonly icon: LucideIcon;
 };
 
 export type NavSection = {
@@ -30,10 +56,10 @@ export function buildNavigation(input: NavigationInput): readonly NavSection[] {
   const { clusterEnabled, capabilities, permissions } = input;
 
   const sections: NavSection[] = [
-    { title: 'Overview', items: [{ href: '/', label: 'Overview' }] },
+    { title: 'Overview', items: [{ href: '/', label: 'Overview', icon: LayoutDashboard }] },
     {
       title: 'Storage',
-      items: [{ href: '/buckets', label: 'Buckets', prefix: '/buckets' }],
+      items: [{ href: '/buckets', label: 'Buckets', prefix: '/buckets', icon: Database }],
     },
   ];
 
@@ -41,7 +67,7 @@ export function buildNavigation(input: NavigationInput): readonly NavSection[] {
   // it belongs to the storage-administration role rather than to everyone.
   const data: NavItem[] = [];
   if (permissions.manage_storage) {
-    data.push({ href: '/integrity', label: 'Integrity', prefix: '/integrity' });
+    data.push({ href: '/integrity', label: 'Integrity', prefix: '/integrity', icon: ShieldCheck });
   }
   if (data.length > 0) sections.push({ title: 'Data management', items: data });
 
@@ -51,31 +77,42 @@ export function buildNavigation(input: NavigationInput): readonly NavSection[] {
       href: '/service-accounts',
       label: 'Service accounts',
       prefix: '/service-accounts',
+      icon: KeyRound,
     });
   }
   if (permissions.manage_policies) {
-    access.push({ href: '/policies', label: 'Policies', prefix: '/policies' });
+    access.push({ href: '/policies', label: 'Policies', prefix: '/policies', icon: Scale });
   }
   if (access.length > 0) sections.push({ title: 'Access', items: access });
 
   const operations: NavItem[] = [];
   if (capabilities.events) {
-    operations.push({ href: '/events', label: 'Events', prefix: '/events' });
+    operations.push({ href: '/events', label: 'Events', prefix: '/events', icon: Activity });
   }
   if (capabilities.webhooks && permissions.manage_webhooks) {
-    operations.push({ href: '/webhooks', label: 'Webhooks', prefix: '/webhooks' });
+    operations.push({ href: '/webhooks', label: 'Webhooks', prefix: '/webhooks', icon: Webhook });
   }
   if (permissions.read_audit) {
-    operations.push({ href: '/audit', label: 'Audit log', prefix: '/audit' });
+    operations.push({ href: '/audit', label: 'Audit log', prefix: '/audit', icon: ScrollText });
   }
   if (operations.length > 0) sections.push({ title: 'Operations', items: operations });
 
   if (clusterEnabled) {
     const cluster: NavItem[] = [
-      { href: '/cluster', label: 'Cluster overview' },
-      { href: '/cluster/nodes', label: 'Nodes', prefix: '/cluster/nodes' },
-      { href: '/cluster/durability', label: 'Durability', prefix: '/cluster/durability' },
-      { href: '/cluster/consensus', label: 'Consensus', prefix: '/cluster/consensus' },
+      { href: '/cluster', label: 'Cluster overview', icon: Boxes },
+      { href: '/cluster/nodes', label: 'Nodes', prefix: '/cluster/nodes', icon: Server },
+      {
+        href: '/cluster/durability',
+        label: 'Durability',
+        prefix: '/cluster/durability',
+        icon: FileStack,
+      },
+      {
+        href: '/cluster/consensus',
+        label: 'Consensus',
+        prefix: '/cluster/consensus',
+        icon: Network,
+      },
     ];
     // Rebalancing moves data between nodes, so it is offered only to a role
     // that may operate the cluster.
@@ -84,15 +121,16 @@ export function buildNavigation(input: NavigationInput): readonly NavSection[] {
         href: '/cluster/rebalance',
         label: 'Rebalancing',
         prefix: '/cluster/rebalance',
+        icon: Shuffle,
       });
     }
     sections.push({ title: 'Cluster', items: cluster });
   }
 
-  const system: NavItem[] = [{ href: '/system', label: 'Health' }];
+  const system: NavItem[] = [{ href: '/system', label: 'Health', icon: HeartPulse }];
   // Metrics read the same counters Prometheus scrapes, through the management
   // plane, so they are available to every role that can reach the console.
-  system.push({ href: '/metrics', label: 'Metrics', prefix: '/metrics' });
+  system.push({ href: '/metrics', label: 'Metrics', prefix: '/metrics', icon: Gauge });
   sections.push({ title: 'System', items: system });
   return sections;
 }

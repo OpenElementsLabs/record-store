@@ -6,9 +6,7 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 
 export function Label({ className, ...props }: React.ComponentProps<typeof LabelPrimitive.Root>) {
-  return (
-    <LabelPrimitive.Root className={cn('text-xs font-medium text-ink', className)} {...props} />
-  );
+  return <LabelPrimitive.Root className={cn('type-label', className)} {...props} />;
 }
 
 /** A labelled form row with optional help and error text. */
@@ -38,7 +36,7 @@ export function Field({
           })
         : children}
       {hint && !error ? (
-        <p id={hintId} className="text-xs text-ink-subtle">
+        <p id={hintId} className="type-meta-subtle">
           {hint}
         </p>
       ) : null}

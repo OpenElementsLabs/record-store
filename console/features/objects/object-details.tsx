@@ -207,8 +207,8 @@ function MetadataTab({ record }: { readonly record: ObjectSummary | null }) {
           <dl className="grid gap-x-8 gap-y-3 sm:grid-cols-2">
             {entries.map(([key, value]) => (
               <div key={key} className="min-w-0 space-y-0.5">
-                <dt className="font-mono text-xs text-ink-muted">{key}</dt>
-                <dd className="break-all text-sm text-ink">{value}</dd>
+                <dt className="font-mono type-meta">{key}</dt>
+                <dd className="break-all type-body">{value}</dd>
               </div>
             ))}
           </dl>
@@ -261,7 +261,7 @@ function IntegrityTab({
             {verification.isPending ? 'Verifying…' : 'Verify object'}
           </Button>
         ) : (
-          <p className="text-xs text-ink-muted">Your role does not permit running verification.</p>
+          <p className="type-meta">Your role does not permit running verification.</p>
         )}
         {verification.error ? <ErrorState error={verification.error} /> : null}
         {verification.data ? (
@@ -310,7 +310,7 @@ function ActivityTab({
             {events.data.events.map((event) => (
               <li key={event.id} className="flex flex-wrap items-baseline gap-x-3 py-2">
                 <Badge tone="neutral">{event.type}</Badge>
-                <span className="text-xs text-ink-muted">
+                <span className="type-meta">
                   <time dateTime={event.time}>{formatDateTime(event.time)}</time>
                 </span>
                 {event.size === null ? null : (
@@ -342,20 +342,20 @@ function Row({
 }) {
   return (
     <div className="min-w-0 space-y-1">
-      <dt className="text-xs text-ink-muted">{label}</dt>
+      <dt className="type-meta">{label}</dt>
       <dd className="flex min-w-0 items-center gap-2">
         {value === null ? (
           <Skeleton className="h-5 w-32" />
         ) : (
           <>
-            <span className={mono ? 'break-all font-mono text-xs text-ink' : 'text-sm text-ink'}>
+            <span className={mono ? 'break-all font-mono text-xs text-ink' : 'type-body'}>
               {value}
             </span>
             {copy ? <CopyButton value={value} label={label} variant="ghost" /> : null}
           </>
         )}
       </dd>
-      {extra ? <p className="text-xs text-ink-subtle">{extra}</p> : null}
+      {extra ? <p className="type-meta-subtle">{extra}</p> : null}
     </div>
   );
 }

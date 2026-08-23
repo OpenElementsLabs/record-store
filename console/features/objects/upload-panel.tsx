@@ -52,7 +52,7 @@ export function UploadPanel({
             <li key={task.id} className="space-y-1.5 px-4 py-2.5">
               <div className="flex items-center gap-2">
                 <StateIcon state={task.state} />
-                <span className="min-w-0 flex-1 truncate text-sm text-ink" title={task.key}>
+                <span className="min-w-0 flex-1 truncate type-body" title={task.key}>
                   {task.name}
                 </span>
                 <span className="shrink-0 text-xs tabular-nums text-ink-muted">
@@ -101,14 +101,14 @@ export function UploadPanel({
                 </p>
               ) : null}
               {task.state === 'cancelled' ? (
-                <p className="text-xs text-ink-subtle">Upload cancelled.</p>
+                <p className="type-meta-subtle">Upload cancelled.</p>
               ) : null}
             </li>
           );
         })}
       </ul>
       {restartable ? (
-        <p className="border-t border-border px-4 py-2 text-xs text-ink-subtle">
+        <p className="border-t border-border px-4 py-2 type-meta-subtle">
           A retry sends the whole file again from the beginning. Uploads do not resume from where
           they stopped.
         </p>

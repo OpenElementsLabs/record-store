@@ -163,7 +163,7 @@ function Window({ observation }: { readonly observation: ReturnType<typeof useMe
   const { observedAt, windowSeconds } = observation;
   return (
     <Card>
-      <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-1.5 py-3 text-xs text-ink-muted">
+      <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-1.5 type-meta py-3">
         <span>
           Last read{' '}
           {observedAt ? (

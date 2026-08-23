@@ -201,10 +201,8 @@ function Detail({
 }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
-      <span className="text-xs text-ink-muted">{label}</span>
-      <span className={mono ? 'break-all font-mono text-xs text-ink' : 'text-sm text-ink'}>
-        {value}
-      </span>
+      <span className="type-meta">{label}</span>
+      <span className={mono ? 'break-all font-mono text-xs text-ink' : 'type-body'}>{value}</span>
     </div>
   );
 }
@@ -220,7 +218,7 @@ function StandaloneHealthPanel() {
   const level = status.isError ? 'critical' : status.isPending ? 'unknown' : 'healthy';
   return (
     <Card>
-      <CardContent className="flex flex-wrap items-center justify-between gap-3 pt-4">
+      <CardContent className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">
           <p className="text-xs font-medium text-ink-muted">OES status</p>
           {status.isPending ? (
@@ -232,7 +230,7 @@ function StandaloneHealthPanel() {
             />
           )}
         </div>
-        <p className="max-w-md text-xs text-ink-muted">
+        <p className="max-w-md type-meta">
           {status.isError
             ? 'Storage status could not be read from the management API.'
             : 'Storage and metadata are responding to readiness probes.'}
@@ -260,7 +258,7 @@ function ClusterHealthPanel() {
 
   return (
     <Card>
-      <CardContent className="space-y-3 pt-4">
+      <CardContent className="space-y-3">
         <div className="flex flex-wrap items-center gap-6">
           <div className="space-y-1">
             <p className="text-xs font-medium text-ink-muted">Cluster status</p>
@@ -296,7 +294,7 @@ function ClusterHealthPanel() {
         {health.data && health.data.reasons.length > 0 ? (
           <ul className="space-y-1 border-t border-border pt-3">
             {health.data.reasons.map((reason) => (
-              <li key={reason} className="text-xs text-ink-muted">
+              <li key={reason} className="type-meta">
                 {reason}
               </li>
             ))}

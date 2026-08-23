@@ -92,7 +92,7 @@ export function RebalanceScreen() {
         </Card>
       ) : operations.isPending ? (
         <Card>
-          <CardContent className="py-6">
+          <CardContent>
             <Skeleton className="h-20 w-full" />
           </CardContent>
         </Card>
@@ -115,7 +115,7 @@ export function RebalanceScreen() {
             </Card>
           ) : (
             <Card>
-              <CardContent className="py-4">
+              <CardContent>
                 <p className="text-sm text-ink-muted">No rebalance is running.</p>
               </CardContent>
             </Card>
@@ -177,25 +177,25 @@ function OperationRow({ operation }: { readonly operation: ClusterOperation }) {
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <StatusBadge level={STATE_LEVEL[operation.state]} label={capitalise(operation.state)} />
-        <span className="text-xs text-ink-muted">
+        <span className="type-meta">
           started{' '}
           <time dateTime={operation.started_at}>{formatDateTime(operation.started_at)}</time>
         </span>
         {operation.completed_at ? (
-          <span className="text-xs text-ink-muted">
+          <span className="type-meta">
             finished{' '}
             <time dateTime={operation.completed_at}>{formatDateTime(operation.completed_at)}</time>
           </span>
         ) : null}
         {progress.replicas_moving > 0 ? (
-          <span className="text-xs text-ink-subtle">
+          <span className="type-meta-subtle">
             {formatCount(progress.replicas_moving)} transfers in flight
           </span>
         ) : null}
       </div>
 
       {percent === null ? (
-        <p className="text-xs text-ink-subtle">
+        <p className="type-meta-subtle">
           {isRunning(operation.state)
             ? 'Planning: the amount to move has not been counted yet.'
             : 'Nothing needed moving.'}
@@ -227,7 +227,7 @@ function OperationRow({ operation }: { readonly operation: ClusterOperation }) {
           {formatCount(progress.tasks_parked)} transfers parked after exhausting their retries.
         </p>
       ) : null}
-      {operation.message ? <p className="text-xs text-ink-muted">{operation.message}</p> : null}
+      {operation.message ? <p className="type-meta">{operation.message}</p> : null}
     </div>
   );
 }

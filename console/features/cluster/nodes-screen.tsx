@@ -128,7 +128,7 @@ export function NodesScreen() {
               >
                 {shortenIdentifier(row.original.node_id, 8)}
               </Link>
-              <p className="text-xs text-ink-subtle">{row.original.rpc_address}</p>
+              <p className="type-meta-subtle">{row.original.rpc_address}</p>
             </div>
           ),
         }),
@@ -142,7 +142,7 @@ export function NodesScreen() {
                 label={capitalise(row.original.state)}
               />
               {row.original.state_reason ? (
-                <p className="max-w-48 text-xs text-ink-subtle">{row.original.state_reason}</p>
+                <p className="max-w-48 type-meta-subtle">{row.original.state_reason}</p>
               ) : null}
             </div>
           ),
@@ -192,7 +192,7 @@ export function NodesScreen() {
           cell: ({ row }) => (
             <div className="space-y-0.5">
               <p className="font-mono text-xs text-ink">{row.original.software_version}</p>
-              <p className="text-xs text-ink-subtle">
+              <p className="type-meta-subtle">
                 seen {formatRelativeTime(row.original.last_heartbeat_at)}
               </p>
             </div>

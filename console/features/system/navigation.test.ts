@@ -1,3 +1,4 @@
+import { Circle } from 'lucide-react';
 import { describe, expect, it } from 'vitest';
 
 import type { Capabilities, RolePermissions } from '@/types/api';
@@ -112,12 +113,12 @@ describe('buildNavigation', () => {
 
 describe('isActive', () => {
   it('matches exact routes', () => {
-    expect(isActive({ href: '/', label: 'Overview' }, '/')).toBe(true);
-    expect(isActive({ href: '/', label: 'Overview' }, '/buckets')).toBe(false);
+    expect(isActive({ href: '/', label: 'Overview', icon: Circle }, '/')).toBe(true);
+    expect(isActive({ href: '/', label: 'Overview', icon: Circle }, '/buckets')).toBe(false);
   });
 
   it('keeps a parent highlighted on nested routes', () => {
-    const item = { href: '/buckets', label: 'Buckets', prefix: '/buckets' };
+    const item = { href: '/buckets', label: 'Buckets', prefix: '/buckets', icon: Circle };
     expect(isActive(item, '/buckets')).toBe(true);
     expect(isActive(item, '/buckets/uploads')).toBe(true);
     expect(isActive(item, '/bucketsomething')).toBe(false);

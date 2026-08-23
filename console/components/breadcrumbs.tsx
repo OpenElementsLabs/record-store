@@ -12,7 +12,7 @@ export function Breadcrumbs({ items }: { readonly items: readonly Crumb[] }) {
   if (items.length === 0) return null;
   return (
     <nav aria-label="Breadcrumb">
-      <ol className="flex flex-wrap items-center gap-1 text-xs text-ink-muted">
+      <ol className="flex flex-wrap items-center gap-1 type-meta">
         {items.map((item, index) => {
           const last = index === items.length - 1;
           return (

@@ -174,7 +174,7 @@ export function WebhooksScreen() {
                             ))}
                           </div>
                         </TableCell>
-                        <TableCell className="text-xs text-ink-muted">
+                        <TableCell className="type-meta">
                           {webhook.bucket_filter ?? 'any bucket'}
                           {webhook.object_prefix_filter ? ` · ${webhook.object_prefix_filter}` : ''}
                         </TableCell>
@@ -303,7 +303,7 @@ function DeliveryBadge({
   if (deliveries === null) return <Skeleton className="h-5 w-20" />;
   const health = summariseDeliveries(deliveries, webhookId);
   if (health.total === 0) {
-    return <span className="text-xs text-ink-subtle">none recently</span>;
+    return <span className="type-meta-subtle">none recently</span>;
   }
   return (
     <div className="space-y-0.5">
@@ -316,7 +316,7 @@ function DeliveryBadge({
           : `${formatCount(health.failed)} of ${formatCount(health.total)} failed`}
       </span>
       {health.lastAttemptAt ? (
-        <p className="text-xs text-ink-subtle">
+        <p className="type-meta-subtle">
           last <time dateTime={health.lastAttemptAt}>{formatDateTime(health.lastAttemptAt)}</time>
         </p>
       ) : null}
@@ -360,7 +360,7 @@ function DeliveryHistory() {
             <TableBody>
               {deliveries.data.map((log) => (
                 <TableRow key={`${log.webhook_id}:${log.event_id}:${log.delivered_at}`}>
-                  <TableCell className="whitespace-nowrap text-xs text-ink-muted">
+                  <TableCell className="whitespace-nowrap type-meta">
                     <time dateTime={log.delivered_at}>{formatDateTime(log.delivered_at)}</time>
                   </TableCell>
                   <TableCell className="font-mono text-xs" title={log.webhook_id}>
@@ -452,7 +452,7 @@ function CreateWebhookDialog({
               />
             </Field>
             <fieldset className="space-y-2">
-              <legend className="text-xs font-medium text-ink">Event types</legend>
+              <legend className="type-label">Event types</legend>
               <div className="grid gap-1.5 sm:grid-cols-2">
                 {EVENT_TYPES.map((type) => (
                   <label key={type} className="flex items-center gap-2 text-xs text-ink">

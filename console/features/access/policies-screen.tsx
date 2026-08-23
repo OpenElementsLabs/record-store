@@ -100,10 +100,10 @@ export function PoliciesScreen() {
                   <div>
                     <CardTitle>{policy.name}</CardTitle>
                     {policy.description ? (
-                      <p className="mt-0.5 text-xs text-ink-muted">{policy.description}</p>
+                      <p className="mt-0.5 type-meta">{policy.description}</p>
                     ) : null}
                   </div>
-                  <span className="shrink-0 text-xs text-ink-subtle">
+                  <span className="shrink-0 type-meta-subtle">
                     Created {formatDate(policy.created_at)}
                   </span>
                 </div>
@@ -191,7 +191,7 @@ function PolicyBindings({ policy }: { readonly policy: Policy }) {
       {accounts.isPending ? (
         <Skeleton className="h-8 w-full" />
       ) : bound.length === 0 ? (
-        <p className="text-xs text-ink-subtle">
+        <p className="type-meta-subtle">
           This policy grants nothing until it is attached to a service account.
         </p>
       ) : (
@@ -267,7 +267,7 @@ function StatementView({ statement }: { readonly statement: PolicyStatement }) {
         {statement.actions.map((action) => (
           <span
             key={action}
-            className="rounded border border-border bg-surface-muted px-1.5 py-0.5 font-mono text-[0.6875rem] text-ink-muted"
+            className="rounded-[--radius-control] border border-border bg-surface-muted px-1.5 py-0.5 font-mono text-[0.6875rem] text-ink-muted"
           >
             {action}
           </span>
@@ -368,10 +368,10 @@ function CreatePolicyForm({ onOpenChange }: { readonly onOpenChange: (open: bool
           </Field>
 
           <fieldset className="space-y-2">
-            <legend className="text-xs font-medium text-ink">Effect</legend>
+            <legend className="type-label">Effect</legend>
             <div className="flex gap-2">
               {(['allow', 'deny'] as const).map((option) => (
-                <label key={option} className="flex items-center gap-1.5 text-sm text-ink">
+                <label key={option} className="flex items-center gap-1.5 type-body">
                   <input
                     type="radio"
                     name="effect"
@@ -386,7 +386,7 @@ function CreatePolicyForm({ onOpenChange }: { readonly onOpenChange: (open: bool
           </fieldset>
 
           <fieldset className="space-y-2">
-            <legend className="text-xs font-medium text-ink">Actions</legend>
+            <legend className="type-label">Actions</legend>
             <div className="grid gap-1.5 sm:grid-cols-2">
               {ACTIONS.map((action) => (
                 <label key={action} className="flex items-center gap-2 text-xs text-ink">
@@ -408,7 +408,7 @@ function CreatePolicyForm({ onOpenChange }: { readonly onOpenChange: (open: bool
           </fieldset>
 
           <fieldset className="space-y-2">
-            <legend className="text-xs font-medium text-ink">Resources</legend>
+            <legend className="type-label">Resources</legend>
             <ul className="space-y-1">
               {resources.map((resource) => (
                 <li key={resource} className="flex items-center gap-2">

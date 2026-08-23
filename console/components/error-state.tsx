@@ -70,7 +70,7 @@ function headingFor(error: ApiError | null): string {
 export function ErrorDetails({ error }: { readonly error: ApiError }) {
   if (!error.code && !error.requestId) return null;
   return (
-    <details className="text-xs text-ink-subtle">
+    <details className="type-meta-subtle">
       <summary className="cursor-pointer select-none">Details</summary>
       <dl className="mt-2 space-y-1 font-mono">
         <div className="flex gap-2">

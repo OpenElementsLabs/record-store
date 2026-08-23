@@ -32,6 +32,10 @@
   --color-accent-hover: oklch(0.46 0.15 250);
   --color-accent-ink: oklch(0.99 0 0);
   --color-accent-soft: oklch(0.95 0.03 250);
+  /* Named so focus styling is a decision recorded in one place rather than the
+     accent colour reused by coincidence. */
+  --color-focus-ring: oklch(0.52 0.14 250);
+  --color-selection: oklch(0.9 0.05 250);
   --color-focus-ring: var(--color-accent);
   --color-selection: var(--color-accent-soft);
 
@@ -75,6 +79,8 @@
   --color-accent-hover: oklch(0.75 0.12 250);
   --color-accent-ink: oklch(0.17 0.01 255);
   --color-accent-soft: oklch(0.28 0.05 250);
+  --color-focus-ring: oklch(0.68 0.13 250);
+  --color-selection: oklch(0.32 0.06 250);
   --color-focus-ring: var(--color-accent);
   --color-selection: var(--color-accent-soft);
 
@@ -114,7 +120,7 @@
    * navigation stays visible everywhere.
    */
   :focus-visible {
-    outline: 2px solid var(--color-accent);
+    outline: 2px solid var(--color-focus-ring);
     outline-offset: 2px;
   }
 
@@ -146,7 +152,7 @@
  * in. `:focus-visible` means a pointer click does not draw a ring.
  */
 :focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-control);
 }
@@ -165,4 +171,88 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/*
+ * The type scale.
+ *
+ * Named roles rather than ad-hoc sizes: the audit found 153 uses of `text-xs`
+ * and one of `text-lg`, which is a flat hierarchy dressed as a dense one.
+ * Naming the roles makes the hierarchy a decision instead of an accident, and
+ * keeps a console compact without shouting.
+ */
+@utility type-page-title {
+  font-size: 1.25rem;
+  line-height: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--color-ink);
+  text-wrap: balance;
+}
+
+@utility type-page-description {
+  font-size: 0.875rem;
+  line-height: 1.375rem;
+  color: var(--color-ink-muted);
+}
+
+@utility type-section-title {
+  font-size: 0.9375rem;
+  line-height: 1.375rem;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+@utility type-body {
+  font-size: 0.875rem;
+  line-height: 1.375rem;
+  color: var(--color-ink);
+}
+
+@utility type-meta {
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+  color: var(--color-ink-muted);
+}
+
+/* A quieter metadata tone, for values that accompany rather than inform. */
+@utility type-meta-subtle {
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+  color: var(--color-ink-subtle);
+}
+
+@utility type-label {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+
+/* Section headings inside the sidebar and toolbars: small, spaced, quiet. */
+@utility type-eyebrow {
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ink-subtle);
+}
+
+/*
+ * Identifiers, not prose.
+ *
+ * A checksum, key, or node id is compared character by character, so it gets a
+ * monospace face and tabular figures. Ordinary sentences never do.
+ */
+@utility type-identifier {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+::selection {
+  background: var(--color-selection);
 }

@@ -51,7 +51,7 @@ export function NodeDetails({ nodeId }: { readonly nodeId: string }) {
                 <Row label="Node ID" value={node.data.node_id} mono />
                 <Row label="RPC address" value={node.data.rpc_address} mono />
                 <div className="space-y-1">
-                  <dt className="text-xs text-ink-muted">Status</dt>
+                  <dt className="type-meta">Status</dt>
                   <dd>
                     <StatusBadge
                       level={levelFor(node.data.state)}
@@ -79,7 +79,7 @@ export function NodeDetails({ nodeId }: { readonly nodeId: string }) {
                   }
                 />
                 <div className="space-y-1 sm:col-span-2">
-                  <dt className="text-xs text-ink-muted">Failure domain</dt>
+                  <dt className="type-meta">Failure domain</dt>
                   <dd className="flex flex-wrap gap-1">
                     {Object.entries(node.data.failure_domain).map(([key, value]) => (
                       <Badge key={key} tone="neutral" className="font-mono">
@@ -105,10 +105,8 @@ export function NodeDetails({ nodeId }: { readonly nodeId: string }) {
 function Row({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="min-w-0 space-y-1">
-      <dt className="text-xs text-ink-muted">{label}</dt>
-      <dd className={mono ? 'break-all font-mono text-xs text-ink' : 'text-sm text-ink'}>
-        {value}
-      </dd>
+      <dt className="type-meta">{label}</dt>
+      <dd className={mono ? 'break-all font-mono text-xs text-ink' : 'type-body'}>{value}</dd>
     </div>
   );
 }

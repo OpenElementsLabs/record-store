@@ -54,7 +54,7 @@ export function ClusterScreen() {
       />
 
       <Card>
-        <CardContent className="flex flex-wrap items-center gap-6 pt-4">
+        <CardContent className="flex flex-wrap items-center gap-6">
           <Dimension label="Cluster">
             {data ? (
               <StatusBadge level={data.health} label={capitalise(data.health)} />
@@ -210,13 +210,13 @@ export function ClusterScreen() {
                         label={capitalise(operation.state)}
                       />
                     </div>
-                    <p className="text-xs text-ink-muted">
+                    <p className="type-meta">
                       {formatCount(operation.progress.objects_remaining)} object(s) and{' '}
                       {formatBytes(operation.progress.bytes_remaining)} remaining ·{' '}
                       {operation.progress.replicas_moving} moving
                     </p>
                     {operation.message ? (
-                      <p className="text-xs text-ink-subtle">{operation.message}</p>
+                      <p className="type-meta-subtle">{operation.message}</p>
                     ) : null}
                   </li>
                 ))}
@@ -227,7 +227,7 @@ export function ClusterScreen() {
       </div>
 
       {data ? (
-        <p className="text-xs text-ink-subtle">
+        <p className="type-meta-subtle">
           Observed {formatDateTime(data.observed_at)} · cluster {data.cluster_id}
         </p>
       ) : null}
@@ -253,8 +253,8 @@ function Dimension({
 function Row({ label, value }: { readonly label: string; readonly value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
-      <span className="text-xs text-ink-muted">{label}</span>
-      <span className="text-sm text-ink">{value}</span>
+      <span className="type-meta">{label}</span>
+      <span className="type-body">{value}</span>
     </div>
   );
 }

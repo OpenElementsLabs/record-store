@@ -73,7 +73,7 @@ function CredentialBody({
           <SecretOnceWarning what="secret key" />
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-ink">Access key ID</span>
+              <span className="type-label">Access key ID</span>
               <CopyButton value={issued.credential.key_id} label="access key ID" />
             </div>
             <p className="break-all rounded-[--radius-control] border border-border bg-surface-muted px-3 py-2 font-mono text-xs text-ink">

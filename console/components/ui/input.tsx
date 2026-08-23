@@ -7,7 +7,7 @@ export function Input({ className, type, ...props }: React.ComponentProps<'input
     <input
       type={type ?? 'text'}
       className={cn(
-        'h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-3 text-sm text-ink placeholder:text-ink-subtle disabled:opacity-50',
+        'h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-3 type-body placeholder:text-ink-subtle disabled:opacity-50',
         className,
       )}
       {...props}

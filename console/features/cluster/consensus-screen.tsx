@@ -66,7 +66,7 @@ export function ConsensusScreen() {
       ) : (
         <div className="space-y-4">
           <Card>
-            <CardContent className="space-y-3 py-4">
+            <CardContent className="space-y-3">
               {quorum ? <Summary quorum={quorum} /> : <Skeleton className="h-16 w-full" />}
             </CardContent>
           </Card>
@@ -97,7 +97,7 @@ export function ConsensusScreen() {
                           <TableCell className="tabular-nums">
                             {member.member_id}
                             {member.member_id === quorum.member_id ? (
-                              <span className="ml-2 text-xs text-ink-subtle">this node</span>
+                              <span className="ml-2 type-meta-subtle">this node</span>
                             ) : null}
                           </TableCell>
                           <TableCell className="font-mono text-xs">{member.address}</TableCell>
@@ -179,7 +179,7 @@ function Summary({ quorum }: { readonly quorum: MetadataQuorum }) {
         </div>
         <div className="space-y-1">
           <p className="text-xs font-medium text-ink-muted">This node</p>
-          <p className="text-sm text-ink">{capitalise(quorum.role)}</p>
+          <p className="type-body">{capitalise(quorum.role)}</p>
         </div>
       </div>
       <p className="text-sm text-ink-muted">{writes}</p>
@@ -189,7 +189,7 @@ function Summary({ quorum }: { readonly quorum: MetadataQuorum }) {
       {status.notes.length > 0 ? (
         <ul className="space-y-1 border-t border-border pt-3">
           {status.notes.map((note) => (
-            <li key={note} className="text-xs text-ink-muted">
+            <li key={note} className="type-meta">
               {note}
             </li>
           ))}

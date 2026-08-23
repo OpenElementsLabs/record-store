@@ -82,11 +82,11 @@ export function CommandTrigger({ onOpen }: { readonly onOpen: () => void }) {
     <button
       type="button"
       onClick={onOpen}
-      className="flex h-8 items-center gap-2 rounded-[--radius-control] border border-border bg-surface-muted px-2.5 text-xs text-ink-muted hover:border-border-strong hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      className="flex h-8 items-center gap-2 rounded-[--radius-control] border border-border bg-surface-muted px-2.5 type-meta hover:border-border-strong hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       <Search aria-hidden className="size-3.5" />
       <span>Search</span>
-      <kbd className="ml-2 hidden rounded border border-border-strong px-1 py-px font-sans text-[0.6875rem] text-ink-subtle sm:inline">
+      <kbd className="ml-2 hidden rounded-[--radius-control] border border-border-strong px-1 py-px font-sans text-[0.6875rem] text-ink-subtle sm:inline">
         {command ? '⌘' : 'Ctrl '}K
       </kbd>
     </button>
@@ -175,7 +175,7 @@ function PaletteBody({
           aria-label="Search commands"
           aria-controls="command-results"
           placeholder="Jump to a screen or action…"
-          className="w-full bg-transparent text-sm text-ink outline-none placeholder:text-ink-subtle"
+          className="w-full bg-transparent type-body outline-none placeholder:text-ink-subtle"
           onChange={(event) => {
             setQuery(event.target.value);
             setHighlighted(0);
@@ -215,7 +215,7 @@ function PaletteBody({
                 onClick={() => run(command)}
               >
                 <span className="text-ink">{command.label}</span>
-                <span className="text-xs text-ink-subtle">{command.group}</span>
+                <span className="type-meta-subtle">{command.group}</span>
               </button>
             </li>
           ))

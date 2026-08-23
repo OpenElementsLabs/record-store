@@ -322,17 +322,15 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
                           .split('/')
                           .map(encodeURIComponent)
                           .join('/')}`}
-                        className="inline-flex items-center gap-2 text-sm text-ink hover:underline"
+                        className="inline-flex items-center gap-2 type-body hover:underline"
                       >
                         <FileIcon aria-hidden className="size-4 text-ink-subtle" />
                         {keyBasename(object.key)}
                       </Link>
                     </TableCell>
                     <TableCell className="tabular-nums">{formatBytes(object.size)}</TableCell>
-                    <TableCell className="text-xs text-ink-muted">
-                      {object.content_type ?? '—'}
-                    </TableCell>
-                    <TableCell className="text-xs text-ink-muted">
+                    <TableCell className="type-meta">{object.content_type ?? '—'}</TableCell>
+                    <TableCell className="type-meta">
                       <time dateTime={object.modified_at} title={object.modified_at}>
                         {formatDateTime(object.modified_at)}
                       </time>
@@ -457,7 +455,7 @@ function Pagination({
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <label className="flex items-center gap-2 text-xs text-ink-muted">
+      <label className="flex items-center gap-2 type-meta">
         Rows per page
         <select
           value={limit}
@@ -524,7 +522,7 @@ function SelectionBar({
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-        <p className="text-sm text-ink" role="status">
+        <p className="type-body" role="status">
           {running && batch
             ? `Deleting ${formatCount(batch.completed)} of ${formatCount(batch.total)}…`
             : count > 0
@@ -552,7 +550,7 @@ function SelectionBar({
           </p>
           <ul className="mt-1 space-y-0.5">
             {batch.failed.map((failure) => (
-              <li key={failure.key} className="text-xs text-ink-muted">
+              <li key={failure.key} className="type-meta">
                 <span className="font-mono">{keyBasename(failure.key)}</span> — {failure.reason}
               </li>
             ))}

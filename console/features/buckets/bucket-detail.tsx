@@ -360,10 +360,10 @@ function BucketActivity({ bucket }: { readonly bucket: string }) {
             {events.data.events.map((event) => (
               <li key={event.id} className="flex flex-wrap items-baseline gap-x-3 py-2">
                 <Badge tone="neutral">{event.type}</Badge>
-                <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-muted">
+                <span className="min-w-0 flex-1 truncate font-mono type-meta">
                   {event.object ?? '—'}
                 </span>
-                <time dateTime={event.time} className="text-xs text-ink-subtle">
+                <time dateTime={event.time} className="type-meta-subtle">
                   {formatDateTime(event.time)}
                 </time>
               </li>
@@ -414,7 +414,7 @@ function BucketIntegrity({ bucket }: { readonly bucket: string }) {
             {verification.isPending ? 'Verifying…' : 'Verify bucket'}
           </Button>
         ) : (
-          <p className="text-xs text-ink-muted">Your role does not permit running verification.</p>
+          <p className="type-meta">Your role does not permit running verification.</p>
         )}
         {verification.error ? <ErrorState error={verification.error} /> : null}
         {verification.data ? (
@@ -439,7 +439,7 @@ function Detail({ label, value }: { readonly label: string; readonly value: stri
       {value === null ? (
         <Skeleton className="h-5 w-24" />
       ) : (
-        <p className="break-all text-sm text-ink">{value}</p>
+        <p className="break-all type-body">{value}</p>
       )}
     </div>
   );
@@ -477,7 +477,7 @@ function VersioningSection({
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex items-center gap-2">
-          <span className="text-xs text-ink-muted">Current state</span>
+          <span className="type-meta">Current state</span>
           {current ? (
             <StatusBadge
               level={
@@ -509,9 +509,7 @@ function VersioningSection({
             </Button>
           </div>
         ) : (
-          <p className="text-xs text-ink-muted">
-            Your role does not permit changing bucket settings.
-          </p>
+          <p className="type-meta">Your role does not permit changing bucket settings.</p>
         )}
       </CardContent>
     </Card>
@@ -590,9 +588,7 @@ function LifecycleSection({ bucket }: { readonly bucket: string }) {
                     level={rule.enabled ? 'healthy' : 'disabled'}
                     label={rule.enabled ? 'Enabled' : 'Disabled'}
                   />
-                  <span className="min-w-0 flex-1 text-xs text-ink-muted">
-                    {describeLifecycleRule(rule)}
-                  </span>
+                  <span className="min-w-0 flex-1 type-meta">{describeLifecycleRule(rule)}</span>
                   {permissions.manage_buckets ? (
                     <div className="flex items-center gap-2">
                       <Button

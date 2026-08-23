@@ -142,7 +142,7 @@ function QuotaForm({ record }: { readonly record: Bucket }) {
         {editable ? (
           <form onSubmit={submit} className="space-y-4 border-t border-border pt-4">
             <fieldset className="space-y-2">
-              <legend className="text-xs font-medium text-ink">Storage limit</legend>
+              <legend className="type-label">Storage limit</legend>
               <Choice
                 name="storage"
                 limited={bytes.limited}
@@ -158,7 +158,7 @@ function QuotaForm({ record }: { readonly record: Bucket }) {
                       onChange={(event) => setBytes({ ...bytes, value: event.target.value })}
                     />
                   </Field>
-                  <label className="flex flex-col gap-1 text-xs text-ink-muted">
+                  <label className="flex flex-col gap-1 type-meta">
                     Unit
                     <select
                       aria-label="Storage limit unit"
@@ -166,7 +166,7 @@ function QuotaForm({ record }: { readonly record: Bucket }) {
                       onChange={(event) =>
                         setBytes({ ...bytes, unit: event.target.value as ByteUnit })
                       }
-                      className="h-9 rounded-[--radius-control] border border-border-strong bg-surface px-2 text-sm text-ink"
+                      className="h-9 rounded-[--radius-control] border border-border-strong bg-surface px-2 type-body"
                     >
                       {BYTE_UNITS.map((unit) => (
                         <option key={unit} value={unit}>
@@ -180,7 +180,7 @@ function QuotaForm({ record }: { readonly record: Bucket }) {
             </fieldset>
 
             <fieldset className="space-y-2">
-              <legend className="text-xs font-medium text-ink">Object limit</legend>
+              <legend className="type-label">Object limit</legend>
               <Choice
                 name="objects"
                 limited={objects.limited}
@@ -209,7 +209,7 @@ function QuotaForm({ record }: { readonly record: Bucket }) {
             </Button>
           </form>
         ) : (
-          <p className="text-xs text-ink-muted">Your role does not permit changing quotas.</p>
+          <p className="type-meta">Your role does not permit changing quotas.</p>
         )}
       </CardContent>
     </Card>
@@ -231,7 +231,7 @@ function Choice({
         { label: 'Unlimited', value: false },
         { label: 'Set a limit', value: true },
       ].map((option) => (
-        <label key={option.label} className="flex items-center gap-1.5 text-sm text-ink">
+        <label key={option.label} className="flex items-center gap-1.5 type-body">
           <input
             type="radio"
             name={`${name}-quota-mode`}
@@ -266,7 +266,7 @@ function Usage({
       {percent === null ? (
         // No limit means there is no fraction to draw; a full or empty bar
         // would both imply a threshold that does not exist.
-        <p className="text-xs text-ink-subtle">No limit configured</p>
+        <p className="type-meta-subtle">No limit configured</p>
       ) : (
         <div
           role="progressbar"
@@ -283,7 +283,7 @@ function Usage({
         </div>
       )}
       {percent === null ? null : (
-        <p className="text-xs text-ink-subtle">{formatPercent((fraction ?? 0) * 100)} used</p>
+        <p className="type-meta-subtle">{formatPercent((fraction ?? 0) * 100)} used</p>
       )}
     </div>
   );

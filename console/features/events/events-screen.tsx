@@ -91,7 +91,7 @@ export function EventsScreen() {
           }}
         >
           <div className="space-y-1.5">
-            <label htmlFor="event-bucket" className="text-xs font-medium text-ink">
+            <label htmlFor="event-bucket" className="type-label">
               Bucket
             </label>
             <Input
@@ -102,14 +102,14 @@ export function EventsScreen() {
             />
           </div>
           <div className="space-y-1.5">
-            <label htmlFor="event-type" className="text-xs font-medium text-ink">
+            <label htmlFor="event-type" className="type-label">
               Type
             </label>
             <select
               id="event-type"
               name="type"
               defaultValue={filters.type ?? ''}
-              className="h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-2 text-sm text-ink"
+              className="h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-2 type-body"
             >
               <option value="">Any</option>
               {EVENT_TYPES.map((type) => (
@@ -120,7 +120,7 @@ export function EventsScreen() {
             </select>
           </div>
           <div className="space-y-1.5">
-            <label htmlFor="event-prefix" className="text-xs font-medium text-ink">
+            <label htmlFor="event-prefix" className="type-label">
               Key prefix
             </label>
             <Input
@@ -166,7 +166,7 @@ export function EventsScreen() {
               <TableBody>
                 {events.data.events.map((event) => (
                   <TableRow key={event.id}>
-                    <TableCell className="whitespace-nowrap text-xs text-ink-muted">
+                    <TableCell className="whitespace-nowrap type-meta">
                       <time dateTime={event.time}>{formatDateTime(event.time)}</time>
                     </TableCell>
                     <TableCell>

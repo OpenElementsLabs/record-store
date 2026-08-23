@@ -106,14 +106,14 @@ export function AuditScreen() {
           <LabelledInput name="source_ip" label="Source IP" defaultValue={filters.sourceIp} />
           <LabelledInput name="request_id" label="Request ID" defaultValue={filters.requestId} />
           <div className="space-y-1.5">
-            <label htmlFor="audit-result" className="text-xs font-medium text-ink">
+            <label htmlFor="audit-result" className="type-label">
               Result
             </label>
             <select
               id="audit-result"
               name="result"
               defaultValue={filters.result ?? ''}
-              className="h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-2 text-sm text-ink"
+              className="h-9 w-full rounded-[--radius-control] border border-border-strong bg-surface px-2 type-body"
             >
               <option value="">Any</option>
               {RESULTS.map((result) => (
@@ -175,7 +175,7 @@ export function AuditScreen() {
                     className="cursor-pointer"
                     onClick={() => setSelected(event)}
                   >
-                    <TableCell className="whitespace-nowrap text-xs text-ink-muted">
+                    <TableCell className="whitespace-nowrap type-meta">
                       <time dateTime={event.timestamp}>{formatDateTime(event.timestamp)}</time>
                     </TableCell>
                     <TableCell className="text-xs">{event.principal}</TableCell>
@@ -236,7 +236,7 @@ function LabelledInput({
 }) {
   return (
     <div className="space-y-1.5">
-      <label htmlFor={`audit-${name}`} className="text-xs font-medium text-ink">
+      <label htmlFor={`audit-${name}`} className="type-label">
         {label}
       </label>
       <Input
@@ -308,11 +308,11 @@ function AuditDetail({
           </dl>
           {Object.keys(event.metadata).length > 0 ? (
             <div className="space-y-1 border-t border-border pt-3">
-              <p className="text-xs font-medium text-ink">Metadata</p>
+              <p className="type-label">Metadata</p>
               <dl className="space-y-1">
                 {Object.entries(event.metadata).map(([key, value]) => (
                   <div key={key} className="flex gap-2">
-                    <dt className="font-mono text-xs text-ink-muted">{key}</dt>
+                    <dt className="font-mono type-meta">{key}</dt>
                     <dd className="font-mono text-xs text-ink">{value}</dd>
                   </div>
                 ))}

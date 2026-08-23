@@ -26,7 +26,7 @@ export function SecretReveal({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-ink">{label}</span>
+        <span className="type-label">{label}</span>
         <div className="flex items-center gap-1">
           <Button
             size="sm"
@@ -46,7 +46,7 @@ export function SecretReveal({
       >
         {revealed ? value : '•'.repeat(Math.min(value.length, 48))}
       </p>
-      {description ? <p className="text-xs text-ink-muted">{description}</p> : null}
+      {description ? <p className="type-meta">{description}</p> : null}
     </div>
   );
 }

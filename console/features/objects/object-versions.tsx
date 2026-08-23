@@ -108,7 +108,7 @@ export function ObjectVersions({
         }}
       >
         <div className="w-full max-w-sm space-y-1.5">
-          <label htmlFor="version-prefix" className="text-xs font-medium text-ink">
+          <label htmlFor="version-prefix" className="type-label">
             Key prefix
           </label>
           <Input
@@ -154,10 +154,7 @@ export function ObjectVersions({
                     <TableCell className="max-w-xs truncate" title={entry.key}>
                       {entry.key}
                     </TableCell>
-                    <TableCell
-                      className="font-mono text-xs text-ink-muted"
-                      title={entry.version_id}
-                    >
+                    <TableCell className="font-mono type-meta" title={entry.version_id}>
                       {shortenIdentifier(entry.version_id, 6)}
                     </TableCell>
                     <TableCell>
@@ -172,7 +169,7 @@ export function ObjectVersions({
                     <TableCell className="tabular-nums">
                       {entry.size === null ? '—' : formatBytes(entry.size)}
                     </TableCell>
-                    <TableCell className="text-xs text-ink-muted">
+                    <TableCell className="type-meta">
                       <time dateTime={entry.created_at} title={entry.created_at}>
                         {formatDateTime(entry.created_at)}
                       </time>
@@ -228,7 +225,7 @@ export function ObjectVersions({
       </Card>
 
       {versions.data?.next_key_marker ? (
-        <p className="text-xs text-ink-subtle">
+        <p className="type-meta-subtle">
           More versions match this prefix than are shown. Narrow the prefix to see them.
         </p>
       ) : null}
