@@ -32,7 +32,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Field } from '@/components/ui/label';
-import { TableSkeleton } from '@/components/ui/skeleton';
+import { Skeleton, TableSkeleton } from '@/components/ui/skeleton';
 import {
   Table,
   TableBody,
@@ -43,6 +43,7 @@ import {
   TableShell,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { summariseDeliveries } from '@/features/webhooks/delivery-health';
 import { queryKeys } from '@/hooks/use-system';
 import {
   createWebhook,
@@ -52,8 +53,13 @@ import {
   setWebhookEnabled,
 } from '@/lib/api/observability';
 import { ApiError } from '@/lib/api/error';
-import { formatDateTime, shortenIdentifier } from '@/lib/format';
-import type { CreatedWebhook, StorageEventType, WebhookSubscription } from '@/types/api';
+import { formatCount, formatDateTime, shortenIdentifier } from '@/lib/format';
+import type {
+  CreatedWebhook,
+  StorageEventType,
+  WebhookDeliveryLog,
+  WebhookSubscription,
+} from '@/types/api';
 
 const EVENT_TYPES: readonly StorageEventType[] = [
   'object.created',
@@ -71,6 +77,11 @@ export function WebhooksScreen() {
   const [creating, setCreating] = React.useState(false);
   const [created, setCreated] = React.useState<CreatedWebhook | null>(null);
   const [pendingDelete, setPendingDelete] = React.useState<WebhookSubscription | null>(null);
+
+  const deliveries = useQuery({
+    queryKey: queryKeys.webhookDeliveries,
+    queryFn: ({ signal }) => fetchWebhookDeliveries(100, signal),
+  });
 
   const webhooks = useQuery({
     queryKey: queryKeys.webhooks,
@@ -142,6 +153,7 @@ export function WebhooksScreen() {
                       <TableHead>Events</TableHead>
                       <TableHead>Filters</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>Recent deliveries</TableHead>
                       <TableHead>
                         <span className="sr-only">Actions</span>
                       </TableHead>
@@ -170,6 +182,12 @@ export function WebhooksScreen() {
                           <StatusBadge
                             level={webhook.enabled ? 'healthy' : 'disabled'}
                             label={webhook.enabled ? 'Enabled' : 'Disabled'}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <DeliveryBadge
+                            deliveries={deliveries.data ?? null}
+                            webhookId={webhook.id}
                           />
                         </TableCell>
                         <TableCell>
@@ -268,6 +286,44 @@ export function WebhooksScreen() {
 }
 
 /** Recent delivery attempts, with the status and attempt count. */
+/**
+ * Delivery health for one webhook, within the fetched window.
+ *
+ * OES returns a bounded delivery log that cannot be filtered per webhook, so
+ * this describes recent deliveries only. An empty result means nothing recent,
+ * not nothing ever, and the label says so rather than implying a clean record.
+ */
+function DeliveryBadge({
+  deliveries,
+  webhookId,
+}: {
+  readonly deliveries: readonly WebhookDeliveryLog[] | null;
+  readonly webhookId: string;
+}) {
+  if (deliveries === null) return <Skeleton className="h-5 w-20" />;
+  const health = summariseDeliveries(deliveries, webhookId);
+  if (health.total === 0) {
+    return <span className="text-xs text-ink-subtle">none recently</span>;
+  }
+  return (
+    <div className="space-y-0.5">
+      <span
+        className={health.failed > 0 ? 'text-xs text-danger' : 'text-xs text-ok'}
+        title={health.lastError ?? undefined}
+      >
+        {health.failed === 0
+          ? `${formatCount(health.total)} delivered`
+          : `${formatCount(health.failed)} of ${formatCount(health.total)} failed`}
+      </span>
+      {health.lastAttemptAt ? (
+        <p className="text-xs text-ink-subtle">
+          last <time dateTime={health.lastAttemptAt}>{formatDateTime(health.lastAttemptAt)}</time>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function DeliveryHistory() {
   const deliveries = useQuery({
     queryKey: queryKeys.webhookDeliveries,

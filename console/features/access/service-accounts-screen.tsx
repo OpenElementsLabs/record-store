@@ -2,7 +2,8 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createColumnHelper } from '@tanstack/react-table';
-import { KeyRound, MoreHorizontal, Plus } from 'lucide-react';
+import { Clock, KeyRound, MoreHorizontal, Plus } from 'lucide-react';
+import { useSearchParams } from 'next/navigation';
 import * as React from 'react';
 import { toast } from 'sonner';
 
@@ -33,25 +34,33 @@ import {
 import { Input } from '@/components/ui/input';
 import { Field } from '@/components/ui/label';
 import { CredentialDialog } from '@/features/access/credential-dialog';
+import { TemporaryCredentialDialog } from '@/features/access/temporary-credential-dialog';
 import { queryKeys } from '@/hooks/use-system';
+import { secondsRemaining } from '@/lib/credential-lifetime';
 import {
   createServiceAccount,
+  issueTemporaryCredential,
   deleteServiceAccount,
   fetchServiceAccounts,
   rotateCredential,
   setServiceAccountEnabled,
 } from '@/lib/api/access';
 import { ApiError } from '@/lib/api/error';
-import { formatDate, formatDateTime } from '@/lib/format';
+import { formatDate, formatDateTime, formatDuration } from '@/lib/format';
+import { readString } from '@/lib/search-params';
 import type { IssuedCredential, ServiceAccountInfo } from '@/types/api';
 
 const column = createColumnHelper<DataTableFeatures, ServiceAccountInfo>();
 
 export function ServiceAccountsScreen() {
   const client = useQueryClient();
-  const [creating, setCreating] = React.useState(false);
+  const params = useSearchParams();
+  const [creating, setCreating] = React.useState(() => readString(params, 'create', '') === '1');
   const [issued, setIssued] = React.useState<IssuedCredential | null>(null);
-  const [issuedKind, setIssuedKind] = React.useState<'created' | 'rotated'>('created');
+  const [issuedKind, setIssuedKind] = React.useState<'created' | 'rotated' | 'temporary'>(
+    'created',
+  );
+  const [temporaryFor, setTemporaryFor] = React.useState<ServiceAccountInfo | null>(null);
   const [pendingDelete, setPendingDelete] = React.useState<ServiceAccountInfo | null>(null);
 
   const accounts = useQuery({
@@ -69,6 +78,18 @@ export function ServiceAccountsScreen() {
       await invalidate();
     },
     onError: (error) => toast.error(message(error, 'Credential rotation failed')),
+  });
+
+  const temporary = useMutation({
+    mutationFn: ({ id, seconds }: { id: string; seconds: number }) =>
+      issueTemporaryCredential(id, seconds),
+    onSuccess: async (result) => {
+      setIssuedKind('temporary');
+      setIssued(result);
+      setTemporaryFor(null);
+      await invalidate();
+    },
+    onError: (error) => toast.error(message(error, 'Could not issue a temporary credential')),
   });
 
   const status = useMutation({
@@ -119,13 +140,27 @@ export function ServiceAccountsScreen() {
           id: 'credentials',
           header: 'Credentials',
           cell: ({ row }) => {
-            const active = row.original.credentials.filter((item) => !item.disabled).length;
+            const live = row.original.credentials.filter((item) => !item.disabled);
+            const disabled = row.original.credentials.length - live.length;
+            // A credential with an expiry is temporary. Showing the shortest
+            // remaining lifetime tells the operator when access will lapse,
+            // which is the thing that surprises people.
+            const soonest = live
+              .map((item) => secondsRemaining(item.expires_at, new Date()))
+              .filter((remaining): remaining is number => remaining !== null)
+              .sort((left, right) => left - right)[0];
             return (
               <span className="text-xs text-ink-muted">
-                {active} active
-                {row.original.credentials.length > active
-                  ? ` · ${row.original.credentials.length - active} disabled`
-                  : ''}
+                {live.length} active
+                {disabled > 0 ? ` · ${disabled} disabled` : ''}
+                {soonest === undefined ? null : (
+                  <span className="text-warn">
+                    {' · '}
+                    {soonest === 0
+                      ? 'temporary credential expired'
+                      : `temporary expires in ${formatDuration(soonest)}`}
+                  </span>
+                )}
               </span>
             );
           },
@@ -166,6 +201,9 @@ export function ServiceAccountsScreen() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent>
+                  <DropdownMenuItem onSelect={() => setTemporaryFor(row.original)}>
+                    <Clock aria-hidden /> Issue temporary credential
+                  </DropdownMenuItem>
                   <DropdownMenuItem
                     onSelect={() => rotation.mutate(row.original.account.id)}
                     disabled={rotation.isPending}
@@ -248,12 +286,29 @@ export function ServiceAccountsScreen() {
       <CredentialDialog
         issued={issued}
         onClose={() => setIssued(null)}
-        title={issuedKind === 'created' ? 'Service account created' : 'New credential issued'}
+        title={
+          issuedKind === 'created'
+            ? 'Service account created'
+            : issuedKind === 'temporary'
+              ? 'Temporary credential issued'
+              : 'New credential issued'
+        }
         description={
           issuedKind === 'created'
             ? 'Store these credentials now. The secret cannot be retrieved later.'
-            : 'The previous credential is still active. Update your application, then disable the old credential.'
+            : issuedKind === 'temporary'
+              ? 'This credential expires on its own and inherits the account\u2019s policies. The secret cannot be retrieved later.'
+              : 'The previous credential is still active. Update your application, then disable the old credential.'
         }
+      />
+
+      <TemporaryCredentialDialog
+        account={temporaryFor}
+        pending={temporary.isPending}
+        onCancel={() => setTemporaryFor(null)}
+        onIssue={(seconds) => {
+          if (temporaryFor) temporary.mutate({ id: temporaryFor.account.id, seconds });
+        }}
       />
 
       <ConfirmDialog

@@ -48,6 +48,9 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/buckets/{}/versioning", Audience::ConsoleAndCli),
     ("/api/v1/cluster", Audience::ConsoleAndCli),
     ("/api/v1/cluster/health", Audience::Console),
+    // Cluster bootstrap stays out of the browser on purpose: initializing a
+    // cluster and minting node join credentials are operator actions performed
+    // from a shell on the host, not from a signed-in web session.
     ("/api/v1/cluster/init", Audience::Cli),
     ("/api/v1/cluster/join-tokens", Audience::Cli),
     ("/api/v1/events", Audience::Console),
@@ -60,9 +63,9 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/nodes/{}/resume", Audience::ConsoleAndCli),
     ("/api/v1/policies", Audience::ConsoleAndCli),
     ("/api/v1/policies/{}/bindings/{}", Audience::ConsoleAndCli),
-    ("/api/v1/rebalance", Audience::Cli),
-    ("/api/v1/rebalance/status", Audience::Cli),
-    ("/api/v1/repair/status", Audience::Cli),
+    ("/api/v1/rebalance", Audience::ConsoleAndCli),
+    ("/api/v1/rebalance/status", Audience::ConsoleAndCli),
+    ("/api/v1/repair/status", Audience::ConsoleAndCli),
     ("/api/v1/restore/{}/{}", Audience::Console),
     ("/api/v1/service-accounts", Audience::Console),
     ("/api/v1/service-accounts/{}", Audience::ConsoleAndCli),

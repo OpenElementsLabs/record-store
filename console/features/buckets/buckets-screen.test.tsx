@@ -12,10 +12,12 @@ import {
 } from '@/test/render';
 import type { Bucket } from '@/types/api';
 
+let searchParams = new URLSearchParams();
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/buckets',
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => searchParams,
 }));
 
 function bucket(overrides: Partial<Bucket> = {}): Bucket {
@@ -38,6 +40,7 @@ function bucket(overrides: Partial<Bucket> = {}): Bucket {
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  searchParams = new URLSearchParams();
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -154,5 +157,24 @@ describe('BucketsScreen', () => {
     await userEvent.click(screen.getByRole('button', { name: /actions for uploads/i }));
     expect(await screen.findByText('Browse objects')).toBeTruthy();
     expect(screen.queryByText('Delete bucket')).toBeNull();
+  });
+
+  it('opens the create dialog from a create intent in the URL', async () => {
+    // The command palette navigates here with `?create=1`, so the intent has to
+    // be honoured or the command would be decoration.
+    searchParams = new URLSearchParams('create=1');
+    fetchMock.mockResolvedValue(jsonResponse([]));
+    renderWithProviders(<BucketsScreen />);
+
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+    expect(screen.getByLabelText('Bucket name')).toBeTruthy();
+  });
+
+  it('does not open the dialog without the intent', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]));
+    renderWithProviders(<BucketsScreen />);
+
+    await screen.findByText('No buckets yet');
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

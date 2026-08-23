@@ -71,13 +71,22 @@ export function buildNavigation(input: NavigationInput): readonly NavSection[] {
   if (operations.length > 0) sections.push({ title: 'Operations', items: operations });
 
   if (clusterEnabled) {
-    sections.push({
-      title: 'Cluster',
-      items: [
-        { href: '/cluster', label: 'Cluster overview' },
-        { href: '/cluster/nodes', label: 'Nodes', prefix: '/cluster/nodes' },
-      ],
-    });
+    const cluster: NavItem[] = [
+      { href: '/cluster', label: 'Cluster overview' },
+      { href: '/cluster/nodes', label: 'Nodes', prefix: '/cluster/nodes' },
+      { href: '/cluster/durability', label: 'Durability', prefix: '/cluster/durability' },
+      { href: '/cluster/consensus', label: 'Consensus', prefix: '/cluster/consensus' },
+    ];
+    // Rebalancing moves data between nodes, so it is offered only to a role
+    // that may operate the cluster.
+    if (permissions.manage_cluster) {
+      cluster.push({
+        href: '/cluster/rebalance',
+        label: 'Rebalancing',
+        prefix: '/cluster/rebalance',
+      });
+    }
+    sections.push({ title: 'Cluster', items: cluster });
   }
 
   const system: NavItem[] = [{ href: '/system', label: 'Health' }];

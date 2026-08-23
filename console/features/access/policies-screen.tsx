@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, TriangleAlert, X } from 'lucide-react';
+import { useSearchParams } from 'next/navigation';
 import * as React from 'react';
 import { toast } from 'sonner';
 
@@ -23,12 +24,20 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Field } from '@/components/ui/label';
-import { TableSkeleton } from '@/components/ui/skeleton';
+import { Skeleton, TableSkeleton } from '@/components/ui/skeleton';
+import { usePermissions } from '@/features/system/deployment';
 import { queryKeys } from '@/hooks/use-system';
-import { createPolicy, fetchPolicies } from '@/lib/api/access';
+import {
+  attachPolicy,
+  createPolicy,
+  detachPolicy,
+  fetchPolicies,
+  fetchServiceAccounts,
+} from '@/lib/api/access';
 import { ApiError } from '@/lib/api/error';
-import { formatDate } from '@/lib/format';
-import type { PolicyAction, PolicyEffect, PolicyStatement } from '@/types/api';
+import { formatCount, formatDate } from '@/lib/format';
+import { readString } from '@/lib/search-params';
+import type { Policy, PolicyAction, PolicyEffect, PolicyStatement } from '@/types/api';
 
 const ACTIONS: readonly PolicyAction[] = [
   's3:ListBucket',
@@ -41,7 +50,8 @@ const ACTIONS: readonly PolicyAction[] = [
 ];
 
 export function PoliciesScreen() {
-  const [creating, setCreating] = React.useState(false);
+  const params = useSearchParams();
+  const [creating, setCreating] = React.useState(() => readString(params, 'create', '') === '1');
   const policies = useQuery({
     queryKey: queryKeys.policies,
     queryFn: ({ signal }) => fetchPolicies(signal),
@@ -98,10 +108,11 @@ export function PoliciesScreen() {
                   </span>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent className="space-y-4">
                 {policy.statements.map((statement, index) => (
                   <StatementView key={index} statement={statement} />
                 ))}
+                <PolicyBindings policy={policy} />
               </CardContent>
             </Card>
           ))}
@@ -110,6 +121,130 @@ export function PoliciesScreen() {
 
       <CreatePolicyDialog open={creating} onOpenChange={setCreating} />
     </>
+  );
+}
+
+/**
+ * Which service accounts a policy grants to, and the controls to change that.
+ *
+ * A policy on its own does nothing: it takes effect only where it is bound.
+ * Showing the bindings beside the rules is what makes the blast radius of a
+ * broad policy visible at the point of reading it.
+ */
+function PolicyBindings({ policy }: { readonly policy: Policy }) {
+  const client = useQueryClient();
+  const permissions = usePermissions();
+  const [attaching, setAttaching] = React.useState('');
+
+  const accounts = useQuery({
+    queryKey: queryKeys.serviceAccounts,
+    queryFn: ({ signal }) => fetchServiceAccounts(signal),
+  });
+
+  const invalidate = async () => {
+    await client.invalidateQueries({ queryKey: queryKeys.serviceAccounts });
+    await client.invalidateQueries({ queryKey: queryKeys.policies });
+  };
+
+  const attach = useMutation({
+    mutationFn: (accountId: string) => attachPolicy(policy.id, accountId),
+    onSuccess: async () => {
+      toast.success('Policy attached');
+      setAttaching('');
+      await invalidate();
+    },
+    onError: (error) =>
+      toast.error(error instanceof ApiError ? error.message : 'Could not attach the policy'),
+  });
+
+  const detach = useMutation({
+    mutationFn: (accountId: string) => detachPolicy(policy.id, accountId),
+    onSuccess: async () => {
+      toast.success('Policy detached');
+      await invalidate();
+    },
+    onError: (error) =>
+      toast.error(error instanceof ApiError ? error.message : 'Could not detach the policy'),
+  });
+
+  const all = accounts.data ?? [];
+  const bound = all.filter((account) => account.policy_bindings.includes(policy.id));
+  const unbound = all.filter((account) => !account.policy_bindings.includes(policy.id));
+  const busy = attach.isPending || detach.isPending;
+
+  return (
+    <div className="space-y-2 border-t border-border pt-3">
+      <p className="text-xs font-medium text-ink-muted">
+        {/*
+          The count is only stated once the accounts are known. Saying "attached
+          to no accounts" while the list is still loading would be a false
+          statement about who has access.
+        */}
+        {accounts.isPending
+          ? 'Attachments'
+          : `Attached to ${
+              bound.length === 0
+                ? 'no accounts'
+                : `${formatCount(bound.length)} account${bound.length === 1 ? '' : 's'}`
+            }`}
+      </p>
+      {accounts.isPending ? (
+        <Skeleton className="h-8 w-full" />
+      ) : bound.length === 0 ? (
+        <p className="text-xs text-ink-subtle">
+          This policy grants nothing until it is attached to a service account.
+        </p>
+      ) : (
+        <ul className="flex flex-wrap gap-1.5">
+          {bound.map((account) => (
+            <li key={account.account.id} className="flex items-center gap-1">
+              <Badge tone="neutral">{account.account.name}</Badge>
+              {permissions.manage_policies ? (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label={`Detach ${policy.name} from ${account.account.name}`}
+                  disabled={busy}
+                  onClick={() => detach.mutate(account.account.id)}
+                >
+                  <X aria-hidden />
+                </Button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {permissions.manage_policies && unbound.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <label className="sr-only" htmlFor={`attach-${policy.id}`}>
+            Attach {policy.name} to a service account
+          </label>
+          <select
+            id={`attach-${policy.id}`}
+            value={attaching}
+            disabled={busy}
+            onChange={(event) => setAttaching(event.target.value)}
+            className="h-8 rounded-[--radius-control] border border-border-strong bg-surface px-2 text-xs text-ink"
+          >
+            <option value="">Attach to…</option>
+            {unbound.map((account) => (
+              <option key={account.account.id} value={account.account.id}>
+                {account.account.name}
+              </option>
+            ))}
+          </select>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={attaching === '' || busy}
+            onClick={() => attach.mutate(attaching)}
+          >
+            Attach
+          </Button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

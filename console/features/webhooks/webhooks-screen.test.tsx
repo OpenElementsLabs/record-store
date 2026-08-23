@@ -121,4 +121,51 @@ describe('WebhooksScreen', () => {
       ).toBe(true);
     });
   });
+
+  it('reports per-webhook delivery health from the recent log', async () => {
+    webhooks = [subscription];
+    deliveries = [
+      {
+        webhook_id: 'webhook-1',
+        event_id: 'e1',
+        attempts: 3,
+        success: false,
+        status_code: 500,
+        error: 'connection refused',
+        delivered_at: '2026-08-23T10:00:00Z',
+      },
+      {
+        webhook_id: 'webhook-1',
+        event_id: 'e2',
+        attempts: 1,
+        success: true,
+        status_code: 200,
+        error: null,
+        delivered_at: '2026-08-23T11:00:00Z',
+      },
+    ];
+    renderWithProviders(<WebhooksScreen />);
+
+    expect(await screen.findByText('1 of 2 failed')).toBeTruthy();
+  });
+
+  it('says a webhook has no recent deliveries rather than implying success', async () => {
+    webhooks = [subscription];
+    deliveries = [];
+    renderWithProviders(<WebhooksScreen />);
+
+    // An empty window is not a clean record: the log is bounded and unfiltered.
+    expect(await screen.findByText('none recently')).toBeTruthy();
+  });
+
+  it('offers no secret rotation or delivery retry, because OES has neither', async () => {
+    webhooks = [subscription];
+    deliveries = [];
+    renderWithProviders(<WebhooksScreen />);
+    await screen.findByText('none recently');
+
+    // Offering a control the backend cannot honour would be a fake feature.
+    expect(screen.queryByText(/rotate secret/i)).toBeNull();
+    expect(screen.queryByText(/retry delivery/i)).toBeNull();
+  });
 });

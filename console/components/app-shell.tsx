@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import * as React from 'react';
 
+import { CommandPalette } from '@/components/command-palette';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -54,6 +55,11 @@ export function AppShell({
 
   return (
     <DeploymentProvider value={deployment}>
+      {/*
+        Inside the provider so the palette sees the same role and capabilities
+        the sidebar does, and cannot offer a screen the sidebar hides.
+      */}
+      <CommandPalette sections={sections} />
       <div className="min-h-screen lg:grid lg:grid-cols-[15rem_1fr]">
         <a
           href="#main"

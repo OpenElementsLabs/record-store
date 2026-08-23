@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createColumnHelper } from '@tanstack/react-table';
 import { MoreHorizontal, Plus, Search } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import * as React from 'react';
 import { toast } from 'sonner';
 
@@ -28,6 +28,7 @@ import { usePermissions } from '@/features/system/deployment';
 import { queryKeys } from '@/hooks/use-system';
 import { deleteBucket, fetchBuckets } from '@/lib/api/buckets';
 import { formatBytes, formatCount, formatDate } from '@/lib/format';
+import { readString } from '@/lib/search-params';
 import type { Bucket } from '@/types/api';
 
 const column = createColumnHelper<DataTableFeatures, Bucket>();
@@ -37,7 +38,8 @@ export function BucketsScreen() {
   const client = useQueryClient();
   const permissions = usePermissions();
   const [filter, setFilter] = React.useState('');
-  const [creating, setCreating] = React.useState(false);
+  const params = useSearchParams();
+  const [creating, setCreating] = React.useState(() => readString(params, 'create', '') === '1');
   const [pendingDelete, setPendingDelete] = React.useState<Bucket | null>(null);
 
   const buckets = useQuery({

@@ -48,6 +48,23 @@ export function rotateCredential(id: string): Promise<IssuedCredential> {
   });
 }
 
+/**
+ * Issues a credential that expires on its own.
+ *
+ * A temporary credential inherits the account's policies, so it grants no more
+ * than the account already has. The backend bounds the lifetime between one
+ * minute and one day; the secret is returned once and never again.
+ */
+export function issueTemporaryCredential(
+  id: string,
+  expiresInSeconds: number,
+): Promise<IssuedCredential> {
+  return request<IssuedCredential>(
+    `/v1/service-accounts/${encodeURIComponent(id)}/temporary-credentials`,
+    { method: 'POST', body: { expires_in_seconds: expiresInSeconds } },
+  );
+}
+
 export function setCredentialEnabled(
   accountId: string,
   credentialId: string,

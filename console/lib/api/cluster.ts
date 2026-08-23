@@ -3,6 +3,7 @@ import type {
   ClusterNode,
   ClusterOperation,
   ClusterStatus,
+  RepairStatus,
 } from '@/types/cluster';
 
 import { request } from './client';
@@ -60,4 +61,29 @@ export function decommissionNode(id: string, force: boolean): Promise<ClusterOpe
     method: 'POST',
     body: { force },
   });
+}
+
+/**
+ * Reads the repair queue.
+ *
+ * Narrower than the full cluster document, so a screen that only watches repair
+ * does not pull every node and operation on each refresh.
+ */
+export function fetchRepairStatus(signal?: AbortSignal): Promise<RepairStatus> {
+  return request<RepairStatus>('/v1/repair/status', signal ? { signal } : {});
+}
+
+/** Reads rebalance operations, past and present. */
+export function fetchRebalanceOperations(signal?: AbortSignal): Promise<ClusterOperation[]> {
+  return request<ClusterOperation[]>('/v1/rebalance/status', signal ? { signal } : {});
+}
+
+/**
+ * Asks the cluster to rebalance.
+ *
+ * The backend decides whether a rebalance is warranted and how much movement it
+ * will allow; this only requests one.
+ */
+export function startRebalance(): Promise<ClusterOperation> {
+  return request<ClusterOperation>('/v1/rebalance', { method: 'POST' });
 }
