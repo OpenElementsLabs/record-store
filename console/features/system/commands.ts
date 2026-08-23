@@ -10,6 +10,52 @@ export type Command = {
   readonly href: string;
 };
 
+/** Bounded entity lists the palette can search directly. */
+export type SearchableEntities = {
+  readonly buckets: readonly { readonly id: string; readonly name: string }[];
+  readonly serviceAccounts: readonly { readonly id: string; readonly name: string }[];
+  readonly policies: readonly { readonly id: string; readonly name: string }[];
+  readonly nodes: readonly { readonly id: string; readonly label: string }[];
+};
+
+/**
+ * Adds entity commands for the lists that are small enough to hold.
+ *
+ * Buckets, service accounts, policies, and nodes are bounded administrative
+ * sets, so searching them locally is honest. Object keys are deliberately
+ * absent: a bucket can hold millions, and OES filters them by prefix on the
+ * server, so the palette sends the operator to that bucket's browser instead of
+ * pretending to search a dataset it never loaded.
+ */
+export function buildEntityCommands(entities: SearchableEntities): readonly Command[] {
+  return [
+    ...entities.buckets.map((bucket) => ({
+      id: `bucket:${bucket.id}`,
+      label: bucket.name,
+      group: 'Buckets',
+      href: `/buckets/${encodeURIComponent(bucket.name)}`,
+    })),
+    ...entities.serviceAccounts.map((account) => ({
+      id: `account:${account.id}`,
+      label: account.name,
+      group: 'Service accounts',
+      href: `/service-accounts/${encodeURIComponent(account.id)}`,
+    })),
+    ...entities.policies.map((policy) => ({
+      id: `policy:${policy.id}`,
+      label: policy.name,
+      group: 'Policies',
+      href: '/policies',
+    })),
+    ...entities.nodes.map((node) => ({
+      id: `node:${node.id}`,
+      label: node.label,
+      group: 'Nodes',
+      href: `/cluster/nodes/${encodeURIComponent(node.id)}`,
+    })),
+  ];
+}
+
 /**
  * Builds the palette's commands from the navigation the operator already has.
  *

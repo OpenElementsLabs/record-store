@@ -1,12 +1,23 @@
 'use client';
 
 import { Search } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import * as React from 'react';
 
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
-import { buildCommands, matchCommands, type Command } from '@/features/system/commands';
-import { usePermissions } from '@/features/system/deployment';
+import {
+  buildCommands,
+  buildEntityCommands,
+  matchCommands,
+  type Command,
+} from '@/features/system/commands';
+import { useClusterEnabled, usePermissions } from '@/features/system/deployment';
+import { queryKeys } from '@/hooks/use-system';
+import { fetchPolicies, fetchServiceAccounts } from '@/lib/api/access';
+import { fetchBuckets } from '@/lib/api/buckets';
+import { fetchClusterNodes } from '@/lib/api/cluster';
+import { shortenIdentifier } from '@/lib/format';
 import type { NavSection } from '@/features/system/navigation';
 import { cn } from '@/lib/utils';
 
@@ -28,9 +39,10 @@ export function CommandPalette({
 }) {
   const permissions = usePermissions();
 
+  const entities = useSearchableEntities(open);
   const commands = React.useMemo(
-    () => buildCommands(sections, permissions),
-    [sections, permissions],
+    () => [...buildCommands(sections, permissions), ...buildEntityCommands(entities)],
+    [sections, permissions, entities],
   );
 
   return (
@@ -78,6 +90,55 @@ export function CommandTrigger({ onOpen }: { readonly onOpen: () => void }) {
         {command ? '⌘' : 'Ctrl '}K
       </kbd>
     </button>
+  );
+}
+
+/**
+ * Loads the bounded lists the palette can search.
+ *
+ * Only fetched while the palette is open, and only for roles that may see each
+ * list, so opening the console costs nothing and the palette cannot surface an
+ * entity the operator has no access to.
+ */
+function useSearchableEntities(open: boolean) {
+  const permissions = usePermissions();
+  const clusterEnabled = useClusterEnabled();
+
+  const buckets = useQuery({
+    queryKey: queryKeys.buckets,
+    queryFn: ({ signal }) => fetchBuckets(signal),
+    enabled: open,
+  });
+  const accounts = useQuery({
+    queryKey: queryKeys.serviceAccounts,
+    queryFn: ({ signal }) => fetchServiceAccounts(signal),
+    enabled: open && permissions.manage_service_accounts,
+  });
+  const policies = useQuery({
+    queryKey: queryKeys.policies,
+    queryFn: ({ signal }) => fetchPolicies(signal),
+    enabled: open && permissions.manage_policies,
+  });
+  const nodes = useQuery({
+    queryKey: queryKeys.clusterNodes,
+    queryFn: ({ signal }) => fetchClusterNodes(signal),
+    enabled: open && clusterEnabled,
+  });
+
+  return React.useMemo(
+    () => ({
+      buckets: (buckets.data ?? []).map((bucket) => ({ id: bucket.id, name: bucket.name })),
+      serviceAccounts: (accounts.data ?? []).map((account) => ({
+        id: account.account.id,
+        name: account.account.name,
+      })),
+      policies: (policies.data ?? []).map((policy) => ({ id: policy.id, name: policy.name })),
+      nodes: (nodes.data ?? []).map((node) => ({
+        id: node.node_id,
+        label: shortenIdentifier(node.node_id, 8),
+      })),
+    }),
+    [buckets.data, accounts.data, policies.data, nodes.data],
   );
 }
 

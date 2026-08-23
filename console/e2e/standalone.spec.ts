@@ -29,7 +29,8 @@ test.describe('standalone deployment', () => {
   test('system health reports readiness and capacity', async ({ signedIn }) => {
     await signedIn.goto('/system');
     await expect(signedIn.getByRole('heading', { name: 'System health' })).toBeVisible();
-    await expect(signedIn.getByText('Ready')).toBeVisible();
+    // 'Ready' now appears in both the summary strip and the subsystem list.
+    await expect(signedIn.getByText('Ready').first()).toBeVisible();
     await expect(signedIn.getByText('Disk capacity')).toBeVisible();
   });
 
@@ -76,5 +77,69 @@ test.describe('standalone deployment', () => {
       (text) => text.includes('e2e-management-system-token') || /authorization/i.test(text),
     );
     expect(leaked).toEqual([]);
+  });
+
+  test('the command palette navigates by keyboard', async ({ signedIn }) => {
+    const page = signedIn;
+    await page.goto('/');
+
+    // The shortcut is printed on the trigger, so both routes in must work.
+    await page.getByRole('button', { name: /Search/ }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.getByLabel('Search commands').fill('audit');
+    await page.keyboard.press('Enter');
+
+    await expect(page.getByRole('heading', { name: 'Audit log' })).toBeVisible();
+  });
+
+  test('integrity reports a clean scan and refuses to overstate it', async ({ signedIn }) => {
+    const page = signedIn;
+    await page.goto('/integrity');
+
+    await expect(page.getByRole('heading', { name: 'Integrity' })).toBeVisible();
+    await expect(page.getByText('Scan findings')).toBeVisible();
+    // Standalone must never imply redundancy it does not have.
+    await expect(page.getByText(/may be recoverable from another replica/)).toHaveCount(0);
+  });
+
+  test('metrics derive a rate rather than inventing one', async ({ signedIn }) => {
+    const page = signedIn;
+    await page.goto('/metrics');
+
+    await expect(page.getByRole('heading', { name: 'Metrics' })).toBeVisible();
+    // One counter reading is not a rate, so the first paint says so.
+    await expect(page.getByText('Collecting…').first()).toBeVisible();
+    await expect(page.getByText(/Requests served|Requests/).first()).toBeVisible();
+  });
+
+  test('health reports disabled cluster parts as not enabled, not failed', async ({ signedIn }) => {
+    const page = signedIn;
+    await page.goto('/system');
+
+    await expect(page.getByText('Subsystems')).toBeVisible();
+    await expect(page.getByText('Not enabled').first()).toBeVisible();
+    await expect(page.getByText('No quorum')).toHaveCount(0);
+  });
+
+  test('a bucket quota can be set and is reported back', async ({ signedIn }) => {
+    const page = signedIn;
+    const bucket = uniqueBucket('quota');
+
+    await page.goto('/buckets');
+    await page
+      .getByRole('button', { name: /create bucket/i })
+      .first()
+      .click();
+    await page.getByLabel('Bucket name').fill(bucket);
+    await page.getByRole('button', { name: 'Create bucket' }).click();
+    await page.getByRole('link', { name: bucket }).click();
+
+    await page.getByRole('tab', { name: 'Quota' }).click();
+    await page.getByRole('radio', { name: 'Set a limit' }).first().check();
+    await page.getByLabel('Amount').fill('5');
+    await page.getByLabel('Storage limit unit').selectOption('GB');
+    await page.getByRole('button', { name: 'Save quota' }).click();
+
+    await expect(page.getByText('of 5.00 GB')).toBeVisible();
   });
 });

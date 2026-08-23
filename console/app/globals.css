@@ -121,3 +121,32 @@
     border-width: 0;
   }
 }
+
+/*
+ * A visible focus ring for keyboard users, applied globally.
+ *
+ * A global rule rather than a per-component class: any focusable element the
+ * console gains later is covered by default, and nothing has to remember to opt
+ * in. `:focus-visible` means a pointer click does not draw a ring.
+ */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+/*
+ * Motion is decoration here: a spinner and a skeleton pulse. Both are
+ * suppressed for anyone who has asked for reduced motion, leaving the state
+ * they communicate intact because it is also carried by text.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

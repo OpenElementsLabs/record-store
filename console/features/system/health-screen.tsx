@@ -5,11 +5,12 @@ import { useQuery } from '@tanstack/react-query';
 import { ErrorState } from '@/components/error-state';
 import { MetricCard, UsageBar } from '@/components/metric-card';
 import { PageHeader } from '@/components/page-header';
-import { StatusBadge, StatusPending } from '@/components/status-badge';
+import { StatusBadge, StatusPending, type StatusLevel } from '@/components/status-badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useClusterEnabled, useDeployment } from '@/features/system/deployment';
 import { queryKeys, useStorageStatus, useStorageUsage } from '@/hooks/use-system';
+import { fetchClusterHealth } from '@/lib/api/cluster';
 import { fetchClusterStatus } from '@/lib/api/cluster';
 import { formatBytes, formatBytesOf, formatCount, formatRelativeTime } from '@/lib/format';
 import type { BackgroundTaskStatus } from '@/types/cluster';
@@ -126,6 +127,10 @@ export function HealthScreen() {
         </div>
       )}
 
+      {/* Subsystems renders in every mode: reporting what is not enabled is
+          the point, not an omission. */}
+      <Subsystems />
+
       {clusterEnabled ? <BackgroundWorkers /> : null}
     </>
   );
@@ -152,6 +157,116 @@ function Detail({
  * A service that stopped unexpectedly is reported rather than hidden, because
  * repair and rebalancing failing silently is worse than a visible warning.
  */
+/**
+ * Per-subsystem health, aware of what this deployment actually runs.
+ *
+ * A standalone server has no cluster, no replication and no repair. Reporting
+ * those as failing would be wrong and would train operators to ignore the
+ * screen, so they read as not enabled — a neutral state, distinct from broken.
+ */
+function Subsystems() {
+  const clusterEnabled = useClusterEnabled();
+  const status = useStorageStatus();
+  const cluster = useQuery({
+    queryKey: queryKeys.clusterHealth,
+    queryFn: ({ signal }) => fetchClusterHealth(signal),
+    enabled: clusterEnabled,
+    refetchInterval: 30_000,
+  });
+
+  const reachable = !status.isError;
+  const rows: readonly {
+    readonly name: string;
+    readonly detail: string;
+    readonly state: StatusLevel;
+    readonly label: string;
+  }[] = [
+    {
+      name: 'Management API',
+      detail: 'Serves this console and the CLI.',
+      state: reachable ? 'healthy' : 'critical',
+      label: reachable ? 'Responding' : 'Unreachable',
+    },
+    {
+      name: 'Object storage',
+      detail: 'Reads and writes object payloads.',
+      state: status.isPending ? 'unknown' : reachable ? 'healthy' : 'critical',
+      label: status.isPending ? 'Checking' : reachable ? 'Ready' : 'Unavailable',
+    },
+    {
+      name: 'Metadata',
+      detail: 'Holds buckets, objects, and versions.',
+      state: status.isPending ? 'unknown' : reachable ? 'healthy' : 'critical',
+      label: status.isPending ? 'Checking' : reachable ? 'Responding' : 'Unreachable',
+    },
+    {
+      name: 'Consensus',
+      detail: clusterEnabled
+        ? 'Agrees metadata changes between members.'
+        : 'Only used when running as a cluster.',
+      state: clusterEnabled
+        ? cluster.data
+          ? cluster.data.metadata.status.writable
+            ? 'healthy'
+            : 'critical'
+          : 'unknown'
+        : 'disabled',
+      label: clusterEnabled
+        ? cluster.data
+          ? cluster.data.metadata.status.writable
+            ? 'Writable'
+            : 'No quorum'
+          : 'Checking'
+        : 'Not enabled',
+    },
+    {
+      name: 'Replication',
+      detail: clusterEnabled
+        ? 'Keeps the configured number of copies.'
+        : 'A standalone server keeps a single copy.',
+      state: clusterEnabled ? (cluster.data ? cluster.data.data.health : 'unknown') : 'disabled',
+      label: clusterEnabled
+        ? cluster.data
+          ? capitalise(cluster.data.data.health)
+          : 'Checking'
+        : 'Not enabled',
+    },
+  ];
+
+  return (
+    <Card>
+      <CardHeader className="flex-col items-start">
+        <CardTitle>Subsystems</CardTitle>
+        <CardDescription>
+          What this deployment runs, and whether each part is working. Components a standalone
+          server does not use are reported as not enabled rather than as failures.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ul className="divide-y divide-border">
+          {rows.map((row) => (
+            <li key={row.name} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-ink">{row.name}</p>
+                <p className="text-xs text-ink-muted">{row.detail}</p>
+              </div>
+              {row.state === 'unknown' ? (
+                <StatusPending />
+              ) : (
+                <StatusBadge level={row.state} label={row.label} />
+              )}
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+function capitalise(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
 function BackgroundWorkers() {
   const status = useQuery({
     queryKey: queryKeys.clusterStatus,

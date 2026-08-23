@@ -71,6 +71,7 @@ export function ObjectVersions({
   const prefix = prefixOverride ?? readString(params, 'vprefix', '');
   const [draft, setDraft] = React.useState(prefix);
   const [pendingDelete, setPendingDelete] = React.useState<ObjectVersionEntry | null>(null);
+  const [pendingRestore, setPendingRestore] = React.useState<ObjectVersionEntry | null>(null);
 
   const versions = useQuery({
     queryKey: queryKeys.objectVersions(bucket, prefix),
@@ -92,6 +93,7 @@ export function ObjectVersions({
       restoreObjectVersion(bucket, entry.key, entry.version_id),
     onSuccess: async () => {
       toast.success('Version restored as current');
+      setPendingRestore(null);
       await client.invalidateQueries({ queryKey: ['buckets', bucket] });
     },
   });
@@ -199,7 +201,7 @@ export function ObjectVersions({
                             !entry.is_latest &&
                             !entry.is_delete_marker ? (
                               <DropdownMenuItem
-                                onSelect={() => restore.mutate(entry)}
+                                onSelect={() => setPendingRestore(entry)}
                                 disabled={restore.isPending}
                               >
                                 <RotateCcw aria-hidden /> Restore as current
@@ -231,7 +233,32 @@ export function ObjectVersions({
         </p>
       ) : null}
 
-      {restore.error ? <ErrorState error={restore.error} /> : null}
+      <ConfirmDialog
+        open={pendingRestore !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingRestore(null);
+            restore.reset();
+          }
+        }}
+        title="Restore this version as current?"
+        description={
+          pendingRestore
+            ? `Version ${pendingRestore.version_id} of ${pendingRestore.key} will be copied to a new current version.`
+            : ''
+        }
+        // History is append-only: restoring adds a version rather than moving
+        // the pointer back, so nothing is lost and the operator should know the
+        // version count will grow.
+        consequence="The version history is not rewritten. This version stays where it is, and a new current version is created from it."
+        confirmLabel="Restore as current"
+        strength="acknowledge"
+        pending={restore.isPending}
+        error={restore.error}
+        onConfirm={() => {
+          if (pendingRestore) restore.mutate(pendingRestore);
+        }}
+      />
 
       <ConfirmDialog
         open={pendingDelete !== null}
