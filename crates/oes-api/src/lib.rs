@@ -526,6 +526,10 @@ pub fn router(state: AppState) -> Router {
             get(download_bucket_object),
         )
         .route(
+            "/api/v1/buckets/{bucket}/object-preview/{*key}",
+            get(preview_bucket_object),
+        )
+        .route(
             "/api/v1/buckets/{bucket}/object-versions",
             get(list_bucket_object_versions),
         )
@@ -1128,6 +1132,81 @@ async fn download_bucket_object(
             filename.replace(['\\', '"'], "_")
         ),
     );
+    Ok(response)
+}
+
+/// Streams an explicitly safe inline preview without changing download semantics.
+async fn preview_bucket_object(
+    State(state): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    Query(query): Query<PreviewQuery>,
+    headers: header::HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Response, ApiError> {
+    let name = parse_bucket_name(&bucket, &request_id)?;
+    let object_key = parse_object_key(&key, &request_id)?;
+    let metadata = match query.version_id {
+        Some(version_id) => {
+            state
+                .services
+                .objects
+                .head_version(&name, object_key.clone(), version_id)
+                .await
+        }
+        None => state.services.objects.head(&name, object_key.clone()).await,
+    }
+    .map_err(|error| service_to_api_error(error, request_id.clone()))?;
+    let range = parse_preview_range(&headers, metadata.size, &request_id)?;
+    let result = match query.version_id {
+        Some(version_id) => {
+            state
+                .services
+                .objects
+                .get_version(&name, object_key, version_id, range)
+                .await
+        }
+        None => state.services.objects.get(&name, object_key, range).await,
+    }
+    .map_err(|error| service_to_api_error(error, request_id.clone()))?;
+    let content_type = preview_content_type(result.metadata.content_type.as_deref(), &request_id)?;
+    let length = result
+        .range
+        .map_or(result.metadata.size, |value| value.length);
+    let status = if result.range.is_some() {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+    let mut response = (
+        status,
+        axum::body::Body::from_stream(futures_util::TryStreamExt::map_err(
+            result.body,
+            std::io::Error::other,
+        )),
+    )
+        .into_response();
+    let response_headers = response.headers_mut();
+    insert_header(response_headers, header::CONTENT_TYPE, &content_type);
+    insert_header(
+        response_headers,
+        header::CONTENT_LENGTH,
+        &length.to_string(),
+    );
+    insert_header(response_headers, header::ACCEPT_RANGES, "bytes");
+    insert_header(response_headers, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+    insert_header(response_headers, header::CONTENT_DISPOSITION, "inline");
+    if let Some(range) = result.range {
+        insert_header(
+            response_headers,
+            header::CONTENT_RANGE,
+            &format!(
+                "bytes {}-{}/{}",
+                range.offset,
+                range.offset + range.length - 1,
+                result.metadata.size
+            ),
+        );
+    }
     Ok(response)
 }
 
@@ -2961,6 +3040,112 @@ struct ObjectVersionListQuery {
     version_id_marker: Option<VersionId>,
     #[serde(default = "default_object_limit")]
     limit: usize,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PreviewQuery {
+    version_id: Option<VersionId>,
+}
+
+fn preview_content_type(
+    content_type: Option<&str>,
+    request_id: &RequestId,
+) -> Result<String, ApiError> {
+    let content_type = content_type.unwrap_or("application/octet-stream");
+    let safe = matches!(
+        content_type,
+        "image/jpeg"
+            | "image/png"
+            | "image/webp"
+            | "image/gif"
+            | "video/mp4"
+            | "video/webm"
+            | "audio/mpeg"
+            | "audio/ogg"
+            | "audio/wav"
+            | "audio/webm"
+            | "application/pdf"
+            | "text/plain"
+            | "text/markdown"
+            | "application/json"
+    );
+    if safe {
+        Ok(content_type.to_owned())
+    } else {
+        Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "PREVIEW_UNSUPPORTED",
+            "This object type cannot be previewed safely",
+            request_id.clone(),
+        ))
+    }
+}
+
+fn parse_preview_range(
+    headers: &header::HeaderMap,
+    size: u64,
+    request_id: &RequestId,
+) -> Result<Option<oes_core::ByteRange>, ApiError> {
+    let Some(value) = headers.get(header::RANGE) else {
+        return Ok(None);
+    };
+    let value = value.to_str().map_err(|_| {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_RANGE",
+            "Range must be an ASCII byte range",
+        )
+    })?;
+    let Some(value) = value.strip_prefix("bytes=") else {
+        return Err(ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_RANGE",
+            "Only byte ranges are supported",
+        ));
+    };
+    if value.contains(',') {
+        return Err(ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_RANGE",
+            "Only one byte range is supported",
+        ));
+    }
+    let (start, end) = value.split_once('-').ok_or_else(|| {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_RANGE",
+            "Range must use bytes=start-end syntax",
+        )
+    })?;
+    let (offset, length) = if start.is_empty() {
+        let suffix = end.parse::<u64>().map_err(|_| {
+            ApiError::bad_request(request_id.clone(), "INVALID_RANGE", "Range is invalid")
+        })?;
+        (size.saturating_sub(suffix), suffix.min(size))
+    } else {
+        let offset = start.parse::<u64>().map_err(|_| {
+            ApiError::bad_request(request_id.clone(), "INVALID_RANGE", "Range is invalid")
+        })?;
+        let end = if end.is_empty() {
+            size
+        } else {
+            end.parse::<u64>()
+                .map_err(|_| {
+                    ApiError::bad_request(request_id.clone(), "INVALID_RANGE", "Range is invalid")
+                })?
+                .checked_add(1)
+                .ok_or_else(|| {
+                    ApiError::bad_request(request_id.clone(), "INVALID_RANGE", "Range is invalid")
+                })?
+        };
+        (
+            offset,
+            end.saturating_sub(offset).min(size.saturating_sub(offset)),
+        )
+    };
+    oes_core::ByteRange::new(offset, length)
+        .map(Some)
+        .map_err(|_| ApiError::bad_request(request_id.clone(), "INVALID_RANGE", "Range is invalid"))
 }
 
 /// One version-history entry.

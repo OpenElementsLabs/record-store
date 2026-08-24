@@ -40,6 +40,7 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/buckets/{}/lifecycle/{}", Audience::Console),
     ("/api/v1/buckets/{}/object-copy/{}", Audience::Console),
     ("/api/v1/buckets/{}/object-content/{}", Audience::Console),
+    ("/api/v1/buckets/{}/object-preview/{}", Audience::Console),
     ("/api/v1/buckets/{}/object-versions", Audience::Console),
     ("/api/v1/buckets/{}/object-versions/{}", Audience::Console),
     ("/api/v1/buckets/{}/object/{}", Audience::Console),

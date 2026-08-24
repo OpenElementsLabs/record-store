@@ -17,6 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { EmptyState } from '@/components/empty-state';
 import { ObjectVersions } from '@/features/objects/object-versions';
+import { ObjectPreview } from '@/features/objects/object-preview';
 import { verifyObject } from '@/lib/api/integrity';
 import { fetchStorageEvents } from '@/lib/api/observability';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -102,14 +103,23 @@ export function ObjectDetails({
           <ErrorState error={object.error} onRetry={() => void object.refetch()} />
         </Card>
       ) : (
-        <Tabs defaultValue="overview">
+        <Tabs defaultValue={object.data && object.data.content_type ? 'preview' : 'overview'}>
           <TabsList>
+            {object.data && object.data.content_type ? (
+              <TabsTrigger value="preview">Preview</TabsTrigger>
+            ) : null}
             <TabsTrigger value="overview">Overview</TabsTrigger>
             {capabilities.versioning ? <TabsTrigger value="versions">Versions</TabsTrigger> : null}
             <TabsTrigger value="metadata">Metadata</TabsTrigger>
             <TabsTrigger value="integrity">Integrity</TabsTrigger>
             {capabilities.events ? <TabsTrigger value="activity">Activity</TabsTrigger> : null}
           </TabsList>
+
+          {object.data && object.data.content_type ? (
+            <TabsContent value="preview">
+              <ObjectPreview bucket={bucket} record={object.data} />
+            </TabsContent>
+          ) : null}
 
           <TabsContent value="overview">
             <OverviewTab bucket={bucket} record={object.data ?? null} />

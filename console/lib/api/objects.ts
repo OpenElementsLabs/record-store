@@ -136,6 +136,14 @@ export function objectContentUrl(bucket: string, key: string): string {
   return apiUrl(`/v1/buckets/${encodeURIComponent(bucket)}/object-content/${encodeObjectKey(key)}`);
 }
 
+/** URL for an authenticated, safe inline preview. */
+export function objectPreviewUrl(bucket: string, key: string, versionId?: string): string {
+  return apiUrl(
+    `/v1/buckets/${encodeURIComponent(bucket)}/object-preview/${encodeObjectKey(key)}`,
+    versionId ? { version_id: versionId } : undefined,
+  );
+}
+
 /** The URL an upload is sent to. */
 export function objectUploadUrl(bucket: string, key: string): string {
   return apiUrl(`/v1/buckets/${encodeURIComponent(bucket)}/object/${encodeObjectKey(key)}`);
