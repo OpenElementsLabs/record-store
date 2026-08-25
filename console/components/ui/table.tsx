@@ -8,8 +8,17 @@ import { cn } from '@/lib/utils';
  * Wide operational tables scroll inside their own container so the page body
  * never scrolls sideways.
  */
+/**
+ * The scroll container a wide table lives in.
+ *
+ * `relative` is load-bearing rather than decorative. Tables carry visually
+ * hidden labels, and `.sr-only` positions them absolutely; without a positioned
+ * ancestor those land against the viewport instead of this box, escape its
+ * `overflow-x-auto`, and widen the whole document — a table that should scroll
+ * inside its own card instead gives the page a horizontal scrollbar on a phone.
+ */
 export function TableShell({ className, ...props }: React.ComponentProps<'div'>) {
-  return <div className={cn('w-full overflow-x-auto', className)} {...props} />;
+  return <div className={cn('relative w-full overflow-x-auto', className)} {...props} />;
 }
 
 export function Table({ className, ...props }: React.ComponentProps<'table'>) {

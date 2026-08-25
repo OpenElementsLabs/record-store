@@ -141,7 +141,9 @@ test.describe('storage workflows', () => {
     // that had failed.
     await page.getByRole('tab', { name: 'Versioning' }).click();
     await page.getByRole('button', { name: 'Enable versioning' }).click();
-    await expect(page.getByText('Enabled')).toBeVisible();
+    // Matched exactly: a toast confirming the change and the explanatory copy
+    // below it both contain the word, and either may be on screen at this point.
+    await expect(page.getByText('Enabled', { exact: true }).first()).toBeVisible();
 
     await page.getByRole('tab', { name: 'Objects' }).click();
     for (const body of ['first revision', 'second revision']) {
@@ -154,7 +156,8 @@ test.describe('storage workflows', () => {
     }
 
     await page.getByRole('tab', { name: 'Versioning' }).click();
-    await expect(page.getByText('Current')).toBeVisible();
+    // The badge on the newest version, not the "Current state" label beside it.
+    await expect(page.getByText('Current', { exact: true }).first()).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: 'doc.txt' })).toHaveCount(2);
   });
 });

@@ -90,6 +90,55 @@ describe('ShareViewer', () => {
     );
   });
 
+  it('publishes the unlock ticket before the viewer asks for any bytes', async () => {
+    // An `<img>`, a media element, and a framed PDF cannot send a header, so the
+    // bytes route reads the ticket from a cookie — and those elements start
+    // loading the moment the viewer mounts. If the cookie were written from an
+    // effect, the first request would already have gone out without it.
+    // The cookie is scoped to the share's own path, which jsdom will not read
+    // back from the document root, so the write itself is what is observed.
+    const written: string[] = [];
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
+    Object.defineProperty(document, 'cookie', {
+      configurable: true,
+      get: () => written.join('; '),
+      set: (value: string) => written.push(value),
+    });
+    let writesBeforeFirstFetch: number | null = null;
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ticket: 'ticket-value', expires_in_seconds: 43_200 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ...openShare, preview: 'text', content_type: 'text/plain' }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      )
+      .mockImplementation(() => {
+        writesBeforeFirstFetch ??= written.length;
+        return Promise.resolve(new Response('the file body', { status: 206 }));
+      });
+
+    render(<ShareViewer token={TOKEN} initial={{ state: 'password_required' }} />);
+    await userEvent.type(screen.getByLabelText('Password'), 'correct horse battery');
+    await userEvent.click(screen.getByRole('button', { name: 'Unlock' }));
+
+    expect(await screen.findByText('the file body')).toBeTruthy();
+    expect(writesBeforeFirstFetch).toBe(1);
+    expect(written[0]).toContain('oes_share_ticket=ticket-value');
+    expect(written[0]).toContain(`Path=/s/${TOKEN}`);
+    expect(written[0]).toContain('SameSite=Strict');
+
+    if (original) Object.defineProperty(document, 'cookie', original);
+  });
+
   it('reports a wrong password without saying whether the link exists', async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
 

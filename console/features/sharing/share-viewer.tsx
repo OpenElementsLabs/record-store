@@ -40,7 +40,6 @@ export function ShareViewer({
   readonly initial: PublicShare | null;
 }) {
   const [share, setShare] = React.useState<PublicShare | null>(initial);
-  const [ticket, setTicket] = React.useState<string | null>(null);
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-4xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-12">
@@ -57,12 +56,18 @@ export function ShareViewer({
         <PasswordChallenge
           token={token}
           onUnlocked={(unlocked, issuedTicket) => {
-            setTicket(issuedTicket);
+            // Written here, in the event handler, rather than from an effect
+            // inside the viewer. An `<img>` or a media element cannot send a
+            // header, so the bytes route reads the ticket from this cookie — and
+            // those elements start loading the moment the viewer mounts. An
+            // effect would set the cookie *after* the first request had already
+            // gone out without it.
+            publishTicket(token, issuedTicket);
             setShare(unlocked);
           }}
         />
       ) : (
-        <SharedObject share={share} token={token} ticket={ticket} />
+        <SharedObject share={share} token={token} />
       )}
 
       <footer className="mt-auto flex items-center gap-2 border-t border-border pt-4">
@@ -182,11 +187,9 @@ function PasswordChallenge({
 function SharedObject({
   share,
   token,
-  ticket,
 }: {
   readonly share: Extract<PublicShare, { state: 'open' }>;
   readonly token: string;
-  readonly ticket: string | null;
 }) {
   const contentUrl = `/s/${token}/content`;
   const downloadUrl = `${contentUrl}?download=true`;
@@ -270,35 +273,26 @@ function SharedObject({
           />
         )}
       </div>
-
-      {/*
-        A password-protected share proves itself with a ticket on every request.
-        Element loads cannot carry a header, so the ticket is stored in a
-        path-scoped cookie for the bytes route instead of being placed in the URL
-        where it would land in every log and referrer along the way.
-      */}
-      {ticket ? <TicketCookie token={token} ticket={ticket} /> : null}
     </section>
   );
 }
 
 /**
- * Publishes the unlock ticket to the bytes route.
+ * Publishes the unlock ticket to this share's bytes route.
  *
- * Scoped to this one share's path so it is never sent anywhere else, and marked
- * `SameSite=Strict` so another site cannot cause it to be attached. It is not
- * `HttpOnly`, because the page itself has to set it after an in-page unlock;
- * that is acceptable precisely because the ticket grants nothing on its own —
- * every request it accompanies re-checks the share's revocation, expiry, and
- * permissions from durable state.
+ * A password-protected share proves itself on every request, and an `<img>`, a
+ * media element, or a framed PDF cannot send a header — so the proof travels as
+ * a cookie rather than in the URL, where it would land in every log and referrer
+ * along the way. Scoped to this one share's path so it is never sent anywhere
+ * else, and `SameSite=Strict` so another site cannot cause it to be attached.
+ *
+ * Not `HttpOnly`, because the page itself sets it after an in-page unlock. That
+ * is acceptable precisely because the ticket grants nothing on its own: every
+ * request it accompanies re-checks the share's revocation, expiry, permission,
+ * and budget against durable state, so it stops working the instant the link is
+ * withdrawn.
  */
-function TicketCookie({ token, ticket }: { readonly token: string; readonly ticket: string }) {
-  React.useEffect(() => {
-    const secure = window.location.protocol === 'https:' ? '; Secure' : '';
-    document.cookie = `oes_share_ticket=${encodeURIComponent(ticket)}; Path=/s/${token}; SameSite=Strict; Max-Age=43200${secure}`;
-    return () => {
-      document.cookie = `oes_share_ticket=; Path=/s/${token}; SameSite=Strict; Max-Age=0${secure}`;
-    };
-  }, [ticket, token]);
-  return null;
+function publishTicket(token: string, ticket: string): void {
+  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `oes_share_ticket=${encodeURIComponent(ticket)}; Path=/s/${token}; SameSite=Strict; Max-Age=43200${secure}`;
 }
