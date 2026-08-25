@@ -119,16 +119,17 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
   const allSelected = pageKeys.length > 0 && selectedOnPage.length === pageKeys.length;
 
   const uploads = useUploadManager();
+  const { setSettledHandler } = uploads;
 
   // Refresh the listing once the queue drains so new objects appear without the
   // operator reloading the page.
   React.useEffect(() => {
-    uploads.setSettledHandler(() => {
+    setSettledHandler(() => {
       void client.invalidateQueries({ queryKey: ['buckets', bucket, 'objects'] });
       void client.invalidateQueries({ queryKey: queryKeys.buckets });
     });
-    return () => uploads.setSettledHandler(null);
-  }, [bucket, client, uploads]);
+    return () => setSettledHandler(null);
+  }, [bucket, client, setSettledHandler]);
 
   const removal = useMutation({
     mutationFn: (key: string) => deleteObject(bucket, key),
