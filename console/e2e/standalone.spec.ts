@@ -60,7 +60,7 @@ test.describe('standalone deployment', () => {
 
     await page.goto('/login');
     await page.getByLabel('Management token').fill('e2e-management-system-token-32-bytes-long');
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.getByRole('button', { name: 'Continue to console' }).click();
     await expect(page.getByRole('navigation', { name: 'Console sections' })).toBeVisible();
 
     const bucket = uniqueBucket('log-check');

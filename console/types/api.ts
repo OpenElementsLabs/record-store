@@ -45,6 +45,13 @@ export type RolePermissions = {
   readonly read_audit: boolean;
   readonly manage_cluster: boolean;
   readonly manage_storage: boolean;
+  /**
+   * Whether this role may create and withdraw share and embed links.
+   *
+   * Distinct from `manage_objects`: one authority changes what OES stores, the
+   * other decides who outside OES can read it.
+   */
+  readonly manage_sharing: boolean;
 };
 
 export type Session = {
@@ -343,3 +350,114 @@ export type LifecycleRule = {
   readonly created_at: string;
   readonly updated_at: string;
 };
+
+/**
+ * External access capabilities.
+ *
+ * A share link is for a person and a embed link is for a website, and they are
+ * modelled separately here for the same reason they are modelled separately in
+ * the backend: they differ in what they carry, who holds them, and how they are
+ * delivered. Neither type ever carries its token — the URL is fetched by a
+ * dedicated call at the moment it is copied.
+ */
+export type CapabilityStatus = 'active' | 'revoked' | 'expired' | 'exhausted';
+
+export type SharePermission = 'view' | 'download' | 'view_and_download';
+
+export type VersionMode = 'current' | 'pinned';
+
+export type EmbedDisposition = 'inline' | 'attachment';
+
+export type ShareLink = {
+  readonly id: string;
+  readonly label: string;
+  readonly bucket: string;
+  readonly key: string;
+  readonly version_mode: VersionMode;
+  readonly version_id: string | null;
+  readonly permission: SharePermission;
+  readonly status: CapabilityStatus;
+  readonly password_protected: boolean;
+  readonly created_by: string;
+  readonly created_at: string;
+  readonly expires_at: string | null;
+  readonly revoked_at: string | null;
+  readonly last_accessed_at: string | null;
+  readonly access_count: number;
+  readonly maximum_access_count: number | null;
+};
+
+export type EmbedLink = {
+  readonly id: string;
+  readonly label: string;
+  readonly bucket: string;
+  readonly key: string;
+  readonly version_mode: VersionMode;
+  readonly version_id: string | null;
+  readonly status: CapabilityStatus;
+  readonly content_type: string;
+  readonly disposition: EmbedDisposition;
+  readonly allowed_origins: readonly string[];
+  readonly created_by: string;
+  readonly created_at: string;
+  readonly updated_at: string | null;
+  readonly expires_at: string | null;
+  readonly revoked_at: string | null;
+  readonly last_accessed_at: string | null;
+  readonly access_count: number;
+};
+
+/** A newly created capability. The URL is shown once, here. */
+export type IssuedShare = {
+  readonly share: ShareLink;
+  readonly url: string;
+};
+
+export type IssuedEmbed = {
+  readonly embed: EmbedLink;
+  readonly url: string;
+};
+
+/**
+ * The URL of an existing capability.
+ *
+ * `available` is false when the stored token can no longer be decrypted, which
+ * happens after the deployment's master key changes. The link still works; only
+ * showing it again does not, and the UI says so rather than showing nothing.
+ */
+export type CapabilityUrl = {
+  readonly url: string | null;
+  readonly available: boolean;
+};
+
+/** What this deployment permits, so the console offers only what will be accepted. */
+export type SharingSettings = {
+  readonly shares_enabled: boolean;
+  readonly embeds_enabled: boolean;
+  readonly maximum_lifetime_days: number | null;
+  readonly require_expiration: boolean;
+  readonly require_share_password: boolean;
+  readonly maximum_access_count: number;
+  readonly minimum_password_length: number;
+  readonly preview_text_limit_bytes: number;
+  readonly embeddable_content_types: readonly string[];
+};
+
+/** What a share page may learn about the object behind a link. */
+export type PublicShare =
+  | { readonly state: 'password_required' }
+  | {
+      readonly state: 'open';
+      readonly file_name: string;
+      readonly content_type: string | null;
+      readonly size: number;
+      readonly preview: PreviewKindName;
+      readonly can_view: boolean;
+      readonly can_download: boolean;
+      readonly expires_at: string | null;
+      readonly preview_text_limit_bytes: number;
+    };
+
+/** The server's own classification of how an object may be presented. */
+export type PreviewKindName =
+  'image' | 'video' | 'audio' | 'pdf' | 'text' | 'json' | 'unsafe_inline' | 'unsupported';

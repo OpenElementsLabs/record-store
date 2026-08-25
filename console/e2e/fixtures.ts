@@ -7,7 +7,7 @@ export const AUDITOR_TOKEN = 'e2e-management-auditor-token-32-bytes-long';
 export async function signIn(page: Page, token = MANAGEMENT_TOKEN): Promise<void> {
   await page.goto('/login');
   await page.getByLabel('Management token').fill(token);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByRole('button', { name: 'Continue to console' }).click();
   await expect(page.getByRole('navigation', { name: 'Console sections' })).toBeVisible();
 }
 

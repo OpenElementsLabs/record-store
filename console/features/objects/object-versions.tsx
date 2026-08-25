@@ -1,7 +1,8 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, MoreHorizontal, RotateCcw } from 'lucide-react';
+import { Download, Eye, MoreHorizontal, RotateCcw } from 'lucide-react';
+import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import * as React from 'react';
 import { toast } from 'sonner';
@@ -187,10 +188,35 @@ export function ObjectVersions({
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent>
+                            {/*
+                              A delete marker has no bytes, so it is offered no
+                              preview and no download rather than a control that
+                              would fail.
+                            */}
                             {entry.is_delete_marker ? null : (
                               <DropdownMenuItem asChild>
-                                <a href={objectContentUrl(bucket, entry.key)} download>
-                                  <Download aria-hidden /> Download current
+                                <Link
+                                  // The tab is named explicitly: the reader
+                                  // asked to see this version, not to arrive on
+                                  // the tab they happened to click from.
+                                  href={`/buckets/${encodeURIComponent(bucket)}/objects/${entry.key
+                                    .split('/')
+                                    .map(encodeURIComponent)
+                                    .join('/')}?version=${encodeURIComponent(
+                                    entry.version_id,
+                                  )}&tab=preview`}
+                                >
+                                  <Eye aria-hidden /> Preview this version
+                                </Link>
+                              </DropdownMenuItem>
+                            )}
+                            {entry.is_delete_marker ? null : (
+                              <DropdownMenuItem asChild>
+                                <a
+                                  href={objectContentUrl(bucket, entry.key, entry.version_id)}
+                                  download
+                                >
+                                  <Download aria-hidden /> Download this version
                                 </a>
                               </DropdownMenuItem>
                             )}

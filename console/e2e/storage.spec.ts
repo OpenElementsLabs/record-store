@@ -43,7 +43,13 @@ test.describe('storage workflows', () => {
 
     await page.getByRole('link', { name: /greeting\.txt/ }).click();
     await expect(page.getByRole('heading', { name: 'greeting.txt' })).toBeVisible();
-    await expect(page.getByText('text/plain')).toBeVisible();
+    // A previewable object opens on its preview, so the file's own content is
+    // what a reader sees first.
+    await expect(page.getByText(contents.trim())).toBeVisible();
+    await expect(page.getByText('text/plain').first()).toBeVisible();
+
+    // Identifiers live on Overview.
+    await page.getByRole('tab', { name: 'Overview' }).click();
     await expect(page.getByText(/^sha256:/)).toBeVisible();
     // Internal storage details must never appear in the UI.
     await expect(page.getByText(/payload_format/i)).toHaveCount(0);

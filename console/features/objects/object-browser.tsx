@@ -6,9 +6,12 @@ import {
   ChevronRight,
   Copy,
   Download,
+  Eye,
   File as FileIcon,
   Folder,
+  History,
   MoreHorizontal,
+  Share2,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -43,7 +46,7 @@ import {
 import { CopyObjectDialog } from '@/features/objects/copy-object-dialog';
 import { UploadPanel } from '@/features/objects/upload-panel';
 import { useUploadManager } from '@/features/objects/upload-manager';
-import { usePermissions } from '@/features/system/deployment';
+import { useCapabilities, usePermissions } from '@/features/system/deployment';
 import { queryKeys } from '@/hooks/use-system';
 import { ApiError } from '@/lib/api/error';
 import { deleteObject, fetchObjects, objectContentUrl } from '@/lib/api/objects';
@@ -81,6 +84,7 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
   const params = useSearchParams();
   const client = useQueryClient();
   const permissions = usePermissions();
+  const capabilities = useCapabilities();
 
   const prefix = normalisePrefix(readString(params, 'prefix', ''));
   const limit = readInt(params, 'limit', 50, 25, 200);
@@ -318,10 +322,7 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
                     ) : null}
                     <TableCell>
                       <Link
-                        href={`/buckets/${encodeURIComponent(bucket)}/objects/${object.key
-                          .split('/')
-                          .map(encodeURIComponent)
-                          .join('/')}`}
+                        href={objectHref(bucket, object.key)}
                         className="inline-flex items-center gap-2 type-body hover:underline"
                       >
                         <FileIcon aria-hidden className="size-4 text-ink-subtle" />
@@ -348,6 +349,16 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent>
+                            {/*
+                              Clicking the name opens the object; these are the
+                              secondary actions, so the row stays a row rather
+                              than a toolbar.
+                            */}
+                            <DropdownMenuItem asChild>
+                              <Link href={objectHref(bucket, object.key)}>
+                                <Eye aria-hidden /> Open
+                              </Link>
+                            </DropdownMenuItem>
                             <DropdownMenuItem asChild>
                               {/*
                                 The browser fetches bytes straight from OES, so a
@@ -357,6 +368,20 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
                                 <Download aria-hidden /> Download
                               </a>
                             </DropdownMenuItem>
+                            {permissions.manage_sharing ? (
+                              <DropdownMenuItem asChild>
+                                <Link href={`${objectHref(bucket, object.key)}?tab=sharing`}>
+                                  <Share2 aria-hidden /> Share or embed
+                                </Link>
+                              </DropdownMenuItem>
+                            ) : null}
+                            {capabilities.versioning ? (
+                              <DropdownMenuItem asChild>
+                                <Link href={`${objectHref(bucket, object.key)}?tab=versions`}>
+                                  <History aria-hidden /> Versions
+                                </Link>
+                              </DropdownMenuItem>
+                            ) : null}
                             {permissions.manage_objects ? (
                               <DropdownMenuItem onSelect={() => setCopying(object.key)}>
                                 <Copy aria-hidden /> Copy to…
@@ -486,6 +511,19 @@ function Pagination({
       </div>
     </div>
   );
+}
+
+/**
+ * The detail route for one key.
+ *
+ * Each segment is encoded on its own so a key containing slashes, spaces, or
+ * anything else that looks like path structure survives the round trip.
+ */
+function objectHref(bucket: string, key: string): string {
+  return `/buckets/${encodeURIComponent(bucket)}/objects/${key
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')}`;
 }
 
 /** Normalises a prefix so it is either empty or ends with a delimiter. */

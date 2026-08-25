@@ -11,7 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use oes_api::{AppState, ClusterManagement, ManagementAuth, MetricsAuth};
+use oes_api::{AppState, ClusterManagement, ManagementAuth, MetricsAuth, SharingManagement};
 use oes_audit::{AuditError, AuditRepository, RedbAuditRepository};
 use oes_auth::{Authorizer, CredentialManager, CredentialStoreError, SigningCredentialProvider};
 use oes_config::Config;
@@ -20,6 +20,7 @@ use oes_events::{EventError, EventRepository, RedbEventRepository, WebhookConfig
 use oes_lifecycle::{LifecycleError, LifecycleWorker};
 use oes_metadata::{MetadataError, MetadataRepository, RedbMetadataRepository};
 use oes_service::{ServiceLimits, Services};
+use oes_sharing::{CapabilityStore, SharingPolicy, SharingService, TicketIssuer};
 use oes_storage::{LocalFilesystemStore, ObjectStore, StorageError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -270,6 +271,42 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         config.lifecycle.batch_size,
     )
     .await?;
+    // Capability tokens are encrypted at rest under the deployment's master key
+    // when one is configured, and under the root secret otherwise — the same
+    // derivation the credential store uses. Verification never depends on it, so
+    // a key change costs the ability to redisplay a link and nothing else.
+    let sharing_key_material = config.auth.credential_master_key.as_ref().map_or_else(
+        || root_secret_key.expose().to_owned(),
+        |key| key.expose().to_owned(),
+    );
+    let sharing_store = CapabilityStore::open(
+        config
+            .storage
+            .data_directory
+            .join("metadata")
+            .join("sharing.redb"),
+        sharing_key_material.as_bytes(),
+    )
+    .await?;
+    let sharing_service = Arc::new(SharingService::new(
+        sharing_store,
+        SharingPolicy {
+            shares_enabled: config.sharing.shares_enabled,
+            embeds_enabled: config.sharing.embeds_enabled,
+            maximum_lifetime: (config.sharing.maximum_lifetime_days > 0)
+                .then(|| chrono::Duration::days(i64::from(config.sharing.maximum_lifetime_days))),
+            require_expiration: config.sharing.require_expiration,
+            require_share_password: config.sharing.require_share_password,
+            maximum_access_count: config.sharing.maximum_access_count,
+            password_attempts_per_window: config.sharing.password_attempts_per_minute,
+            token_probes_per_window: config.sharing.token_probes_per_minute,
+            abuse_window: Duration::from_secs(60),
+            unlock_lifetime: chrono::Duration::hours(i64::from(
+                config.sharing.unlock_lifetime_hours,
+            )),
+        },
+        TicketIssuer::derive(sharing_key_material.as_bytes())?,
+    ));
     let mut management_state = AppState::new(
         storage_dependency,
         metadata_dependency,
@@ -280,7 +317,13 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         env!("CARGO_PKG_VERSION"),
     )
     .with_mode(config.server.mode)
-    .with_events(Arc::clone(&event_dependency));
+    .with_events(Arc::clone(&event_dependency))
+    .with_sharing(SharingManagement::new(
+        Arc::clone(&sharing_service),
+        config.sharing.normalized_share_base_url(),
+        config.effective_embed_base_url(),
+        config.sharing.preview_text_limit_bytes,
+    ));
     if let Some(dependencies) = &cluster_dependencies {
         management_state = management_state.with_cluster(ClusterManagement::new(
             Arc::clone(&dependencies.context),
@@ -314,6 +357,9 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
     } else {
         warn!("metrics scrape token is not configured; the metrics endpoint remains closed");
     }
+    // The embed surface is built from the same state but mounted on the storage
+    // listener below, so an asset URL never touches the management plane.
+    let embed_delivery = oes_api::embed_router(management_state.clone());
     let management = oes_api::router(management_state);
     let authorizer: Arc<dyn Authorizer> = credentials.clone();
     let credential_provider: Arc<dyn SigningCredentialProvider> = credentials;
@@ -323,7 +369,12 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
             .with_audit(audit_dependency)
             .with_root_s3_enabled(config.auth.root_s3_enabled)
             .with_maximum_header_bytes(config.limits.maximum_header_bytes),
-    );
+    )
+    // Merged rather than nested, so embed delivery sits alongside the S3
+    // operations without passing through their SigV4 layer. The `/e/` prefix
+    // cannot shadow a bucket, because a bucket name is at least three
+    // characters.
+    .merge(embed_delivery);
 
     Ok(ServerRuntime {
         management,
@@ -634,6 +685,9 @@ pub enum StartupError {
     /// Audit initialization or probing failed.
     #[error("audit initialization failed: {0}")]
     Audit(#[from] AuditError),
+    /// Capability store initialization failed.
+    #[error("sharing initialization failed: {0}")]
+    Sharing(#[from] oes_sharing::SharingError),
     /// Event and webhook initialization or supervision failed.
     #[error("event subsystem failed: {0}")]
     Events(#[from] EventError),

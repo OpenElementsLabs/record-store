@@ -1,6 +1,6 @@
 # OES
 
-OES is a self-hosted object storage service written in Rust. It supports a simple standalone mode and a single-region replicated cluster mode. Public S3 traffic uses port 7600, the native management API uses 7601, 7602 remains reserved for the web console, and authenticated internal gRPC uses 7603. Every listener is configurable; OES does not use ports 9000 or 9001.
+OES is a self-hosted object storage service written in Rust. It supports a simple standalone mode and a single-region replicated cluster mode. Public S3 traffic uses port 7600, the native management API uses 7601, the web console uses 7602, and authenticated internal gRPC uses 7603. Every listener is configurable; OES does not use ports 9000 or 9001.
 
 ## Supported S3 surface
 
@@ -114,10 +114,10 @@ cargo run --bin oes -- server
 The equivalent daemon entry point is `cargo run --bin oes-server`. Defaults remain:
 
 ```text
-S3 API          http://localhost:7600
+S3 API          http://localhost:7600 (also serves /e/<token> embeds)
 Management API  http://localhost:7601
+Web console     http://localhost:7602 (also serves /s/<token> share pages)
 Internal RPC    0.0.0.0:7603 (cluster mode only; do not publish publicly)
-Web console     7602 (reserved; no listener yet)
 ```
 
 Load the example file with `cargo run --bin oes -- server --config oes.example.toml`; secrets should still come from the environment.
@@ -268,9 +268,81 @@ Configuration file values overlay defaults, then environment variables take prec
 | `OES_WEBHOOK_POLL_INTERVAL_SECONDS` | `webhooks.poll_interval_seconds` |
 | `OES_LIFECYCLE_INTERVAL_SECONDS` | `lifecycle.interval_seconds` |
 | `OES_LIFECYCLE_BATCH_SIZE` | `lifecycle.batch_size` |
+| `OES_SHARING_SHARES_ENABLED` | `sharing.shares_enabled` |
+| `OES_SHARING_EMBEDS_ENABLED` | `sharing.embeds_enabled` |
+| `OES_SHARING_MAXIMUM_LIFETIME_DAYS` | `sharing.maximum_lifetime_days` |
+| `OES_SHARING_REQUIRE_EXPIRATION` | `sharing.require_expiration` |
+| `OES_SHARING_REQUIRE_PASSWORD` | `sharing.require_share_password` |
+| `OES_SHARING_MAXIMUM_ACCESS_COUNT` | `sharing.maximum_access_count` |
+| `OES_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE` | `sharing.password_attempts_per_minute` |
+| `OES_SHARING_TOKEN_PROBES_PER_MINUTE` | `sharing.token_probes_per_minute` |
+| `OES_SHARING_UNLOCK_LIFETIME_HOURS` | `sharing.unlock_lifetime_hours` |
+| `OES_SHARING_PREVIEW_TEXT_LIMIT_BYTES` | `sharing.preview_text_limit_bytes` |
+| `OES_SHARING_SHARE_BASE_URL` | `sharing.share_base_url` |
+| `OES_SHARING_EMBED_BASE_URL` | `sharing.embed_base_url` |
 | `OES_LOG` | `observability.log_filter` |
 | `OES_LOG_JSON` | `observability.json` |
 | `OES_CONFIG_FILE` | server/CLI configuration selection |
+
+## Preview, share links, and embeds
+
+Stored objects are usable directly rather than only administrable. The console
+previews an object; a *share link* gives a person read access to one object
+through an OES page; an *embed link* gives a website or application a read-only
+URL for the bytes. All three resolve through the same authoritative object
+service, so there is no second copy of anything.
+
+```text
+                          OES object
+                               │
+            ┌──────────────────┼──────────────────┐
+            ▼                  ▼                  ▼
+         Preview            Share              Embed
+      authenticated       a person        a site or an app
+      console :7602      /s/<token>          /e/<token>
+                        console :7602       S3 API :7600
+```
+
+A share link and an embed link are different capabilities, and they are
+published in different places. A share is a page OES renders, so it lives on the
+console alongside the viewer that shows it. An embed serves object bytes into
+somebody else's page, so it lives on the S3-compatible endpoint that already
+publishes object bytes — which is what lets a deployment expose storage to the
+internet while the management plane and the console stay closed. Set
+`sharing.embed_base_url` when storage is published under its own hostname.
+
+Both are capabilities rather than credentials. The opaque token in the path is
+the entire authorization; it names one object and one version policy and can
+express nothing else. Neither can list, write, delete, or reach any other
+object, and neither is ever an S3 credential. Every request re-resolves the
+token against durable state, so a revocation takes effect on the next one.
+
+| | Share link | Embed link |
+| --- | --- | --- |
+| Intended for | A person | A website or application |
+| Delivered by | Console `:7602` | S3 API `:7600` |
+| Version | Current, or a pinned `VersionId` | Current, or a pinned `VersionId` |
+| Access | View, download, or both | Read-only bytes |
+| Optional controls | Password, expiry, strict access budget | Origin allowlist, expiry |
+| Caching | `no-store`, so revocation is immediate | Short, bounded revalidation |
+
+Only media types OES is prepared to be responsible for are served inline:
+JPEG, PNG, WebP, GIF, MP4, WebM, MP3, Ogg, WAV, PDF, plain text, Markdown, CSV,
+and JSON. A declared type is corroborated against the object's leading bytes
+before anything is rendered, so an upload labelled `image/png` that begins with
+`<html>` is refused. HTML, SVG, XML, and script are never rendered inline and
+never embeddable inline; they remain downloadable as attachments. Downloads are
+unchanged: always `Content-Disposition: attachment`, always `nosniff`, whatever
+the object turns out to be.
+
+Capability tokens carry 256 bits of entropy from the operating system's
+cryptographic generator. They are stored as a lookup digest plus an
+AES-256-GCM-sealed copy under the deployment's master key, so an administrator
+can copy a link again without OES holding it in the clear. Share passwords are
+stored as salted Argon2 hashes, never a digest, and repeated attempts are
+throttled per link and per client so a public link cannot be locked for
+everyone. Capability tokens are redacted from request logs and audit records;
+audit entries name a share or embed by its stable non-secret identifier instead.
 
 ## Web console
 
@@ -280,6 +352,8 @@ the CLI and the API alone.
 
 ```text
 Applications ──────► S3 API        :7600
+Embedding sites ───► S3 API        :7600  /e/<token>
+Share recipients ──► Web console   :7602  /s/<token>
 Administrators ────► Web console   :7602 ──► Management API :7601
 OES internal ──────► Node RPC      :7603
 ```
@@ -288,6 +362,10 @@ The browser talks only to the console's own origin. The console server attaches
 the management credential and forwards the request to 7601, so the credential
 lives in an HTTP-only cookie the page cannot read, no CORS configuration is
 needed, and the browser never reaches storage, metadata, consensus, or 7603.
+
+Public share pages are served by the same application but authorize differently:
+that boundary attaches no credential at all, because the token in the path is the
+authorization. Embed bytes do not pass through the console.
 
 After sign-in, deployment mode is discovered from `GET /api/v1/system/info`, which reports
 `mode` and a capability set. A standalone deployment shows a storage-management

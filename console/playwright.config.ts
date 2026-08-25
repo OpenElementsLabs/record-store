@@ -14,6 +14,8 @@ process.env.OES_E2E_MANAGEMENT_URL = MANAGEMENT_URL;
 process.env.OES_E2E_CONSOLE_URL = CONSOLE_URL;
 process.env.OES_E2E_EXPECTED_MODE = 'standalone';
 process.env.OES_E2E_TOKEN = MANAGEMENT_TOKEN;
+// Embeds are published on the storage endpoint, so the specs need to know it.
+process.env.OES_E2E_S3_PORT = String(S3_PORT);
 
 export default defineConfig({
   testDir: './e2e',

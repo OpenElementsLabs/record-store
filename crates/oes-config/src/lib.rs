@@ -58,6 +58,8 @@ pub struct Config {
     pub webhooks: WebhookConfig,
     /// Incremental object expiration settings.
     pub lifecycle: LifecycleConfig,
+    /// Share-link and embed-link policy.
+    pub sharing: SharingConfig,
     /// Node-local cluster settings.
     pub cluster: ClusterConfig,
     /// Logging settings.
@@ -104,6 +106,43 @@ impl Config {
         config.apply_environment(&environment)?;
         config.validate()?;
         Ok(config)
+    }
+
+    /// Returns the address embed links are published on.
+    ///
+    /// Embeds serve object bytes, so they belong on the storage endpoint rather
+    /// than the console. The explicit setting wins; the advertised S3 endpoint
+    /// is the next best answer a deployment has already given; and the listener
+    /// address is the last resort, correct for a local install and wrong the
+    /// moment anything sits in front of it.
+    #[must_use]
+    pub fn effective_embed_base_url(&self) -> String {
+        if let Some(configured) = self.sharing.normalized_embed_base_url() {
+            return configured;
+        }
+        if let Some(endpoint) = self
+            .cluster
+            .s3_endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let endpoint = endpoint.trim_end_matches('/');
+            return if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+                endpoint.to_owned()
+            } else {
+                format!("http://{endpoint}")
+            };
+        }
+        // An unspecified bind address is reachable from nowhere, so it is
+        // rendered as loopback: a link that works locally is more useful than
+        // one naming an address no client can resolve.
+        let bind = self.server.s3_bind;
+        if bind.ip().is_unspecified() {
+            format!("http://127.0.0.1:{}", bind.port())
+        } else {
+            format!("http://{bind}")
+        }
     }
 
     /// Validates cross-field and security-sensitive constraints.
@@ -302,6 +341,7 @@ impl Config {
         if self.lifecycle.batch_size == 0 || self.lifecycle.batch_size > 1_000 {
             issues.push("lifecycle.batch_size must be between 1 and 1000".to_owned());
         }
+        issues.extend(self.sharing.issues());
         if self.observability.log_filter.trim().is_empty() {
             issues.push("observability.log_filter must not be empty".to_owned());
         }
@@ -410,6 +450,54 @@ impl Config {
         }
         if let Some(value) = environment_value(environment, "OES_LIFECYCLE_BATCH_SIZE")? {
             self.lifecycle.batch_size = parse_environment("OES_LIFECYCLE_BATCH_SIZE", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_SHARES_ENABLED")? {
+            self.sharing.shares_enabled = parse_environment("OES_SHARING_SHARES_ENABLED", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_EMBEDS_ENABLED")? {
+            self.sharing.embeds_enabled = parse_environment("OES_SHARING_EMBEDS_ENABLED", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_MAXIMUM_LIFETIME_DAYS")? {
+            self.sharing.maximum_lifetime_days =
+                parse_environment("OES_SHARING_MAXIMUM_LIFETIME_DAYS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_REQUIRE_EXPIRATION")? {
+            self.sharing.require_expiration =
+                parse_environment("OES_SHARING_REQUIRE_EXPIRATION", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_REQUIRE_PASSWORD")? {
+            self.sharing.require_share_password =
+                parse_environment("OES_SHARING_REQUIRE_PASSWORD", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_MAXIMUM_ACCESS_COUNT")? {
+            self.sharing.maximum_access_count =
+                parse_environment("OES_SHARING_MAXIMUM_ACCESS_COUNT", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "OES_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE")?
+        {
+            self.sharing.password_attempts_per_minute =
+                parse_environment("OES_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_TOKEN_PROBES_PER_MINUTE")?
+        {
+            self.sharing.token_probes_per_minute =
+                parse_environment("OES_SHARING_TOKEN_PROBES_PER_MINUTE", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_UNLOCK_LIFETIME_HOURS")? {
+            self.sharing.unlock_lifetime_hours =
+                parse_environment("OES_SHARING_UNLOCK_LIFETIME_HOURS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_PREVIEW_TEXT_LIMIT_BYTES")?
+        {
+            self.sharing.preview_text_limit_bytes =
+                parse_environment("OES_SHARING_PREVIEW_TEXT_LIMIT_BYTES", value)?;
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_SHARE_BASE_URL")? {
+            self.sharing.share_base_url = Some(value.to_owned());
+        }
+        if let Some(value) = environment_value(environment, "OES_SHARING_EMBED_BASE_URL")? {
+            self.sharing.embed_base_url = Some(value.to_owned());
         }
         if let Some(value) = environment_value(environment, "OES_CLUSTER_SEEDS")? {
             self.cluster.seeds = value
@@ -959,6 +1047,146 @@ impl Default for LifecycleConfig {
     }
 }
 
+/// Deployment policy for external object-access capabilities.
+///
+/// Every value here narrows what an administrator may create. None of them are
+/// enforcement on their own: the capability service re-checks each one, and the
+/// public delivery routes re-check revocation and expiry per request. These
+/// settings exist so an operator can make a whole deployment stricter than its
+/// most careless administrator.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SharingConfig {
+    /// Whether share links may be created.
+    pub shares_enabled: bool,
+    /// Whether embed links may be created.
+    pub embeds_enabled: bool,
+    /// Longest lifetime a new capability may be given, in days.
+    ///
+    /// Zero means no ceiling, which is a deliberate opt-in rather than the
+    /// default: a capability that never expires is one an operator has to keep
+    /// track of forever.
+    pub maximum_lifetime_days: u32,
+    /// Require every new capability to carry an expiry.
+    pub require_expiration: bool,
+    /// Require every new share link to carry a password.
+    pub require_share_password: bool,
+    /// Largest access budget a share may be given.
+    pub maximum_access_count: u32,
+    /// Failed password attempts permitted per share, per client, per window.
+    pub password_attempts_per_minute: u32,
+    /// Unknown-token lookups permitted per client, per window.
+    pub token_probes_per_minute: u32,
+    /// How long a share password unlock remains valid, in hours.
+    pub unlock_lifetime_hours: u32,
+    /// Largest slice of a text or JSON object the console preview will read.
+    ///
+    /// The console shows the first slice and says so. Nothing about the stored
+    /// object changes, and the full bytes remain one download away.
+    pub preview_text_limit_bytes: u64,
+    /// Public base URL that share links are built from.
+    ///
+    /// A share link is a page a person opens, so this is the console's public
+    /// address. When it is unset the console completes the link against the
+    /// origin the administrator is already using, which is right for a
+    /// single-origin deployment and wrong behind a rewriting proxy.
+    pub share_base_url: Option<String>,
+    /// Public base URL that embed links are built from.
+    ///
+    /// An embed is pasted into somebody else's page and serves object bytes, so
+    /// it is published on the S3-compatible storage endpoint rather than on the
+    /// console. Keeping the two apart is what lets a deployment expose storage
+    /// to the internet while the management plane stays closed.
+    ///
+    /// When unset this falls back to the advertised S3 endpoint, and then to the
+    /// S3 listener address — useful for development, and something a production
+    /// deployment behind a proxy or a separate hostname must set explicitly.
+    pub embed_base_url: Option<String>,
+}
+
+impl Default for SharingConfig {
+    fn default() -> Self {
+        Self {
+            shares_enabled: true,
+            embeds_enabled: true,
+            maximum_lifetime_days: 365,
+            require_expiration: false,
+            require_share_password: false,
+            maximum_access_count: 10_000,
+            password_attempts_per_minute: 10,
+            token_probes_per_minute: 60,
+            unlock_lifetime_hours: 12,
+            preview_text_limit_bytes: 1024 * 1024,
+            share_base_url: None,
+            embed_base_url: None,
+        }
+    }
+}
+
+impl SharingConfig {
+    /// Returns validation problems with the sharing policy.
+    fn issues(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if self.maximum_lifetime_days > 3_650 {
+            issues.push("sharing.maximum_lifetime_days must be at most 3650".to_owned());
+        }
+        if self.maximum_access_count == 0 || self.maximum_access_count > 1_000_000 {
+            issues.push("sharing.maximum_access_count must be between 1 and 1000000".to_owned());
+        }
+        if self.password_attempts_per_minute == 0 || self.password_attempts_per_minute > 1_000 {
+            issues
+                .push("sharing.password_attempts_per_minute must be between 1 and 1000".to_owned());
+        }
+        if self.token_probes_per_minute == 0 || self.token_probes_per_minute > 100_000 {
+            issues.push("sharing.token_probes_per_minute must be between 1 and 100000".to_owned());
+        }
+        if self.unlock_lifetime_hours == 0 || self.unlock_lifetime_hours > 168 {
+            issues.push("sharing.unlock_lifetime_hours must be between 1 and 168".to_owned());
+        }
+        if self.preview_text_limit_bytes < 1_024
+            || self.preview_text_limit_bytes > 64 * 1_024 * 1_024
+        {
+            issues.push(
+                "sharing.preview_text_limit_bytes must be between 1024 and 67108864".to_owned(),
+            );
+        }
+        for (name, value) in [
+            ("sharing.share_base_url", &self.share_base_url),
+            ("sharing.embed_base_url", &self.embed_base_url),
+        ] {
+            if let Some(base) = value {
+                let trimmed = base.trim();
+                if !(trimmed.starts_with("https://") || trimmed.starts_with("http://"))
+                    || trimmed.len() > 512
+                    || trimmed.contains(char::is_whitespace)
+                {
+                    issues.push(format!("{name} must be an absolute http or https URL"));
+                }
+            }
+        }
+        issues
+    }
+
+    /// Returns the share base URL without a trailing slash.
+    #[must_use]
+    pub fn normalized_share_base_url(&self) -> Option<String> {
+        normalize_base_url(self.share_base_url.as_deref())
+    }
+
+    /// Returns the embed base URL without a trailing slash, if one was set.
+    #[must_use]
+    pub fn normalized_embed_base_url(&self) -> Option<String> {
+        normalize_base_url(self.embed_base_url.as_deref())
+    }
+}
+
+fn normalize_base_url(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.trim_end_matches('/').to_owned())
+}
+
 /// Structured logging settings.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -987,6 +1215,7 @@ struct PartialConfig {
     limits: Option<PartialLimitsConfig>,
     webhooks: Option<PartialWebhookConfig>,
     lifecycle: Option<PartialLifecycleConfig>,
+    sharing: Option<PartialSharingConfig>,
     cluster: Option<PartialClusterConfig>,
     observability: Option<PartialObservabilityConfig>,
 }
@@ -1010,6 +1239,9 @@ impl PartialConfig {
         }
         if let Some(value) = self.lifecycle {
             value.apply(&mut target.lifecycle);
+        }
+        if let Some(value) = self.sharing {
+            value.apply(&mut target.sharing);
         }
         if let Some(value) = self.cluster {
             value.apply(&mut target.cluster);
@@ -1277,6 +1509,64 @@ impl PartialLifecycleConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PartialSharingConfig {
+    shares_enabled: Option<bool>,
+    embeds_enabled: Option<bool>,
+    maximum_lifetime_days: Option<u32>,
+    require_expiration: Option<bool>,
+    require_share_password: Option<bool>,
+    maximum_access_count: Option<u32>,
+    password_attempts_per_minute: Option<u32>,
+    token_probes_per_minute: Option<u32>,
+    unlock_lifetime_hours: Option<u32>,
+    preview_text_limit_bytes: Option<u64>,
+    share_base_url: Option<String>,
+    embed_base_url: Option<String>,
+}
+
+impl PartialSharingConfig {
+    fn apply(self, target: &mut SharingConfig) {
+        if let Some(value) = self.shares_enabled {
+            target.shares_enabled = value;
+        }
+        if let Some(value) = self.embeds_enabled {
+            target.embeds_enabled = value;
+        }
+        if let Some(value) = self.maximum_lifetime_days {
+            target.maximum_lifetime_days = value;
+        }
+        if let Some(value) = self.require_expiration {
+            target.require_expiration = value;
+        }
+        if let Some(value) = self.require_share_password {
+            target.require_share_password = value;
+        }
+        if let Some(value) = self.maximum_access_count {
+            target.maximum_access_count = value;
+        }
+        if let Some(value) = self.password_attempts_per_minute {
+            target.password_attempts_per_minute = value;
+        }
+        if let Some(value) = self.token_probes_per_minute {
+            target.token_probes_per_minute = value;
+        }
+        if let Some(value) = self.unlock_lifetime_hours {
+            target.unlock_lifetime_hours = value;
+        }
+        if let Some(value) = self.preview_text_limit_bytes {
+            target.preview_text_limit_bytes = value;
+        }
+        if let Some(value) = self.share_base_url {
+            target.share_base_url = Some(value);
+        }
+        if let Some(value) = self.embed_base_url {
+            target.embed_base_url = Some(value);
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PartialObservabilityConfig {
     log_filter: Option<String>,
     json: Option<bool>,
@@ -1457,6 +1747,100 @@ mod tests {
             Config::load_with_environment(None, duplicate),
             Err(ConfigError::Validation(message)) if message.contains("metrics_scrape_token")
         ));
+    }
+
+    #[test]
+    fn sharing_policy_is_configurable_from_file_and_environment() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("oes.toml");
+        fs::write(
+            &path,
+            r#"
+                [sharing]
+                require_expiration = true
+                maximum_lifetime_days = 30
+                share_base_url = "https://oes.example.com/"
+                embed_base_url = "https://storage.example.com/"
+            "#,
+        )
+        .expect("write configuration");
+        let mut environment = credentials().to_vec();
+        environment.push(("OES_SHARING_EMBEDS_ENABLED", "false"));
+        environment.push(("OES_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", "3"));
+        let config =
+            Config::load_with_environment(Some(&path), environment).expect("valid configuration");
+
+        assert!(config.sharing.shares_enabled);
+        assert!(!config.sharing.embeds_enabled);
+        assert!(config.sharing.require_expiration);
+        assert_eq!(config.sharing.maximum_lifetime_days, 30);
+        assert_eq!(config.sharing.password_attempts_per_minute, 3);
+        assert_eq!(
+            config.sharing.normalized_share_base_url().as_deref(),
+            Some("https://oes.example.com")
+        );
+        // Embeds are published on the storage endpoint, never on the console:
+        // a site loading an asset must not have to reach the management plane.
+        assert_eq!(
+            config.effective_embed_base_url(),
+            "https://storage.example.com"
+        );
+    }
+
+    #[test]
+    fn the_embed_address_falls_back_from_config_to_endpoint_to_listener() {
+        let mut config = valid_config();
+        assert_eq!(
+            config.effective_embed_base_url(),
+            "http://127.0.0.1:7600",
+            "an unspecified bind address must be rendered as something reachable"
+        );
+
+        config.cluster.s3_endpoint = Some("storage.internal:7600".to_owned());
+        assert_eq!(
+            config.effective_embed_base_url(),
+            "http://storage.internal:7600"
+        );
+
+        config.sharing.embed_base_url = Some("https://cdn.example.com/".to_owned());
+        assert_eq!(config.effective_embed_base_url(), "https://cdn.example.com");
+    }
+
+    #[test]
+    fn sharing_defaults_are_permissive_but_bounded() {
+        let config = valid_config();
+        assert!(config.sharing.shares_enabled);
+        assert!(config.sharing.embeds_enabled);
+        assert_eq!(config.sharing.maximum_lifetime_days, 365);
+        assert_eq!(config.sharing.preview_text_limit_bytes, 1024 * 1024);
+        assert!(config.sharing.normalized_share_base_url().is_none());
+        assert!(config.sharing.normalized_embed_base_url().is_none());
+    }
+
+    #[test]
+    fn unsafe_sharing_policy_values_are_refused_at_load() {
+        for (name, value) in [
+            ("OES_SHARING_MAXIMUM_ACCESS_COUNT", "0"),
+            ("OES_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", "0"),
+            ("OES_SHARING_TOKEN_PROBES_PER_MINUTE", "0"),
+            ("OES_SHARING_UNLOCK_LIFETIME_HOURS", "0"),
+            ("OES_SHARING_PREVIEW_TEXT_LIMIT_BYTES", "16"),
+            ("OES_SHARING_MAXIMUM_LIFETIME_DAYS", "100000"),
+            ("OES_SHARING_SHARE_BASE_URL", "javascript:alert(1)"),
+            ("OES_SHARING_SHARE_BASE_URL", "oes.example.com"),
+            ("OES_SHARING_EMBED_BASE_URL", "javascript:alert(1)"),
+            ("OES_SHARING_EMBED_BASE_URL", "storage.example.com"),
+        ] {
+            let mut environment = credentials().to_vec();
+            environment.push((name, value));
+            assert!(
+                matches!(
+                    Config::load_with_environment(None, environment),
+                    Err(ConfigError::Validation(_))
+                ),
+                "accepted unsafe sharing value {name}={value}"
+            );
+        }
     }
 
     #[test]

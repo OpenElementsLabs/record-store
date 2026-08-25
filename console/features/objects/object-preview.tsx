@@ -1,134 +1,119 @@
 'use client';
 
-import { Download, Maximize2 } from 'lucide-react';
+import { Download } from 'lucide-react';
 import * as React from 'react';
 
-import { EmptyState } from '@/components/empty-state';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  AudioViewer,
+  ImageViewer,
+  PdfViewer,
+  TextViewer,
+  UnsupportedPreview,
+  VideoViewer,
+} from '@/features/objects/preview-viewers';
 import { objectContentUrl, objectPreviewUrl } from '@/lib/api/objects';
-import { previewKind } from '@/lib/preview-kind';
-import { formatBytes } from '@/lib/format';
+import { formatBytes, keyBasename } from '@/lib/format';
+import { previewKind, previewKindLabel } from '@/lib/preview-kind';
 import type { ObjectSummary } from '@/types/api';
 
+/** Fallback slice size, used until the deployment reports its own limit. */
+const DEFAULT_TEXT_LIMIT = 1024 * 1024;
+
+/**
+ * The console's preview of one stored object.
+ *
+ * Preview is a different promise from download: download hands over whatever
+ * bytes exist, while preview asks the browser to interpret them, so it is
+ * offered only for media types OES is prepared to be responsible for. The
+ * management API refuses the rest, and this screen is honest about which case
+ * the reader is looking at instead of mounting a viewer that will fail.
+ *
+ * A version can be pinned. When one is, every request on this screen names it,
+ * so opening an old version never shows the current bytes.
+ */
 export function ObjectPreview({
   bucket,
   record,
+  versionId,
+  textLimitBytes = DEFAULT_TEXT_LIMIT,
 }: {
   readonly bucket: string;
   readonly record: ObjectSummary | null;
+  readonly versionId?: string | undefined;
+  readonly textLimitBytes?: number;
 }) {
-  if (record === null) return <Card className="h-40 animate-pulse bg-surface-muted" />;
+  if (record === null) {
+    return (
+      <Card>
+        <CardHeader className="flex-col items-start gap-1">
+          <CardTitle>Preview</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-64 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
 
   const kind = previewKind(record.content_type);
-  const previewUrl = objectPreviewUrl(bucket, record.key, record.version_id);
-  const downloadUrl = objectContentUrl(bucket, record.key);
+  // The pinned version is threaded through explicitly rather than defaulting to
+  // the record's own version: a caller viewing history must never be silently
+  // handed the current bytes.
+  const previewUrl = objectPreviewUrl(bucket, record.key, versionId);
+  // The download inside the preview card names the same version the viewer is
+  // showing. Handing a reader who is looking at history the current bytes would
+  // be handing them the wrong file.
+  const downloadUrl = objectContentUrl(bucket, record.key, versionId);
+  const name = keyBasename(record.key);
+  const download = (
+    <Button asChild variant="secondary" size="sm">
+      <a href={downloadUrl} download>
+        <Download aria-hidden /> Download
+      </a>
+    </Button>
+  );
 
   return (
     <Card>
-      <CardHeader className="flex-col items-start gap-1">
-        <div className="flex w-full items-center justify-between gap-3">
-          <div>
-            <CardTitle>Preview</CardTitle>
-            <CardDescription>{record.content_type ?? 'Unknown content type'}</CardDescription>
-          </div>
-          <Button asChild variant="secondary" size="sm">
-            <a href={downloadUrl} download>
-              <Download aria-hidden /> Download
-            </a>
-          </Button>
+      <CardHeader className="flex-col items-start gap-3 sm:flex-row sm:items-center">
+        <div className="min-w-0">
+          <CardTitle>Preview</CardTitle>
+          <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span>{record.content_type ?? 'Unknown content type'}</span>
+            <span aria-hidden>·</span>
+            <span>{formatBytes(record.size)}</span>
+          </CardDescription>
+        </div>
+        <div className="flex items-center gap-2 sm:ml-auto">
+          <Badge tone="neutral">{previewKindLabel(kind)}</Badge>
+          {versionId ? <Badge tone="info">Historical version</Badge> : null}
+          {download}
         </div>
       </CardHeader>
       <CardContent>
         {kind === 'image' ? (
-          <div className="relative flex min-h-64 items-center justify-center overflow-auto rounded-inner bg-surface-muted p-4">
-            {/* Direct object bytes preserve authenticated streaming and range behavior. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={previewUrl}
-              alt={record.key.split('/').at(-1) ?? 'Object preview'}
-              className="max-h-[65vh] max-w-full object-contain"
-            />
-            <Maximize2 aria-hidden className="absolute right-3 top-3 size-4 text-ink-subtle" />
-          </div>
+          <ImageViewer url={previewUrl} alt={name} size={record.size} />
         ) : kind === 'video' ? (
-          <video
-            controls
-            preload="metadata"
-            className="max-h-[65vh] w-full rounded-inner bg-black"
-            src={previewUrl}
-          />
+          <VideoViewer url={previewUrl} />
         ) : kind === 'audio' ? (
-          <audio controls preload="metadata" className="w-full" src={previewUrl} />
+          <AudioViewer url={previewUrl} />
         ) : kind === 'pdf' ? (
-          <iframe
-            title={`Preview of ${record.key}`}
-            src={previewUrl}
-            className="h-[65vh] w-full rounded-inner border border-border"
-          />
+          <PdfViewer url={previewUrl} title={name} />
         ) : kind === 'text' || kind === 'json' ? (
-          <TextPreview url={previewUrl} kind={kind} size={record.size} />
+          <TextViewer url={previewUrl} kind={kind} size={record.size} limitBytes={textLimitBytes} />
         ) : (
-          <EmptyState
-            title="Preview unavailable"
-            description={`${record.content_type ?? 'application/octet-stream'} · ${formatBytes(record.size)}. This object type cannot be previewed safely.`}
+          <UnsupportedPreview
+            kind={kind}
+            contentType={record.content_type}
+            size={record.size}
+            action={download}
           />
         )}
       </CardContent>
     </Card>
-  );
-}
-
-function TextPreview({
-  url,
-  kind,
-  size,
-}: {
-  readonly url: string;
-  readonly kind: 'text' | 'json';
-  readonly size: number;
-}) {
-  const [state, setState] = React.useState<{ text: string; error: boolean } | null>(null);
-  React.useEffect(() => {
-    let cancelled = false;
-    void fetch(url, { headers: { Range: 'bytes=0-1048575' } })
-      .then((response) => (response.ok ? response.text() : Promise.reject(new Error('preview'))))
-      .then((text) => {
-        if (!cancelled) {
-          let output = text;
-          if (kind === 'json') {
-            try {
-              output = JSON.stringify(JSON.parse(text), null, 2);
-            } catch {
-              // Invalid JSON remains safely escaped plain text.
-            }
-          }
-          setState({ text: output, error: false });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setState({ text: '', error: true });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [kind, url]);
-
-  if (state?.error)
-    return (
-      <EmptyState title="Preview failed" description="The object could not be read right now." />
-    );
-  if (state === null) return <div className="h-48 animate-pulse rounded-inner bg-surface-muted" />;
-  return (
-    <div>
-      <pre className="max-h-[65vh] overflow-auto whitespace-pre-wrap break-words rounded-inner bg-surface-muted p-4 font-mono text-sm">
-        {state.text}
-      </pre>
-      {size > 1024 * 1024 ? (
-        <p className="mt-3 type-meta">
-          Showing the first 1 MiB of this object. Download the file to view the complete content.
-        </p>
-      ) : null}
-    </div>
   );
 }

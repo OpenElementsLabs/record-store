@@ -22,6 +22,15 @@ enum Audience {
     /// Unauthenticated operational probe or scrape target, consumed by
     /// orchestrators and Prometheus rather than by OES's own clients.
     Probe,
+    /// Unauthenticated public capability delivery, where the opaque token in
+    /// the path is the entire authorization. Reached by share recipients and by
+    /// other people's websites, never by the console's authenticated API layer.
+    ///
+    /// `/s/...` is mounted on the management listener and proxied by the
+    /// console, because a share is a page a person opens. `/e/...` is mounted on
+    /// the storage listener instead, because an embed serves object bytes into
+    /// somebody else's page and must not require reaching the management plane.
+    PublicCapability,
 }
 
 impl Audience {
@@ -39,6 +48,8 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/buckets/{}/lifecycle", Audience::Console),
     ("/api/v1/buckets/{}/lifecycle/{}", Audience::Console),
     ("/api/v1/buckets/{}/object-copy/{}", Audience::Console),
+    ("/api/v1/buckets/{}/object-embeds/{}", Audience::Console),
+    ("/api/v1/buckets/{}/object-shares/{}", Audience::Console),
     ("/api/v1/buckets/{}/object-content/{}", Audience::Console),
     ("/api/v1/buckets/{}/object-preview/{}", Audience::Console),
     ("/api/v1/buckets/{}/object-versions", Audience::Console),
@@ -68,6 +79,9 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/rebalance/status", Audience::ConsoleAndCli),
     ("/api/v1/repair/status", Audience::ConsoleAndCli),
     ("/api/v1/restore/{}/{}", Audience::Console),
+    ("/api/v1/embeds/{}", Audience::Console),
+    ("/api/v1/embeds/{}/revoke", Audience::Console),
+    ("/api/v1/embeds/{}/url", Audience::Console),
     ("/api/v1/service-accounts", Audience::Console),
     ("/api/v1/service-accounts/{}", Audience::ConsoleAndCli),
     (
@@ -86,6 +100,10 @@ const CLASSIFIED: &[(&str, Audience)] = &[
         "/api/v1/service-accounts/{}/temporary-credentials",
         Audience::Cli,
     ),
+    ("/api/v1/shares/{}", Audience::Console),
+    ("/api/v1/shares/{}/revoke", Audience::Console),
+    ("/api/v1/shares/{}/url", Audience::Console),
+    ("/api/v1/sharing/settings", Audience::Console),
     ("/api/v1/storage/inspect", Audience::ConsoleAndCli),
     ("/api/v1/storage/repair", Audience::ConsoleAndCli),
     ("/api/v1/storage/status", Audience::Console),
@@ -98,9 +116,13 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/webhooks", Audience::ConsoleAndCli),
     ("/api/v1/webhooks/{}", Audience::Console),
     ("/api/v1/webhooks/{}/status", Audience::Console),
+    ("/e/{}", Audience::PublicCapability),
     ("/health", Audience::Probe),
     ("/metrics", Audience::Probe),
     ("/ready", Audience::Probe),
+    ("/s/{}", Audience::PublicCapability),
+    ("/s/{}/content", Audience::PublicCapability),
+    ("/s/{}/unlock", Audience::PublicCapability),
 ];
 
 /// The management router's own source, read at compile time.
@@ -284,7 +306,7 @@ fn the_console_only_calls_routes_that_exist() {
 }
 
 #[test]
-fn probes_are_the_only_unauthenticated_surface() {
+fn the_unauthenticated_surface_is_exactly_probes_and_capability_delivery() {
     let probes: Vec<&str> = CLASSIFIED
         .iter()
         .filter(|(_, audience)| *audience == Audience::Probe)
@@ -293,4 +315,28 @@ fn probes_are_the_only_unauthenticated_surface() {
     // Anything else being anonymous would be an information disclosure; the
     // authenticated surface is asserted end to end in the server tests.
     assert_eq!(probes, vec!["/health", "/metrics", "/ready"]);
+
+    // The public capability routes are the only other anonymous surface, and
+    // this list is what stops that surface growing by accident. Every entry
+    // takes an opaque token as its first segment and can reach nothing but the
+    // single object that token names.
+    let public: Vec<&str> = CLASSIFIED
+        .iter()
+        .filter(|(_, audience)| *audience == Audience::PublicCapability)
+        .map(|(path, _)| *path)
+        .collect();
+    assert_eq!(
+        public,
+        vec!["/e/{}", "/s/{}", "/s/{}/content", "/s/{}/unlock"]
+    );
+    for path in public {
+        assert!(
+            path.starts_with("/s/{}") || path.starts_with("/e/{}"),
+            "{path} is public but is not addressed by a capability token"
+        );
+        assert!(
+            !path.starts_with("/api/"),
+            "{path} puts public access inside the administrative tree"
+        );
+    }
 }

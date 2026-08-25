@@ -73,6 +73,42 @@ poll_interval_seconds = 2
 interval_seconds = 3600
 batch_size = 100
 
+[sharing]
+# Share links are for people; embed links are for websites and applications.
+# Both are unguessable, individually revocable capabilities that grant read
+# access to exactly one object. Neither is ever a general storage credential.
+shares_enabled = true
+embeds_enabled = true
+# Ceiling on how long a new link may live. Zero removes the ceiling, which
+# means an administrator can create a link nobody will ever remember to retire.
+maximum_lifetime_days = 365
+# Turn these on for deployments where every externally shared object is
+# sensitive by default.
+require_expiration = false
+require_share_password = false
+maximum_access_count = 10000
+# Abuse controls for the public routes. Password guessing is throttled per link
+# and per client so a public link can never be locked for everyone; ordinary
+# media range requests are not throttled at all.
+password_attempts_per_minute = 10
+token_probes_per_minute = 60
+unlock_lifetime_hours = 12
+# How much of a text or JSON object the console preview reads. The console says
+# when it is showing a slice; the stored object is never altered.
+preview_text_limit_bytes = 1048576
+# Where each kind of link is published. A share link is a page a person opens,
+# so it lives on the console. An embed serves object bytes into somebody else's
+# page, so it lives on the S3-compatible storage endpoint — which is what lets a
+# deployment expose storage to the internet while the management plane and the
+# console stay closed.
+#
+# Leave share_base_url unset for a single-origin deployment; the console
+# completes the link against the origin the administrator is already using.
+# embed_base_url falls back to cluster.s3_endpoint and then to the S3 listener
+# address, which is right for a local install and wrong behind any proxy.
+# share_base_url = "https://oes.example.com"
+# embed_base_url = "https://storage.example.com"
+
 [observability]
 log_filter = "oes=info,tower_http=info"
 json = false

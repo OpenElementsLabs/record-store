@@ -22,6 +22,7 @@ const admin: RolePermissions = {
   read_audit: true,
   manage_cluster: true,
   manage_storage: true,
+  manage_sharing: true,
 };
 
 const auditor: RolePermissions = {
@@ -33,6 +34,7 @@ const auditor: RolePermissions = {
   read_audit: true,
   manage_cluster: false,
   manage_storage: false,
+  manage_sharing: false,
 };
 
 describe('buildCommands', () => {

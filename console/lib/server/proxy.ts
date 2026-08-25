@@ -16,18 +16,40 @@ const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  * Headers forwarded upstream.
  *
  * An allowlist is used so browser-controlled headers cannot influence how the
- * management API authenticates or authorises the call.
+ * management API authenticates or authorises the call. `Range` and its
+ * validators are on the list because a preview of a large video or PDF is a
+ * sequence of partial reads: without them the browser asks for a slice, receives
+ * the whole object, and seeking silently stops working.
  */
-const FORWARDED_REQUEST_HEADERS = ['content-type', 'accept', 'x-request-id'];
+const FORWARDED_REQUEST_HEADERS = [
+  'content-type',
+  'accept',
+  'range',
+  'if-range',
+  'if-none-match',
+  'if-modified-since',
+  'x-request-id',
+];
 
-/** Headers copied back to the browser. */
+/**
+ * Headers copied back to the browser.
+ *
+ * `Content-Range` and `Accept-Ranges` are what make a `206` mean anything: a
+ * partial response without them is a truncated object as far as the browser is
+ * concerned.
+ */
 const FORWARDED_RESPONSE_HEADERS = [
   'content-type',
   'content-length',
   'content-disposition',
+  'content-range',
+  'accept-ranges',
   'etag',
+  'last-modified',
   'x-request-id',
   'cache-control',
+  'x-content-type-options',
+  'content-security-policy',
 ];
 
 function jsonError(status: number, code: string, message: string): Response {
@@ -112,6 +134,9 @@ export async function forwardToManagementApi(
   }
   // Object payloads must never be cached by an intermediary on the way back.
   responseHeaders.set('cache-control', 'no-store');
+  // A preview of an untrusted object must not be sniffed into something else,
+  // whatever the upstream said.
+  responseHeaders.set('x-content-type-options', 'nosniff');
 
   // The upstream body is streamed rather than buffered so object transfers are
   // bounded by the network, not by this process's memory.

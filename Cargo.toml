@@ -20,6 +20,7 @@ members = [
     "crates/oes-rpc",
     "crates/oes-s3",
     "crates/oes-service",
+    "crates/oes-sharing",
     "crates/oes-storage",
 ]
 
@@ -33,6 +34,7 @@ authors = ["OES contributors"]
 [workspace.dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.99"
+argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "password-hash"] }
 async-trait = "0.1.89"
 axum = "0.8.4"
 base64 = "0.22.1"
@@ -43,6 +45,7 @@ criterion = { version = "0.7.0", features = ["async_tokio"] }
 futures-core = "0.3.31"
 futures-util = "0.3.31"
 fs2 = "0.4.3"
+getrandom = "0.4.3"
 hex = "0.4.3"
 hkdf = "0.12.4"
 hmac = "0.12.1"

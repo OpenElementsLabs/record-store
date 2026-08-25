@@ -16,6 +16,16 @@ export function managementApiUrl(): string {
 export const SESSION_COOKIE = 'oes_session';
 
 /**
+ * Name of the cookie carrying proof that a share password was entered.
+ *
+ * Deliberately not `HttpOnly`: the share page sets it after an in-page unlock,
+ * and it is safe for script to hold because it authorizes nothing on its own.
+ * Every request it accompanies is still checked against the share's durable
+ * state, so a stolen ticket stops working the instant the link is revoked.
+ */
+export const SHARE_TICKET_COOKIE = 'oes_share_ticket';
+
+/**
  * Whether cookies must be marked `Secure`.
  *
  * Enabled in production by default so a token is never sent over plain HTTP,

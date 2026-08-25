@@ -1,5 +1,7 @@
 //! Native operational and authenticated management HTTP API.
 
+mod sharing;
+
 use std::{
     fmt::{self, Display, Formatter},
     future::{Future, IntoFuture},
@@ -28,8 +30,8 @@ use oes_config::DeploymentMode;
 use oes_consensus::MetadataConsensus;
 use oes_core::{
     Bucket, BucketName, BucketQuota, ClusterId, ExpirationDays, LifecycleRule, LifecycleRuleId,
-    NodeId, ObjectKey, ObjectMetadata, OrganizationId, ServiceAccountId, StorageUsage, VersionId,
-    VersioningState, WebhookId,
+    NodeId, ObjectKey, ObjectMetadata, OrganizationId, PreviewKind, ServiceAccountId, StorageUsage,
+    VersionId, VersioningState, WebhookId,
 };
 use oes_events::{
     CreateWebhookRequest, CreatedWebhook, EventRepository, WebhookDeliveryLog, WebhookSubscription,
@@ -39,6 +41,7 @@ use oes_replication::{
     ClusterContext, ClusterOperations, ClusterStatus, OperationError, TaskHealth,
 };
 use oes_service::{ServiceError, ServiceListRequest, Services};
+use oes_sharing::redact_capability_path;
 use oes_storage::{
     ObjectStore, StorageInspection, StorageRepairRequest, StorageRepairResult, StorageStatus,
 };
@@ -51,7 +54,69 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, error, info, info_span};
 use uuid::Uuid;
 
+pub use crate::sharing::SharingManagement;
+
 static REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+
+/// Bounded counters for preview and capability traffic.
+///
+/// Every value is a plain total with no labels at all. That is deliberate: the
+/// natural dimensions here — a token, an object key, a request identifier —
+/// are unbounded and attacker-influenced, and putting any of them on a metric
+/// would turn a scrape endpoint into a memory leak with a public trigger.
+#[derive(Debug, Default)]
+pub struct SharingMetrics {
+    preview_requests: std::sync::atomic::AtomicU64,
+    preview_failures: std::sync::atomic::AtomicU64,
+    share_accesses: std::sync::atomic::AtomicU64,
+    share_denials: std::sync::atomic::AtomicU64,
+    shares_created: std::sync::atomic::AtomicU64,
+    embed_requests: std::sync::atomic::AtomicU64,
+    embed_denials: std::sync::atomic::AtomicU64,
+    embeds_created: std::sync::atomic::AtomicU64,
+}
+
+impl SharingMetrics {
+    fn bump(counter: &std::sync::atomic::AtomicU64) {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn read(counter: &std::sync::atomic::AtomicU64) -> u64 {
+        counter.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn preview_request(&self) {
+        Self::bump(&self.preview_requests);
+    }
+
+    fn preview_failure(&self) {
+        Self::bump(&self.preview_failures);
+    }
+
+    fn share_access(&self) {
+        Self::bump(&self.share_accesses);
+    }
+
+    fn share_denied(&self) {
+        Self::bump(&self.share_denials);
+    }
+
+    fn shares_created(&self) {
+        Self::bump(&self.shares_created);
+    }
+
+    fn embed_request(&self) {
+        Self::bump(&self.embed_requests);
+    }
+
+    fn embed_denied(&self) {
+        Self::bump(&self.embed_denials);
+    }
+
+    fn embeds_created(&self) {
+        Self::bump(&self.embeds_created);
+    }
+}
 
 /// Explicit dependencies shared by native HTTP handlers.
 #[derive(Clone)]
@@ -68,6 +133,8 @@ pub struct AppState {
     metrics_auth: MetricsAuth,
     events: Option<Arc<dyn EventRepository>>,
     cluster: Option<ClusterManagement>,
+    sharing: Option<SharingManagement>,
+    sharing_metrics: Arc<SharingMetrics>,
 }
 
 /// Cluster services exposed through the authenticated management API.
@@ -127,6 +194,8 @@ impl AppState {
             metrics_auth: MetricsAuth::disabled(),
             events: None,
             cluster: None,
+            sharing: None,
+            sharing_metrics: Arc::new(SharingMetrics::default()),
         }
     }
 
@@ -165,6 +234,17 @@ impl AppState {
         self
     }
 
+    /// Adds share and embed capabilities, including their public routes.
+    ///
+    /// Absent by default. A deployment that never calls this serves no public
+    /// capability surface at all, and the management routes report the feature
+    /// as unavailable rather than failing in some less obvious way.
+    #[must_use]
+    pub fn with_sharing(mut self, sharing: SharingManagement) -> Self {
+        self.sharing = Some(sharing);
+        self
+    }
+
     async fn check_ready(&self) -> Result<(), ReadinessError> {
         tokio::try_join!(
             async {
@@ -192,6 +272,14 @@ impl AppState {
                 Ok(())
             },
         )?;
+        if let Some(sharing) = &self.sharing {
+            sharing
+                .service()
+                .store()
+                .check_ready()
+                .await
+                .map_err(|error| ReadinessError::Sharing(error.to_string()))?;
+        }
         if let Some(cluster) = &self.cluster {
             let status = cluster.status().await.map_err(ReadinessError::Cluster)?;
             if !status.metadata.status.readable
@@ -231,6 +319,12 @@ struct RolePermissions {
     read_audit: bool,
     manage_cluster: bool,
     manage_storage: bool,
+    /// Whether this role may create and withdraw share and embed links.
+    ///
+    /// Separate from `manage_objects` because the two are different authorities:
+    /// one changes what OES stores, the other decides who outside OES can read
+    /// it. A role can reasonably have either without the other.
+    manage_sharing: bool,
 }
 
 impl RolePermissions {
@@ -245,6 +339,7 @@ impl RolePermissions {
                 read_audit: true,
                 manage_cluster: true,
                 manage_storage: true,
+                manage_sharing: true,
             },
             ManagementRole::StorageAdministrator => Self {
                 manage_buckets: true,
@@ -255,6 +350,7 @@ impl RolePermissions {
                 read_audit: false,
                 manage_cluster: false,
                 manage_storage: true,
+                manage_sharing: true,
             },
             ManagementRole::Auditor => Self {
                 manage_buckets: false,
@@ -265,6 +361,7 @@ impl RolePermissions {
                 read_audit: true,
                 manage_cluster: false,
                 manage_storage: false,
+                manage_sharing: false,
             },
         }
     }
@@ -429,8 +526,18 @@ impl ManagementPrincipal {
                     && !path.starts_with("/api/v1/webhook-deliveries")
             }
             ManagementRole::Auditor => {
+                // An auditor may see that a capability exists and what it
+                // grants, but never its URL: the URL is the capability, and
+                // reading one would be an escalation dressed as a report.
+                let capability_metadata = (path.starts_with("/api/v1/shares")
+                    || path.starts_with("/api/v1/embeds")
+                    || path.contains("/object-shares/")
+                    || path.contains("/object-embeds/"))
+                    && !path.ends_with("/url");
                 request.method() == axum::http::Method::GET
-                    && (path == "/api/v1/auth/session"
+                    && (capability_metadata
+                        || path == "/api/v1/sharing/settings"
+                        || path == "/api/v1/auth/session"
                         || path == "/api/v1/system/info"
                         || path == "/api/v1/events"
                         || path == "/api/v1/audit/events"
@@ -603,6 +710,35 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/verify/buckets/{bucket}",
             axum::routing::post(verify_bucket),
         )
+        .route("/api/v1/sharing/settings", get(sharing::sharing_settings))
+        .route(
+            "/api/v1/buckets/{bucket}/object-shares/{*key}",
+            get(sharing::list_object_shares).post(sharing::create_object_share),
+        )
+        .route(
+            "/api/v1/shares/{id}",
+            get(sharing::get_share).delete(sharing::delete_share),
+        )
+        .route("/api/v1/shares/{id}/url", get(sharing::get_share_url))
+        .route(
+            "/api/v1/shares/{id}/revoke",
+            axum::routing::post(sharing::revoke_share),
+        )
+        .route(
+            "/api/v1/buckets/{bucket}/object-embeds/{*key}",
+            get(sharing::list_object_embeds).post(sharing::create_object_embed),
+        )
+        .route(
+            "/api/v1/embeds/{id}",
+            get(sharing::get_embed)
+                .patch(sharing::update_embed)
+                .delete(sharing::delete_embed),
+        )
+        .route("/api/v1/embeds/{id}/url", get(sharing::get_embed_url))
+        .route(
+            "/api/v1/embeds/{id}/revoke",
+            axum::routing::post(sharing::revoke_embed),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.management_auth.clone(),
             require_management,
@@ -615,13 +751,55 @@ pub fn router(state: AppState) -> Router {
                 require_metrics,
             ));
 
+    // Public share delivery. These routes carry no session and are deliberately
+    // outside the administrative tree: the token in the path is the entire
+    // authorization, and it is re-checked against durable state on every request
+    // so a revocation lands on the next one. Embed delivery is not here — it
+    // belongs on the storage data plane, and [`embed_router`] mounts it there.
+    let public_capabilities = Router::new()
+        .route("/s/{token}", get(sharing::public_share_descriptor))
+        .route(
+            "/s/{token}/unlock",
+            axum::routing::post(sharing::public_share_unlock),
+        )
+        .route("/s/{token}/content", get(sharing::public_share_content));
+
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
         .merge(operational_metrics)
+        .merge(public_capabilities)
         .merge(administrative)
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            request_context,
+        ))
+        .with_state(state)
+}
+
+/// Public embed delivery, mounted on the storage data plane rather than here.
+///
+/// An embed URL is pasted into somebody else's `<img>` tag, so it has to live
+/// where object bytes already live: the S3-compatible endpoint a deployment
+/// publishes, not the administrative console. Two things follow from that. A
+/// site loading an asset never touches the management plane, which can stay
+/// closed to the internet; and the bytes never travel through a document server
+/// that would have to re-issue them through a body limit.
+///
+/// The router carries no authentication layer at all. That is the point: the
+/// opaque token in the path is the entire authorization, and it is re-resolved
+/// against durable state on every request. It is merged alongside the S3
+/// operations rather than inside them, so nothing here can reach an S3 handler
+/// and no S3 credential is ever consulted. The prefix cannot collide with a
+/// bucket, because a bucket name is at least three characters.
+pub fn embed_router(state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/e/{token}",
+            get(sharing::public_embed_content).options(sharing::public_embed_preflight),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             request_context,
@@ -1065,20 +1243,31 @@ async fn list_bucket_objects(
 }
 
 /// Returns one object's metadata without transferring its bytes.
+///
+/// A `version_id` names an exact immutable version. Without one the current
+/// version is returned; the two are never substituted for one another, because a
+/// caller inspecting history that silently receives the current metadata has
+/// been told something false.
 async fn get_bucket_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
+    Query(query): Query<PreviewQuery>,
     Extension(request_id): Extension<RequestId>,
 ) -> Result<Json<ObjectSummary>, ApiError> {
     let name = parse_bucket_name(&bucket, &request_id)?;
     let key = parse_object_key(&key, &request_id)?;
-    state
-        .services
-        .objects
-        .head(&name, key)
-        .await
-        .map(|metadata| Json(ObjectSummary::from(metadata)))
-        .map_err(|error| service_to_api_error(error, request_id))
+    match query.version_id {
+        Some(version_id) => {
+            state
+                .services
+                .objects
+                .head_version(&name, key, version_id)
+                .await
+        }
+        None => state.services.objects.head(&name, key).await,
+    }
+    .map(|metadata| Json(ObjectSummary::from(metadata)))
+    .map_err(|error| service_to_api_error(error, request_id))
 }
 
 /// Streams an object's bytes to the caller.
@@ -1088,16 +1277,25 @@ async fn get_bucket_object(
 async fn download_bucket_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
+    Query(query): Query<PreviewQuery>,
     Extension(request_id): Extension<RequestId>,
 ) -> Result<Response, ApiError> {
     let name = parse_bucket_name(&bucket, &request_id)?;
     let key = parse_object_key(&key, &request_id)?;
-    let result = state
-        .services
-        .objects
-        .get(&name, key.clone(), None)
-        .await
-        .map_err(|error| service_to_api_error(error, request_id.clone()))?;
+    let result = match query.version_id {
+        Some(version_id) => {
+            state
+                .services
+                .objects
+                .get_version(&name, key.clone(), version_id, None)
+                .await
+        }
+        None => state.services.objects.get(&name, key.clone(), None).await,
+    }
+    .map_err(|error| service_to_api_error(error, request_id.clone()))?;
+    // A download is an attachment whatever the bytes turn out to be, so the
+    // declared media type is carried through rather than reinterpreted. What
+    // makes that safe is the disposition and `nosniff` below, not the type.
     let content_type = result
         .metadata
         .content_type
@@ -1132,10 +1330,24 @@ async fn download_bucket_object(
             filename.replace(['\\', '"'], "_")
         ),
     );
+    // The declared type is caller-supplied, so the browser is told plainly not
+    // to look for a better one.
+    insert_header(headers, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+    insert_header(
+        headers,
+        header::CACHE_CONTROL,
+        "private, no-store, max-age=0",
+    );
     Ok(response)
 }
 
 /// Streams an explicitly safe inline preview without changing download semantics.
+///
+/// Preview and download are two different promises. Download hands an operator
+/// an attachment whatever the bytes turn out to be; preview asks a browser to
+/// interpret them, and so it is only ever offered for media types OES is willing
+/// to be responsible for. This route therefore refuses far more than the
+/// download route does, and its refusals are the point rather than a gap.
 async fn preview_bucket_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
@@ -1143,8 +1355,12 @@ async fn preview_bucket_object(
     headers: header::HeaderMap,
     Extension(request_id): Extension<RequestId>,
 ) -> Result<Response, ApiError> {
+    state.sharing_metrics.preview_request();
     let name = parse_bucket_name(&bucket, &request_id)?;
     let object_key = parse_object_key(&key, &request_id)?;
+    // The version the caller asked for is the version that is inspected, and
+    // later the version that is read. Falling back to "current" when a specific
+    // one was requested would quietly show the wrong bytes.
     let metadata = match query.version_id {
         Some(version_id) => {
             state
@@ -1155,7 +1371,36 @@ async fn preview_bucket_object(
         }
         None => state.services.objects.head(&name, object_key.clone()).await,
     }
+    .inspect_err(|_| state.sharing_metrics.preview_failure())
     .map_err(|error| service_to_api_error(error, request_id.clone()))?;
+
+    let kind = PreviewKind::classify(metadata.content_type.as_deref());
+    let Some(content_type) =
+        PreviewKind::canonical_content_type(metadata.content_type.as_deref().unwrap_or_default())
+            .filter(|_| kind.allows_inline())
+    else {
+        state.sharing_metrics.preview_failure();
+        return Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "PREVIEW_UNSUPPORTED",
+            "This object type cannot be previewed safely",
+            request_id,
+        ));
+    };
+    // The stored media type came from whoever uploaded the object. Serving it
+    // inline on that word alone would let an uploader choose how a browser
+    // interprets their bytes, so the object's own leading bytes have to agree.
+    verify_preview_signature(
+        &state,
+        &name,
+        &object_key,
+        query.version_id,
+        &metadata,
+        &request_id,
+    )
+    .await
+    .inspect_err(|_| state.sharing_metrics.preview_failure())?;
+
     let range = parse_preview_range(&headers, metadata.size, &request_id)?;
     let result = match query.version_id {
         Some(version_id) => {
@@ -1167,8 +1412,8 @@ async fn preview_bucket_object(
         }
         None => state.services.objects.get(&name, object_key, range).await,
     }
+    .inspect_err(|_| state.sharing_metrics.preview_failure())
     .map_err(|error| service_to_api_error(error, request_id.clone()))?;
-    let content_type = preview_content_type(result.metadata.content_type.as_deref(), &request_id)?;
     let length = result
         .range
         .map_or(result.metadata.size, |value| value.length);
@@ -1186,7 +1431,7 @@ async fn preview_bucket_object(
     )
         .into_response();
     let response_headers = response.headers_mut();
-    insert_header(response_headers, header::CONTENT_TYPE, &content_type);
+    insert_header(response_headers, header::CONTENT_TYPE, content_type);
     insert_header(
         response_headers,
         header::CONTENT_LENGTH,
@@ -1195,6 +1440,25 @@ async fn preview_bucket_object(
     insert_header(response_headers, header::ACCEPT_RANGES, "bytes");
     insert_header(response_headers, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
     insert_header(response_headers, header::CONTENT_DISPOSITION, "inline");
+    insert_header(
+        response_headers,
+        header::ETAG,
+        &format!("\"{}\"", result.metadata.etag.as_str()),
+    );
+    // Preview bytes are authenticated content that must not outlive the session
+    // that fetched them in any shared cache.
+    insert_header(
+        response_headers,
+        header::CACHE_CONTROL,
+        "private, no-store, max-age=0",
+    );
+    // Stored bytes get their own opaque origin. A PDF still renders, and
+    // anything it tries to execute has no origin to execute against.
+    insert_header(
+        response_headers,
+        header::CONTENT_SECURITY_POLICY,
+        sharing::SHARE_CONTENT_POLICY,
+    );
     if let Some(range) = result.range {
         insert_header(
             response_headers,
@@ -1208,6 +1472,60 @@ async fn preview_bucket_object(
         );
     }
     Ok(response)
+}
+
+/// Confirms an object's leading bytes agree with the media type it claims.
+async fn verify_preview_signature(
+    state: &AppState,
+    bucket: &BucketName,
+    key: &ObjectKey,
+    version_id: Option<VersionId>,
+    metadata: &ObjectMetadata,
+    request_id: &RequestId,
+) -> Result<(), ApiError> {
+    let Some(content_type) = metadata.content_type.as_deref() else {
+        return Ok(());
+    };
+    if metadata.size == 0 {
+        return Ok(());
+    }
+    let probe_length = metadata
+        .size
+        .min(oes_core::CONTENT_SIGNATURE_PROBE_BYTES as u64);
+    let Ok(range) = oes_core::ByteRange::new(0, probe_length) else {
+        return Ok(());
+    };
+    let result = match version_id {
+        Some(version_id) => {
+            state
+                .services
+                .objects
+                .get_version(bucket, key.clone(), version_id, Some(range))
+                .await
+        }
+        None => {
+            state
+                .services
+                .objects
+                .get(bucket, key.clone(), Some(range))
+                .await
+        }
+    }
+    .map_err(|error| service_to_api_error(error, request_id.clone()))?;
+    let prefix = sharing::read_probe(result).await.map_err(|error| {
+        error!(%error, request_id = %request_id, "content signature probe failed");
+        ApiError::internal(request_id.clone())
+    })?;
+    if oes_core::content_signature_matches(content_type, &prefix) {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "CONTENT_TYPE_MISMATCH",
+            "This object's contents do not match its recorded media type, so it will not be shown inline",
+            request_id.clone(),
+        ))
+    }
 }
 
 /// Streams an uploaded object into storage.
@@ -2412,10 +2730,27 @@ struct MetricsSnapshot {
     /// Bytes served to clients since this process started.
     download_bytes: u64,
     storage: StorageMetrics,
+    /// Preview, share, and embed activity.
+    sharing: CapabilityMetrics,
     /// Present only in cluster mode, so a standalone console shows no cluster
     /// figures rather than zeroes that look like a broken cluster.
     #[serde(skip_serializing_if = "Option::is_none")]
     cluster: Option<ClusterMetrics>,
+}
+
+/// Preview and capability counters, plus live capability counts.
+#[derive(Debug, Default, Serialize)]
+struct CapabilityMetrics {
+    preview_requests: u64,
+    preview_failures: u64,
+    shares_created: u64,
+    share_access: u64,
+    share_access_denied: u64,
+    share_links_active: u64,
+    embeds_created: u64,
+    embed_requests: u64,
+    embed_denied: u64,
+    embeds_active: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -2488,6 +2823,41 @@ async fn gather_metrics(
         }
     }
 
+    let counters = &state.sharing_metrics;
+    let mut sharing_metrics = CapabilityMetrics {
+        preview_requests: SharingMetrics::read(&counters.preview_requests),
+        preview_failures: SharingMetrics::read(&counters.preview_failures),
+        shares_created: SharingMetrics::read(&counters.shares_created),
+        share_access: SharingMetrics::read(&counters.share_accesses),
+        share_access_denied: SharingMetrics::read(&counters.share_denials),
+        embeds_created: SharingMetrics::read(&counters.embeds_created),
+        embed_requests: SharingMetrics::read(&counters.embed_requests),
+        embed_denied: SharingMetrics::read(&counters.embed_denials),
+        ..CapabilityMetrics::default()
+    };
+    if let Some(sharing) = &state.sharing {
+        let now = chrono::Utc::now();
+        match sharing.service().store().list_shares().await {
+            Ok(links) => {
+                sharing_metrics.share_links_active = links
+                    .iter()
+                    .filter(|link| link.status(now).usable())
+                    .count() as u64;
+            }
+            // A capability read failure must not fail the whole scrape.
+            Err(error) => error!(%error, "active share count could not be collected"),
+        }
+        match sharing.service().store().list_embeds().await {
+            Ok(links) => {
+                sharing_metrics.embeds_active = links
+                    .iter()
+                    .filter(|link| link.status(now).usable())
+                    .count() as u64;
+            }
+            Err(error) => error!(%error, "active embed count could not be collected"),
+        }
+    }
+
     Ok(MetricsSnapshot {
         requests: metrics.requests,
         errors: metrics.errors,
@@ -2501,6 +2871,7 @@ async fn gather_metrics(
             physical_bytes: usage.physical_bytes,
             multipart_bytes: usage.temporary_multipart_bytes,
         },
+        sharing: sharing_metrics,
         cluster: cluster_metrics,
     })
 }
@@ -2537,6 +2908,52 @@ fn prometheus_exposition(snapshot: &MetricsSnapshot) -> String {
         "gauge",
         snapshot.storage.multipart_bytes,
     );
+    gauge(
+        "oes_preview_requests_total",
+        "counter",
+        snapshot.sharing.preview_requests,
+    );
+    gauge(
+        "oes_preview_failures_total",
+        "counter",
+        snapshot.sharing.preview_failures,
+    );
+    gauge(
+        "oes_share_links_created_total",
+        "counter",
+        snapshot.sharing.shares_created,
+    );
+    gauge(
+        "oes_share_access_total",
+        "counter",
+        snapshot.sharing.share_access,
+    );
+    gauge(
+        "oes_share_access_denied_total",
+        "counter",
+        snapshot.sharing.share_access_denied,
+    );
+    gauge(
+        "oes_share_links_active",
+        "gauge",
+        snapshot.sharing.share_links_active,
+    );
+    gauge(
+        "oes_embeds_created_total",
+        "counter",
+        snapshot.sharing.embeds_created,
+    );
+    gauge(
+        "oes_embed_requests_total",
+        "counter",
+        snapshot.sharing.embed_requests,
+    );
+    gauge(
+        "oes_embed_denied_total",
+        "counter",
+        snapshot.sharing.embed_denied,
+    );
+    gauge("oes_embeds_active", "gauge", snapshot.sharing.embeds_active);
     gauge("oes_upload_bytes_total", "counter", snapshot.upload_bytes);
     gauge(
         "oes_download_bytes_total",
@@ -2826,13 +3243,30 @@ async fn request_context(
     request.extensions_mut().insert(request_id.clone());
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
+    // A public capability route carries its secret in the path, and the tracing
+    // stack records paths verbatim. Redacting here — before the span is opened
+    // and before anything else in this function sees it — is what keeps the
+    // ordinary request log from becoming a list of working share links.
+    let logged_path = redact_capability_path(&path);
+    // Resolved once, here, because every public capability handler needs it and
+    // because deciding what counts as "one client" is a policy question that
+    // deserves a single answer rather than one per route.
+    let client = ClientIdentity(sharing::client_identity(
+        request.headers(),
+        request.extensions().get::<ConnectInfo<SocketAddr>>(),
+    ));
+    request.extensions_mut().insert(client);
     let source_ip = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|connect| connect.0.ip().to_string());
     let started = Instant::now();
-    let span =
-        info_span!("http.request", request_id = %request_id, method = %method, route = %path);
+    let span = info_span!(
+        "http.request",
+        request_id = %request_id,
+        method = %method,
+        route = %logged_path
+    );
     let mut response = next.run(request).instrument(span.clone()).await;
     let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     info!(parent: &span, status = response.status().as_u16(), latency_ms, "request completed");
@@ -2862,8 +3296,8 @@ async fn request_context(
                 .into(),
             credential_id: None,
             source_ip,
-            operation: format!("{} {}", method, path),
-            resource: path,
+            operation: format!("{method} {logged_path}"),
+            resource: logged_path,
             result,
             metadata: Default::default(),
         };
@@ -2872,6 +3306,19 @@ async fn request_context(
         }
     }
     response
+}
+
+/// Who abuse controls treat one public request as coming from.
+///
+/// Resolved once per request from the forwarded address or the socket, and
+/// carried as a value so that no handler is tempted to invent its own rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClientIdentity(String);
+
+impl ClientIdentity {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// A validated request correlation identifier.
@@ -3047,41 +3494,7 @@ struct PreviewQuery {
     version_id: Option<VersionId>,
 }
 
-fn preview_content_type(
-    content_type: Option<&str>,
-    request_id: &RequestId,
-) -> Result<String, ApiError> {
-    let content_type = content_type.unwrap_or("application/octet-stream");
-    let safe = matches!(
-        content_type,
-        "image/jpeg"
-            | "image/png"
-            | "image/webp"
-            | "image/gif"
-            | "video/mp4"
-            | "video/webm"
-            | "audio/mpeg"
-            | "audio/ogg"
-            | "audio/wav"
-            | "audio/webm"
-            | "application/pdf"
-            | "text/plain"
-            | "text/markdown"
-            | "application/json"
-    );
-    if safe {
-        Ok(content_type.to_owned())
-    } else {
-        Err(ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "PREVIEW_UNSUPPORTED",
-            "This object type cannot be previewed safely",
-            request_id.clone(),
-        ))
-    }
-}
-
-fn parse_preview_range(
+pub(crate) fn parse_preview_range(
     headers: &header::HeaderMap,
     size: u64,
     request_id: &RequestId,
@@ -3383,6 +3796,9 @@ enum ReadinessError {
     Metadata(oes_metadata::MetadataError),
     #[error("audit dependency failed: {0}")]
     Audit(oes_audit::AuditError),
+    /// The capability store is not reachable.
+    #[error("sharing dependency failed: {0}")]
+    Sharing(String),
     #[error("event dependency failed: {0}")]
     Events(oes_events::EventError),
     #[error("cluster dependency failed: {0}")]

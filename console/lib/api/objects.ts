@@ -32,14 +32,25 @@ export function fetchObjects(
   });
 }
 
+/**
+ * Reads one object's metadata.
+ *
+ * A version identifier names an exact immutable version. It is threaded through
+ * rather than defaulted, because a screen showing history that quietly receives
+ * the current metadata is showing the wrong object.
+ */
 export function fetchObject(
   bucket: string,
   key: string,
+  versionId?: string | undefined,
   signal?: AbortSignal,
 ): Promise<ObjectSummary> {
   return request<ObjectSummary>(
     `/v1/buckets/${encodeURIComponent(bucket)}/object/${encodeObjectKey(key)}`,
-    signal ? { signal } : {},
+    {
+      ...(versionId ? { query: { version_id: versionId } } : {}),
+      ...(signal ? { signal } : {}),
+    },
   );
 }
 
@@ -132,8 +143,11 @@ export function restoreObjectVersion(
  * The browser fetches this directly so payloads never pass through JavaScript
  * memory, and the session cookie authorises the transfer.
  */
-export function objectContentUrl(bucket: string, key: string): string {
-  return apiUrl(`/v1/buckets/${encodeURIComponent(bucket)}/object-content/${encodeObjectKey(key)}`);
+export function objectContentUrl(bucket: string, key: string, versionId?: string): string {
+  return apiUrl(
+    `/v1/buckets/${encodeURIComponent(bucket)}/object-content/${encodeObjectKey(key)}`,
+    versionId ? { version_id: versionId } : undefined,
+  );
 }
 
 /** URL for an authenticated, safe inline preview. */

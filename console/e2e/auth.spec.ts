@@ -4,13 +4,13 @@ test.describe('authentication', () => {
   test('an unauthenticated visit is sent to sign in', async ({ page }) => {
     await page.goto('/');
     await expect(page).toHaveURL(/\/login/);
-    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Continue to console' })).toBeVisible();
   });
 
   test('an invalid token is rejected without creating a session', async ({ page }) => {
     await page.goto('/login');
     await page.getByLabel('Management token').fill('not-a-valid-management-token-value');
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.getByRole('button', { name: 'Continue to console' }).click();
 
     // Scoped to the form's own alert: the framework injects a route announcer
     // with the same role on every page.

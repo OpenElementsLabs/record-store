@@ -24,6 +24,17 @@ export const queryKeys = {
   object: (bucket: string, key: string) => ['buckets', bucket, 'object', key] as const,
   objectVersions: (bucket: string, prefix: string) =>
     ['buckets', bucket, 'versions', prefix] as const,
+  // Capability keys sit under the object they belong to, so invalidating after
+  // creating a share touches that object's lists and nothing else.
+  objectShares: (bucket: string, key: string) =>
+    ['buckets', bucket, 'object', key, 'shares'] as const,
+  objectEmbeds: (bucket: string, key: string) =>
+    ['buckets', bucket, 'object', key, 'embeds'] as const,
+  share: (id: string) => ['shares', id] as const,
+  shareUrl: (id: string) => ['shares', id, 'url'] as const,
+  embed: (id: string) => ['embeds', id] as const,
+  embedUrl: (id: string) => ['embeds', id, 'url'] as const,
+  sharingSettings: ['sharing', 'settings'] as const,
   serviceAccounts: ['service-accounts'] as const,
   serviceAccount: (id: string) => ['service-accounts', id] as const,
   policies: ['policies'] as const,

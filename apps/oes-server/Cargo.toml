@@ -28,6 +28,7 @@ oes-replication = { path = "../../crates/oes-replication" }
 oes-rpc = { path = "../../crates/oes-rpc" }
 oes-s3 = { path = "../../crates/oes-s3" }
 oes-service = { path = "../../crates/oes-service" }
+oes-sharing = { path = "../../crates/oes-sharing" }
 oes-storage = { path = "../../crates/oes-storage" }
 serde.workspace = true
 serde_json.workspace = true
@@ -40,6 +41,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true
+chrono.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true

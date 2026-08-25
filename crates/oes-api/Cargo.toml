@@ -21,6 +21,7 @@ oes-events = { path = "../oes-events" }
 oes-metadata = { path = "../oes-metadata" }
 oes-replication = { path = "../oes-replication" }
 oes-service = { path = "../oes-service" }
+oes-sharing = { path = "../oes-sharing" }
 oes-storage = { path = "../oes-storage" }
 serde.workspace = true
 sha2.workspace = true
