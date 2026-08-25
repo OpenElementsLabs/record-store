@@ -50,6 +50,22 @@ async function fetchObjectDirect(
 }
 
 test.describe('upload integrity across the 10 MiB boundary', () => {
+  /**
+   * The only block in the suite that needs its own deadline.
+   *
+   * Every other spec clicks through a page. The largest case here moves 40 MiB
+   * up through the console, 40 MiB back down, and hashes both — so the default
+   * 60-second test timeout was not merely tight, it was unreachable: the
+   * assertion below asked to wait 60 seconds for the upload alone, which the
+   * test deadline could never grant. On a slow runner that surfaced as "test
+   * timeout" rather than as anything about the bytes.
+   *
+   * Only the deadline moves. Every integrity assertion — the stored byte count,
+   * the backend's checksum, and the checksum of what the console downloads —
+   * stays exactly as strict, because those are what this file exists to protect.
+   */
+  test.describe.configure({ timeout: 300_000 });
+
   for (const size of SIZES) {
     test(`console upload stores the complete ${size}-byte object`, async ({ signedIn }) => {
       const page = signedIn;
@@ -63,8 +79,10 @@ test.describe('upload integrity across the 10 MiB boundary', () => {
         mimeType: 'application/octet-stream',
         buffer,
       });
+      // Comfortably inside the block's deadline, so a stalled upload is
+      // reported as a stalled upload rather than as an expired test.
       await expect(page.getByRole('link', { name: /payload\.bin/ })).toBeVisible({
-        timeout: 60_000,
+        timeout: 120_000,
       });
 
       // Ground truth: what the backend actually stored, not what the console claims.
