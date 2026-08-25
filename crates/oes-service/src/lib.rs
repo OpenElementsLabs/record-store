@@ -12,9 +12,10 @@ use std::{
 use chrono::Utc;
 use futures_util::{StreamExt, TryStreamExt};
 use oes_core::{
-    Bucket, BucketId, BucketName, BucketQuota, Checksum, CompletedPart, CoreError, MultipartUpload,
-    MultipartUploadState, ObjectKey, ObjectMetadata, ObjectVersionRecord, OrganizationId,
-    PartNumber, StorageUsage, UploadId, UploadedPart, VersionId, VersioningState,
+    Bucket, BucketId, BucketName, BucketQuota, Checksum, CompletedPart, CoreError,
+    CorsConfiguration, MultipartUpload, MultipartUploadState, ObjectKey, ObjectMetadata,
+    ObjectVersionRecord, OrganizationId, PartNumber, StorageUsage, UploadId, UploadedPart,
+    VersionId, VersioningState,
 };
 use oes_events::{EventRepository, StorageEvent, StorageEventType};
 use oes_metadata::{
@@ -179,6 +180,7 @@ impl BucketService {
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
             durability_policy: None,
+            cors: None,
         };
         self.metadata
             .create_bucket(&bucket)
@@ -236,6 +238,37 @@ impl BucketService {
         let _guard = lock.write().await;
         self.metadata
             .set_bucket_quota(bucket.id, quota)
+            .await
+            .map_err(map_metadata)
+    }
+
+    /// Replaces a bucket's browser CORS configuration after validating every rule.
+    pub async fn set_cors(
+        &self,
+        name: &BucketName,
+        configuration: CorsConfiguration,
+    ) -> Result<Bucket, ServiceError> {
+        configuration.validate()?;
+        self.update_cors(name, Some(configuration)).await
+    }
+
+    /// Removes a bucket's browser CORS configuration.
+    pub async fn delete_cors(&self, name: &BucketName) -> Result<Bucket, ServiceError> {
+        self.update_cors(name, None).await
+    }
+
+    async fn update_cors(
+        &self,
+        name: &BucketName,
+        configuration: Option<CorsConfiguration>,
+    ) -> Result<Bucket, ServiceError> {
+        self.metrics.requests.fetch_add(1, Ordering::Relaxed);
+        let _permit = self.acquire().await?;
+        let bucket = self.resolve(name).await?;
+        let lock = self.coordinator.lock(bucket.id)?;
+        let _guard = lock.write().await;
+        self.metadata
+            .set_bucket_cors(bucket.id, configuration)
             .await
             .map_err(map_metadata)
     }

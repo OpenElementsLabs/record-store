@@ -15,8 +15,8 @@ use oes_cluster::{
     PlacementPage, RaftNodeId, ReplicaTask, TaskPage, Tombstone,
 };
 use oes_core::{
-    Bucket, BucketId, BucketName, BucketQuota, ClusterOperationId, JoinTokenId, LifecycleRule,
-    LifecycleRuleId, MultipartUpload, NodeCredentialId, NodeId, ObjectId, ObjectKey,
+    Bucket, BucketId, BucketName, BucketQuota, ClusterOperationId, CorsConfiguration, JoinTokenId,
+    LifecycleRule, LifecycleRuleId, MultipartUpload, NodeCredentialId, NodeId, ObjectId, ObjectKey,
     ObjectMetadata, ObjectVersionRecord, PartNumber, ReplicaTaskId, StorageUsage, UploadId,
     UploadedPart, VersionId, VersioningState,
 };
@@ -121,6 +121,19 @@ impl MetadataRepository for ReplicatedMetadataRepository {
         self.propose(MetadataCommand::SetBucketQuota {
             bucket_id: id,
             quota,
+        })
+        .await?
+        .into_bucket()
+    }
+
+    async fn set_bucket_cors(
+        &self,
+        id: BucketId,
+        configuration: Option<CorsConfiguration>,
+    ) -> Result<Bucket, MetadataError> {
+        self.propose(MetadataCommand::SetBucketCors {
+            bucket_id: id,
+            configuration,
         })
         .await?
         .into_bucket()

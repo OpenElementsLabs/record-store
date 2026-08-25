@@ -5,8 +5,8 @@ use std::{fmt::Display, path::Path, sync::Arc};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oes_core::{
-    Bucket, BucketId, BucketName, BucketQuota, DeleteMarker, LifecycleRule, LifecycleRuleId,
-    MultipartUpload, MultipartUploadState, ObjectId, ObjectKey, ObjectMetadata,
+    Bucket, BucketId, BucketName, BucketQuota, CorsConfiguration, DeleteMarker, LifecycleRule,
+    LifecycleRuleId, MultipartUpload, MultipartUploadState, ObjectId, ObjectKey, ObjectMetadata,
     ObjectVersionRecord, PartNumber, StorageUsage, UploadId, UploadedPart, VersionId,
     VersioningState,
 };
@@ -188,6 +188,11 @@ pub trait MetadataRepository: Send + Sync {
         &self,
         id: BucketId,
         quota: BucketQuota,
+    ) -> Result<Bucket, MetadataError>;
+    async fn set_bucket_cors(
+        &self,
+        id: BucketId,
+        configuration: Option<CorsConfiguration>,
     ) -> Result<Bucket, MetadataError>;
     async fn delete_bucket(&self, name: &BucketName) -> Result<Bucket, MetadataError>;
     async fn put_object(
@@ -468,6 +473,19 @@ impl MetadataRepository for RedbMetadataRepository {
         self.command(MetadataCommand::SetBucketQuota {
             bucket_id: id,
             quota,
+        })
+        .await?
+        .into_bucket()
+    }
+
+    async fn set_bucket_cors(
+        &self,
+        id: BucketId,
+        configuration: Option<CorsConfiguration>,
+    ) -> Result<Bucket, MetadataError> {
+        self.command(MetadataCommand::SetBucketCors {
+            bucket_id: id,
+            configuration,
         })
         .await?
         .into_bucket()
@@ -1864,6 +1882,13 @@ pub enum MetadataCommand {
         /// Requested quota.
         quota: BucketQuota,
     },
+    /// Replace or remove a bucket's browser CORS configuration.
+    SetBucketCors {
+        /// Bucket to change.
+        bucket_id: BucketId,
+        /// Complete replacement configuration, or `None` to remove it.
+        configuration: Option<CorsConfiguration>,
+    },
     /// Delete an empty bucket.
     DeleteBucket {
         /// Bucket name.
@@ -1946,6 +1971,7 @@ impl MetadataCommand {
             Self::CreateBucket { .. } => "create_bucket",
             Self::SetBucketVersioning { .. } => "set_bucket_versioning",
             Self::SetBucketQuota { .. } => "set_bucket_quota",
+            Self::SetBucketCors { .. } => "set_bucket_cors",
             Self::DeleteBucket { .. } => "delete_bucket",
             Self::PutObject { .. } => "put_object",
             Self::DeleteObject { .. } => "delete_object",
@@ -2090,6 +2116,16 @@ pub fn apply_command_tx(
             }
             let bucket = update_bucket_tx(write, bucket_id, move |bucket| {
                 bucket.quota = quota;
+                Ok(())
+            })?;
+            Ok(MetadataOutcome::Bucket(Box::new(bucket)))
+        }
+        MetadataCommand::SetBucketCors {
+            bucket_id,
+            configuration,
+        } => {
+            let bucket = update_bucket_tx(write, bucket_id, move |bucket| {
+                bucket.cors = configuration;
                 Ok(())
             })?;
             Ok(MetadataOutcome::Bucket(Box::new(bucket)))
@@ -2977,7 +3013,7 @@ pub fn import_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oes_core::{Checksum, ETag, OrganizationId};
+    use oes_core::{Checksum, CorsMethod, CorsPattern, CorsRule, ETag, OrganizationId};
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
@@ -2990,6 +3026,7 @@ mod tests {
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
             durability_policy: None,
+            cors: None,
         }
     }
     fn object(bucket: BucketId, key: &str, size: u64) -> ObjectMetadata {
@@ -3011,6 +3048,21 @@ mod tests {
         }
     }
 
+    fn cors_configuration() -> CorsConfiguration {
+        CorsConfiguration {
+            rules: vec![CorsRule {
+                id: Some("browser-upload".into()),
+                allowed_origins: vec![
+                    CorsPattern::origin("https://app.example.com").expect("origin"),
+                ],
+                allowed_methods: vec![CorsMethod::Put, CorsMethod::Get],
+                allowed_headers: vec![CorsPattern::header("x-amz-*").expect("header")],
+                expose_headers: vec!["ETag".into()],
+                max_age_seconds: Some(600),
+            }],
+        }
+    }
+
     #[tokio::test]
     async fn applying_the_same_commands_produces_identical_state() {
         // Determinism is what makes the catalog usable as a consensus state
@@ -3026,6 +3078,10 @@ mod tests {
             MetadataCommand::SetBucketVersioning {
                 bucket_id: bucket_record.id,
                 state: VersioningState::Enabled,
+            },
+            MetadataCommand::SetBucketCors {
+                bucket_id: bucket_record.id,
+                configuration: Some(cors_configuration()),
             },
             MetadataCommand::PutObject {
                 metadata: Box::new(first_object.clone()),
@@ -3146,6 +3202,36 @@ mod tests {
             Some(ObjectVersionRecord::Object { .. })
         ));
         assert_eq!(repo.storage_usage().await.expect("usage").version_count, 3);
+    }
+
+    #[tokio::test]
+    async fn bucket_cors_configuration_survives_restart_and_can_be_removed() {
+        let dir = tempdir().expect("temp");
+        let path = dir.path().join("catalog.redb");
+        let bucket = bucket("cors-bucket");
+        let configuration = cors_configuration();
+        {
+            let repo = RedbMetadataRepository::open(&path).await.expect("repo");
+            repo.create_bucket(&bucket).await.expect("bucket");
+            let updated = repo
+                .set_bucket_cors(bucket.id, Some(configuration.clone()))
+                .await
+                .expect("set CORS");
+            assert_eq!(updated.cors.as_ref(), Some(&configuration));
+        }
+
+        let repo = RedbMetadataRepository::open(&path).await.expect("reopen");
+        let restored = repo
+            .get_bucket_by_name(&bucket.name)
+            .await
+            .expect("read bucket")
+            .expect("bucket exists");
+        assert_eq!(restored.cors.as_ref(), Some(&configuration));
+        let updated = repo
+            .set_bucket_cors(bucket.id, None)
+            .await
+            .expect("remove CORS");
+        assert!(updated.cors.is_none());
     }
 
     #[tokio::test]

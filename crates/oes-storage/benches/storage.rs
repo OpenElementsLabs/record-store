@@ -36,6 +36,7 @@ async fn create_fixture(encrypted: bool) -> Fixture {
         versioning: VersioningState::Disabled,
         quota: BucketQuota::default(),
         durability_policy: None,
+        cors: None,
     };
     repository
         .create_bucket(&bucket)
