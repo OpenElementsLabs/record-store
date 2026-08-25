@@ -133,6 +133,8 @@ export AWS_SECRET_ACCESS_KEY="$OES_ROOT_SECRET_KEY"
 export AWS_DEFAULT_REGION=us-east-1
 export AWS_EC2_METADATA_DISABLED=true
 export AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED
+export AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED
+aws configure set s3.addressing_style path
 
 aws --endpoint-url http://localhost:7600 s3api list-buckets
 aws --endpoint-url http://localhost:7600 s3api create-bucket --bucket demo
@@ -144,6 +146,12 @@ aws --endpoint-url http://localhost:7600 s3 cp ./example.pdf s3://demo/example.p
 aws --endpoint-url http://localhost:7600 s3 cp s3://demo/example.pdf ./downloaded.pdf
 aws --endpoint-url http://localhost:7600 s3api list-object-versions --bucket demo
 ```
+
+When using a named profile, apply path-style addressing to that profile as
+well: `aws configure set s3.addressing_style path --profile PROFILE`. Keep the
+endpoint as a plain URL; shell commands must not contain Markdown link syntax.
+The checksum environment settings avoid the `aws-chunked` trailer encoding
+that OES intentionally reports as unsupported.
 
 Set `OES_ROOT_S3_ENABLED=false` after service-account policies are established to keep root credentials off the application data plane.
 
