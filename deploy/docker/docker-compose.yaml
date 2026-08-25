@@ -1,34 +1,45 @@
 services:
   oes:
     build:
-      context: ../..
+      context: .
       dockerfile: deploy/docker/Dockerfile
 
     read_only: true
 
     tmpfs:
       - /tmp
+      - /run
 
     security_opt:
       - no-new-privileges:true
 
     restart: unless-stopped
 
+    # Internal container ports.
+    # 7600 gets an HTTPS domain through Coolify below.
+    # 7601 has no domain and remains private.
+    expose:
+      - "7600"
+      - "7601"
+
     environment:
-      OES_ROOT_ACCESS_KEY: "${OES_ROOT_ACCESS_KEY:?OES_ROOT_ACCESS_KEY is required}"
-      OES_ROOT_SECRET_KEY: "${OES_ROOT_SECRET_KEY:?OES_ROOT_SECRET_KEY is required}"
+      # Public S3 endpoint through Coolify/Traefik.
+      SERVICE_FQDN_OES_7600: /
 
-      OES_CREDENTIAL_MASTER_KEY: "${OES_CREDENTIAL_MASTER_KEY:?OES_CREDENTIAL_MASTER_KEY is required}"
+      # Generated once and retained by Coolify.
+      OES_ROOT_ACCESS_KEY: "${SERVICE_USER_ROOTACCESS}"
+      OES_ROOT_SECRET_KEY: "${SERVICE_PASSWORD_64_ROOTSECRET}"
 
-      OES_MANAGEMENT_SYSTEM_TOKEN: "${OES_MANAGEMENT_SYSTEM_TOKEN:?OES_MANAGEMENT_SYSTEM_TOKEN is required}"
-      OES_MANAGEMENT_STORAGE_TOKEN: "${OES_MANAGEMENT_STORAGE_TOKEN:?OES_MANAGEMENT_STORAGE_TOKEN is required}"
-      OES_MANAGEMENT_AUDITOR_TOKEN: "${OES_MANAGEMENT_AUDITOR_TOKEN:?OES_MANAGEMENT_AUDITOR_TOKEN is required}"
+      # Confirm the exact encoding required by OES before changing this.
+      OES_CREDENTIAL_MASTER_KEY: "${SERVICE_BASE64_64_CREDENTIALMASTER}"
 
-      OES_METRICS_SCRAPE_TOKEN: "${OES_METRICS_SCRAPE_TOKEN:?OES_METRICS_SCRAPE_TOKEN is required}"
+      OES_MANAGEMENT_SYSTEM_TOKEN: "${SERVICE_PASSWORD_64_SYSTEMTOKEN}"
+      OES_MANAGEMENT_STORAGE_TOKEN: "${SERVICE_PASSWORD_64_STORAGETOKEN}"
+      OES_MANAGEMENT_AUDITOR_TOKEN: "${SERVICE_PASSWORD_64_AUDITORTOKEN}"
+      OES_METRICS_SCRAPE_TOKEN: "${SERVICE_PASSWORD_64_SCRAPETOKEN}"
 
       OES_STORAGE_ENCRYPTION_ENABLED: "${OES_STORAGE_ENCRYPTION_ENABLED:-true}"
       OES_ROOT_S3_ENABLED: "${OES_ROOT_S3_ENABLED:-true}"
-
       OES_LOG_JSON: "${OES_LOG_JSON:-true}"
 
     volumes:
@@ -45,18 +56,19 @@ services:
         ]
       interval: 30s
       timeout: 5s
-      start_period: 10s
+      start_period: 45s
       retries: 3
 
   console:
     build:
-      context: ../..
+      context: .
       dockerfile: deploy/docker/Dockerfile.console
 
     read_only: true
 
     tmpfs:
       - /tmp
+      - /run
 
     security_opt:
       - no-new-privileges:true
@@ -67,7 +79,12 @@ services:
       oes:
         condition: service_healthy
 
+    expose:
+      - "7602"
+
     environment:
+      SERVICE_FQDN_CONSOLE_7602: /
+
       OES_API_URL: "http://oes:7601"
 
       OES_CONSOLE_SECURE_COOKIES: "${OES_CONSOLE_SECURE_COOKIES:-true}"
