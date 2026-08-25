@@ -951,6 +951,7 @@ mod tests {
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
             durability_policy: None,
+            cors: None,
         };
         first_metadata
             .create_bucket(&bucket)

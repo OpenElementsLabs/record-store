@@ -36,6 +36,7 @@ async fn store() -> (
         versioning: VersioningState::Disabled,
         quota: BucketQuota::default(),
         durability_policy: None,
+        cors: None,
     };
     repository
         .create_bucket(&bucket)
@@ -469,6 +470,7 @@ async fn envelope_encryption_streams_ranges_survives_restart_and_detects_tamperi
         versioning: VersioningState::Disabled,
         quota: BucketQuota::default(),
         durability_policy: None,
+        cors: None,
     };
     repository
         .create_bucket(&bucket)
@@ -606,6 +608,7 @@ async fn envelope_encryption_covers_durable_multipart_parts_and_completion() {
         versioning: VersioningState::Disabled,
         quota: BucketQuota::default(),
         durability_policy: None,
+        cors: None,
     };
     repository
         .create_bucket(&bucket)

@@ -2,9 +2,11 @@ import {
   CompleteMultipartUploadCommand,
   CreateBucketCommand,
   CreateMultipartUploadCommand,
+  GetBucketCorsCommand,
   GetObjectCommand,
   ListObjectVersionsCommand,
   ListObjectsV2Command,
+  PutBucketCorsCommand,
   PutBucketVersioningCommand,
   PutObjectCommand,
   S3Client,
@@ -32,6 +34,31 @@ function require(condition, message) {
 }
 
 await client.send(new CreateBucketCommand({ Bucket: bucket }));
+const browserOrigin = "https://app.example.com";
+await client.send(new PutBucketCorsCommand({
+  Bucket: bucket,
+  CORSConfiguration: { CORSRules: [{
+    ID: "browser-upload",
+    AllowedOrigins: [browserOrigin],
+    AllowedMethods: ["PUT", "GET"],
+    AllowedHeaders: ["content-type", "x-amz-*"],
+    ExposeHeaders: ["ETag", "x-amz-version-id"],
+    MaxAgeSeconds: 600,
+  }] },
+}));
+const cors = await client.send(new GetBucketCorsCommand({ Bucket: bucket }));
+require(cors.CORSRules[0].AllowedOrigins[0] === browserOrigin, "bucket CORS round trip mismatch");
+const preflightUrl = new URL(`${bucket}/browser.txt`, `${endpoint.replace(/\/?$/, "")}/`);
+const preflight = await fetch(preflightUrl, {
+  method: "OPTIONS",
+  headers: {
+    Origin: browserOrigin,
+    "Access-Control-Request-Method": "PUT",
+    "Access-Control-Request-Headers": "content-type, x-amz-checksum-sha256",
+  },
+});
+require(preflight.ok, `browser preflight failed: ${preflight.status}`);
+require(preflight.headers.get("access-control-allow-origin") === browserOrigin, "preflight origin mismatch");
 await client.send(new PutObjectCommand({ Bucket: bucket, Key: "single.txt", Body: "javascript-single" }));
 const downloaded = await client.send(new GetObjectCommand({ Bucket: bucket, Key: "single.txt" }));
 require(await downloaded.Body.transformToString() === "javascript-single", "download mismatch");
@@ -68,11 +95,16 @@ const putUrl = await getSignedUrl(
   new PutObjectCommand({ Bucket: bucket, Key: "presigned.txt" }),
   { expiresIn: 60 },
 );
-const presignedPut = await fetch(putUrl, { method: "PUT", body: "presigned" });
+const presignedPut = await fetch(putUrl, {
+  method: "PUT",
+  headers: { Origin: browserOrigin },
+  body: "presigned",
+});
 if (!presignedPut.ok) {
   const queryNames = [...new URL(putUrl).searchParams.keys()].join(",");
   throw new Error(`presigned PUT failed (${presignedPut.status}; query=${queryNames}): ${await presignedPut.text()}`);
 }
+require(presignedPut.headers.get("access-control-allow-origin") === browserOrigin, "PUT CORS origin mismatch");
 const getUrl = await getSignedUrl(
   client,
   new GetObjectCommand({ Bucket: bucket, Key: "presigned.txt" }),

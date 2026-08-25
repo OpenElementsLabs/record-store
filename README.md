@@ -10,6 +10,7 @@ OES is a self-hosted object storage service written in Rust. It supports a simpl
 - `ListObjectsV2` with bounded pagination, prefix, delimiter, and continuation tokens
 - multipart create, streamed part upload, persisted part listing, completion, abort, and upload listing
 - bucket versioning (`Disabled`, `Enabled`, and `Suspended`), immutable version reads/deletes, delete markers, and `ListObjectVersions`
+- per-bucket CORS configuration, unsigned browser preflights, and CORS headers on matching S3 responses
 - streaming same-bucket and cross-bucket `CopyObject` with `COPY` and `REPLACE` metadata directives
 - bounded, open-ended, and suffix byte ranges
 - `If-Match`, `If-None-Match`, `If-Modified-Since`, and `If-Unmodified-Since`
@@ -90,7 +91,7 @@ removes the optional backend.
 
 Storage microbenchmarks are reproducible with `cargo bench -p oes-storage --bench storage`.
 
-Real-client compatibility checks exercise boto3, AWS SDK for JavaScript v3, and AWS SDK for Go against an ephemeral encrypted OES data directory on the fixed listeners. They cover bucket/object I/O, listing, multipart completion, presigned requests, ranges, versioning, historical reads, and copy behavior:
+Real-client compatibility checks exercise boto3, AWS SDK for JavaScript v3, and AWS SDK for Go against an ephemeral encrypted OES data directory on the fixed listeners. They cover bucket/object I/O, listing, multipart completion, presigned requests, browser CORS, ranges, versioning, historical reads, and copy behavior:
 
 ```bash
 bash tests/compatibility/run.sh
@@ -137,12 +138,22 @@ aws --endpoint-url http://localhost:7600 s3api list-buckets
 aws --endpoint-url http://localhost:7600 s3api create-bucket --bucket demo
 aws --endpoint-url http://localhost:7600 s3api put-bucket-versioning \
   --bucket demo --versioning-configuration Status=Enabled
+aws --endpoint-url http://localhost:7600 s3api put-bucket-cors --bucket demo \
+  --cors-configuration '{"CORSRules":[{"AllowedOrigins":["https://app.example.com"],"AllowedMethods":["PUT","GET","HEAD"],"AllowedHeaders":["content-type","x-amz-*"],"ExposeHeaders":["ETag","x-amz-version-id"],"MaxAgeSeconds":3600}]}'
 aws --endpoint-url http://localhost:7600 s3 cp ./example.pdf s3://demo/example.pdf
 aws --endpoint-url http://localhost:7600 s3 cp s3://demo/example.pdf ./downloaded.pdf
 aws --endpoint-url http://localhost:7600 s3api list-object-versions --bucket demo
 ```
 
 Set `OES_ROOT_S3_ENABLED=false` after service-account policies are established to keep root credentials off the application data plane.
+
+Browser access is denied by default. Configure CORS on each bucket that a web
+origin may reach; OES does not apply a deployment-wide wildcard. A successful
+preflight is unauthenticated but grants only the origins, methods, and request
+headers stored on that bucket. The following signed request still needs its
+ordinary S3 permission or valid presigned URL. OES never emits
+`Access-Control-Allow-Credentials` because S3 browser authorization belongs in
+the signature rather than ambient cookies.
 
 ### Management API and CLI
 

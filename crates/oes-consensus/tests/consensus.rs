@@ -326,6 +326,7 @@ fn bucket(name: &str) -> Bucket {
         versioning: VersioningState::Disabled,
         quota: BucketQuota::default(),
         durability_policy: None,
+        cors: None,
     }
 }
 

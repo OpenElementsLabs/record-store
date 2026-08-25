@@ -1,5 +1,12 @@
 //! Fundamental domain types shared by OES components.
 
+mod cors;
+
+pub use crate::cors::{
+    CorsConfiguration, CorsGrant, CorsMethod, CorsPattern, CorsRule, MAXIMUM_CORS_MAX_AGE_SECONDS,
+    MAXIMUM_CORS_RULES, parse_requested_headers,
+};
+
 use std::{
     collections::BTreeMap,
     fmt::{self, Display, Formatter},
@@ -63,6 +70,9 @@ pub enum CoreError {
     /// A replication profile was internally inconsistent.
     #[error("invalid replication profile: {0}")]
     InvalidReplicationProfile(String),
+    /// A bucket CORS rule was malformed or unsafe.
+    #[error("invalid CORS rule: {0}")]
+    InvalidCorsRule(String),
 }
 
 impl CoreError {
@@ -974,6 +984,14 @@ pub struct Bucket {
     /// replication in cluster mode. Changing this never changes old versions.
     #[serde(default)]
     pub durability_policy: Option<DurabilityProfile>,
+    /// Which web origins may reach this bucket's objects from a browser.
+    ///
+    /// `None` means none of them, which is the only safe default: a bucket
+    /// nobody configured must not be readable by any page on the internet. It
+    /// lives on the bucket rather than in deployment configuration so that one
+    /// permissive application cannot set the policy for every other bucket.
+    #[serde(default)]
+    pub cors: Option<CorsConfiguration>,
 }
 
 /// Persisted object metadata, independent of the physical object layout.

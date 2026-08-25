@@ -36,8 +36,9 @@ use oes_auth::{
     SigningCredentialProvider, SigningSecret,
 };
 use oes_core::{
-    BucketName, ByteRange, Checksum, CompletedPart, ETag, ObjectKey, ObjectMetadata,
-    ObjectVersionRecord, PartNumber, UploadId, VersionId, VersioningState,
+    BucketName, ByteRange, Checksum, CompletedPart, CorsConfiguration, CorsGrant, CorsMethod,
+    CorsPattern, CorsRule, ETag, ObjectKey, ObjectMetadata, ObjectVersionRecord, PartNumber,
+    UploadId, VersionId, VersioningState, parse_requested_headers,
 };
 use oes_service::{
     CopyMetadataDirective, ServiceCompleteMultipartRequest, ServiceCopyRequest,
@@ -88,6 +89,10 @@ pub const S3_CAPABILITIES: &[S3Capability] = &[
     },
     S3Capability {
         name: "BucketOperations",
+        status: CapabilityStatus::Implemented,
+    },
+    S3Capability {
+        name: "BucketCors",
         status: CapabilityStatus::Implemented,
     },
     S3Capability {
@@ -220,14 +225,16 @@ pub fn router(state: S3State) -> Router {
             put(create_bucket)
                 .head(head_bucket)
                 .delete(delete_bucket)
-                .get(list_objects_v2),
+                .get(list_objects_v2)
+                .options(cors_preflight),
         )
         .route(
             "/{bucket}/",
             put(create_bucket)
                 .head(head_bucket)
                 .delete(delete_bucket)
-                .get(list_objects_v2),
+                .get(list_objects_v2)
+                .options(cors_preflight),
         )
         .route(
             "/{bucket}/{*key}",
@@ -235,7 +242,8 @@ pub fn router(state: S3State) -> Router {
                 .post(post_object)
                 .get(get_object)
                 .head(head_object)
-                .delete(delete_object),
+                .delete(delete_object)
+                .options(cors_preflight),
         )
         .fallback(unsupported_operation)
         .method_not_allowed_fallback(unsupported_operation)
@@ -262,6 +270,7 @@ async fn authenticate_request(
         .get::<ConnectInfo<SocketAddr>>()
         .map(|connect| connect.0.ip().to_string());
     let headers = request.headers().clone();
+    let is_preflight = is_cors_preflight(&method, &headers);
     let header_bytes = headers.iter().fold(0_usize, |total, (name, value)| {
         total
             .saturating_add(name.as_str().len())
@@ -287,37 +296,51 @@ async fn authenticate_request(
         .await;
         return response;
     }
-    let authorization = match verify_request(&state, method.clone(), uri, headers).await {
-        Ok(authenticated) => {
-            let permissions = request_permissions(&request);
-            match permissions {
-                Err(kind) => Err(kind),
-                Ok(_)
-                    if !state.root_s3_enabled
-                        && matches!(authenticated.principal, Principal::System { ref component } if component == "root") =>
-                {
-                    Err(S3ErrorKind::AccessDenied)
-                }
-                Ok(permissions) => {
-                    authorize_permissions(&state, &authenticated.principal, permissions)
-                        .await
-                        .map(|()| authenticated)
-                }
-            }
-        }
-        Err(kind) => Err(kind),
+    let cors_grant = if is_preflight {
+        None
+    } else {
+        cors_grant_for_request(&state, &method, &uri, &headers, &request_id).await
     };
     let mut audit_principal = None;
-    let mut response = match authorization {
-        Ok(authenticated) => {
-            audit_principal = Some(authenticated.principal.clone());
-            request.extensions_mut().insert(authenticated.principal);
-            request.extensions_mut().insert(authenticated.payload);
-            next.run(request).await
+    let mut response = if is_preflight {
+        next.run(request).await
+    } else {
+        let authorization = match verify_request(&state, method.clone(), uri, headers).await {
+            Ok(authenticated) => {
+                let permissions = request_permissions(&request);
+                match permissions {
+                    Err(kind) => Err(kind),
+                    Ok(_)
+                        if !state.root_s3_enabled
+                            && matches!(authenticated.principal, Principal::System { ref component } if component == "root") =>
+                    {
+                        Err(S3ErrorKind::AccessDenied)
+                    }
+                    Ok(permissions) => {
+                        authorize_permissions(&state, &authenticated.principal, permissions)
+                            .await
+                            .map(|()| authenticated)
+                    }
+                }
+            }
+            Err(kind) => Err(kind),
+        };
+        match authorization {
+            Ok(authenticated) => {
+                audit_principal = Some(authenticated.principal.clone());
+                request.extensions_mut().insert(authenticated.principal);
+                request.extensions_mut().insert(authenticated.payload);
+                next.run(request).await
+            }
+            Err(kind) => {
+                S3Error::new(kind, request_id.clone(), request.uri().path()).into_response()
+            }
         }
-        Err(kind) => S3Error::new(kind, request_id.clone(), request.uri().path()).into_response(),
     };
     insert_request_id(&mut response, &request_id);
+    if let Some(grant) = &cors_grant {
+        apply_cors_grant(&mut response, grant, false);
+    }
     append_s3_audit(
         &state,
         &request_id,
@@ -337,6 +360,144 @@ async fn authenticate_request(
         "S3 request completed"
     );
     response
+}
+
+fn is_cors_preflight(method: &Method, headers: &HeaderMap) -> bool {
+    method == Method::OPTIONS
+        && headers.contains_key(header::ORIGIN)
+        && headers.contains_key(header::ACCESS_CONTROL_REQUEST_METHOD)
+}
+
+async fn cors_grant_for_request(
+    state: &S3State,
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    request_id: &S3RequestId,
+) -> Option<CorsGrant> {
+    let origin = headers.get(header::ORIGIN)?.to_str().ok()?;
+    let method = CorsMethod::parse(method.as_str()).ok()?;
+    let name = bucket_name_from_uri(uri, request_id).ok()?;
+    let bucket = state.services.buckets.head(&name).await.ok()?;
+    let configuration = bucket.cors.as_ref()?;
+    let rule = configuration.match_request(origin, method)?;
+    Some(CorsGrant::response(rule, origin))
+}
+
+async fn cors_preflight(
+    State(state): State<S3State>,
+    Extension(request_id): Extension<S3RequestId>,
+    request: Request,
+) -> Result<Response, S3Error> {
+    let resource = request.uri().path();
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), resource))?;
+    let requested_method = request
+        .headers()
+        .get(header::ACCESS_CONTROL_REQUEST_METHOD)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| CorsMethod::parse(value).ok())
+        .ok_or_else(|| S3Error::new(S3ErrorKind::AccessDenied, request_id.clone(), resource))?;
+    let requested_headers = request
+        .headers()
+        .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+        .and_then(|value| value.to_str().ok())
+        .map_or_else(Vec::new, parse_requested_headers);
+    if requested_headers
+        .iter()
+        .any(|name| HeaderName::from_bytes(name.as_bytes()).is_err())
+    {
+        return Err(S3Error::new(
+            S3ErrorKind::AccessDenied,
+            request_id,
+            resource,
+        ));
+    }
+    let name = bucket_name_from_uri(request.uri(), &request_id)?;
+    let bucket = state
+        .services
+        .buckets
+        .head(&name)
+        .await
+        .map_err(|error| service_error(error, request_id.clone(), resource))?;
+    let configuration = bucket
+        .cors
+        .as_ref()
+        .ok_or_else(|| S3Error::new(S3ErrorKind::AccessDenied, request_id.clone(), resource))?;
+    let rule = configuration
+        .match_preflight(origin, requested_method, &requested_headers)
+        .ok_or_else(|| S3Error::new(S3ErrorKind::AccessDenied, request_id.clone(), resource))?;
+    let grant = CorsGrant::preflight(rule, origin, &requested_headers);
+    let mut response = StatusCode::OK.into_response();
+    apply_cors_grant(&mut response, &grant, true);
+    Ok(response)
+}
+
+fn bucket_name_from_uri(uri: &Uri, request_id: &S3RequestId) -> Result<BucketName, S3Error> {
+    let segment = uri
+        .path()
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .ok_or_else(|| {
+            S3Error::new(
+                S3ErrorKind::InvalidBucketName,
+                request_id.clone(),
+                uri.path(),
+            )
+        })?;
+    let decoded = String::from_utf8(percent_decode_str(segment).collect()).map_err(|_| {
+        S3Error::new(
+            S3ErrorKind::InvalidBucketName,
+            request_id.clone(),
+            uri.path(),
+        )
+    })?;
+    bucket_name(&decoded, request_id)
+}
+
+fn apply_cors_grant(response: &mut Response, grant: &CorsGrant, preflight: bool) {
+    insert_cors_header(
+        response,
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        &grant.allow_origin,
+    );
+    if let Some(methods) = grant.allow_methods.as_deref() {
+        insert_cors_header(response, header::ACCESS_CONTROL_ALLOW_METHODS, methods);
+    }
+    if let Some(headers) = grant.allow_headers.as_deref() {
+        insert_cors_header(response, header::ACCESS_CONTROL_ALLOW_HEADERS, headers);
+    }
+    if let Some(headers) = grant.expose_headers.as_deref() {
+        insert_cors_header(response, header::ACCESS_CONTROL_EXPOSE_HEADERS, headers);
+    }
+    if let Some(seconds) = grant.max_age_seconds {
+        insert_cors_header(
+            response,
+            header::ACCESS_CONTROL_MAX_AGE,
+            &seconds.to_string(),
+        );
+    }
+    let vary = match (preflight, grant.is_wildcard()) {
+        (true, true) => "Access-Control-Request-Method, Access-Control-Request-Headers",
+        (true, false) => "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+        (false, false) => "Origin",
+        (false, true) => return,
+    };
+    response
+        .headers_mut()
+        .append(header::VARY, HeaderValue::from_static(vary));
+}
+
+fn insert_cors_header(response: &mut Response, name: HeaderName, value: &str) {
+    if let Ok(value) = HeaderValue::from_str(value) {
+        response.headers_mut().insert(name, value);
+    }
 }
 
 async fn append_s3_audit(
@@ -528,7 +689,10 @@ fn request_permissions(request: &Request) -> Result<Vec<Permission>, S3ErrorKind
         .map_or((path, None), |(bucket, key)| (bucket, Some(key)));
     let query = query_map(request.uri().query())?;
     let action = if key.is_none() {
-        if request.method() == Method::GET && !query.contains_key("versioning") {
+        if request.method() == Method::GET
+            && !query.contains_key("versioning")
+            && !query.contains_key("cors")
+        {
             Action::ListBucket
         } else {
             Action::ManageBucket
@@ -984,6 +1148,9 @@ async fn create_bucket(
     Extension(request_id): Extension<S3RequestId>,
     body: Body,
 ) -> Result<Response, S3Error> {
+    if has_query_flag(raw_query.as_deref(), "cors") {
+        return put_bucket_cors(state, bucket, request_id, body).await;
+    }
     if has_query_flag(raw_query.as_deref(), "versioning") {
         return put_bucket_versioning(state, bucket, request_id, body).await;
     }
@@ -1025,6 +1192,9 @@ async fn delete_bucket(
     RawQuery(raw_query): RawQuery,
     Extension(request_id): Extension<S3RequestId>,
 ) -> Result<StatusCode, S3Error> {
+    if has_query_flag(raw_query.as_deref(), "cors") {
+        return delete_bucket_cors(state, bucket, request_id).await;
+    }
     reject_subresources(raw_query.as_deref(), &request_id, &format!("/{bucket}"))?;
     let name = bucket_name(&bucket, &request_id)?;
     state
@@ -1508,6 +1678,72 @@ async fn get_bucket_versioning(
     )
 }
 
+async fn put_bucket_cors(
+    state: S3State,
+    bucket: String,
+    request_id: S3RequestId,
+    body: Body,
+) -> Result<Response, S3Error> {
+    let bytes = to_bytes(body, 256 * 1024)
+        .await
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?;
+    let document: CorsConfigurationDocument = quick_xml::de::from_reader(bytes.as_ref())
+        .map_err(|_| S3Error::new(S3ErrorKind::MalformedXml, request_id.clone(), &bucket))?;
+    let configuration = document
+        .try_into()
+        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?;
+    let name = bucket_name(&bucket, &request_id)?;
+    state
+        .services
+        .buckets
+        .set_cors(&name, configuration)
+        .await
+        .map_err(|error| service_error(error, request_id, &bucket))?;
+    Ok(StatusCode::OK.into_response())
+}
+
+async fn get_bucket_cors(
+    state: S3State,
+    bucket: String,
+    request_id: S3RequestId,
+) -> Result<Response, S3Error> {
+    let name = bucket_name(&bucket, &request_id)?;
+    let bucket_record = state
+        .services
+        .buckets
+        .head(&name)
+        .await
+        .map_err(|error| service_error(error, request_id.clone(), &bucket))?;
+    let configuration = bucket_record.cors.ok_or_else(|| {
+        S3Error::new(
+            S3ErrorKind::NoSuchCorsConfiguration,
+            request_id.clone(),
+            &bucket,
+        )
+    })?;
+    xml_response(
+        StatusCode::OK,
+        &CorsConfigurationResult::from(&configuration),
+        request_id,
+        &bucket,
+    )
+}
+
+async fn delete_bucket_cors(
+    state: S3State,
+    bucket: String,
+    request_id: S3RequestId,
+) -> Result<StatusCode, S3Error> {
+    let name = bucket_name(&bucket, &request_id)?;
+    state
+        .services
+        .buckets
+        .delete_cors(&name)
+        .await
+        .map_err(|error| service_error(error, request_id, &bucket))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn copy_object(
     state: S3State,
     bucket: String,
@@ -1837,6 +2073,9 @@ async fn list_objects_v2(
     RawQuery(raw_query): RawQuery,
     Extension(request_id): Extension<S3RequestId>,
 ) -> Result<Response, S3Error> {
+    if has_query_flag(raw_query.as_deref(), "cors") {
+        return get_bucket_cors(state, bucket, request_id).await;
+    }
     if has_query_flag(raw_query.as_deref(), "versioning") {
         return get_bucket_versioning(state, bucket, request_id).await;
     }
@@ -2342,6 +2581,7 @@ enum S3ErrorKind {
     AuthorizationHeaderMalformed,
     RequestTimeTooSkewed,
     NoSuchBucket,
+    NoSuchCorsConfiguration,
     NoSuchKey,
     NoSuchUpload,
     BucketAlreadyExists,
@@ -2370,6 +2610,7 @@ impl S3ErrorKind {
             Self::AuthorizationHeaderMalformed => "AuthorizationHeaderMalformed",
             Self::RequestTimeTooSkewed => "RequestTimeTooSkewed",
             Self::NoSuchBucket => "NoSuchBucket",
+            Self::NoSuchCorsConfiguration => "NoSuchCORSConfiguration",
             Self::NoSuchKey => "NoSuchKey",
             Self::NoSuchUpload => "NoSuchUpload",
             Self::BucketAlreadyExists => "BucketAlreadyExists",
@@ -2400,6 +2641,7 @@ impl S3ErrorKind {
                 "The difference between request time and server time is too large"
             }
             Self::NoSuchBucket => "The specified bucket does not exist",
+            Self::NoSuchCorsConfiguration => "The CORS configuration does not exist",
             Self::NoSuchKey => "The specified key does not exist",
             Self::NoSuchUpload => "The specified multipart upload does not exist",
             Self::BucketAlreadyExists => "The requested bucket name is not available",
@@ -2428,7 +2670,10 @@ impl S3ErrorKind {
             | Self::InvalidAccessKeyId
             | Self::SignatureDoesNotMatch
             | Self::RequestTimeTooSkewed => StatusCode::FORBIDDEN,
-            Self::NoSuchBucket | Self::NoSuchKey | Self::NoSuchUpload => StatusCode::NOT_FOUND,
+            Self::NoSuchBucket
+            | Self::NoSuchCorsConfiguration
+            | Self::NoSuchKey
+            | Self::NoSuchUpload => StatusCode::NOT_FOUND,
             Self::BucketAlreadyExists => StatusCode::CONFLICT,
             Self::BucketNotEmpty => StatusCode::CONFLICT,
             Self::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
@@ -2476,6 +2721,124 @@ struct VersioningConfigurationResult<'a> {
     xmlns: &'a str,
     #[serde(rename = "Status", skip_serializing_if = "Option::is_none")]
     status: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename = "CORSConfiguration")]
+struct CorsConfigurationDocument {
+    #[serde(rename = "CORSRule", default)]
+    rules: Vec<CorsRuleDocument>,
+}
+
+#[derive(Deserialize)]
+struct CorsRuleDocument {
+    #[serde(rename = "ID")]
+    id: Option<String>,
+    #[serde(rename = "AllowedOrigin", default)]
+    allowed_origins: Vec<String>,
+    #[serde(rename = "AllowedMethod", default)]
+    allowed_methods: Vec<String>,
+    #[serde(rename = "AllowedHeader", default)]
+    allowed_headers: Vec<String>,
+    #[serde(rename = "ExposeHeader", default)]
+    expose_headers: Vec<String>,
+    #[serde(rename = "MaxAgeSeconds")]
+    max_age_seconds: Option<u32>,
+}
+
+impl TryFrom<CorsConfigurationDocument> for CorsConfiguration {
+    type Error = oes_core::CoreError;
+
+    fn try_from(document: CorsConfigurationDocument) -> Result<Self, Self::Error> {
+        let rules = document
+            .rules
+            .into_iter()
+            .map(|document| {
+                let rule = CorsRule {
+                    id: document.id,
+                    allowed_origins: document
+                        .allowed_origins
+                        .iter()
+                        .map(|origin| CorsPattern::origin(origin))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    allowed_methods: document
+                        .allowed_methods
+                        .iter()
+                        .map(|method| CorsMethod::parse(method))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    allowed_headers: document
+                        .allowed_headers
+                        .iter()
+                        .map(|header| CorsPattern::header(header))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    expose_headers: document.expose_headers,
+                    max_age_seconds: document.max_age_seconds,
+                };
+                rule.validate()?;
+                Ok(rule)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let configuration = Self { rules };
+        configuration.validate()?;
+        Ok(configuration)
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename = "CORSConfiguration")]
+struct CorsConfigurationResult<'a> {
+    #[serde(rename = "@xmlns")]
+    xmlns: &'a str,
+    #[serde(rename = "CORSRule")]
+    rules: Vec<CorsRuleResult<'a>>,
+}
+
+#[derive(Serialize)]
+struct CorsRuleResult<'a> {
+    #[serde(rename = "ID", skip_serializing_if = "Option::is_none")]
+    id: Option<&'a str>,
+    #[serde(rename = "AllowedOrigin")]
+    allowed_origins: Vec<&'a str>,
+    #[serde(rename = "AllowedMethod")]
+    allowed_methods: Vec<&'static str>,
+    #[serde(rename = "AllowedHeader", skip_serializing_if = "Vec::is_empty")]
+    allowed_headers: Vec<&'a str>,
+    #[serde(rename = "ExposeHeader", skip_serializing_if = "Vec::is_empty")]
+    expose_headers: Vec<&'a str>,
+    #[serde(rename = "MaxAgeSeconds", skip_serializing_if = "Option::is_none")]
+    max_age_seconds: Option<u32>,
+}
+
+impl<'a> From<&'a CorsConfiguration> for CorsConfigurationResult<'a> {
+    fn from(configuration: &'a CorsConfiguration) -> Self {
+        Self {
+            xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+            rules: configuration
+                .rules
+                .iter()
+                .map(|rule| CorsRuleResult {
+                    id: rule.id.as_deref(),
+                    allowed_origins: rule
+                        .allowed_origins
+                        .iter()
+                        .map(CorsPattern::as_str)
+                        .collect(),
+                    allowed_methods: rule
+                        .allowed_methods
+                        .iter()
+                        .map(|method| method.as_str())
+                        .collect(),
+                    allowed_headers: rule
+                        .allowed_headers
+                        .iter()
+                        .map(CorsPattern::as_str)
+                        .collect(),
+                    expose_headers: rule.expose_headers.iter().map(String::as_str).collect(),
+                    max_age_seconds: rule.max_age_seconds,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -3109,6 +3472,225 @@ mod tests {
                 .expect("expired URL")
                 .status(),
             StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn bucket_cors_controls_preflights_and_actual_presigned_responses() {
+        let (_directory, application, _credentials) = test_router().await;
+        let now = Utc::now();
+        let create = signed_request(
+            Method::PUT,
+            "/browser-bucket",
+            b"",
+            &[],
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+        );
+        assert_eq!(
+            application
+                .clone()
+                .oneshot(create)
+                .await
+                .expect("create bucket")
+                .status(),
+            StatusCode::OK
+        );
+
+        let preflight = || {
+            HttpRequest::builder()
+                .method(Method::OPTIONS)
+                .uri("/browser-bucket/report.txt")
+                .header(header::ORIGIN, "https://app.example.com")
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "PUT")
+                .header(
+                    header::ACCESS_CONTROL_REQUEST_HEADERS,
+                    "content-type, x-amz-checksum-sha256",
+                )
+                .body(Body::empty())
+                .expect("preflight request")
+        };
+        let denied = application
+            .clone()
+            .oneshot(preflight())
+            .await
+            .expect("unconfigured preflight");
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        assert!(
+            !denied
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        );
+
+        let cors = br#"<CORSConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+          <CORSRule>
+            <ID>browser-upload</ID>
+            <AllowedOrigin>https://app.example.com</AllowedOrigin>
+            <AllowedMethod>PUT</AllowedMethod>
+            <AllowedMethod>GET</AllowedMethod>
+            <AllowedHeader>content-type</AllowedHeader>
+            <AllowedHeader>x-amz-*</AllowedHeader>
+            <ExposeHeader>ETag</ExposeHeader>
+            <ExposeHeader>x-amz-version-id</ExposeHeader>
+            <MaxAgeSeconds>600</MaxAgeSeconds>
+          </CORSRule>
+        </CORSConfiguration>"#;
+        let configure = signed_request(
+            Method::PUT,
+            "/browser-bucket?cors",
+            cors,
+            &[("content-type", XML_CONTENT_TYPE)],
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+        );
+        assert_eq!(
+            application
+                .clone()
+                .oneshot(configure)
+                .await
+                .expect("configure CORS")
+                .status(),
+            StatusCode::OK
+        );
+
+        let get_configuration = signed_request(
+            Method::GET,
+            "/browser-bucket?cors",
+            b"",
+            &[],
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+        );
+        let configuration = application
+            .clone()
+            .oneshot(get_configuration)
+            .await
+            .expect("get CORS configuration");
+        assert_eq!(configuration.status(), StatusCode::OK);
+        let configuration = body_text(configuration).await;
+        assert!(configuration.contains("<AllowedOrigin>https://app.example.com</AllowedOrigin>"));
+        assert!(configuration.contains("<AllowedHeader>x-amz-*</AllowedHeader>"));
+
+        let allowed = application
+            .clone()
+            .oneshot(preflight())
+            .await
+            .expect("allowed preflight");
+        assert_eq!(allowed.status(), StatusCode::OK);
+        assert_eq!(
+            allowed.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("https://app.example.com"))
+        );
+        assert_eq!(
+            allowed.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS),
+            Some(&HeaderValue::from_static("PUT, GET"))
+        );
+        assert_eq!(
+            allowed.headers().get(header::ACCESS_CONTROL_ALLOW_HEADERS),
+            Some(&HeaderValue::from_static(
+                "content-type, x-amz-checksum-sha256"
+            ))
+        );
+        assert_eq!(
+            allowed.headers().get(header::ACCESS_CONTROL_MAX_AGE),
+            Some(&HeaderValue::from_static("600"))
+        );
+        assert!(
+            !allowed
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+        );
+
+        let mut put = presigned_request(
+            Method::PUT,
+            "/browser-bucket/report.txt",
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+            60,
+        );
+        put.headers_mut().insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://app.example.com"),
+        );
+        *put.body_mut() = Body::from("browser payload");
+        let uploaded = application
+            .clone()
+            .oneshot(put)
+            .await
+            .expect("browser upload");
+        assert_eq!(uploaded.status(), StatusCode::OK);
+        assert_eq!(
+            uploaded.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("https://app.example.com"))
+        );
+        assert_eq!(
+            uploaded
+                .headers()
+                .get(header::ACCESS_CONTROL_EXPOSE_HEADERS),
+            Some(&HeaderValue::from_static("ETag, x-amz-version-id"))
+        );
+        assert_eq!(
+            uploaded.headers().get(header::VARY),
+            Some(&HeaderValue::from_static("Origin"))
+        );
+
+        let forbidden_origin = HttpRequest::builder()
+            .method(Method::OPTIONS)
+            .uri("/browser-bucket/report.txt")
+            .header(header::ORIGIN, "https://evil.example")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "PUT")
+            .body(Body::empty())
+            .expect("foreign-origin preflight");
+        let forbidden = application
+            .clone()
+            .oneshot(forbidden_origin)
+            .await
+            .expect("foreign-origin response");
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        assert!(
+            !forbidden
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        );
+
+        let remove = signed_request(
+            Method::DELETE,
+            "/browser-bucket?cors",
+            b"",
+            &[],
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+        );
+        assert_eq!(
+            application
+                .clone()
+                .oneshot(remove)
+                .await
+                .expect("delete CORS configuration")
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        let missing = application
+            .oneshot(signed_request(
+                Method::GET,
+                "/browser-bucket?cors",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("missing CORS response");
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            xml_value(&body_text(missing).await, "Code"),
+            Some("NoSuchCORSConfiguration")
         );
     }
 
