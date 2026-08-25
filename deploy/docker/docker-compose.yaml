@@ -1,0 +1,76 @@
+services:
+  oes:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+
+    read_only: true
+
+    tmpfs:
+      - /tmp
+
+    security_opt:
+      - no-new-privileges:true
+
+    restart: unless-stopped
+
+    environment:
+      OES_ROOT_ACCESS_KEY: "${OES_ROOT_ACCESS_KEY:?OES_ROOT_ACCESS_KEY is required}"
+      OES_ROOT_SECRET_KEY: "${OES_ROOT_SECRET_KEY:?OES_ROOT_SECRET_KEY is required}"
+
+      OES_CREDENTIAL_MASTER_KEY: "${OES_CREDENTIAL_MASTER_KEY:?OES_CREDENTIAL_MASTER_KEY is required}"
+
+      OES_MANAGEMENT_SYSTEM_TOKEN: "${OES_MANAGEMENT_SYSTEM_TOKEN:?OES_MANAGEMENT_SYSTEM_TOKEN is required}"
+      OES_MANAGEMENT_STORAGE_TOKEN: "${OES_MANAGEMENT_STORAGE_TOKEN:?OES_MANAGEMENT_STORAGE_TOKEN is required}"
+      OES_MANAGEMENT_AUDITOR_TOKEN: "${OES_MANAGEMENT_AUDITOR_TOKEN:?OES_MANAGEMENT_AUDITOR_TOKEN is required}"
+
+      OES_METRICS_SCRAPE_TOKEN: "${OES_METRICS_SCRAPE_TOKEN:?OES_METRICS_SCRAPE_TOKEN is required}"
+
+      OES_STORAGE_ENCRYPTION_ENABLED: "${OES_STORAGE_ENCRYPTION_ENABLED:-true}"
+      OES_ROOT_S3_ENABLED: "${OES_ROOT_S3_ENABLED:-true}"
+
+      OES_LOG_JSON: "${OES_LOG_JSON:-true}"
+
+    volumes:
+      - oes-data:/var/lib/oes
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "oes",
+          "status",
+          "--endpoint",
+          "http://127.0.0.1:7601"
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  console:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.console
+
+    read_only: true
+
+    tmpfs:
+      - /tmp
+
+    security_opt:
+      - no-new-privileges:true
+
+    restart: unless-stopped
+
+    depends_on:
+      oes:
+        condition: service_healthy
+
+    environment:
+      OES_API_URL: "http://oes:7601"
+
+      OES_CONSOLE_SECURE_COOKIES: "${OES_CONSOLE_SECURE_COOKIES:-true}"
+
+volumes:
+  oes-data:
