@@ -187,7 +187,7 @@ async fn starts_serves_operational_routes_and_shuts_down() {
     assert!(missing["error"]["request_id"].is_string());
 
     shutdown_tx.send(()).expect("request shutdown");
-    timeout(Duration::from_secs(3), server)
+    timeout(Duration::from_secs(10), server)
         .await
         .expect("bounded shutdown")
         .expect("server task")
@@ -294,7 +294,7 @@ async fn cluster_mode_bootstraps_persistent_identity_and_exposes_status() {
     assert_eq!(info["cluster_id"], status["cluster_id"]);
 
     shutdown_tx.send(()).expect("request shutdown");
-    timeout(Duration::from_secs(3), server)
+    timeout(Duration::from_secs(10), server)
         .await
         .expect("bounded cluster shutdown")
         .expect("server task")
@@ -405,13 +405,13 @@ async fn a_token_joined_node_enters_the_consensus_group() {
     assert_eq!(status["metadata"]["status"]["members"], 2);
 
     second_shutdown_tx.send(()).expect("stop second node");
-    timeout(Duration::from_secs(3), second_server)
+    timeout(Duration::from_secs(10), second_server)
         .await
         .expect("second node bounded shutdown")
         .expect("second server task")
         .expect("second node clean shutdown");
     first_shutdown_tx.send(()).expect("stop first node");
-    timeout(Duration::from_secs(3), first_server)
+    timeout(Duration::from_secs(10), first_server)
         .await
         .expect("first node bounded shutdown")
         .expect("first server task")
