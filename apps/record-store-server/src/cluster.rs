@@ -428,6 +428,9 @@ fn cluster_config(config: &Config) -> record_store_cluster::ClusterConfig {
 /// instead of hanging. It matches the consensus operation timeout.
 const MEMBERSHIP_BARRIER_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How often the membership barrier re-checks a momentarily unavailable quorum.
+const MEMBERSHIP_BARRIER_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Blocks until this node's applied state includes every committed write.
 ///
 /// A joining node's registration is committed by the leader, remotely. Reading
@@ -442,13 +445,27 @@ async fn establish_membership_read_barrier(
         // Standalone has no replicated state, so a local read is already current.
         return Ok(());
     };
+    let deadline = tokio::time::Instant::now() + MEMBERSHIP_BARRIER_TIMEOUT;
     // The barrier asks the leader for its read index, so the leader has to be
     // known first; a node that has only just been added does not know it yet.
     consensus
         .wait_for_leader(MEMBERSHIP_BARRIER_TIMEOUT)
         .await?;
-    consensus.ensure_read_consistency().await?;
-    Ok(())
+    // Knowing the leader is not yet enough. A leader that has just admitted
+    // this node still has to establish replication to it before the enlarged
+    // voter set can answer a read index, and until it does it reports the
+    // quorum as momentarily unavailable. That is a startup condition like the
+    // leadership wait above, not a failure, so wait it out under the same
+    // bound; a genuinely unreachable quorum still fails startup.
+    loop {
+        match consensus.ensure_read_consistency().await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.retryable() && tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(MEMBERSHIP_BARRIER_POLL_INTERVAL).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 async fn update_local_membership(
