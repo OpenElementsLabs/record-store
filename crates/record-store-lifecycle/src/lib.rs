@@ -9,12 +9,12 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use oes_audit::{AuditEvent, AuditRepository, AuditResult};
-use oes_core::{AuditEventId, LifecycleRule, LifecycleRuleId};
-use oes_metadata::{
+use record_store_audit::{AuditEvent, AuditRepository, AuditResult};
+use record_store_core::{AuditEventId, LifecycleRule, LifecycleRuleId};
+use record_store_metadata::{
     ListObjectVersionsRequest, ListObjectsRequest, MetadataError, MetadataRepository,
 };
-use oes_service::{ServiceError, Services};
+use record_store_service::{ServiceError, Services};
 use redb::{Database, TableDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -28,7 +28,7 @@ const CURSORS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("lifecycle_c
 struct RuleCursor {
     current_key: Option<String>,
     version_key: Option<String>,
-    version_id: Option<oes_core::VersionId>,
+    version_id: Option<record_store_core::VersionId>,
 }
 
 /// Observable outcome of one bounded metadata scan.
@@ -247,7 +247,7 @@ impl LifecycleWorker {
         operation: &str,
         bucket: &str,
         key: &str,
-        version_id: Option<oes_core::VersionId>,
+        version_id: Option<record_store_core::VersionId>,
     ) -> Result<(), LifecycleError> {
         let mut metadata = std::collections::BTreeMap::new();
         if let Some(version_id) = version_id {
@@ -321,7 +321,7 @@ pub enum LifecycleError {
     #[error("lifecycle object action failed: {0}")]
     Service(#[from] ServiceError),
     #[error("lifecycle audit append failed: {0}")]
-    Audit(#[from] oes_audit::AuditError),
+    Audit(#[from] record_store_audit::AuditError),
     #[error("lifecycle batch size must be between 1 and 1000")]
     InvalidBatchSize,
     #[error("lifecycle rule refers to a missing bucket")]
@@ -338,14 +338,14 @@ mod tests {
 
     use super::*;
 
-    use oes_audit::{AuditQuery, RedbAuditRepository};
-    use oes_core::{
+    use record_store_audit::{AuditQuery, RedbAuditRepository};
+    use record_store_core::{
         Bucket, BucketId, BucketName, BucketQuota, Checksum, ETag, ExpirationDays, ObjectId,
         ObjectKey, ObjectMetadata, OrganizationId, VersionId, VersioningState,
     };
-    use oes_metadata::RedbMetadataRepository;
-    use oes_service::ServiceLimits;
-    use oes_storage::{LocalFilesystemStore, ObjectStore};
+    use record_store_metadata::RedbMetadataRepository;
+    use record_store_service::ServiceLimits;
+    use record_store_storage::{LocalFilesystemStore, ObjectStore};
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -377,8 +377,8 @@ mod tests {
                 version_id: VersionId::new(),
                 size: 0,
                 checksum: Checksum::sha256([0_u8; 32]),
-                payload_format: oes_core::PayloadFormat::Plaintext,
-                durability: oes_core::DurabilityProfile::Single,
+                payload_format: record_store_core::PayloadFormat::Plaintext,
+                durability: record_store_core::DurabilityProfile::Single,
                 etag: ETag::from_md5([0_u8; 16]),
                 content_type: None,
                 custom_metadata: BTreeMap::new(),

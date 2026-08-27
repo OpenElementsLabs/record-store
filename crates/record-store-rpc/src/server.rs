@@ -7,7 +7,7 @@
 
 use std::{future::Future, net::SocketAddr, time::Duration};
 
-use oes_protocol::{
+use record_store_protocol::{
     consensus_v1::consensus_service_server::ConsensusServiceServer,
     replica_v1::replica_service_server::ReplicaServiceServer,
     system_v1::system_service_server::SystemServiceServer,

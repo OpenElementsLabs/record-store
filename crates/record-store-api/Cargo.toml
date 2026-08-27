@@ -1,5 +1,5 @@
 [package]
-name = "oes-api"
+name = "record-store-api"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,18 +11,18 @@ base64.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 http.workspace = true
-oes-auth = { path = "../oes-auth" }
-oes-audit = { path = "../oes-audit" }
-oes-cluster = { path = "../oes-cluster" }
-oes-config = { path = "../oes-config" }
-oes-consensus = { path = "../oes-consensus" }
-oes-core = { path = "../oes-core" }
-oes-events = { path = "../oes-events" }
-oes-metadata = { path = "../oes-metadata" }
-oes-replication = { path = "../oes-replication" }
-oes-service = { path = "../oes-service" }
-oes-sharing = { path = "../oes-sharing" }
-oes-storage = { path = "../oes-storage" }
+record-store-auth = { path = "../record-store-auth" }
+record-store-audit = { path = "../record-store-audit" }
+record-store-cluster = { path = "../record-store-cluster" }
+record-store-config = { path = "../record-store-config" }
+record-store-consensus = { path = "../record-store-consensus" }
+record-store-core = { path = "../record-store-core" }
+record-store-events = { path = "../record-store-events" }
+record-store-metadata = { path = "../record-store-metadata" }
+record-store-replication = { path = "../record-store-replication" }
+record-store-service = { path = "../record-store-service" }
+record-store-sharing = { path = "../record-store-sharing" }
+record-store-storage = { path = "../record-store-storage" }
 serde.workspace = true
 sha2.workspace = true
 subtle.workspace = true

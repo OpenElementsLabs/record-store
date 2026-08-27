@@ -1,5 +1,5 @@
 [package]
-name = "oes-sharing"
+name = "record-store-sharing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,7 +14,7 @@ chrono.workspace = true
 getrandom.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
-oes-core = { path = "../oes-core" }
+record-store-core = { path = "../record-store-core" }
 redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true

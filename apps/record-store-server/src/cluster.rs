@@ -9,29 +9,29 @@ use std::{
 };
 
 use chrono::Utc;
-use oes_cluster::{
+use record_store_cluster::{
     CapacityAwarePlacement, ClusterCommand, ClusterIdentity, FailureDomain, NodeCapacity,
     NodeCredential, NodeIdentity, NodeIdentityStore, NodeRegistration, NodeState, NodeVersions,
     StorageClass,
 };
-use oes_config::{Config, DeploymentMode};
-use oes_consensus::{
+use record_store_config::{Config, DeploymentMode};
+use record_store_consensus::{
     ClusterStore, ClusterWrite, ConsensusSettings, MetadataConsensus, ReplicatedClusterStore,
     ReplicatedMetadataRepository,
 };
-use oes_core::{ClusterId, PayloadFormat};
-use oes_metadata::MetadataRepository;
-use oes_protocol::system_v1::{NodeDescriptor, NodeProfile};
-use oes_replication::{
+use record_store_core::{ClusterId, PayloadFormat};
+use record_store_metadata::MetadataRepository;
+use record_store_protocol::system_v1::{NodeDescriptor, NodeProfile};
+use record_store_replication::{
     ClusterContext, ClusterOperations, ClusterRuntime, Coordinator, CoordinatorSettings,
     DistributedObjectStore, DistributedSettings, RuntimeSettings, TaskHealth,
 };
-use oes_rpc::{
+use record_store_rpc::{
     CatalogPeerAuthenticator, ConsensusNetwork, ConsensusRpcService, InternalRpcServer,
     PeerHeaders, PeerPool, PeerVerifier, ReplicaRpcService, RpcClientSettings, RpcLeaderForwarder,
     RpcReplicaTransport, RpcServerError, RpcServerSettings, SystemRpcService, TlsSettings,
 };
-use oes_storage::{LocalFilesystemStore, ObjectStore, ReplicaStore, StorageError};
+use record_store_storage::{LocalFilesystemStore, ObjectStore, ReplicaStore, StorageError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::task::JoinHandle;
@@ -237,7 +237,7 @@ pub async fn initialize(config: &Config) -> Result<ClusterDependencies, ClusterS
         verifier = verifier.with_bootstrap_peer(cluster_id, seed_node_id);
     }
     let verifier = Arc::new(verifier);
-    let admission = Arc::new(oes_replication::JoinCoordinator::new(
+    let admission = Arc::new(record_store_replication::JoinCoordinator::new(
         Arc::clone(&context),
         Arc::clone(&consensus),
         versions.clone(),
@@ -322,7 +322,7 @@ pub async fn initialize(config: &Config) -> Result<ClusterDependencies, ClusterS
         .map_err(ClusterStartupError::Storage)?;
     runtime.start(
         Duration::from_secs(cluster_config.failure_detection.heartbeat_interval_seconds),
-        oes_replication::tasks::MovementLimits {
+        record_store_replication::tasks::MovementLimits {
             concurrency: config.cluster.movement_concurrency,
             bytes_per_second: config.cluster.movement_bytes_per_second,
             lease: Duration::from_secs(cluster_config.repair.lease_seconds),
@@ -397,17 +397,17 @@ async fn bootstrap_cluster(
             }),
         ]))
         .await?;
-    if let oes_consensus::ClusterWriteResponse::Rejected(rejection) = response {
+    if let record_store_consensus::ClusterWriteResponse::Rejected(rejection) = response {
         return Err(ClusterStartupError::Consensus(
-            oes_consensus::ConsensusError::Rejected(rejection),
+            record_store_consensus::ConsensusError::Rejected(rejection),
         ));
     }
     info!(cluster = %cluster_id, node = %identity.node_id, "initialized cluster metadata");
     Ok(())
 }
 
-fn cluster_config(config: &Config) -> oes_cluster::ClusterConfig {
-    let mut cluster = oes_cluster::ClusterConfig::default();
+fn cluster_config(config: &Config) -> record_store_cluster::ClusterConfig {
+    let mut cluster = record_store_cluster::ClusterConfig::default();
     cluster.replication_factor = config.cluster.replication_factor;
     cluster.watermarks.low_percent = config.cluster.capacity_low_watermark_percent;
     cluster.watermarks.high_percent = config.cluster.capacity_high_watermark_percent;
@@ -522,7 +522,7 @@ async fn join_from_seed(
     token: &str,
     descriptor: NodeDescriptor,
     profile: NodeProfile,
-) -> Result<(oes_rpc::JoinOutcome, oes_core::NodeId), ClusterStartupError> {
+) -> Result<(record_store_rpc::JoinOutcome, record_store_core::NodeId), ClusterStartupError> {
     let mut failures = Vec::new();
     for seed in seeds {
         let remote = match pool.probe_cluster(seed, descriptor.clone()).await {
@@ -554,7 +554,7 @@ async fn probe_seed(
     pool: &Arc<PeerPool>,
     seeds: &[String],
     descriptor: NodeDescriptor,
-) -> Result<oes_core::NodeId, ClusterStartupError> {
+) -> Result<record_store_core::NodeId, ClusterStartupError> {
     let mut failures = Vec::new();
     for seed in seeds {
         match pool.probe_cluster(seed, descriptor.clone()).await {
@@ -739,7 +739,7 @@ impl LocalCredentialStore {
         let document: CredentialDocument = serde_json::from_slice(&encoded)
             .map_err(|error| ClusterStartupError::CredentialMalformed(error.to_string()))?;
         if document.format_version != CREDENTIAL_FORMAT_VERSION
-            || oes_cluster::parse_node_credential(&document.credential).is_err()
+            || record_store_cluster::parse_node_credential(&document.credential).is_err()
         {
             return Err(ClusterStartupError::CredentialMalformed(
                 "unsupported format or malformed credential".to_owned(),
@@ -756,7 +756,7 @@ impl LocalCredentialStore {
         credential: &str,
         record: Option<&NodeCredential>,
     ) -> Result<(), ClusterStartupError> {
-        oes_cluster::parse_node_credential(credential)?;
+        record_store_cluster::parse_node_credential(credential)?;
         let parent = self.path.parent().ok_or_else(|| {
             ClusterStartupError::CredentialMalformed("credential path has no parent".to_owned())
         })?;
@@ -791,19 +791,19 @@ impl LocalCredentialStore {
 #[derive(Debug, Error)]
 pub enum ClusterStartupError {
     #[error(transparent)]
-    Identity(#[from] oes_cluster::IdentityError),
+    Identity(#[from] record_store_cluster::IdentityError),
     #[error(transparent)]
-    Credential(#[from] oes_cluster::CredentialError),
+    Credential(#[from] record_store_cluster::CredentialError),
     #[error(transparent)]
-    Topology(#[from] oes_cluster::TopologyError),
+    Topology(#[from] record_store_cluster::TopologyError),
     #[error(transparent)]
-    Catalog(#[from] oes_cluster::ClusterCatalogError),
+    Catalog(#[from] record_store_cluster::ClusterCatalogError),
     #[error(transparent)]
-    Consensus(#[from] oes_consensus::ConsensusError),
+    Consensus(#[from] record_store_consensus::ConsensusError),
     #[error(transparent)]
-    StateMachine(#[from] oes_consensus::StateMachineError),
+    StateMachine(#[from] record_store_consensus::StateMachineError),
     #[error(transparent)]
-    Tls(#[from] oes_rpc::TlsError),
+    Tls(#[from] record_store_rpc::TlsError),
     #[error(transparent)]
     Rpc(#[from] RpcServerError),
     #[error(transparent)]
@@ -836,10 +836,10 @@ mod tests {
 
     use bytes::Bytes;
     use futures_util::{TryStreamExt, stream};
-    use oes_core::{
+    use record_store_core::{
         Bucket, BucketId, BucketName, BucketQuota, ObjectKey, OrganizationId, VersioningState,
     };
-    use oes_storage::{GetObjectRequest, PutObjectRequest, upload_stream};
+    use record_store_storage::{GetObjectRequest, PutObjectRequest, upload_stream};
     use tempfile::tempdir;
     use tokio::time::timeout;
 
@@ -899,7 +899,7 @@ mod tests {
             .config()
             .await
             .expect("read the initial cluster configuration");
-        cluster_config.watermarks = oes_cluster::CapacityWatermarks {
+        cluster_config.watermarks = record_store_cluster::CapacityWatermarks {
             low_percent: 98,
             high_percent: 99,
             critical_percent: 100,
@@ -923,8 +923,9 @@ mod tests {
         let second_rpc = reserve_rpc_address();
         let mut second_config = node_config(directory.path().join("second"), second_rpc, "rack-b");
         second_config.cluster.seeds = vec![first_rpc.to_string()];
-        second_config.cluster.join_token =
-            Some(oes_config::SecretValue::new(second_token.token.expose()));
+        second_config.cluster.join_token = Some(record_store_config::SecretValue::new(
+            second_token.token.expose(),
+        ));
         let second = initialize(&second_config)
             .await
             .expect("join the second cluster node");
@@ -935,8 +936,9 @@ mod tests {
         let third_rpc = reserve_rpc_address();
         let mut third_config = node_config(directory.path().join("third"), third_rpc, "rack-c");
         third_config.cluster.seeds = vec![first_rpc.to_string()];
-        third_config.cluster.join_token =
-            Some(oes_config::SecretValue::new(third_token.token.expose()));
+        third_config.cluster.join_token = Some(record_store_config::SecretValue::new(
+            third_token.token.expose(),
+        ));
         let third = initialize(&third_config)
             .await
             .expect("join the third cluster node");
@@ -987,7 +989,7 @@ mod tests {
             placement
                 .replicas
                 .iter()
-                .all(|replica| replica.state == oes_cluster::ReplicaState::Healthy)
+                .all(|replica| replica.state == record_store_cluster::ReplicaState::Healthy)
         );
 
         for context in [&first_context, &second_context, &third_context] {

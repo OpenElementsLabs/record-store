@@ -12,10 +12,12 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use oes_cluster::{ClusterCommand, NodeActivity, NodeCapacity, NodeState, Readiness, ReplicaState};
-use oes_consensus::{ClusterWrite, MetadataConsensus};
-use oes_core::PayloadFormat;
-use oes_storage::ObjectStore;
+use record_store_cluster::{
+    ClusterCommand, NodeActivity, NodeCapacity, NodeState, Readiness, ReplicaState,
+};
+use record_store_consensus::{ClusterWrite, MetadataConsensus};
+use record_store_core::PayloadFormat;
+use record_store_storage::ObjectStore;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;

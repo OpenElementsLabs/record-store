@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use oes_config::{Config, DeploymentMode, SecretValue};
+use record_store_config::{Config, DeploymentMode, SecretValue};
 use tempfile::tempdir;
 use tokio::{net::TcpListener, sync::oneshot, time::timeout};
 
@@ -22,7 +22,7 @@ async fn starts_serves_operational_routes_and_shuts_down() {
         "test-dedicated-metrics-scrape-token-32-bytes-long",
     ));
 
-    let runtime = oes_server::initialize(&config)
+    let runtime = record_store_server::initialize(&config)
         .await
         .expect("initialize server");
     let api_listener = TcpListener::bind("127.0.0.1:0")
@@ -81,7 +81,7 @@ async fn starts_serves_operational_routes_and_shuts_down() {
         .json::<serde_json::Value>()
         .await
         .expect("system info JSON");
-    assert_eq!(info["name"], "oes");
+    assert_eq!(info["name"], "record-store");
     assert_eq!(info["status"], "ready");
     assert_eq!(info["mode"], "standalone");
     assert!(info.get("cluster_id").is_none());
@@ -118,7 +118,7 @@ async fn starts_serves_operational_routes_and_shuts_down() {
             .text()
             .await
             .expect("metrics body")
-            .contains("oes_requests_total")
+            .contains("record_store_requests_total")
     );
 
     let unauthorized_admin = client
@@ -204,23 +204,23 @@ async fn offline_metadata_backup_is_versioned_verified_and_non_overwriting() {
     config.auth.credential_master_key = Some(SecretValue::new(
         "test-credential-master-key-at-least-32-bytes",
     ));
-    let runtime = oes_server::initialize(&config)
+    let runtime = record_store_server::initialize(&config)
         .await
         .expect("initialize source");
     let backup = directory.path().join("backup");
-    assert!(oes_server::backup_metadata(&config, &backup).is_err());
+    assert!(record_store_server::backup_metadata(&config, &backup).is_err());
     drop(runtime);
-    oes_server::backup_metadata(&config, &backup).expect("backup");
+    record_store_server::backup_metadata(&config, &backup).expect("backup");
     assert!(backup.join("manifest.json").is_file());
 
     let mut restored = config.clone();
     restored.storage.data_directory = directory.path().join("restored");
-    oes_server::restore_metadata(&restored, &backup).expect("restore");
-    let restored_runtime = oes_server::initialize(&restored)
+    record_store_server::restore_metadata(&restored, &backup).expect("restore");
+    let restored_runtime = record_store_server::initialize(&restored)
         .await
         .expect("initialize restored state");
     drop(restored_runtime);
-    assert!(oes_server::restore_metadata(&restored, &backup).is_err());
+    assert!(record_store_server::restore_metadata(&restored, &backup).is_err());
 }
 
 #[tokio::test]
@@ -241,7 +241,7 @@ async fn cluster_mode_bootstraps_persistent_identity_and_exposes_status() {
         "test-system-management-token-32-bytes-long",
     ));
 
-    let runtime = oes_server::initialize(&config)
+    let runtime = record_store_server::initialize(&config)
         .await
         .expect("initialize clustered server");
     let identity_before = std::fs::read(config.storage.data_directory.join("node-identity.json"))
@@ -300,7 +300,7 @@ async fn cluster_mode_bootstraps_persistent_identity_and_exposes_status() {
         .expect("server task")
         .expect("clean cluster shutdown");
 
-    let restarted = oes_server::initialize(&config)
+    let restarted = record_store_server::initialize(&config)
         .await
         .expect("restart clustered server");
     let identity_after = std::fs::read(config.storage.data_directory.join("node-identity.json"))
@@ -336,7 +336,7 @@ async fn a_token_joined_node_enters_the_consensus_group() {
     first.auth.management_system_token = Some(SecretValue::new(
         "test-system-management-token-32-bytes-long",
     ));
-    let first_runtime = oes_server::initialize(&first)
+    let first_runtime = record_store_server::initialize(&first)
         .await
         .expect("initialize first node");
     let first_api = TcpListener::bind("127.0.0.1:0")
@@ -378,7 +378,7 @@ async fn a_token_joined_node_enters_the_consensus_group() {
     second.cluster.seeds = vec![first_rpc_address.to_string()];
     second.cluster.join_token = Some(SecretValue::new(token));
     second.storage.data_directory = directory.path().join("second");
-    let second_runtime = oes_server::initialize(&second)
+    let second_runtime = record_store_server::initialize(&second)
         .await
         .expect("join second node");
     let second_api = TcpListener::bind("127.0.0.1:0")
@@ -438,7 +438,7 @@ async fn management_api_serves_the_console_surface() {
         "test-auditor-management-token-32-bytes-long",
     ));
 
-    let runtime = oes_server::initialize(&config)
+    let runtime = record_store_server::initialize(&config)
         .await
         .expect("initialize server");
     let api_listener = TcpListener::bind("127.0.0.1:0")
@@ -810,7 +810,7 @@ async fn metrics_are_served_to_both_planes_with_separate_credentials() {
         "test-metrics-scrape-token-32-bytes-long-x",
     ));
 
-    let runtime = oes_server::initialize(&config)
+    let runtime = record_store_server::initialize(&config)
         .await
         .expect("initialize server");
     let api_listener = TcpListener::bind("127.0.0.1:0")
@@ -884,11 +884,11 @@ async fn metrics_are_served_to_both_planes_with_separate_credentials() {
     );
 
     for (field, metric) in [
-        ("object_count", "oes_objects_total"),
-        ("bucket_count", "oes_buckets_total"),
-        ("version_count", "oes_versions_total"),
-        ("logical_bytes", "oes_storage_logical_bytes"),
-        ("physical_bytes", "oes_storage_physical_bytes"),
+        ("object_count", "record_store_objects_total"),
+        ("bucket_count", "record_store_buckets_total"),
+        ("version_count", "record_store_versions_total"),
+        ("logical_bytes", "record_store_storage_logical_bytes"),
+        ("physical_bytes", "record_store_storage_physical_bytes"),
     ] {
         let value = json["storage"][field]
             .as_u64()
@@ -899,10 +899,10 @@ async fn metrics_are_served_to_both_planes_with_separate_credentials() {
         );
     }
     for (field, metric) in [
-        ("requests", "oes_requests_total"),
-        ("errors", "oes_errors_total"),
-        ("upload_bytes", "oes_upload_bytes_total"),
-        ("download_bytes", "oes_download_bytes_total"),
+        ("requests", "record_store_requests_total"),
+        ("errors", "record_store_errors_total"),
+        ("upload_bytes", "record_store_upload_bytes_total"),
+        ("download_bytes", "record_store_download_bytes_total"),
     ] {
         let value = json[field]
             .as_u64()
@@ -919,7 +919,7 @@ async fn metrics_are_served_to_both_planes_with_separate_credentials() {
 
 /// Server-side copy through the management plane.
 ///
-/// The console offers copy, so the bytes must move inside OES rather than being
+/// The console offers copy, so the bytes must move inside Record Store rather than being
 /// downloaded and re-uploaded by the browser.
 #[tokio::test]
 async fn management_api_copies_objects_server_side() {
@@ -939,7 +939,7 @@ async fn management_api_copies_objects_server_side() {
         "test-auditor-management-token-32-bytes-long",
     ));
 
-    let runtime = oes_server::initialize(&config)
+    let runtime = record_store_server::initialize(&config)
         .await
         .expect("initialize server");
     let api_listener = TcpListener::bind("127.0.0.1:0")
@@ -1112,7 +1112,7 @@ async fn management_api_updates_lifecycle_rules() {
         "test-system-management-token-32-bytes-long",
     ));
 
-    let runtime = oes_server::initialize(&config)
+    let runtime = record_store_server::initialize(&config)
         .await
         .expect("initialize server");
     let api_listener = TcpListener::bind("127.0.0.1:0")

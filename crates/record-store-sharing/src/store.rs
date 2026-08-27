@@ -19,7 +19,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
 };
 use chrono::{DateTime, Utc};
-use oes_core::{BucketId, EmbedLinkId, ObjectKey, ShareLinkId};
+use record_store_core::{BucketId, EmbedLinkId, ObjectKey, ShareLinkId};
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::Sha256;
@@ -56,7 +56,7 @@ const KEY_TERMINATOR: u8 = 0xFF;
 /// first message is lost. Storing the token in the clear to allow that would be
 /// indefensible, and storing only a hash would mean the link can never be shown
 /// again. Envelope encryption under the deployment's master key is the same
-/// answer OES already gives for service-account secrets and webhook signing
+/// answer Record Store already gives for service-account secrets and webhook signing
 /// keys: a stolen database alone yields nothing, and a compromise that also
 /// yields the master key has already lost far more than these tokens.
 #[derive(Debug, Clone, Serialize, Deserialize)]

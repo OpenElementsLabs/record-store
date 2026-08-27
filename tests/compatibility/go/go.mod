@@ -1,4 +1,4 @@
-module oes.example/compatibility
+module record-store.example/compatibility
 
 go 1.24
 

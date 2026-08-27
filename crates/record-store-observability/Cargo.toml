@@ -1,12 +1,12 @@
 [package]
-name = "oes-observability"
+name = "record-store-observability"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-oes-config = { path = "../oes-config" }
+record-store-config = { path = "../record-store-config" }
 thiserror.workspace = true
 tracing-subscriber.workspace = true
 

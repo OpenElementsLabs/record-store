@@ -10,7 +10,7 @@
 //!
 //! Nothing on the public surface can reach anything but the one object its
 //! capability names, and nothing on it discloses a bucket, a key path, a version
-//! identifier, a node, or any other internal fact about how OES stores things.
+//! identifier, a node, or any other internal fact about how Record Store stores things.
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -22,13 +22,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
-use oes_audit::{AuditEvent, AuditResult};
-use oes_core::{
+use record_store_audit::{AuditEvent, AuditResult};
+use record_store_core::{
     BucketName, CONTENT_SIGNATURE_PROBE_BYTES, EmbedLinkId, ObjectKey, ObjectMetadata, PreviewKind,
     ShareLinkId, VersionId, content_signature_matches,
 };
-use oes_service::{ServiceError, ServiceGetResult};
-use oes_sharing::{
+use record_store_service::{ServiceError, ServiceGetResult};
+use record_store_sharing::{
     AccessDenial, AccessRefusal, CapabilityStatus, CapabilityTarget, CapabilityToken,
     CreateEmbedRequest, CreateShareRequest, EmbedDisposition, EmbedLink, OriginDecision,
     RateDecision, ShareLink, ShareLookup, SharePermission, SharingError, SharingService,
@@ -92,7 +92,7 @@ impl SharingManagement {
     /// Without a configured base this returns only the path. That is not a
     /// failure: the console knows its own public origin and completes the URL,
     /// and guessing an external address from a request header would be a way to
-    /// hand out links pointing at somewhere OES was never deployed.
+    /// hand out links pointing at somewhere Record Store was never deployed.
     fn share_url(&self, token: &CapabilityToken) -> String {
         match &self.share_base_url {
             Some(base) => format!("{base}/s/{}", token.expose()),
@@ -103,7 +103,7 @@ impl SharingManagement {
     /// Builds the URL a website loads an embed from.
     ///
     /// Always absolute, because the browser that eventually resolves it is on a
-    /// page OES has nothing to do with: there is no origin for it to fall back
+    /// page Record Store has nothing to do with: there is no origin for it to fall back
     /// to. The address is the storage endpoint, resolved once at startup.
     fn embed_url(&self, token: &CapabilityToken) -> String {
         format!("{}/e/{}", self.embed_base_url, token.expose())
@@ -112,11 +112,11 @@ impl SharingManagement {
 
 /// Extracts the identity abuse controls are applied to.
 ///
-/// `X-Forwarded-For` is honoured because public capability traffic reaches OES
+/// `X-Forwarded-For` is honoured because public capability traffic reaches Record Store
 /// through the console or a reverse proxy, and the socket address would
 /// otherwise be that hop for every visitor in the world. The header is only
 /// meaningful when the management listener is not itself internet-facing, which
-/// is how OES is meant to be deployed; when it is absent the socket address is
+/// is how Record Store is meant to be deployed; when it is absent the socket address is
 /// used and the limits simply apply more coarsely. The value is bounded and
 /// sanitised because it is attacker-influenced either way, and it is never used
 /// for anything but partitioning a counter.
@@ -157,7 +157,7 @@ pub(crate) struct SharingSettingsResponse {
     maximum_access_count: u32,
     minimum_password_length: usize,
     preview_text_limit_bytes: u64,
-    /// Element embeds OES will accept, so the console can explain a refusal
+    /// Element embeds Record Store will accept, so the console can explain a refusal
     /// before the operator fills in a dialog.
     embeddable_content_types: Vec<&'static str>,
 }
@@ -175,7 +175,7 @@ pub(crate) async fn sharing_settings(
         require_expiration: policy.require_expiration,
         require_share_password: policy.require_share_password,
         maximum_access_count: policy.maximum_access_count,
-        minimum_password_length: oes_sharing::MINIMUM_PASSWORD_LENGTH,
+        minimum_password_length: record_store_sharing::MINIMUM_PASSWORD_LENGTH,
         preview_text_limit_bytes: sharing.preview_text_limit_bytes(),
         embeddable_content_types: EMBEDDABLE_CONTENT_TYPES.to_vec(),
     }))
@@ -840,7 +840,7 @@ pub(crate) async fn delete_embed(
 
 /// What a share page may learn about the object behind a link.
 ///
-/// Everything OES knows and does not need to say is left out: the bucket, the
+/// Everything Record Store knows and does not need to say is left out: the bucket, the
 /// key's path, the version identifier, the checksum, the storage layout. A
 /// recipient needs to recognise the file and decide whether to open it, and
 /// that is the whole list.
@@ -898,7 +898,7 @@ pub(crate) async fn public_share_descriptor(
     // Proof of an earlier unlock, if the visitor has one. It is what turns the
     // challenge below into the file they were sent.
     let ticket = headers
-        .get("x-oes-share-ticket")
+        .get("x-record-store-share-ticket")
         .and_then(|value| value.to_str().ok());
     let Some(token) = CapabilityToken::parse(&token) else {
         // A malformed token never reaches the store, but it is still a guess.
@@ -1027,7 +1027,7 @@ pub(crate) async fn public_share_content(
         return Err(share_unavailable(request_id));
     };
     let ticket = headers
-        .get("x-oes-share-ticket")
+        .get("x-record-store-share-ticket")
         .and_then(|value| value.to_str().ok());
     let now = Utc::now();
     let authorized = sharing
@@ -1083,7 +1083,7 @@ pub(crate) async fn public_share_content(
     state.sharing_metrics.share_access();
     let mut response = byte_response(result, &metadata, disposition, !budgeted);
     let response_headers = response.headers_mut();
-    // A share is revocable, so nothing between OES and the recipient may keep a
+    // A share is revocable, so nothing between Record Store and the recipient may keep a
     // copy that outlives the revocation.
     insert_header(
         response_headers,
@@ -1440,7 +1440,7 @@ fn byte_response(
 async fn open_stream(
     state: &AppState,
     target: &CapabilityTarget,
-    range: Option<oes_core::ByteRange>,
+    range: Option<record_store_core::ByteRange>,
     request_id: &RequestId,
 ) -> Result<ServiceGetResult, ApiError> {
     let objects = &state.services.objects;
@@ -1492,7 +1492,7 @@ async fn verify_signature(
         return Ok(());
     }
     let probe_length = metadata.size.min(CONTENT_SIGNATURE_PROBE_BYTES as u64);
-    let Ok(range) = oes_core::ByteRange::new(0, probe_length) else {
+    let Ok(range) = record_store_core::ByteRange::new(0, probe_length) else {
         return Ok(());
     };
     let result = open_stream(state, target, Some(range), request_id).await?;
@@ -1519,7 +1519,7 @@ async fn verify_signature(
 /// keeps that true regardless of what the storage layer returns.
 pub(crate) async fn read_probe(
     result: ServiceGetResult,
-) -> Result<Vec<u8>, oes_storage::StorageError> {
+) -> Result<Vec<u8>, record_store_storage::StorageError> {
     use futures_util::StreamExt;
 
     let mut body = result.body;
@@ -1662,7 +1662,7 @@ const fn refusal_label(refusal: AccessRefusal) -> &'static str {
 
 /// Records a denied public access as a security event.
 ///
-/// Only denials involving a capability OES actually issued are recorded. A
+/// Only denials involving a capability Record Store actually issued are recorded. A
 /// stranger guessing tokens produces no audit entries at all, because letting an
 /// anonymous caller write unbounded rows into the security trail would itself be
 /// the vulnerability. Successful accesses are counted as metrics rather than
@@ -1675,7 +1675,7 @@ async fn record_public_denial(
     reason: &'static str,
 ) {
     let event = AuditEvent {
-        event_id: oes_core::AuditEventId::new(),
+        event_id: record_store_core::AuditEventId::new(),
         timestamp: Utc::now(),
         request_id: Some(request_id.to_string()),
         // A public visitor has no identity, and inventing one would be worse
@@ -1705,7 +1705,7 @@ async fn record_capability_audit<const N: usize>(
     metadata: [(&'static str, String); N],
 ) {
     let event = AuditEvent {
-        event_id: oes_core::AuditEventId::new(),
+        event_id: record_store_core::AuditEventId::new(),
         timestamp: Utc::now(),
         request_id: Some(request_id.to_string()),
         principal: principal.audit_name().to_owned(),
@@ -1743,7 +1743,7 @@ async fn resolve_target(
     bucket: &str,
     key: &str,
     request_id: &RequestId,
-) -> Result<(oes_core::BucketId, BucketName, ObjectKey), ApiError> {
+) -> Result<(record_store_core::BucketId, BucketName, ObjectKey), ApiError> {
     let name = parse_bucket_name(bucket, request_id)?;
     let key = parse_object_key(key, request_id)?;
     let bucket = state
@@ -1936,7 +1936,7 @@ mod tests {
             assert!(!policy.contains("allow-same-origin"), "{policy}");
             assert!(!policy.contains("unsafe-inline"), "{policy}");
         }
-        // Only the share and preview surface is framed by OES itself.
+        // Only the share and preview surface is framed by Record Store itself.
         assert!(SHARE_CONTENT_POLICY.contains("frame-ancestors 'self'"));
     }
 }

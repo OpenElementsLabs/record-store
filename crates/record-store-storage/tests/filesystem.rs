@@ -3,12 +3,12 @@ use std::{collections::BTreeMap, sync::Arc};
 use bytes::Bytes;
 use chrono::Utc;
 use futures_util::{StreamExt, TryStreamExt, stream};
-use oes_core::{
+use record_store_core::{
     Bucket, BucketId, BucketName, BucketQuota, ByteRange, MultipartUpload, MultipartUploadState,
     ObjectId, ObjectKey, OrganizationId, PartNumber, PayloadFormat, UploadId, VersioningState,
 };
-use oes_metadata::{MetadataRepository, RedbMetadataRepository};
-use oes_storage::{
+use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
+use record_store_storage::{
     CompleteMultipartRequest, DeleteObjectRequest, DownloadStream, GetObjectRequest,
     HeadObjectRequest, LocalFilesystemStore, ObjectStore, PutMultipartPartRequest,
     PutObjectRequest, StorageError, VerifyObjectRequest, upload_stream,
@@ -154,7 +154,7 @@ async fn streams_put_get_range_head_and_delete() {
 async fn failed_checksum_never_publishes_object_or_leaves_temporary_file() {
     let (directory, storage, _repository, bucket) = store().await;
     let mut request = put_request(bucket.id, "checksums/test", &[b"actual bytes"]);
-    request.expected_checksum = Some(oes_core::Checksum::sha256([0; 32]));
+    request.expected_checksum = Some(record_store_core::Checksum::sha256([0; 32]));
     assert!(matches!(
         storage.put(request).await,
         Err(StorageError::ChecksumMismatch { .. })
@@ -291,7 +291,7 @@ async fn overwrite_failure_preserves_old_object_and_success_replaces_it() {
         .await
         .expect("put original");
     let mut invalid = put_request(bucket.id, "replaceable", &[b"corrupt replacement"]);
-    invalid.expected_checksum = Some(oes_core::Checksum::sha256([0; 32]));
+    invalid.expected_checksum = Some(record_store_core::Checksum::sha256([0; 32]));
     assert!(matches!(
         storage.put(invalid).await,
         Err(StorageError::ChecksumMismatch { .. })
@@ -411,7 +411,7 @@ async fn restart_preserves_metadata_detects_corruption_and_cleans_owned_temporar
         .join("tmp")
         .join(format!("{}.upload", upload_id.simple()));
     std::fs::write(&recognized_upload, b"partial").expect("write abandoned upload");
-    let unrelated = data_root.join("tmp/not-an-oes-upload.upload");
+    let unrelated = data_root.join("tmp/not-an-record-store-upload.upload");
     std::fs::write(&unrelated, b"preserve").expect("write unrelated file");
 
     drop(storage);
@@ -512,7 +512,7 @@ async fn envelope_encryption_streams_ranges_survives_restart_and_detects_tamperi
     );
     let physical_path = payload_path(directory.path(), committed.metadata.id);
     let stored = std::fs::read(&physical_path).expect("stored ciphertext");
-    assert!(stored.starts_with(b"OESOBJ01"));
+    assert!(stored.starts_with(b"RSOBJV01"));
     assert!(stored.len() > plaintext.len());
     assert!(!stored.windows(64).any(|window| window == &plaintext[..64]));
 
@@ -652,7 +652,7 @@ async fn envelope_encryption_covers_durable_multipart_parts_and_completion() {
         assert!(
             std::fs::read(payload_path(directory.path(), part.object_id))
                 .expect("stored part")
-                .starts_with(b"OESOBJ01")
+                .starts_with(b"RSOBJV01")
         );
         parts.push(part);
     }

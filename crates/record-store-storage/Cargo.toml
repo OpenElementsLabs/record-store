@@ -1,5 +1,5 @@
 [package]
-name = "oes-storage"
+name = "record-store-storage"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,8 +16,8 @@ fs2.workspace = true
 hex.workspace = true
 hkdf.workspace = true
 md-5.workspace = true
-oes-core = { path = "../oes-core" }
-oes-metadata = { path = "../oes-metadata" }
+record-store-core = { path = "../record-store-core" }
+record-store-metadata = { path = "../record-store-metadata" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

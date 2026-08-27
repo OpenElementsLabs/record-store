@@ -61,7 +61,7 @@ impl AllowedOrigin {
         }
         // An origin is a scheme, host, and port. Anything after them — a path,
         // a query, a fragment, or credentials — means the operator has supplied
-        // a URL and expects path-level behaviour OES will not provide.
+        // a URL and expects path-level behaviour Record Store will not provide.
         if remainder.contains('/')
             || remainder.contains('?')
             || remainder.contains('#')

@@ -227,7 +227,7 @@ export function BucketsScreen() {
           }
         }}
         title={`Delete bucket ${pendingDelete?.name ?? ''}?`}
-        description="The bucket record is removed. OES refuses this while the bucket still holds object versions."
+        description="The bucket record is removed. Record Store refuses this while the bucket still holds object versions."
         consequence={
           pendingDelete && pendingDelete.version_count > 0
             ? `This bucket still holds ${formatCount(pendingDelete.version_count)} object version(s). Delete them first.`

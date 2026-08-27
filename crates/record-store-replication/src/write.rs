@@ -10,10 +10,10 @@ use std::{sync::Arc, time::Duration};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use md5::Md5;
-use oes_cluster::{PlacementPlan, PlacementTarget};
-use oes_core::{Checksum, ETag, NodeId, ObjectId};
-use oes_rpc::{ReplicaTarget, TransferExpectation};
-use oes_storage::{
+use record_store_cluster::{PlacementPlan, PlacementTarget};
+use record_store_core::{Checksum, ETag, NodeId, ObjectId};
+use record_store_rpc::{ReplicaTarget, TransferExpectation};
+use record_store_storage::{
     ReplicaCommitment, StorageError, UploadStream, WriteReplicaRequest, upload_stream,
 };
 use sha2::{Digest, Sha256};

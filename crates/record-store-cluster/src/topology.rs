@@ -8,7 +8,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use oes_core::{ClusterId, NodeId};
+use record_store_core::{ClusterId, NodeId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -45,7 +45,7 @@ pub enum TopologyError {
 
 /// A validated storage-class label such as `nvme`, `ssd`, `hdd`, or `archive`.
 ///
-/// Storage classes are operator-defined labels. OES only uses them to keep
+/// Storage classes are operator-defined labels. Record Store only uses them to keep
 /// replicas of one payload on compatible hardware; it performs no automatic
 /// tiering.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -181,7 +181,7 @@ impl FromStr for FailureDomainScope {
 /// A flexible set of topology labels such as `region`, `zone`, `rack`, `host`.
 ///
 /// The label system is deliberately open so operators can describe their own
-/// physical layout without an OES release. Placement only needs a stable string
+/// physical layout without a Record Store release. Placement only needs a stable string
 /// per scope.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -449,7 +449,7 @@ pub struct NodeCapacity {
     pub total_bytes: u64,
     /// Currently free bytes.
     pub available_bytes: u64,
-    /// Bytes occupied by OES replicas on this node.
+    /// Bytes occupied by Record Store replicas on this node.
     pub replica_bytes: u64,
     /// Bytes held by incomplete transfers and temporary uploads.
     pub temporary_bytes: u64,

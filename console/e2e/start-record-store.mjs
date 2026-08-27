@@ -1,4 +1,4 @@
-/** Starts and verifies a disposable standalone OES backend for Playwright. */
+/** Starts and verifies a disposable standalone Record Store backend for Playwright. */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
@@ -8,39 +8,40 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
-const dataDirectory = mkdtempSync(join(tmpdir(), 'oes-e2e-standalone-'));
+const dataDirectory = mkdtempSync(join(tmpdir(), 'record-store-e2e-standalone-'));
 const host = '127.0.0.1';
-const s3Port = port('OES_E2E_S3_PORT', 47_600);
-const apiPort = port('OES_E2E_API_PORT', 47_601);
-const consolePort = port('OES_E2E_CONSOLE_PORT', 47_602);
-const rpcPort = port('OES_E2E_RPC_PORT', 47_603);
-const harnessPort = port('OES_E2E_HARNESS_PORT', 47_604);
-const managementToken = process.env.OES_E2E_TOKEN ?? 'e2e-management-system-token-32-bytes-long';
+const s3Port = port('RECORD_STORE_E2E_S3_PORT', 47_600);
+const apiPort = port('RECORD_STORE_E2E_API_PORT', 47_601);
+const consolePort = port('RECORD_STORE_E2E_CONSOLE_PORT', 47_602);
+const rpcPort = port('RECORD_STORE_E2E_RPC_PORT', 47_603);
+const harnessPort = port('RECORD_STORE_E2E_HARNESS_PORT', 47_604);
+const managementToken =
+  process.env.RECORD_STORE_E2E_TOKEN ?? 'e2e-management-system-token-32-bytes-long';
 
 await Promise.all([
-  assertPortFree(s3Port, 'S3', 'OES_E2E_S3_PORT'),
-  assertPortFree(apiPort, 'management', 'OES_E2E_API_PORT'),
-  assertPortFree(consolePort, 'console', 'OES_E2E_CONSOLE_PORT'),
-  assertPortFree(rpcPort, 'RPC', 'OES_E2E_RPC_PORT'),
-  assertPortFree(harnessPort, 'harness readiness', 'OES_E2E_HARNESS_PORT'),
+  assertPortFree(s3Port, 'S3', 'RECORD_STORE_E2E_S3_PORT'),
+  assertPortFree(apiPort, 'management', 'RECORD_STORE_E2E_API_PORT'),
+  assertPortFree(consolePort, 'console', 'RECORD_STORE_E2E_CONSOLE_PORT'),
+  assertPortFree(rpcPort, 'RPC', 'RECORD_STORE_E2E_RPC_PORT'),
+  assertPortFree(harnessPort, 'harness readiness', 'RECORD_STORE_E2E_HARNESS_PORT'),
 ]);
 
-const server = spawn('cargo', ['run', '--quiet', '--bin', 'oes-server'], {
+const server = spawn('cargo', ['run', '--quiet', '--bin', 'record-store-server'], {
   cwd: repositoryRoot,
   env: {
     ...process.env,
-    OES_MODE: 'standalone',
-    OES_STORAGE_DATA_DIRECTORY: dataDirectory,
-    OES_S3_BIND: `${host}:${s3Port}`,
-    OES_API_BIND: `${host}:${apiPort}`,
-    OES_RPC_BIND: `${host}:${rpcPort}`,
-    OES_ROOT_ACCESS_KEY: 'e2e-root-access',
-    OES_ROOT_SECRET_KEY: 'e2e-root-secret-at-least-sixteen',
-    OES_CREDENTIAL_MASTER_KEY: 'e2e-credential-master-key-at-least-32-bytes',
-    OES_MANAGEMENT_SYSTEM_TOKEN: managementToken,
-    OES_MANAGEMENT_AUDITOR_TOKEN: 'e2e-management-auditor-token-32-bytes-long',
-    OES_METRICS_SCRAPE_TOKEN: 'e2e-dedicated-metrics-token-at-least-32-bytes',
-    OES_LOG: 'oes=warn',
+    RECORD_STORE_MODE: 'standalone',
+    RECORD_STORE_STORAGE_DATA_DIRECTORY: dataDirectory,
+    RECORD_STORE_S3_BIND: `${host}:${s3Port}`,
+    RECORD_STORE_API_BIND: `${host}:${apiPort}`,
+    RECORD_STORE_RPC_BIND: `${host}:${rpcPort}`,
+    RECORD_STORE_ROOT_ACCESS_KEY: 'e2e-root-access',
+    RECORD_STORE_ROOT_SECRET_KEY: 'e2e-root-secret-at-least-sixteen',
+    RECORD_STORE_CREDENTIAL_MASTER_KEY: 'e2e-credential-master-key-at-least-32-bytes',
+    RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN: managementToken,
+    RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN: 'e2e-management-auditor-token-32-bytes-long',
+    RECORD_STORE_METRICS_SCRAPE_TOKEN: 'e2e-dedicated-metrics-token-at-least-32-bytes',
+    RECORD_STORE_LOG: 'record_store=warn',
   },
   stdio: 'inherit',
 });
@@ -51,7 +52,9 @@ let readinessServer;
 server.once('exit', (code, signal) => {
   exited = true;
   if (!shuttingDown) {
-    console.error(`OES E2E backend exited before shutdown (code=${code}, signal=${signal})`);
+    console.error(
+      `Record Store E2E backend exited before shutdown (code=${code}, signal=${signal})`,
+    );
     shutdown(code ?? 1);
   }
 });
@@ -59,9 +62,9 @@ server.once('exit', (code, signal) => {
 await verifyBackend(`http://${host}:${apiPort}`, 'standalone');
 readinessServer = createHttpServer((_request, response) => {
   response.writeHead(200, { 'content-type': 'text/plain' });
-  response.end('verified standalone OES\n');
+  response.end('verified standalone Record Store\n');
 }).listen(harnessPort, host);
-process.stdout.write(`Verified standalone OES backend on ${host}:${apiPort}\n`);
+process.stdout.write(`Verified standalone Record Store backend on ${host}:${apiPort}\n`);
 
 function port(name, fallback) {
   const value = Number(process.env[name] ?? fallback);
@@ -91,7 +94,7 @@ function assertPortFree(value, label, variable) {
 async function verifyBackend(baseUrl, expectedMode) {
   const deadline = Date.now() + 600_000;
   while (Date.now() < deadline) {
-    if (exited) throw new Error('OES exited before its identity could be verified');
+    if (exited) throw new Error('Record Store exited before its identity could be verified');
     try {
       const ready = await fetch(`${baseUrl}/ready`);
       if (ready.ok) {
@@ -101,7 +104,7 @@ async function verifyBackend(baseUrl, expectedMode) {
         if (!response.ok) throw new Error(`identity endpoint returned HTTP ${response.status}`);
         const identity = await response.json();
         if (
-          identity?.name !== 'oes' ||
+          identity?.name !== 'record-store' ||
           identity?.mode !== expectedMode ||
           typeof identity?.version !== 'string'
         ) {
@@ -116,7 +119,7 @@ async function verifyBackend(baseUrl, expectedMode) {
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`OES did not become ready on ${baseUrl}`);
+  throw new Error(`Record Store did not become ready on ${baseUrl}`);
 }
 
 function shutdown(code = 0) {

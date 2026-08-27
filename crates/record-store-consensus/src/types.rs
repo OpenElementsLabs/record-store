@@ -1,6 +1,6 @@
 //! Consensus type configuration.
 //!
-//! The consensus implementation is deliberately hidden behind OES-owned types.
+//! The consensus implementation is deliberately hidden behind Record Store-owned types.
 //! Nothing outside this crate names an `openraft` type, so the dependency can be
 //! replaced without touching the rest of the system.
 
@@ -17,23 +17,23 @@ pub type MemberId = u64;
 pub type MemberNode = openraft::BasicNode;
 
 openraft::declare_raft_types!(
-    /// The OES consensus type configuration.
-    pub OesTypeConfig:
+    /// The Record Store consensus type configuration.
+    pub RecordStoreTypeConfig:
         D = ClusterWrite,
         R = ClusterWriteResponse,
         NodeId = MemberId,
         Node = MemberNode,
-        Entry = openraft::Entry<OesTypeConfig>,
+        Entry = openraft::Entry<RecordStoreTypeConfig>,
         SnapshotData = Cursor<Vec<u8>>,
         AsyncRuntime = TokioRuntime,
-        Responder = OneshotResponder<OesTypeConfig>,
+        Responder = OneshotResponder<RecordStoreTypeConfig>,
 );
 
 /// A committed log position.
 pub type ConsensusLogId = openraft::LogId<MemberId>;
 
 /// A consensus log entry.
-pub type ConsensusEntry = openraft::Entry<OesTypeConfig>;
+pub type ConsensusEntry = openraft::Entry<RecordStoreTypeConfig>;
 
 /// The membership configuration stored with the state machine.
 pub type ConsensusMembership = openraft::StoredMembership<MemberId, MemberNode>;

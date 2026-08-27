@@ -11,7 +11,7 @@ shutdown_grace_period_seconds = 30
 # standalone installation needs nothing beyond [server] and [storage].
 #
 # [cluster]
-# # Joining nodes set seeds plus a short-lived OES_CLUSTER_JOIN_TOKEN. A first
+# # Joining nodes set seeds plus a short-lived RECORD_STORE_CLUSTER_JOIN_TOKEN. A first
 # # cluster node leaves both empty and forms the initial one-member Raft group.
 # seeds = []
 # storage_class = "standard"
@@ -32,26 +32,26 @@ shutdown_grace_period_seconds = 30
 # [cluster.tls]
 # # Production clusters should configure a certificate, private key, peer CA,
 # # and client CA for mutual TLS on internal port 7603.
-# # certificate_path = "/etc/oes/tls/node.crt"
-# # private_key_path = "/etc/oes/tls/node.key"
-# # peer_ca_path = "/etc/oes/tls/ca.crt"
-# # client_ca_path = "/etc/oes/tls/ca.crt"
+# # certificate_path = "/etc/record-store/tls/node.crt"
+# # private_key_path = "/etc/record-store/tls/node.key"
+# # peer_ca_path = "/etc/record-store/tls/ca.crt"
+# # client_ca_path = "/etc/record-store/tls/ca.crt"
 # # server_name = "storage-1.internal"
 
 [storage]
 data_directory = "./data"
-encryption_enabled = false # requires a stable OES_CREDENTIAL_MASTER_KEY
+encryption_enabled = false # requires a stable RECORD_STORE_CREDENTIAL_MASTER_KEY
 # Keep this on the same filesystem as data_directory when overriding it.
 # temporary_directory = "./data/tmp"
 
 [auth]
-# Supply root_access_key and root_secret_key through OES_ROOT_ACCESS_KEY and
-# OES_ROOT_SECRET_KEY. OES deliberately has no default credentials.
-# A stable OES_CREDENTIAL_MASTER_KEY is recommended for service accounts.
-# Set OES_MANAGEMENT_SYSTEM_TOKEN to a distinct 32+ byte bearer token. Optional
+# Supply root_access_key and root_secret_key through RECORD_STORE_ROOT_ACCESS_KEY and
+# RECORD_STORE_ROOT_SECRET_KEY. Record Store deliberately has no default credentials.
+# A stable RECORD_STORE_CREDENTIAL_MASTER_KEY is recommended for service accounts.
+# Set RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN to a distinct 32+ byte bearer token. Optional
 # storage-administrator and auditor tokens can be supplied with their matching
-# OES_MANAGEMENT_* environment variables.
-# Set OES_METRICS_SCRAPE_TOKEN to an independent 32+ byte token to enable
+# RECORD_STORE_MANAGEMENT_* environment variables.
+# Set RECORD_STORE_METRICS_SCRAPE_TOKEN to an independent 32+ byte token to enable
 # authenticated Prometheus scraping. Metrics stay closed when it is absent.
 root_s3_enabled = true # disable after attaching policies to service accounts
 
@@ -106,9 +106,9 @@ preview_text_limit_bytes = 1048576
 # completes the link against the origin the administrator is already using.
 # embed_base_url falls back to cluster.s3_endpoint and then to the S3 listener
 # address, which is right for a local install and wrong behind any proxy.
-# share_base_url = "https://oes.example.com"
+# share_base_url = "https://record-store.example.com"
 # embed_base_url = "https://storage.example.com"
 
 [observability]
-log_filter = "oes=info,tower_http=info"
+log_filter = "record_store=info,tower_http=info"
 json = false

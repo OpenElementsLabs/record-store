@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use oes_core::{NodeId, ObjectId};
+use record_store_core::{NodeId, ObjectId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -403,8 +403,8 @@ fn candidate(
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use oes_core::ClusterId;
     use proptest::prelude::*;
+    use record_store_core::ClusterId;
 
     use super::*;
     use crate::{

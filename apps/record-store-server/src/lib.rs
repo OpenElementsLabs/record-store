@@ -1,4 +1,4 @@
-//! Explicit OES server initialization and dual-listener lifecycle orchestration.
+//! Explicit Record Store server initialization and dual-listener lifecycle orchestration.
 
 mod cluster;
 
@@ -11,17 +11,23 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use oes_api::{AppState, ClusterManagement, ManagementAuth, MetricsAuth, SharingManagement};
-use oes_audit::{AuditError, AuditRepository, RedbAuditRepository};
-use oes_auth::{Authorizer, CredentialManager, CredentialStoreError, SigningCredentialProvider};
-use oes_config::Config;
-use oes_core::OrganizationId;
-use oes_events::{EventError, EventRepository, RedbEventRepository, WebhookConfig, WebhookWorker};
-use oes_lifecycle::{LifecycleError, LifecycleWorker};
-use oes_metadata::{MetadataError, MetadataRepository, RedbMetadataRepository};
-use oes_service::{ServiceLimits, Services};
-use oes_sharing::{CapabilityStore, SharingPolicy, SharingService, TicketIssuer};
-use oes_storage::{LocalFilesystemStore, ObjectStore, StorageError};
+use record_store_api::{
+    AppState, ClusterManagement, ManagementAuth, MetricsAuth, SharingManagement,
+};
+use record_store_audit::{AuditError, AuditRepository, RedbAuditRepository};
+use record_store_auth::{
+    Authorizer, CredentialManager, CredentialStoreError, SigningCredentialProvider,
+};
+use record_store_config::Config;
+use record_store_core::OrganizationId;
+use record_store_events::{
+    EventError, EventRepository, RedbEventRepository, WebhookConfig, WebhookWorker,
+};
+use record_store_lifecycle::{LifecycleError, LifecycleWorker};
+use record_store_metadata::{MetadataError, MetadataRepository, RedbMetadataRepository};
+use record_store_service::{ServiceLimits, Services};
+use record_store_sharing::{CapabilityStore, SharingPolicy, SharingService, TicketIssuer};
+use record_store_storage::{LocalFilesystemStore, ObjectStore, StorageError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -68,7 +74,7 @@ impl ServerRuntime {
         let cluster_shutdown = lifecycle_shutdown.clone();
         tokio::try_join!(
             async {
-                oes_api::serve(
+                record_store_api::serve(
                     s3_listener,
                     self.s3,
                     s3_shutdown,
@@ -78,7 +84,7 @@ impl ServerRuntime {
                 .map_err(StartupError::Http)
             },
             async {
-                oes_api::serve(
+                record_store_api::serve(
                     api_listener,
                     self.management,
                     api_shutdown,
@@ -359,12 +365,12 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
     }
     // The embed surface is built from the same state but mounted on the storage
     // listener below, so an asset URL never touches the management plane.
-    let embed_delivery = oes_api::embed_router(management_state.clone());
-    let management = oes_api::router(management_state);
+    let embed_delivery = record_store_api::embed_router(management_state.clone());
+    let management = record_store_api::router(management_state);
     let authorizer: Arc<dyn Authorizer> = credentials.clone();
     let credential_provider: Arc<dyn SigningCredentialProvider> = credentials;
-    let s3 = oes_s3::router(
-        oes_s3::S3State::new(services, credential_provider)
+    let s3 = record_store_s3::router(
+        record_store_s3::S3State::new(services, credential_provider)
             .with_authorizer(authorizer)
             .with_audit(audit_dependency)
             .with_root_s3_enabled(config.auth.root_s3_enabled)
@@ -391,7 +397,7 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
     })
 }
 
-/// Initializes and serves OES at both configured addresses.
+/// Initializes and serves Record Store at both configured addresses.
 pub async fn run<F>(config: &Config, shutdown: F) -> Result<(), StartupError>
 where
     F: Future<Output = ()> + Send + 'static,
@@ -409,11 +415,11 @@ where
             interface: "management",
             source,
         })?;
-    info!(mode = %config.server.mode, "OES starting");
+    info!(mode = %config.server.mode, "Record Store starting");
     info!(address = %config.server.s3_bind, "S3 API listening");
     info!(address = %config.server.api_bind, "management API listening");
     if !config.server.mode.clustered() {
-        info!("OES started in standalone mode; internal cluster RPC is not listening");
+        info!("Record Store started in standalone mode; internal cluster RPC is not listening");
     }
     runtime.serve(s3_listener, api_listener, shutdown).await
 }
@@ -490,7 +496,7 @@ struct MetadataBackupFile {
     sha256: String,
 }
 
-/// Creates a consistent offline backup of OES metadata databases.
+/// Creates a consistent offline backup of Record Store metadata databases.
 ///
 /// The operation refuses to run while a server owns the data-directory lock and
 /// never includes object payload bytes or secret configuration values.
@@ -532,7 +538,7 @@ pub fn backup_metadata(config: &Config, output: &Path) -> Result<(), MetadataBac
     files.sort_by(|left, right| left.name.cmp(&right.name));
     let manifest = MetadataBackupManifest {
         backup_format_version: METADATA_BACKUP_FORMAT_VERSION,
-        metadata_schema_version: oes_metadata::METADATA_SCHEMA_VERSION,
+        metadata_schema_version: record_store_metadata::METADATA_SCHEMA_VERSION,
         created_unix_seconds: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -574,7 +580,7 @@ pub fn restore_metadata(config: &Config, input: &Path) -> Result<(), MetadataBac
     }
     let manifest: MetadataBackupManifest = serde_json::from_slice(&manifest_bytes)?;
     if manifest.backup_format_version != METADATA_BACKUP_FORMAT_VERSION
-        || manifest.metadata_schema_version > oes_metadata::METADATA_SCHEMA_VERSION
+        || manifest.metadata_schema_version > record_store_metadata::METADATA_SCHEMA_VERSION
     {
         return Err(MetadataBackupError::IncompatibleVersion);
     }
@@ -606,7 +612,7 @@ fn acquire_data_lock(data_directory: &Path) -> Result<File, std::io::Error> {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(data_directory.join(".oes.lock"))?;
+        .open(data_directory.join(".record-store.lock"))?;
     fs2::FileExt::try_lock_exclusive(&lock)?;
     Ok(lock)
 }
@@ -652,10 +658,10 @@ fn valid_backup_filename(name: &str) -> bool {
 #[derive(Debug, Error)]
 pub enum MetadataBackupError {
     #[error("invalid configuration: {0}")]
-    Configuration(oes_config::ConfigError),
+    Configuration(record_store_config::ConfigError),
     #[error("metadata backup I/O failed: {0}")]
     Io(#[source] std::io::Error),
-    #[error("the data directory is in use by another OES process: {0}")]
+    #[error("the data directory is in use by another Record Store process: {0}")]
     DataDirectoryInUse(#[source] std::io::Error),
     #[error("backup destination already exists: {}", .0.display())]
     DestinationExists(PathBuf),
@@ -678,7 +684,7 @@ pub enum MetadataBackupError {
 pub enum StartupError {
     /// Resolved configuration was invalid.
     #[error("invalid configuration: {0}")]
-    Configuration(oes_config::ConfigError),
+    Configuration(record_store_config::ConfigError),
     /// Credential initialization failed.
     #[error("credential initialization failed: {0}")]
     Credentials(#[from] CredentialStoreError),
@@ -687,7 +693,7 @@ pub enum StartupError {
     Audit(#[from] AuditError),
     /// Capability store initialization failed.
     #[error("sharing initialization failed: {0}")]
-    Sharing(#[from] oes_sharing::SharingError),
+    Sharing(#[from] record_store_sharing::SharingError),
     /// Event and webhook initialization or supervision failed.
     #[error("event subsystem failed: {0}")]
     Events(#[from] EventError),
@@ -717,5 +723,5 @@ pub enum StartupError {
     },
     /// HTTP serving or graceful shutdown failed.
     #[error("HTTP lifecycle failed: {0}")]
-    Http(oes_api::ServerError),
+    Http(record_store_api::ServerError),
 }

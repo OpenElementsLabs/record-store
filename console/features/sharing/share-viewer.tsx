@@ -24,7 +24,7 @@ import type { PublicShare } from '@/types/api';
  * The public share page.
  *
  * Restrained on purpose. This page is opened by someone who was sent a link and
- * who has no relationship with OES, so it shows the file, the two things they
+ * who has no relationship with Record Store, so it shows the file, the two things they
  * might want to do with it, and a single line saying where it came from. There
  * is no navigation, because there is nowhere else they are allowed to go.
  *
@@ -46,7 +46,7 @@ export function ShareViewer({
       <header className="flex items-center gap-3">
         <BrandMark />
         <div className="min-w-0">
-          <p className="type-eyebrow">Shared securely through OES</p>
+          <p className="type-eyebrow">Shared securely through Record Store</p>
         </div>
       </header>
 
@@ -130,7 +130,7 @@ function PasswordChallenge({
       // arrives from the server only after the password has actually been
       // verified rather than having been held back in the browser.
       const descriptor = await fetch(`/s/${token}/descriptor`, {
-        headers: { accept: 'application/json', 'x-oes-share-ticket': ticket },
+        headers: { accept: 'application/json', 'x-record-store-share-ticket': ticket },
       });
       if (!descriptor.ok) {
         setError('This link is no longer available.');
@@ -294,5 +294,5 @@ function SharedObject({
  */
 function publishTicket(token: string, ticket: string): void {
   const secure = window.location.protocol === 'https:' ? '; Secure' : '';
-  document.cookie = `oes_share_ticket=${encodeURIComponent(ticket)}; Path=/s/${token}; SameSite=Strict; Max-Age=43200${secure}`;
+  document.cookie = `record_store_share_ticket=${encodeURIComponent(ticket)}; Path=/s/${token}; SameSite=Strict; Max-Age=43200${secure}`;
 }

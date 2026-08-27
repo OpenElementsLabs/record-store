@@ -13,7 +13,7 @@ use std::{
 };
 
 use chrono::{DateTime, TimeDelta, Utc};
-use oes_core::{
+use record_store_core::{
     ClusterId, ClusterOperationId, JoinTokenId, NodeCredentialId, NodeId, ObjectId, ReplicaTaskId,
 };
 use redb::{
@@ -88,7 +88,7 @@ const UNAVAILABLE_PAYLOADS: &[u8] = b"unavailable_payloads";
 #[derive(Debug, Error)]
 pub enum ClusterCatalogError {
     /// The cluster has not been initialized yet.
-    #[error("cluster has not been initialized; run 'oes cluster init' first")]
+    #[error("cluster has not been initialized; run 'record-store cluster init' first")]
     NotInitialized,
     /// The cluster was already initialized.
     #[error("cluster {0} is already initialized")]
@@ -1190,7 +1190,7 @@ impl ClusterCatalog {
         .await?
     }
 
-    /// Opens a catalog that shares a database with other OES state.
+    /// Opens a catalog that shares a database with other Record Store state.
     ///
     /// Sharing one database is what lets a consensus state machine commit
     /// object metadata, cluster metadata, and the applied log position together.
@@ -1664,7 +1664,7 @@ pub fn silence(node: &NodeRecord, now: DateTime<Utc>) -> TimeDelta {
 
 #[cfg(test)]
 mod tests {
-    use oes_core::Checksum;
+    use record_store_core::Checksum;
 
     use super::*;
     use crate::{

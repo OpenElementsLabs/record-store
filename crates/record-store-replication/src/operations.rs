@@ -8,12 +8,12 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use oes_cluster::{
+use record_store_cluster::{
     ClusterCommand, ClusterOperation, ClusterOperationKind, ClusterOperationState,
     DecommissionSafety, IssuedJoinToken, JoinToken, NodeState,
 };
-use oes_consensus::{ClusterWrite, MetadataConsensus};
-use oes_core::{ClusterOperationId, NodeId};
+use record_store_consensus::{ClusterWrite, MetadataConsensus};
+use record_store_core::{ClusterOperationId, NodeId};
 use thiserror::Error;
 use tracing::info;
 
@@ -197,9 +197,9 @@ impl ClusterOperations {
             } else {
                 ClusterOperationState::Moving
             },
-            progress: oes_cluster::OperationProgress {
+            progress: record_store_cluster::OperationProgress {
                 objects_remaining: u64::try_from(planned).unwrap_or(0),
-                ..oes_cluster::OperationProgress::default()
+                ..record_store_cluster::OperationProgress::default()
             },
             message: Some(format!("{planned} movement(s) planned")),
             at: Utc::now(),
@@ -230,7 +230,7 @@ impl ClusterOperations {
     /// Revokes a join token.
     pub async fn revoke_join_token(
         &self,
-        token_id: oes_core::JoinTokenId,
+        token_id: record_store_core::JoinTokenId,
     ) -> Result<(), OperationError> {
         self.apply(ClusterCommand::RevokeJoinToken {
             token_id,
@@ -242,7 +242,7 @@ impl ClusterOperations {
     /// Replaces the cluster-wide configuration after strict validation.
     pub async fn set_config(
         &self,
-        config: oes_cluster::ClusterConfig,
+        config: record_store_cluster::ClusterConfig,
     ) -> Result<(), OperationError> {
         config
             .validate()
@@ -309,7 +309,10 @@ impl ClusterOperations {
         .await
     }
 
-    async fn node(&self, node_id: NodeId) -> Result<oes_cluster::NodeRecord, OperationError> {
+    async fn node(
+        &self,
+        node_id: NodeId,
+    ) -> Result<record_store_cluster::NodeRecord, OperationError> {
         self.context
             .cluster
             .node(node_id)

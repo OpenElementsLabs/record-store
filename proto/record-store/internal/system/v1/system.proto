@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package oes.internal.system.v1;
+package record_store.internal.system.v1;
 
 // Identity a node advertises to its peers.
 //
@@ -75,7 +75,7 @@ message ActivateResponse {
   bool metadata_voter = 2;
 }
 
-// Node lifecycle and diagnostics exchanged between OES processes.
+// Node lifecycle and diagnostics exchanged between Record Store processes.
 service SystemService {
   // Confirms identity, protocol compatibility, and cluster membership.
   rpc Ping(PingRequest) returns (PingResponse);

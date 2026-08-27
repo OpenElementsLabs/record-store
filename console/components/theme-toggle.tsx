@@ -13,9 +13,9 @@ import {
 
 type Theme = 'light' | 'dark' | 'system';
 
-const STORAGE_KEY = 'oes-theme';
+const STORAGE_KEY = 'record-store-theme';
 /** Notifies other instances in this tab, which `storage` events do not cover. */
-const CHANGE_EVENT = 'oes-theme-change';
+const CHANGE_EVENT = 'record-store-theme-change';
 
 function subscribe(onChange: () => void): () => void {
   window.addEventListener('storage', onChange);

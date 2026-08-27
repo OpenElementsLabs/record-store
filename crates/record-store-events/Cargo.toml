@@ -1,5 +1,5 @@
 [package]
-name = "oes-events"
+name = "record-store-events"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,7 @@ chrono.workspace = true
 hex.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
-oes-core = { path = "../oes-core" }
+record-store-core = { path = "../record-store-core" }
 redb.workspace = true
 reqwest.workspace = true
 serde.workspace = true

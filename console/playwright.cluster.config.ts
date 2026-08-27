@@ -1,16 +1,16 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const CONSOLE_PORT = testPort('OES_CLUSTER_E2E_CONSOLE_PORT', 18_602);
-const API_PORT = testPort('OES_CLUSTER_E2E_NODE_1_API_PORT', 18_601);
-const HARNESS_PORT = testPort('OES_CLUSTER_E2E_HARNESS_PORT', 18_604);
+const CONSOLE_PORT = testPort('RECORD_STORE_CLUSTER_E2E_CONSOLE_PORT', 18_602);
+const API_PORT = testPort('RECORD_STORE_CLUSTER_E2E_NODE_1_API_PORT', 18_601);
+const HARNESS_PORT = testPort('RECORD_STORE_CLUSTER_E2E_HARNESS_PORT', 18_604);
 const CONSOLE_URL = `http://127.0.0.1:${CONSOLE_PORT}`;
 const MANAGEMENT_URL = `http://127.0.0.1:${API_PORT}`;
 const MANAGEMENT_TOKEN = 'e2e-management-system-token-32-bytes-long';
 
-process.env.OES_E2E_MANAGEMENT_URL = MANAGEMENT_URL;
-process.env.OES_E2E_CONSOLE_URL = CONSOLE_URL;
-process.env.OES_E2E_EXPECTED_MODE = 'cluster';
-process.env.OES_E2E_TOKEN = MANAGEMENT_TOKEN;
+process.env.RECORD_STORE_E2E_MANAGEMENT_URL = MANAGEMENT_URL;
+process.env.RECORD_STORE_E2E_CONSOLE_URL = CONSOLE_URL;
+process.env.RECORD_STORE_E2E_EXPECTED_MODE = 'cluster';
+process.env.RECORD_STORE_E2E_TOKEN = MANAGEMENT_TOKEN;
 
 export default defineConfig({
   testDir: './e2e',
@@ -36,7 +36,7 @@ export default defineConfig({
       timeout: 600_000,
       stdout: 'pipe',
       stderr: 'pipe',
-      env: { OES_E2E_TOKEN: MANAGEMENT_TOKEN },
+      env: { RECORD_STORE_E2E_TOKEN: MANAGEMENT_TOKEN },
     },
     {
       command: 'node e2e/start-console.mjs',
@@ -45,8 +45,8 @@ export default defineConfig({
       timeout: 120_000,
       env: {
         PORT: String(CONSOLE_PORT),
-        OES_API_URL: MANAGEMENT_URL,
-        OES_CONSOLE_SECURE_COOKIES: 'false',
+        RECORD_STORE_API_URL: MANAGEMENT_URL,
+        RECORD_STORE_CONSOLE_SECURE_COOKIES: 'false',
         NODE_ENV: 'production',
       },
     },

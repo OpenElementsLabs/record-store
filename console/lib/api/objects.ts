@@ -89,7 +89,7 @@ export function fetchObjectVersions(
 /**
  * Copies an object server side.
  *
- * The bytes never travel through the browser: OES streams them internally, so
+ * The bytes never travel through the browser: Record Store streams them internally, so
  * copying a large object costs the console nothing. Supplying `contentType` or
  * `customMetadata` replaces the source's metadata instead of carrying it over.
  */

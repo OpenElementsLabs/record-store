@@ -1,5 +1,5 @@
 [package]
-name = "oes-server"
+name = "record-store-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,24 +12,24 @@ chrono.workspace = true
 clap.workspace = true
 fs2.workspace = true
 hex.workspace = true
-oes-api = { path = "../../crates/oes-api" }
-oes-audit = { path = "../../crates/oes-audit" }
-oes-auth = { path = "../../crates/oes-auth" }
-oes-cluster = { path = "../../crates/oes-cluster" }
-oes-config = { path = "../../crates/oes-config" }
-oes-consensus = { path = "../../crates/oes-consensus" }
-oes-core = { path = "../../crates/oes-core" }
-oes-events = { path = "../../crates/oes-events" }
-oes-lifecycle = { path = "../../crates/oes-lifecycle" }
-oes-metadata = { path = "../../crates/oes-metadata" }
-oes-observability = { path = "../../crates/oes-observability" }
-oes-protocol = { path = "../../crates/oes-protocol" }
-oes-replication = { path = "../../crates/oes-replication" }
-oes-rpc = { path = "../../crates/oes-rpc" }
-oes-s3 = { path = "../../crates/oes-s3" }
-oes-service = { path = "../../crates/oes-service" }
-oes-sharing = { path = "../../crates/oes-sharing" }
-oes-storage = { path = "../../crates/oes-storage" }
+record-store-api = { path = "../../crates/record-store-api" }
+record-store-audit = { path = "../../crates/record-store-audit" }
+record-store-auth = { path = "../../crates/record-store-auth" }
+record-store-cluster = { path = "../../crates/record-store-cluster" }
+record-store-config = { path = "../../crates/record-store-config" }
+record-store-consensus = { path = "../../crates/record-store-consensus" }
+record-store-core = { path = "../../crates/record-store-core" }
+record-store-events = { path = "../../crates/record-store-events" }
+record-store-lifecycle = { path = "../../crates/record-store-lifecycle" }
+record-store-metadata = { path = "../../crates/record-store-metadata" }
+record-store-observability = { path = "../../crates/record-store-observability" }
+record-store-protocol = { path = "../../crates/record-store-protocol" }
+record-store-replication = { path = "../../crates/record-store-replication" }
+record-store-rpc = { path = "../../crates/record-store-rpc" }
+record-store-s3 = { path = "../../crates/record-store-s3" }
+record-store-service = { path = "../../crates/record-store-service" }
+record-store-sharing = { path = "../../crates/record-store-sharing" }
+record-store-storage = { path = "../../crates/record-store-storage" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

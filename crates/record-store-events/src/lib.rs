@@ -11,7 +11,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
-use oes_core::{EventId, VersionId, WebhookId};
+use record_store_core::{EventId, VersionId, WebhookId};
 use redb::{Database, ReadableTable, TableDefinition};
 use reqwest::{Client, Url, redirect::Policy};
 use serde::{Deserialize, Serialize};
@@ -384,10 +384,10 @@ impl RedbEventRepository {
         let response = client
             .post(target.url)
             .header("content-type", "application/json")
-            .header("x-oes-event-id", event.id.to_string())
-            .header("x-oes-event-type", event.event_type.header_value())
-            .header("x-oes-event-time", event.time.to_rfc3339())
-            .header("x-oes-signature", signature)
+            .header("x-record-store-event-id", event.id.to_string())
+            .header("x-record-store-event-type", event.event_type.header_value())
+            .header("x-record-store-event-time", event.time.to_rfc3339())
+            .header("x-record-store-signature", signature)
             .body(payload)
             .send()
             .await;
@@ -972,7 +972,7 @@ pub enum EventError {
 }
 
 fn derive_cipher(master_key: &[u8]) -> Result<Aes256Gcm, EventError> {
-    let hkdf = Hkdf::<Sha256>::new(Some(b"oes-webhook-secrets-v1"), master_key);
+    let hkdf = Hkdf::<Sha256>::new(Some(b"record-store-webhook-secrets-v1"), master_key);
     let mut key = [0_u8; 32];
     hkdf.expand(b"aes-256-gcm", &mut key)
         .map_err(|_| EventError::Crypto)?;

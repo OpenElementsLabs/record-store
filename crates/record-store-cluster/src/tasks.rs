@@ -8,7 +8,7 @@
 use std::fmt::{self, Display, Formatter};
 
 use chrono::{DateTime, TimeDelta, Utc};
-use oes_core::{ClusterOperationId, NodeId, ObjectId, ReplicaTaskId};
+use record_store_core::{ClusterOperationId, NodeId, ObjectId, ReplicaTaskId};
 use serde::{Deserialize, Serialize};
 
 /// Why a replica needs to move or be rebuilt.

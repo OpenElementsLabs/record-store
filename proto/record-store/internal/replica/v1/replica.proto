@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package oes.internal.replica.v1;
+package record_store.internal.replica.v1;
 
 // What a replica transfer is expected to contain.
 //

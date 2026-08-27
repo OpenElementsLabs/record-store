@@ -22,7 +22,7 @@ test.describe('storage workflows', () => {
     await expect(page.getByRole('heading', { name: bucket })).toBeVisible();
     await expect(page.getByText('This bucket is empty')).toBeVisible();
 
-    const contents = 'hello from the OES console end-to-end test\n';
+    const contents = 'hello from the Record Store console end-to-end test\n';
     await page.setInputFiles('input[type="file"]', {
       name: 'greeting.txt',
       mimeType: 'text/plain',
@@ -34,7 +34,7 @@ test.describe('storage workflows', () => {
       timeout: 20_000,
     });
 
-    // Downloading streams from OES through the console's own origin.
+    // Downloading streams from Record Store through the console's own origin.
     const download = page.waitForEvent('download');
     await page.getByRole('button', { name: /actions for greeting\.txt/i }).click();
     await page.getByRole('menuitem', { name: /download/i }).click();

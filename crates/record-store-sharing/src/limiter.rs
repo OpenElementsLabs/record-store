@@ -11,7 +11,7 @@
 //! Limits are held in process memory rather than in durable state. That is a
 //! deliberate trade: a limiter that writes to disk on every public request would
 //! turn a read path into a write path, and a restart merely resets a counter
-//! rather than losing anything OES is authoritative for.
+//! rather than losing anything Record Store is authoritative for.
 
 use std::{
     collections::HashMap,

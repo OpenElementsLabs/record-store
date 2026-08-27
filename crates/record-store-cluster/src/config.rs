@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::topology::FailureDomainScope;
 
-/// Highest replication factor OES accepts in this release.
+/// Highest replication factor Record Store accepts in this release.
 pub const MAXIMUM_REPLICATION_FACTOR: u8 = 3;
 
 /// Failures raised while validating cluster configuration.

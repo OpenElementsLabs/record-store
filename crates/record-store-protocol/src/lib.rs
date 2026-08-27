@@ -1,28 +1,28 @@
 //! Versioned internal wire contracts.
 //!
 //! Only generated types live here. The service implementations and clients live
-//! in `oes-rpc`, which keeps the contract crate free of transport, storage, and
+//! in `record-store-rpc`, which keeps the contract crate free of transport, storage, and
 //! consensus dependencies.
 
 /// Current internal protocol major version.
 ///
-/// The authoritative compatibility rules live in `oes-cluster`; this constant
+/// The authoritative compatibility rules live in `record-store-cluster`; this constant
 /// exists so the generated contracts and those rules cannot drift apart.
 pub const PROTOCOL_MAJOR_VERSION: u32 = 1;
 
 /// Version 1 node identity and lifecycle messages.
 pub mod system_v1 {
-    tonic::include_proto!("oes.internal.system.v1");
+    tonic::include_proto!("record_store.internal.system.v1");
 }
 
 /// Version 1 metadata consensus transport.
 pub mod consensus_v1 {
-    tonic::include_proto!("oes.internal.consensus.v1");
+    tonic::include_proto!("record_store.internal.consensus.v1");
 }
 
 /// Version 1 replica transfer and integrity operations.
 pub mod replica_v1 {
-    tonic::include_proto!("oes.internal.replica.v1");
+    tonic::include_proto!("record_store.internal.replica.v1");
 }
 
 #[cfg(test)]

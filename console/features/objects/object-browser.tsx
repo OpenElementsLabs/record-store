@@ -74,7 +74,7 @@ type BatchProgress = {
  * Browses a bucket by logical prefix.
  *
  * Prefixes are groupings produced by applying `/` as a delimiter, not
- * directories: OES stores flat keys. Folders therefore appear and disappear with
+ * directories: Record Store stores flat keys. Folders therefore appear and disappear with
  * the objects inside them, which is why they are rendered distinctly from
  * objects rather than as the same kind of row.
  */
@@ -362,7 +362,7 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
                             </DropdownMenuItem>
                             <DropdownMenuItem asChild>
                               {/*
-                                The browser fetches bytes straight from OES, so a
+                                The browser fetches bytes straight from Record Store, so a
                                 large download never passes through this app.
                               */}
                               <a href={objectContentUrl(bucket, object.key)} download>

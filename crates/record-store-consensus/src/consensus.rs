@@ -1,4 +1,4 @@
-//! The OES-owned consensus boundary.
+//! The Record Store-owned consensus boundary.
 //!
 //! Everything outside this crate talks to [`MetadataConsensus`]; no other crate
 //! names a consensus library type. Leader redirection, read barriers, quorum
@@ -12,7 +12,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use oes_cluster::{ClusterHealth, QuorumStatus};
 use openraft::{
     Config, Raft, RaftMetrics, RaftNetworkFactory, ServerState,
     error::{
@@ -23,6 +22,7 @@ use openraft::{
         InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
 };
+use record_store_cluster::{ClusterHealth, QuorumStatus};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -30,7 +30,7 @@ use crate::{
     command::{ClusterWrite, ClusterWriteResponse, CommandRejection, RejectionKind},
     log_store::{LogStoreError, RedbLogStore},
     state_machine::{ReplicatedState, StateMachineError, StateMachineStore},
-    types::{MemberId, MemberNode, OesTypeConfig},
+    types::{MemberId, MemberNode, RecordStoreTypeConfig},
 };
 
 /// Failures raised by the consensus boundary.
@@ -149,7 +149,7 @@ impl ConsensusSettings {
             member_id,
             advertise_address: advertise_address.into(),
             directory: directory.as_ref().to_path_buf(),
-            cluster_name: "oes".to_owned(),
+            cluster_name: "record-store".to_owned(),
             heartbeat_interval_millis: 250,
             election_timeout_min_millis: 1_000,
             election_timeout_max_millis: 2_000,
@@ -233,9 +233,9 @@ pub struct MetadataQuorum {
     pub members: Vec<ConsensusMemberStatus>,
 }
 
-/// The metadata consensus boundary used by the rest of OES.
+/// The metadata consensus boundary used by the rest of Record Store.
 pub struct MetadataConsensus {
-    raft: Raft<OesTypeConfig>,
+    raft: Raft<RecordStoreTypeConfig>,
     state: Arc<ReplicatedState>,
     settings: ConsensusSettings,
     forwarder: Arc<tokio::sync::RwLock<Option<Arc<dyn LeaderForwarder>>>>,
@@ -251,7 +251,7 @@ impl MetadataConsensus {
         network: N,
     ) -> Result<Arc<Self>, ConsensusError>
     where
-        N: RaftNetworkFactory<OesTypeConfig>,
+        N: RaftNetworkFactory<RecordStoreTypeConfig>,
     {
         settings.validate()?;
         let config = Arc::new(settings.raft_config()?);
@@ -637,7 +637,7 @@ impl MetadataConsensus {
     /// Handles an append-entries request received over internal RPC.
     pub async fn handle_append_entries(
         &self,
-        request: AppendEntriesRequest<OesTypeConfig>,
+        request: AppendEntriesRequest<RecordStoreTypeConfig>,
     ) -> Result<AppendEntriesResponse<MemberId>, ConsensusError> {
         self.raft
             .append_entries(request)
@@ -659,7 +659,7 @@ impl MetadataConsensus {
     /// Handles a snapshot installation chunk received over internal RPC.
     pub async fn handle_install_snapshot(
         &self,
-        request: InstallSnapshotRequest<OesTypeConfig>,
+        request: InstallSnapshotRequest<RecordStoreTypeConfig>,
     ) -> Result<InstallSnapshotResponse<MemberId>, ConsensusError> {
         self.raft
             .install_snapshot(request)

@@ -1,5 +1,5 @@
 /**
- * Types for the OES management API on port 7601.
+ * Types for the Record Store management API on port 7601.
  *
  * These mirror the Rust API's serialized shapes. They are written by hand
  * because the surface the console uses is small and reviewable; a generation
@@ -48,8 +48,8 @@ export type RolePermissions = {
   /**
    * Whether this role may create and withdraw share and embed links.
    *
-   * Distinct from `manage_objects`: one authority changes what OES stores, the
-   * other decides who outside OES can read it.
+   * Distinct from `manage_objects`: one authority changes what Record Store stores, the
+   * other decides who outside Record Store can read it.
    */
   readonly manage_sharing: boolean;
 };
@@ -105,7 +105,7 @@ export type StorageStatus = {
 /**
  * What a storage consistency scan found.
  *
- * `metadata_without_data` is the serious category: an object OES believes it
+ * `metadata_without_data` is the serious category: an object Record Store believes it
  * has whose bytes are gone. The other categories are reclaimable space rather
  * than lost data.
  */
@@ -183,7 +183,7 @@ export type ObjectSummary = {
 
 export type ObjectListPage = {
   readonly objects: readonly ObjectSummary[];
-  /** Logical prefixes produced by the delimiter. OES stores no directories. */
+  /** Logical prefixes produced by the delimiter. Record Store stores no directories. */
   readonly prefixes: readonly string[];
   readonly is_truncated: boolean;
   readonly next_continuation_token: string | null;

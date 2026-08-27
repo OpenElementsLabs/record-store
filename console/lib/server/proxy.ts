@@ -1,5 +1,5 @@
 /**
- * The forwarding boundary between the browser and the OES management API.
+ * The forwarding boundary between the browser and the Record Store management API.
  *
  * This layer is deliberately thin: it attaches the session credential, checks
  * the request origin, and streams bodies through. It contains no business rules,
@@ -124,7 +124,11 @@ export async function forwardToManagementApi(
       cache: 'no-store',
     } as RequestInit);
   } catch {
-    return jsonError(503, 'MANAGEMENT_API_UNREACHABLE', 'The OES management API is unreachable.');
+    return jsonError(
+      503,
+      'MANAGEMENT_API_UNREACHABLE',
+      'The Record Store management API is unreachable.',
+    );
   }
 
   const responseHeaders = new Headers();

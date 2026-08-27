@@ -7,7 +7,7 @@
 use std::fmt::{self, Debug, Formatter};
 
 use chrono::{DateTime, TimeDelta, Utc};
-use oes_core::{JoinTokenId, NodeCredentialId, NodeId};
+use record_store_core::{JoinTokenId, NodeCredentialId, NodeId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -15,9 +15,9 @@ use thiserror::Error;
 use uuid::Uuid;
 
 /// Prefix identifying a node credential.
-const NODE_CREDENTIAL_PREFIX: &str = "oesnode";
+const NODE_CREDENTIAL_PREFIX: &str = "recordstorenode";
 /// Prefix identifying a cluster join token.
-const JOIN_TOKEN_PREFIX: &str = "oesjoin";
+const JOIN_TOKEN_PREFIX: &str = "recordstorejoin";
 
 /// Failures raised while issuing or verifying cluster credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -199,7 +199,7 @@ pub struct JoinToken {
 pub struct IssuedJoinToken {
     /// The replicated record to persist.
     pub record: JoinToken,
-    /// The token an operator passes to `oes node join`.
+    /// The token an operator passes to `record-store node join`.
     pub token: ClusterSecret,
 }
 
@@ -373,10 +373,10 @@ mod tests {
         );
         for value in [
             "",
-            "oesnode",
-            "oesnode.not-a-uuid.0123456789012345678901234567890123456789",
-            "oesjoin.11111111111111111111111111111111.0123456789012345678901234567890123456789",
-            "oesnode.11111111111111111111111111111111.short",
+            "recordstorenode",
+            "recordstorenode.not-a-uuid.0123456789012345678901234567890123456789",
+            "recordstorejoin.11111111111111111111111111111111.0123456789012345678901234567890123456789",
+            "recordstorenode.11111111111111111111111111111111.short",
         ] {
             assert!(
                 parse_node_credential(value).is_err(),

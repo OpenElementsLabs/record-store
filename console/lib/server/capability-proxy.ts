@@ -9,7 +9,7 @@
  *
  * Only shares come through here. An embed is served by the storage endpoint
  * directly, because it is loaded by somebody else's page and has no business
- * reaching an administrative console; a share is a page OES itself renders, so
+ * reaching an administrative console; a share is a page Record Store itself renders, so
  * its bytes stay same-origin with the viewer that shows them.
  *
  * It also forwards more than the management proxy does. Range requests, range
@@ -33,13 +33,13 @@ const FORWARDED_REQUEST_HEADERS = [
   'origin',
   'x-request-id',
   // Proof that a share password was already entered.
-  'x-oes-share-ticket',
+  'x-record-store-share-ticket',
 ];
 
 /**
  * Response headers copied back to the caller.
  *
- * An allowlist rather than a passthrough, so a header OES gains later cannot
+ * An allowlist rather than a passthrough, so a header Record Store gains later cannot
  * start reaching the public without anyone deciding that it should.
  */
 const FORWARDED_RESPONSE_HEADERS = [
@@ -145,7 +145,7 @@ export async function readShareDescriptor(
   ticket: string | null,
 ): Promise<{ readonly status: number; readonly body: unknown }> {
   const headers = new Headers({ accept: 'application/json' });
-  if (ticket) headers.set('x-oes-share-ticket', ticket);
+  if (ticket) headers.set('x-record-store-share-ticket', ticket);
   try {
     const response = await fetch(`${managementApiUrl()}/s/${encodeURIComponent(token)}`, {
       headers,

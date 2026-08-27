@@ -8,11 +8,11 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
-use oes_cluster::{
+use record_store_cluster::{
     ClusterHealth, ClusterOperation, ClusterUsage, DataHealth, NodeState, QuorumStatus,
 };
-use oes_consensus::{MetadataConsensus, MetadataQuorum};
-use oes_core::{ClusterId, NodeId};
+use record_store_consensus::{MetadataConsensus, MetadataQuorum};
+use record_store_core::{ClusterId, NodeId};
 use serde::{Deserialize, Serialize};
 
 use crate::{context::ClusterContext, runtime::TaskStatus};

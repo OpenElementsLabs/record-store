@@ -1,6 +1,6 @@
 //! Process-wide structured tracing initialization.
 
-use oes_config::ObservabilityConfig;
+use record_store_config::ObservabilityConfig;
 use thiserror::Error;
 use tracing_subscriber::{EnvFilter, fmt};
 

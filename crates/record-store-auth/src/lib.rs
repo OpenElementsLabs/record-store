@@ -17,7 +17,7 @@ use aes_gcm::{
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use oes_core::{OrganizationId, ServiceAccountId};
+use record_store_core::{OrganizationId, ServiceAccountId};
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -40,7 +40,7 @@ pub enum Principal {
         #[serde(default)]
         credential_id: Option<Uuid>,
     },
-    /// A trusted internal OES component.
+    /// A trusted internal Record Store component.
     System {
         /// Stable component name.
         component: String,
@@ -1289,13 +1289,13 @@ mod tests {
         let credential = Credential {
             id: Uuid::new_v4(),
             service_account_id: ServiceAccountId::new(),
-            key_id: "oes_test_public".into(),
+            key_id: "record_store_test_public".into(),
             disabled: false,
             created_at: Utc::now(),
             expires_at: None,
         };
         let debug = format!("{credential:?}");
-        assert!(debug.contains("oes_test_public"));
+        assert!(debug.contains("record_store_test_public"));
         assert!(!debug.contains("secret"));
         assert!(!debug.contains("hash"));
     }

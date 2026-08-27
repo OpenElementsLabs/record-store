@@ -289,7 +289,7 @@ export function WebhooksScreen() {
 /**
  * Delivery health for one webhook, within the fetched window.
  *
- * OES returns a bounded delivery log that cannot be filtered per webhook, so
+ * Record Store returns a bounded delivery log that cannot be filtered per webhook, so
  * this describes recent deliveries only. An empty result means nothing recent,
  * not nothing ever, and the label says so rather than implying a clean record.
  */
@@ -431,8 +431,8 @@ function CreateWebhookDialog({
         <DialogHeader>
           <DialogTitle>Create webhook</DialogTitle>
           <DialogDescription>
-            OES requires HTTPS endpoints by default and refuses private network targets unless the
-            server was configured to allow them.
+            Record Store requires HTTPS endpoints by default and refuses private network targets
+            unless the server was configured to allow them.
           </DialogDescription>
         </DialogHeader>
         <form
@@ -446,7 +446,7 @@ function CreateWebhookDialog({
               <Input
                 type="url"
                 value={url}
-                placeholder="https://example.com/oes-events"
+                placeholder="https://example.com/record-store-events"
                 required
                 onChange={(event) => setUrl(event.target.value)}
               />

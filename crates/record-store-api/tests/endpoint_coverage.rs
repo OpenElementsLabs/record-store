@@ -20,7 +20,7 @@ enum Audience {
     /// Reached by both.
     ConsoleAndCli,
     /// Unauthenticated operational probe or scrape target, consumed by
-    /// orchestrators and Prometheus rather than by OES's own clients.
+    /// orchestrators and Prometheus rather than by Record Store's own clients.
     Probe,
     /// Unauthenticated public capability delivery, where the opaque token in
     /// the path is the entire authorization. Reached by share recipients and by

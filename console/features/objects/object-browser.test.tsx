@@ -61,7 +61,7 @@ describe('ObjectBrowser', () => {
 
     await screen.findByText('report.pdf');
     const url = String(fetchMock.mock.calls[0]?.[0]);
-    expect(url).toContain('/api/oes/v1/buckets/uploads/objects');
+    expect(url).toContain('/api/record-store/v1/buckets/uploads/objects');
     expect(url).toContain('delimiter=%2F');
     expect(url).toContain('limit=50');
   });
@@ -153,7 +153,7 @@ describe('ObjectBrowser', () => {
     expect(screen.getByRole('button', { name: /next page/i }).hasAttribute('disabled')).toBe(true);
   });
 
-  it('builds a download link straight to OES rather than proxying in the page', async () => {
+  it('builds a download link straight to Record Store rather than proxying in the page', async () => {
     fetchMock.mockResolvedValue(jsonResponse(page()));
     renderWithProviders(<ObjectBrowser bucket="uploads" />);
     await screen.findByText('report.pdf');
@@ -161,7 +161,7 @@ describe('ObjectBrowser', () => {
     await userEvent.click(screen.getByRole('button', { name: /actions for report\.pdf/i }));
     const download = await screen.findByRole('menuitem', { name: /download/i });
     const href = download.querySelector('a')?.getAttribute('href') ?? download.getAttribute('href');
-    expect(href).toBe('/api/oes/v1/buckets/uploads/object-content/documents/report.pdf');
+    expect(href).toBe('/api/record-store/v1/buckets/uploads/object-content/documents/report.pdf');
   });
 
   it('encodes each key segment so a key cannot alter the request path', async () => {

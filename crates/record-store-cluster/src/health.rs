@@ -283,7 +283,7 @@ pub enum Readiness {
 
 #[cfg(test)]
 mod tests {
-    use oes_core::{ClusterId, NodeId};
+    use record_store_core::{ClusterId, NodeId};
 
     use super::*;
     use crate::{

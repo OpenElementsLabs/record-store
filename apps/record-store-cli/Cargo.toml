@@ -1,21 +1,21 @@
 [package]
-name = "oes-cli"
+name = "record-store-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "oes"
+name = "record-store"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-oes-config = { path = "../../crates/oes-config" }
-oes-core = { path = "../../crates/oes-core" }
-oes-observability = { path = "../../crates/oes-observability" }
-oes-server = { path = "../oes-server" }
+record-store-config = { path = "../../crates/record-store-config" }
+record-store-core = { path = "../../crates/record-store-core" }
+record-store-observability = { path = "../../crates/record-store-observability" }
+record-store-server = { path = "../record-store-server" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

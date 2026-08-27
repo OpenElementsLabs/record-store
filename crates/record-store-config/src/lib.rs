@@ -42,7 +42,7 @@ impl Debug for SecretValue {
     }
 }
 
-/// Fully resolved and validated OES configuration.
+/// Fully resolved and validated Record Store configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -67,7 +67,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// Loads defaults, overlays an optional TOML file, overlays `OES_*`
+    /// Loads defaults, overlays an optional TOML file, overlays `RECORD_STORE_*`
     /// environment variables, and validates the result.
     pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
         Self::load_with_environment(path, env::vars_os())
@@ -234,7 +234,7 @@ impl Config {
                 }
             }
             (None, None) => issues.push(
-                "root credentials are required; set OES_ROOT_ACCESS_KEY and OES_ROOT_SECRET_KEY"
+                "root credentials are required; set RECORD_STORE_ROOT_ACCESS_KEY and RECORD_STORE_ROOT_SECRET_KEY"
                     .to_owned(),
             ),
             _ => issues.push(
@@ -365,141 +365,185 @@ impl Config {
         &mut self,
         environment: &HashMap<OsString, OsString>,
     ) -> Result<(), ConfigError> {
-        if let Some(value) = environment_value(environment, "OES_MODE")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_MODE")? {
             self.server.mode = value.parse()?;
         }
-        if let Some(value) = environment_value(environment, "OES_S3_BIND")? {
-            self.server.s3_bind = parse_environment("OES_S3_BIND", value)?;
+        if let Some(value) = environment_value(environment, "RECORD_STORE_S3_BIND")? {
+            self.server.s3_bind = parse_environment("RECORD_STORE_S3_BIND", value)?;
         }
-        if let Some(value) = environment_value(environment, "OES_RPC_BIND")? {
-            self.server.rpc_bind = parse_environment("OES_RPC_BIND", value)?;
+        if let Some(value) = environment_value(environment, "RECORD_STORE_RPC_BIND")? {
+            self.server.rpc_bind = parse_environment("RECORD_STORE_RPC_BIND", value)?;
         }
-        if let Some(value) = environment_value(environment, "OES_RPC_ADVERTISE")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_RPC_ADVERTISE")? {
             self.server.rpc_advertise = Some(value.to_owned());
         }
-        if let Some(value) = environment_value(environment, "OES_API_BIND")? {
-            self.server.api_bind = parse_environment("OES_API_BIND", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_SHUTDOWN_TIMEOUT_SECONDS")? {
-            self.server.shutdown_grace_period_seconds =
-                parse_environment("OES_SHUTDOWN_TIMEOUT_SECONDS", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_STORAGE_DATA_DIRECTORY")? {
-            self.storage.data_directory = PathBuf::from(value);
-        }
-        if let Some(value) = environment_value(environment, "OES_STORAGE_TEMPORARY_DIRECTORY")? {
-            self.storage.temporary_directory = Some(PathBuf::from(value));
-        }
-        if let Some(value) = environment_value(environment, "OES_STORAGE_ENCRYPTION_ENABLED")? {
-            self.storage.encryption_enabled =
-                parse_environment("OES_STORAGE_ENCRYPTION_ENABLED", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_ROOT_ACCESS_KEY")? {
-            self.auth.root_access_key = Some(value.to_owned());
-        }
-        if let Some(value) = environment_value(environment, "OES_ROOT_SECRET_KEY")? {
-            self.auth.root_secret_key = Some(SecretValue::new(value));
-        }
-        if let Some(value) = environment_value(environment, "OES_CREDENTIAL_MASTER_KEY")? {
-            self.auth.credential_master_key = Some(SecretValue::new(value));
-        }
-        if let Some(value) = environment_value(environment, "OES_ROOT_S3_ENABLED")? {
-            self.auth.root_s3_enabled = parse_environment("OES_ROOT_S3_ENABLED", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_MANAGEMENT_SYSTEM_TOKEN")? {
-            self.auth.management_system_token = Some(SecretValue::new(value));
-        }
-        if let Some(value) = environment_value(environment, "OES_MANAGEMENT_STORAGE_TOKEN")? {
-            self.auth.management_storage_token = Some(SecretValue::new(value));
-        }
-        if let Some(value) = environment_value(environment, "OES_MANAGEMENT_AUDITOR_TOKEN")? {
-            self.auth.management_auditor_token = Some(SecretValue::new(value));
-        }
-        if let Some(value) = environment_value(environment, "OES_METRICS_SCRAPE_TOKEN")? {
-            self.auth.metrics_scrape_token = Some(SecretValue::new(value));
-        }
-        if let Some(value) = environment_value(environment, "OES_MAX_CONCURRENT_OPERATIONS")? {
-            self.limits.maximum_concurrent_operations =
-                parse_environment("OES_MAX_CONCURRENT_OPERATIONS", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_MAX_HEADER_BYTES")? {
-            self.limits.maximum_header_bytes = parse_environment("OES_MAX_HEADER_BYTES", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_WEBHOOK_ALLOW_HTTP")? {
-            self.webhooks.allow_http = parse_environment("OES_WEBHOOK_ALLOW_HTTP", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_WEBHOOK_ALLOW_PRIVATE_NETWORKS")? {
-            self.webhooks.allow_private_networks =
-                parse_environment("OES_WEBHOOK_ALLOW_PRIVATE_NETWORKS", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_WEBHOOK_TIMEOUT_SECONDS")? {
-            self.webhooks.request_timeout_seconds =
-                parse_environment("OES_WEBHOOK_TIMEOUT_SECONDS", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_WEBHOOK_MAXIMUM_ATTEMPTS")? {
-            self.webhooks.maximum_attempts =
-                parse_environment("OES_WEBHOOK_MAXIMUM_ATTEMPTS", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_WEBHOOK_POLL_INTERVAL_SECONDS")? {
-            self.webhooks.poll_interval_seconds =
-                parse_environment("OES_WEBHOOK_POLL_INTERVAL_SECONDS", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_LIFECYCLE_INTERVAL_SECONDS")? {
-            self.lifecycle.interval_seconds =
-                parse_environment("OES_LIFECYCLE_INTERVAL_SECONDS", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_LIFECYCLE_BATCH_SIZE")? {
-            self.lifecycle.batch_size = parse_environment("OES_LIFECYCLE_BATCH_SIZE", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_SHARING_SHARES_ENABLED")? {
-            self.sharing.shares_enabled = parse_environment("OES_SHARING_SHARES_ENABLED", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_SHARING_EMBEDS_ENABLED")? {
-            self.sharing.embeds_enabled = parse_environment("OES_SHARING_EMBEDS_ENABLED", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_SHARING_MAXIMUM_LIFETIME_DAYS")? {
-            self.sharing.maximum_lifetime_days =
-                parse_environment("OES_SHARING_MAXIMUM_LIFETIME_DAYS", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_SHARING_REQUIRE_EXPIRATION")? {
-            self.sharing.require_expiration =
-                parse_environment("OES_SHARING_REQUIRE_EXPIRATION", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_SHARING_REQUIRE_PASSWORD")? {
-            self.sharing.require_share_password =
-                parse_environment("OES_SHARING_REQUIRE_PASSWORD", value)?;
-        }
-        if let Some(value) = environment_value(environment, "OES_SHARING_MAXIMUM_ACCESS_COUNT")? {
-            self.sharing.maximum_access_count =
-                parse_environment("OES_SHARING_MAXIMUM_ACCESS_COUNT", value)?;
+        if let Some(value) = environment_value(environment, "RECORD_STORE_API_BIND")? {
+            self.server.api_bind = parse_environment("RECORD_STORE_API_BIND", value)?;
         }
         if let Some(value) =
-            environment_value(environment, "OES_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE")?
+            environment_value(environment, "RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS")?
         {
-            self.sharing.password_attempts_per_minute =
-                parse_environment("OES_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", value)?;
+            self.server.shutdown_grace_period_seconds =
+                parse_environment("RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS", value)?;
         }
-        if let Some(value) = environment_value(environment, "OES_SHARING_TOKEN_PROBES_PER_MINUTE")?
+        if let Some(value) = environment_value(environment, "RECORD_STORE_STORAGE_DATA_DIRECTORY")?
+        {
+            self.storage.data_directory = PathBuf::from(value);
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_STORAGE_TEMPORARY_DIRECTORY")?
+        {
+            self.storage.temporary_directory = Some(PathBuf::from(value));
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_STORAGE_ENCRYPTION_ENABLED")?
+        {
+            self.storage.encryption_enabled =
+                parse_environment("RECORD_STORE_STORAGE_ENCRYPTION_ENABLED", value)?;
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_ROOT_ACCESS_KEY")? {
+            self.auth.root_access_key = Some(value.to_owned());
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_ROOT_SECRET_KEY")? {
+            self.auth.root_secret_key = Some(SecretValue::new(value));
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CREDENTIAL_MASTER_KEY")? {
+            self.auth.credential_master_key = Some(SecretValue::new(value));
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_ROOT_S3_ENABLED")? {
+            self.auth.root_s3_enabled = parse_environment("RECORD_STORE_ROOT_S3_ENABLED", value)?;
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN")?
+        {
+            self.auth.management_system_token = Some(SecretValue::new(value));
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_MANAGEMENT_STORAGE_TOKEN")?
+        {
+            self.auth.management_storage_token = Some(SecretValue::new(value));
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN")?
+        {
+            self.auth.management_auditor_token = Some(SecretValue::new(value));
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_METRICS_SCRAPE_TOKEN")? {
+            self.auth.metrics_scrape_token = Some(SecretValue::new(value));
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_MAX_CONCURRENT_OPERATIONS")?
+        {
+            self.limits.maximum_concurrent_operations =
+                parse_environment("RECORD_STORE_MAX_CONCURRENT_OPERATIONS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_MAX_HEADER_BYTES")? {
+            self.limits.maximum_header_bytes =
+                parse_environment("RECORD_STORE_MAX_HEADER_BYTES", value)?;
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_WEBHOOK_ALLOW_HTTP")? {
+            self.webhooks.allow_http = parse_environment("RECORD_STORE_WEBHOOK_ALLOW_HTTP", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_WEBHOOK_ALLOW_PRIVATE_NETWORKS")?
+        {
+            self.webhooks.allow_private_networks =
+                parse_environment("RECORD_STORE_WEBHOOK_ALLOW_PRIVATE_NETWORKS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_WEBHOOK_TIMEOUT_SECONDS")?
+        {
+            self.webhooks.request_timeout_seconds =
+                parse_environment("RECORD_STORE_WEBHOOK_TIMEOUT_SECONDS", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_WEBHOOK_MAXIMUM_ATTEMPTS")?
+        {
+            self.webhooks.maximum_attempts =
+                parse_environment("RECORD_STORE_WEBHOOK_MAXIMUM_ATTEMPTS", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_WEBHOOK_POLL_INTERVAL_SECONDS")?
+        {
+            self.webhooks.poll_interval_seconds =
+                parse_environment("RECORD_STORE_WEBHOOK_POLL_INTERVAL_SECONDS", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_LIFECYCLE_INTERVAL_SECONDS")?
+        {
+            self.lifecycle.interval_seconds =
+                parse_environment("RECORD_STORE_LIFECYCLE_INTERVAL_SECONDS", value)?;
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_LIFECYCLE_BATCH_SIZE")? {
+            self.lifecycle.batch_size =
+                parse_environment("RECORD_STORE_LIFECYCLE_BATCH_SIZE", value)?;
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_SHARING_SHARES_ENABLED")?
+        {
+            self.sharing.shares_enabled =
+                parse_environment("RECORD_STORE_SHARING_SHARES_ENABLED", value)?;
+        }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_SHARING_EMBEDS_ENABLED")?
+        {
+            self.sharing.embeds_enabled =
+                parse_environment("RECORD_STORE_SHARING_EMBEDS_ENABLED", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_SHARING_MAXIMUM_LIFETIME_DAYS")?
+        {
+            self.sharing.maximum_lifetime_days =
+                parse_environment("RECORD_STORE_SHARING_MAXIMUM_LIFETIME_DAYS", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_SHARING_REQUIRE_EXPIRATION")?
+        {
+            self.sharing.require_expiration =
+                parse_environment("RECORD_STORE_SHARING_REQUIRE_EXPIRATION", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_SHARING_REQUIRE_PASSWORD")?
+        {
+            self.sharing.require_share_password =
+                parse_environment("RECORD_STORE_SHARING_REQUIRE_PASSWORD", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_SHARING_MAXIMUM_ACCESS_COUNT")?
+        {
+            self.sharing.maximum_access_count =
+                parse_environment("RECORD_STORE_SHARING_MAXIMUM_ACCESS_COUNT", value)?;
+        }
+        if let Some(value) = environment_value(
+            environment,
+            "RECORD_STORE_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE",
+        )? {
+            self.sharing.password_attempts_per_minute =
+                parse_environment("RECORD_STORE_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_SHARING_TOKEN_PROBES_PER_MINUTE")?
         {
             self.sharing.token_probes_per_minute =
-                parse_environment("OES_SHARING_TOKEN_PROBES_PER_MINUTE", value)?;
+                parse_environment("RECORD_STORE_SHARING_TOKEN_PROBES_PER_MINUTE", value)?;
         }
-        if let Some(value) = environment_value(environment, "OES_SHARING_UNLOCK_LIFETIME_HOURS")? {
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_SHARING_UNLOCK_LIFETIME_HOURS")?
+        {
             self.sharing.unlock_lifetime_hours =
-                parse_environment("OES_SHARING_UNLOCK_LIFETIME_HOURS", value)?;
+                parse_environment("RECORD_STORE_SHARING_UNLOCK_LIFETIME_HOURS", value)?;
         }
-        if let Some(value) = environment_value(environment, "OES_SHARING_PREVIEW_TEXT_LIMIT_BYTES")?
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_SHARING_PREVIEW_TEXT_LIMIT_BYTES")?
         {
             self.sharing.preview_text_limit_bytes =
-                parse_environment("OES_SHARING_PREVIEW_TEXT_LIMIT_BYTES", value)?;
+                parse_environment("RECORD_STORE_SHARING_PREVIEW_TEXT_LIMIT_BYTES", value)?;
         }
-        if let Some(value) = environment_value(environment, "OES_SHARING_SHARE_BASE_URL")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_SHARING_SHARE_BASE_URL")?
+        {
             self.sharing.share_base_url = Some(value.to_owned());
         }
-        if let Some(value) = environment_value(environment, "OES_SHARING_EMBED_BASE_URL")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_SHARING_EMBED_BASE_URL")?
+        {
             self.sharing.embed_base_url = Some(value.to_owned());
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_SEEDS")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_SEEDS")? {
             self.cluster.seeds = value
                 .split(',')
                 .map(str::trim)
@@ -507,77 +551,93 @@ impl Config {
                 .map(str::to_owned)
                 .collect();
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_JOIN_TOKEN")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_JOIN_TOKEN")? {
             self.cluster.join_token = Some(SecretValue::new(value));
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_STORAGE_CLASS")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_STORAGE_CLASS")? {
             self.cluster.storage_class = value.to_owned();
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_FAILURE_DOMAIN")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_FAILURE_DOMAIN")?
+        {
             self.cluster.failure_domain = value.to_owned();
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_S3_ENDPOINT")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_S3_ENDPOINT")? {
             self.cluster.s3_endpoint = Some(value.to_owned());
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_REPLICATION_FACTOR")? {
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_CLUSTER_REPLICATION_FACTOR")?
+        {
             self.cluster.replication_factor =
-                parse_environment("OES_CLUSTER_REPLICATION_FACTOR", value)?;
-        }
-        if let Some(value) =
-            environment_value(environment, "OES_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT")?
-        {
-            self.cluster.capacity_low_watermark_percent =
-                parse_environment("OES_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT", value)?;
-        }
-        if let Some(value) =
-            environment_value(environment, "OES_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT")?
-        {
-            self.cluster.capacity_high_watermark_percent =
-                parse_environment("OES_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT", value)?;
+                parse_environment("RECORD_STORE_CLUSTER_REPLICATION_FACTOR", value)?;
         }
         if let Some(value) = environment_value(
             environment,
-            "OES_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT",
+            "RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT",
         )? {
-            self.cluster.capacity_critical_watermark_percent =
-                parse_environment("OES_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT", value)?;
+            self.cluster.capacity_low_watermark_percent =
+                parse_environment("RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT", value)?;
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_MOVEMENT_CONCURRENCY")? {
+        if let Some(value) = environment_value(
+            environment,
+            "RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT",
+        )? {
+            self.cluster.capacity_high_watermark_percent = parse_environment(
+                "RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT",
+                value,
+            )?;
+        }
+        if let Some(value) = environment_value(
+            environment,
+            "RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT",
+        )? {
+            self.cluster.capacity_critical_watermark_percent = parse_environment(
+                "RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT",
+                value,
+            )?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_CLUSTER_MOVEMENT_CONCURRENCY")?
+        {
             self.cluster.movement_concurrency =
-                parse_environment("OES_CLUSTER_MOVEMENT_CONCURRENCY", value)?;
+                parse_environment("RECORD_STORE_CLUSTER_MOVEMENT_CONCURRENCY", value)?;
         }
-        if let Some(value) =
-            environment_value(environment, "OES_CLUSTER_MOVEMENT_BYTES_PER_SECOND")?
-        {
+        if let Some(value) = environment_value(
+            environment,
+            "RECORD_STORE_CLUSTER_MOVEMENT_BYTES_PER_SECOND",
+        )? {
             self.cluster.movement_bytes_per_second =
-                parse_environment("OES_CLUSTER_MOVEMENT_BYTES_PER_SECOND", value)?;
+                parse_environment("RECORD_STORE_CLUSTER_MOVEMENT_BYTES_PER_SECOND", value)?;
         }
-        if let Some(value) =
-            environment_value(environment, "OES_CLUSTER_RECONCILE_INTERVAL_SECONDS")?
-        {
+        if let Some(value) = environment_value(
+            environment,
+            "RECORD_STORE_CLUSTER_RECONCILE_INTERVAL_SECONDS",
+        )? {
             self.cluster.reconcile_interval_seconds =
-                parse_environment("OES_CLUSTER_RECONCILE_INTERVAL_SECONDS", value)?;
+                parse_environment("RECORD_STORE_CLUSTER_RECONCILE_INTERVAL_SECONDS", value)?;
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_TLS_CERTIFICATE")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_TLS_CERTIFICATE")?
+        {
             self.cluster.tls.certificate_path = Some(PathBuf::from(value));
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_TLS_PRIVATE_KEY")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_TLS_PRIVATE_KEY")?
+        {
             self.cluster.tls.private_key_path = Some(PathBuf::from(value));
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_TLS_PEER_CA")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_TLS_PEER_CA")? {
             self.cluster.tls.peer_ca_path = Some(PathBuf::from(value));
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_TLS_CLIENT_CA")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_TLS_CLIENT_CA")? {
             self.cluster.tls.client_ca_path = Some(PathBuf::from(value));
         }
-        if let Some(value) = environment_value(environment, "OES_CLUSTER_TLS_SERVER_NAME")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_TLS_SERVER_NAME")?
+        {
             self.cluster.tls.server_name = Some(value.to_owned());
         }
-        if let Some(value) = environment_value(environment, "OES_LOG")? {
+        if let Some(value) = environment_value(environment, "RECORD_STORE_LOG")? {
             self.observability.log_filter = value.to_owned();
         }
-        if let Some(value) = environment_value(environment, "OES_LOG_JSON")? {
-            self.observability.json = parse_environment("OES_LOG_JSON", value)?;
+        if let Some(value) = environment_value(environment, "RECORD_STORE_LOG_JSON")? {
+            self.observability.json = parse_environment("RECORD_STORE_LOG_JSON", value)?;
         }
         Ok(())
     }
@@ -908,7 +968,7 @@ impl Default for ClusterConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StorageConfig {
-    /// Root of all durable OES state.
+    /// Root of all durable Record Store state.
     pub data_directory: PathBuf,
     /// Optional location for incomplete payload files.
     pub temporary_directory: Option<PathBuf>,
@@ -1200,7 +1260,7 @@ pub struct ObservabilityConfig {
 impl Default for ObservabilityConfig {
     fn default() -> Self {
         Self {
-            log_filter: "oes=info".to_owned(),
+            log_filter: "record_store=info".to_owned(),
             json: false,
         }
     }
@@ -1595,7 +1655,7 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
-    /// The selected file was not valid OES TOML.
+    /// The selected file was not valid Record Store TOML.
     #[error("failed to parse configuration file '{}': {source}", path.display())]
     ParseFile {
         /// Selected file path.
@@ -1656,8 +1716,11 @@ mod tests {
 
     fn credentials() -> [(&'static str, &'static str); 2] {
         [
-            ("OES_ROOT_ACCESS_KEY", "test-access"),
-            ("OES_ROOT_SECRET_KEY", "test-secret-at-least-sixteen"),
+            ("RECORD_STORE_ROOT_ACCESS_KEY", "test-access"),
+            (
+                "RECORD_STORE_ROOT_SECRET_KEY",
+                "test-secret-at-least-sixteen",
+            ),
         ]
     }
 
@@ -1668,7 +1731,7 @@ mod tests {
     #[test]
     fn file_and_environment_overlay_defaults_in_order() {
         let directory = tempdir().expect("temporary directory");
-        let path = directory.path().join("oes.toml");
+        let path = directory.path().join("record-store.toml");
         fs::write(
             &path,
             r#"
@@ -1676,13 +1739,13 @@ mod tests {
                 s3_bind = "127.0.0.1:7700"
 
                 [storage]
-                data_directory = "/srv/oes"
+                data_directory = "/srv/record-store"
             "#,
         )
         .expect("write configuration");
         let mut environment = credentials().to_vec();
-        environment.push(("OES_API_BIND", "127.0.0.1:7701"));
-        environment.push(("OES_LOG", "oes=debug"));
+        environment.push(("RECORD_STORE_API_BIND", "127.0.0.1:7701"));
+        environment.push(("RECORD_STORE_LOG", "record_store=debug"));
         let config =
             Config::load_with_environment(Some(&path), environment).expect("valid configuration");
         assert_eq!(
@@ -1693,12 +1756,15 @@ mod tests {
             config.server.api_bind,
             "127.0.0.1:7701".parse().expect("bind")
         );
-        assert_eq!(config.storage.data_directory, PathBuf::from("/srv/oes"));
-        assert_eq!(config.observability.log_filter, "oes=debug");
+        assert_eq!(
+            config.storage.data_directory,
+            PathBuf::from("/srv/record-store")
+        );
+        assert_eq!(config.observability.log_filter, "record_store=debug");
     }
 
     #[test]
-    fn defaults_use_oes_ports_and_require_credentials() {
+    fn defaults_use_record_store_ports_and_require_credentials() {
         let config = Config::default();
         assert_eq!(config.server.s3_bind.port(), 7_600);
         assert_eq!(config.server.api_bind.port(), 7_601);
@@ -1717,7 +1783,7 @@ mod tests {
     fn metrics_use_a_dedicated_validated_secret() {
         let mut environment = credentials().to_vec();
         environment.push((
-            "OES_METRICS_SCRAPE_TOKEN",
+            "RECORD_STORE_METRICS_SCRAPE_TOKEN",
             "dedicated-test-metrics-token-at-least-32-bytes",
         ));
         let config =
@@ -1735,11 +1801,11 @@ mod tests {
         let mut duplicate = credentials().to_vec();
         duplicate.extend([
             (
-                "OES_MANAGEMENT_SYSTEM_TOKEN",
+                "RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN",
                 "one-shared-token-that-is-at-least-32-bytes",
             ),
             (
-                "OES_METRICS_SCRAPE_TOKEN",
+                "RECORD_STORE_METRICS_SCRAPE_TOKEN",
                 "one-shared-token-that-is-at-least-32-bytes",
             ),
         ]);
@@ -1752,21 +1818,21 @@ mod tests {
     #[test]
     fn sharing_policy_is_configurable_from_file_and_environment() {
         let directory = tempdir().expect("temporary directory");
-        let path = directory.path().join("oes.toml");
+        let path = directory.path().join("record-store.toml");
         fs::write(
             &path,
             r#"
                 [sharing]
                 require_expiration = true
                 maximum_lifetime_days = 30
-                share_base_url = "https://oes.example.com/"
+                share_base_url = "https://record-store.example.com/"
                 embed_base_url = "https://storage.example.com/"
             "#,
         )
         .expect("write configuration");
         let mut environment = credentials().to_vec();
-        environment.push(("OES_SHARING_EMBEDS_ENABLED", "false"));
-        environment.push(("OES_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", "3"));
+        environment.push(("RECORD_STORE_SHARING_EMBEDS_ENABLED", "false"));
+        environment.push(("RECORD_STORE_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", "3"));
         let config =
             Config::load_with_environment(Some(&path), environment).expect("valid configuration");
 
@@ -1777,7 +1843,7 @@ mod tests {
         assert_eq!(config.sharing.password_attempts_per_minute, 3);
         assert_eq!(
             config.sharing.normalized_share_base_url().as_deref(),
-            Some("https://oes.example.com")
+            Some("https://record-store.example.com")
         );
         // Embeds are published on the storage endpoint, never on the console:
         // a site loading an asset must not have to reach the management plane.
@@ -1820,16 +1886,19 @@ mod tests {
     #[test]
     fn unsafe_sharing_policy_values_are_refused_at_load() {
         for (name, value) in [
-            ("OES_SHARING_MAXIMUM_ACCESS_COUNT", "0"),
-            ("OES_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", "0"),
-            ("OES_SHARING_TOKEN_PROBES_PER_MINUTE", "0"),
-            ("OES_SHARING_UNLOCK_LIFETIME_HOURS", "0"),
-            ("OES_SHARING_PREVIEW_TEXT_LIMIT_BYTES", "16"),
-            ("OES_SHARING_MAXIMUM_LIFETIME_DAYS", "100000"),
-            ("OES_SHARING_SHARE_BASE_URL", "javascript:alert(1)"),
-            ("OES_SHARING_SHARE_BASE_URL", "oes.example.com"),
-            ("OES_SHARING_EMBED_BASE_URL", "javascript:alert(1)"),
-            ("OES_SHARING_EMBED_BASE_URL", "storage.example.com"),
+            ("RECORD_STORE_SHARING_MAXIMUM_ACCESS_COUNT", "0"),
+            ("RECORD_STORE_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", "0"),
+            ("RECORD_STORE_SHARING_TOKEN_PROBES_PER_MINUTE", "0"),
+            ("RECORD_STORE_SHARING_UNLOCK_LIFETIME_HOURS", "0"),
+            ("RECORD_STORE_SHARING_PREVIEW_TEXT_LIMIT_BYTES", "16"),
+            ("RECORD_STORE_SHARING_MAXIMUM_LIFETIME_DAYS", "100000"),
+            ("RECORD_STORE_SHARING_SHARE_BASE_URL", "javascript:alert(1)"),
+            (
+                "RECORD_STORE_SHARING_SHARE_BASE_URL",
+                "record-store.example.com",
+            ),
+            ("RECORD_STORE_SHARING_EMBED_BASE_URL", "javascript:alert(1)"),
+            ("RECORD_STORE_SHARING_EMBED_BASE_URL", "storage.example.com"),
         ] {
             let mut environment = credentials().to_vec();
             environment.push((name, value));
@@ -1846,17 +1915,17 @@ mod tests {
     #[test]
     fn unknown_file_fields_and_invalid_environment_are_rejected() {
         let directory = tempdir().expect("temporary directory");
-        let path = directory.path().join("oes.toml");
+        let path = directory.path().join("record-store.toml");
         fs::write(&path, "[server]\nsecret_backdoor = true\n").expect("write configuration");
         assert!(matches!(
             Config::load_with_environment(Some(&path), credentials()),
             Err(ConfigError::ParseFile { .. })
         ));
         let mut environment = credentials().to_vec();
-        environment.push(("OES_S3_BIND", "not-an-address"));
+        environment.push(("RECORD_STORE_S3_BIND", "not-an-address"));
         let error =
             Config::load_with_environment(None, environment).expect_err("invalid environment");
-        assert!(error.to_string().contains("OES_S3_BIND"));
+        assert!(error.to_string().contains("RECORD_STORE_S3_BIND"));
         assert!(!error.to_string().contains("test-secret"));
     }
 
@@ -1873,16 +1942,16 @@ mod tests {
     #[test]
     fn object_encryption_requires_the_explicit_master_key() {
         let mut without_key = credentials().to_vec();
-        without_key.push(("OES_STORAGE_ENCRYPTION_ENABLED", "true"));
+        without_key.push(("RECORD_STORE_STORAGE_ENCRYPTION_ENABLED", "true"));
         assert!(matches!(
             Config::load_with_environment(None, without_key),
             Err(ConfigError::Validation(message)) if message.contains("credential_master_key")
         ));
 
         let mut configured = credentials().to_vec();
-        configured.push(("OES_STORAGE_ENCRYPTION_ENABLED", "true"));
+        configured.push(("RECORD_STORE_STORAGE_ENCRYPTION_ENABLED", "true"));
         configured.push((
-            "OES_CREDENTIAL_MASTER_KEY",
+            "RECORD_STORE_CREDENTIAL_MASTER_KEY",
             "stable-test-master-key-at-least-thirty-two-bytes",
         ));
         let config = Config::load_with_environment(None, configured).expect("encrypted config");
@@ -1890,7 +1959,7 @@ mod tests {
     }
 
     #[test]
-    fn default_listeners_use_the_documented_oes_ports() {
+    fn default_listeners_use_the_documented_record_store_ports() {
         let server = ServerConfig::default();
         assert_eq!(server.s3_bind.port(), 7_600);
         assert_eq!(server.api_bind.port(), 7_601);
@@ -1903,11 +1972,11 @@ mod tests {
         ] {
             assert_ne!(
                 port, 9_000,
-                "OES must not default to another product's port"
+                "Record Store must not default to another product's port"
             );
             assert_ne!(
                 port, 9_001,
-                "OES must not default to another product's port"
+                "Record Store must not default to another product's port"
             );
         }
         assert_eq!(server.mode, DeploymentMode::Standalone);
@@ -1966,19 +2035,28 @@ mod tests {
         let config = Config::load_with_environment(
             None,
             [
-                ("OES_ROOT_ACCESS_KEY", "root-access"),
-                ("OES_ROOT_SECRET_KEY", "root-secret-at-least-sixteen"),
-                ("OES_MODE", "cluster"),
-                ("OES_RPC_BIND", "0.0.0.0:17603"),
-                ("OES_RPC_ADVERTISE", "10.0.1.12:17603"),
-                ("OES_CLUSTER_SEEDS", "storage-1:7603, storage-2:7603"),
-                ("OES_CLUSTER_JOIN_TOKEN", "oesjoin.token"),
-                ("OES_CLUSTER_STORAGE_CLASS", "nvme"),
-                ("OES_CLUSTER_FAILURE_DOMAIN", "rack=r1,zone=dc1"),
-                ("OES_CLUSTER_REPLICATION_FACTOR", "2"),
-                ("OES_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT", "70"),
-                ("OES_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT", "80"),
-                ("OES_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT", "90"),
+                ("RECORD_STORE_ROOT_ACCESS_KEY", "root-access"),
+                (
+                    "RECORD_STORE_ROOT_SECRET_KEY",
+                    "root-secret-at-least-sixteen",
+                ),
+                ("RECORD_STORE_MODE", "cluster"),
+                ("RECORD_STORE_RPC_BIND", "0.0.0.0:17603"),
+                ("RECORD_STORE_RPC_ADVERTISE", "10.0.1.12:17603"),
+                (
+                    "RECORD_STORE_CLUSTER_SEEDS",
+                    "storage-1:7603, storage-2:7603",
+                ),
+                ("RECORD_STORE_CLUSTER_JOIN_TOKEN", "recordstorejoin.token"),
+                ("RECORD_STORE_CLUSTER_STORAGE_CLASS", "nvme"),
+                ("RECORD_STORE_CLUSTER_FAILURE_DOMAIN", "rack=r1,zone=dc1"),
+                ("RECORD_STORE_CLUSTER_REPLICATION_FACTOR", "2"),
+                ("RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT", "70"),
+                ("RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT", "80"),
+                (
+                    "RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT",
+                    "90",
+                ),
             ],
         )
         .expect("configuration must load");

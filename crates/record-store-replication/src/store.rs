@@ -12,19 +12,19 @@ use std::sync::Arc;
 use chrono::Utc;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use md5::{Digest as _, Md5};
-use oes_cluster::{
+use record_store_cluster::{
     ClusterCommand, ObjectPlacementRequest, PayloadPlacement, Replica, ReplicaState,
     ReplicaTaskKind, ReplicaTaskPriority,
 };
-use oes_consensus::ClusterWrite;
-use oes_core::{
+use record_store_consensus::ClusterWrite;
+use record_store_core::{
     CoreError, DurabilityProfile, ETag, MultipartUploadState, ObjectId, ObjectMetadata,
     ObjectVersionRecord, PayloadFormat, ReplicationProfile, UploadedPart, VersionId,
 };
-use oes_metadata::{
+use record_store_metadata::{
     DeleteObjectResult, MetadataCommand, MetadataError, NewDeleteMarker, ObjectCommitResult,
 };
-use oes_storage::{
+use record_store_storage::{
     CompleteMultipartRequest, DeleteObjectRequest, DeleteObjectVersionRequest, GetObjectRequest,
     GetObjectResult, GetObjectVersionRequest, HeadObjectRequest, ObjectStore,
     PutMultipartPartRequest, PutObjectRequest, PutObjectResult, StorageError, StorageInspection,
@@ -169,7 +169,7 @@ impl DistributedObjectStore {
             }),
         ]);
         let response = consensus.write(write).await.map_err(|error| match error {
-            oes_consensus::ConsensusError::Rejected(rejection) => {
+            record_store_consensus::ConsensusError::Rejected(rejection) => {
                 StorageError::Metadata(rejection.into_metadata_error())
             }
             other => StorageError::ClusterUnavailable(other.to_string()),
@@ -254,7 +254,7 @@ impl DistributedObjectStore {
             // executable repair from replacing it.
             return;
         };
-        let task = oes_cluster::ReplicaTask::queued(
+        let task = record_store_cluster::ReplicaTask::queued(
             placement.object_id,
             ReplicaTaskKind::Repair,
             ReplicaTaskPriority::classify(ReplicaTaskKind::Repair, healthy, desired),
@@ -286,8 +286,8 @@ impl DistributedObjectStore {
 
     async fn metadata_for(
         &self,
-        bucket_id: oes_core::BucketId,
-        key: &oes_core::ObjectKey,
+        bucket_id: record_store_core::BucketId,
+        key: &record_store_core::ObjectKey,
     ) -> Result<ObjectMetadata, StorageError> {
         self.context
             .metadata
@@ -299,7 +299,7 @@ impl DistributedObjectStore {
     async fn open_object(
         &self,
         metadata: ObjectMetadata,
-        range: Option<oes_core::ByteRange>,
+        range: Option<record_store_core::ByteRange>,
     ) -> Result<GetObjectResult, StorageError> {
         let read = open_replica(
             &self.context,
@@ -439,7 +439,7 @@ impl ObjectStore for DistributedObjectStore {
             Err(error) => {
                 rollback(&self.context, object_id, &outcome.durable).await;
                 return Err(match error {
-                    oes_consensus::ConsensusError::Rejected(rejection) => {
+                    record_store_consensus::ConsensusError::Rejected(rejection) => {
                         StorageError::Metadata(rejection.into_metadata_error())
                     }
                     other => StorageError::ClusterUnavailable(other.to_string()),

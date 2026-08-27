@@ -1,8 +1,8 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protos = [
-        "../../proto/oes/internal/system/v1/system.proto",
-        "../../proto/oes/internal/consensus/v1/consensus.proto",
-        "../../proto/oes/internal/replica/v1/replica.proto",
+        "../../proto/record-store/internal/system/v1/system.proto",
+        "../../proto/record-store/internal/consensus/v1/consensus.proto",
+        "../../proto/record-store/internal/replica/v1/replica.proto",
     ];
     for proto in protos {
         println!("cargo:rerun-if-changed={proto}");

@@ -7,7 +7,7 @@
 //! catalog to be a consensus state machine rather than a shared database.
 
 use chrono::{DateTime, Utc};
-use oes_core::{
+use record_store_core::{
     Checksum, ClusterId, ClusterOperationId, JoinTokenId, NodeId, ObjectId, ReplicaTaskId,
 };
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,7 @@ use crate::{
     version::NodeVersions,
 };
 
-/// Immutable cluster identity established by `oes cluster init`.
+/// Immutable cluster identity established by `record-store cluster init`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterIdentity {
     /// Stable cluster identifier.

@@ -111,7 +111,7 @@ describe('AppShell', () => {
     // Collapsed labels stay in the accessible tree even though they are hidden.
     expect(screen.getByRole('button', { name: 'Expand navigation' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Buckets' })).toBeTruthy();
-    expect(window.localStorage.getItem('oes.sidebar.collapsed')).toBe('1');
+    expect(window.localStorage.getItem('record-store.sidebar.collapsed')).toBe('1');
   });
 
   it('puts the account menu in the sidebar, not the top bar', async () => {

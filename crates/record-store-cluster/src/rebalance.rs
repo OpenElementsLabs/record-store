@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use oes_core::{NodeId, ObjectId};
+use record_store_core::{NodeId, ObjectId};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -234,7 +234,7 @@ impl DecommissionSafety {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use oes_core::{Checksum, ClusterId};
+    use record_store_core::{Checksum, ClusterId};
 
     use super::*;
     use crate::{

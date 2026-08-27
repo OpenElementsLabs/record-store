@@ -28,7 +28,7 @@ const DEFAULT_TEXT_LIMIT = 1024 * 1024;
  *
  * Preview is a different promise from download: download hands over whatever
  * bytes exist, while preview asks the browser to interpret them, so it is
- * offered only for media types OES is prepared to be responsible for. The
+ * offered only for media types Record Store is prepared to be responsible for. The
  * management API refuses the rest, and this screen is honest about which case
  * the reader is looking at instead of mounting a viewer that will fail.
  *

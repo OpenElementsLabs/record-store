@@ -8,34 +8,34 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
-use oes_cluster::{
+use record_store_cluster::{
     CompatibilityError, NodeVersions, ProtocolVersion, check_compatibility, parse_node_credential,
 };
-use oes_consensus::ClusterStore;
-use oes_core::{ClusterId, NodeId};
+use record_store_consensus::ClusterStore;
+use record_store_core::{ClusterId, NodeId};
 use thiserror::Error;
 use tonic::{Status, metadata::MetadataMap};
 
 use crate::trace::TraceContext;
 
 /// Header carrying the caller's internal protocol major version.
-pub const PROTOCOL_MAJOR_HEADER: &str = "oes-protocol-major";
+pub const PROTOCOL_MAJOR_HEADER: &str = "record-store-protocol-major";
 /// Header carrying the caller's internal protocol minor version.
-pub const PROTOCOL_MINOR_HEADER: &str = "oes-protocol-minor";
+pub const PROTOCOL_MINOR_HEADER: &str = "record-store-protocol-minor";
 /// Header carrying the caller's build version.
-pub const SOFTWARE_VERSION_HEADER: &str = "oes-software-version";
+pub const SOFTWARE_VERSION_HEADER: &str = "record-store-software-version";
 /// Header carrying the caller's durable replica layout version.
-pub const STORAGE_FORMAT_HEADER: &str = "oes-storage-format";
+pub const STORAGE_FORMAT_HEADER: &str = "record-store-storage-format";
 /// Header carrying the caller's durable cluster catalog layout version.
-pub const CLUSTER_FORMAT_HEADER: &str = "oes-cluster-format";
+pub const CLUSTER_FORMAT_HEADER: &str = "record-store-cluster-format";
 /// Header carrying the caller's cluster identity.
-pub const CLUSTER_ID_HEADER: &str = "oes-cluster-id";
+pub const CLUSTER_ID_HEADER: &str = "record-store-cluster-id";
 /// Header carrying the caller's opaque node identity.
-pub const NODE_ID_HEADER: &str = "oes-node-id";
+pub const NODE_ID_HEADER: &str = "record-store-node-id";
 /// Header carrying the caller's node credential.
-pub const NODE_CREDENTIAL_HEADER: &str = "oes-node-credential";
+pub const NODE_CREDENTIAL_HEADER: &str = "record-store-node-credential";
 /// Header carrying a single-use cluster join token.
-pub const JOIN_TOKEN_HEADER: &str = "oes-join-token";
+pub const JOIN_TOKEN_HEADER: &str = "record-store-join-token";
 
 /// Failures raised while validating an internal caller.
 #[derive(Debug, Error)]

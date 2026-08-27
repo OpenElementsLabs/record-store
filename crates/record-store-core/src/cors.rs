@@ -442,7 +442,7 @@ impl CorsGrant {
 
     fn allow_origin(rule: &CorsRule, origin: &str) -> String {
         // A rule written as `*` answers with `*`, which is what an SDK expects
-        // and is safe here precisely because OES never allows credentials on a
+        // and is safe here precisely because Record Store never allows credentials on a
         // cross-origin storage request. Any other rule answers with the origin
         // that matched it — never with an unmatched header.
         if rule.allowed_origins.iter().any(CorsPattern::is_wildcard) {

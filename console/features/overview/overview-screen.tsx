@@ -36,8 +36,8 @@ export function OverviewScreen() {
         title="Overview"
         description={
           clusterEnabled
-            ? 'Health and capacity across this OES cluster.'
-            : 'Health and capacity for this OES server.'
+            ? 'Health and capacity across this Record Store cluster.'
+            : 'Health and capacity for this Record Store server.'
         }
       />
 
@@ -138,7 +138,7 @@ export function OverviewScreen() {
 /**
  * Traffic counters since this server started.
  *
- * These are cumulative totals, and they are labelled as such. OES exposes
+ * These are cumulative totals, and they are labelled as such. Record Store exposes
  * counters, not windowed rates, so presenting a "requests per second" here
  * would be a number the backend never measured.
  */
@@ -220,7 +220,7 @@ function StandaloneHealthPanel() {
     <Card>
       <CardContent className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">
-          <p className="text-xs font-medium text-ink-muted">OES status</p>
+          <p className="text-xs font-medium text-ink-muted">Record Store status</p>
           {status.isPending ? (
             <StatusPending />
           ) : (

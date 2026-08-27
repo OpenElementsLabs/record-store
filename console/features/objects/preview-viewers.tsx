@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The viewers OES is willing to mount over stored bytes.
+ * The viewers Record Store is willing to mount over stored bytes.
  *
  * Each one is deliberately small and deliberately dumb. Stored objects are
  * untrusted content, so nothing here parses markup, injects HTML, or hands bytes
@@ -33,7 +33,7 @@ const DEFAULT_ZOOM_INDEX = 3;
  *
  * Zoom is applied with a CSS transform rather than by changing the element's
  * width. The browser keeps one decoded copy of the bitmap either way, which
- * matters for the large originals OES stores: re-laying out a 12000px-wide
+ * matters for the large originals Record Store stores: re-laying out a 12000px-wide
  * photograph on every zoom step would be an avoidable stall, and this milestone
  * deliberately previews the original rather than generating a derivative.
  */
@@ -277,7 +277,7 @@ export function TextViewer({
 }
 
 /**
- * The state for objects OES will not render.
+ * The state for objects Record Store will not render.
  *
  * It names the media type and the size, says plainly that the type cannot be
  * shown safely, and offers the download. A broken viewer would communicate less
@@ -301,7 +301,7 @@ export function UnsupportedPreview({
       title="Preview unavailable"
       description={
         unsafe
-          ? `${contentType ?? 'This format'} · ${formatBytes(size)}. This format can carry active content, so OES will not display it in the console. Download it to inspect it somewhere isolated.`
+          ? `${contentType ?? 'This format'} · ${formatBytes(size)}. This format can carry active content, so Record Store will not display it in the console. Download it to inspect it somewhere isolated.`
           : `${contentType ?? 'application/octet-stream'} · ${formatBytes(size)}. This object type cannot be previewed safely.`
       }
       action={action}

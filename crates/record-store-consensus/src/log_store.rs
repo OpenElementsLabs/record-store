@@ -26,7 +26,7 @@ use openraft::{
 };
 use redb::{Database, ReadableTable, TableDefinition};
 
-use crate::types::{ConsensusEntry, MemberId, OesTypeConfig};
+use crate::types::{ConsensusEntry, MemberId, RecordStoreTypeConfig};
 
 const ENTRIES: TableDefinition<u64, &[u8]> = TableDefinition::new("raft.entries.v1");
 const STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("raft.state.v1");
@@ -164,7 +164,7 @@ fn io<E: std::fmt::Display>(error: E) -> std::io::Error {
     std::io::Error::other(error.to_string())
 }
 
-impl RaftLogReader<OesTypeConfig> for RedbLogStore {
+impl RaftLogReader<RecordStoreTypeConfig> for RedbLogStore {
     async fn try_get_log_entries<RB>(
         &mut self,
         range: RB,
@@ -206,10 +206,12 @@ impl RaftLogReader<OesTypeConfig> for RedbLogStore {
     }
 }
 
-impl RaftLogStorage<OesTypeConfig> for RedbLogStore {
+impl RaftLogStorage<RecordStoreTypeConfig> for RedbLogStore {
     type LogReader = Self;
 
-    async fn get_log_state(&mut self) -> Result<LogState<OesTypeConfig>, StorageError<MemberId>> {
+    async fn get_log_state(
+        &mut self,
+    ) -> Result<LogState<RecordStoreTypeConfig>, StorageError<MemberId>> {
         let last_purged_log_id: Option<LogId<MemberId>> = self.read_state(LAST_PURGED)?;
         let last_log_id = self.last_entry()?.or(last_purged_log_id);
         Ok(LogState {
@@ -244,7 +246,7 @@ impl RaftLogStorage<OesTypeConfig> for RedbLogStore {
     async fn append<I>(
         &mut self,
         entries: I,
-        callback: LogFlushed<OesTypeConfig>,
+        callback: LogFlushed<RecordStoreTypeConfig>,
     ) -> Result<(), StorageError<MemberId>>
     where
         I: IntoIterator<Item = ConsensusEntry> + OptionalSend,

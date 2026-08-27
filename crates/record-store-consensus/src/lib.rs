@@ -1,6 +1,6 @@
 //! Consensus-backed cluster metadata.
 //!
-//! OES keeps exactly one authoritative copy of cluster metadata, replicated by a
+//! Record Store keeps exactly one authoritative copy of cluster metadata, replicated by a
 //! Raft group formed from the storage nodes themselves. That placement is
 //! deliberate: it means object requests keep working while the management plane
 //! is restarted, upgraded, or temporarily unavailable.
@@ -14,7 +14,7 @@
 //!
 //! The consensus algorithm itself is provided by a mature implementation rather
 //! than written here, and it is fully hidden behind [`MetadataConsensus`] so the
-//! choice can change without touching the rest of OES.
+//! choice can change without touching the rest of Record Store.
 
 mod command;
 mod consensus;
@@ -37,5 +37,6 @@ pub use repository::{
 };
 pub use state_machine::{ReplicatedState, StateMachineError, StateMachineStore};
 pub use types::{
-    ConsensusEntry, ConsensusLogId, ConsensusMembership, MemberId, MemberNode, OesTypeConfig,
+    ConsensusEntry, ConsensusLogId, ConsensusMembership, MemberId, MemberNode,
+    RecordStoreTypeConfig,
 };

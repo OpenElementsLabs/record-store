@@ -19,12 +19,14 @@ use chrono::Utc;
 use futures_core::Stream;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use md5::Md5;
-use oes_core::{
+use record_store_core::{
     BucketId, ByteRange, Checksum, CoreError, ETag, MultipartUpload, MultipartUploadState,
     ObjectId, ObjectKey, ObjectMetadata, ObjectVersionRecord, PartNumber, PayloadFormat,
     ResolvedByteRange, UploadId, UploadedPart, VersionId,
 };
-use oes_metadata::{DeleteObjectResult, MetadataError, MetadataRepository, NewDeleteMarker};
+use record_store_metadata::{
+    DeleteObjectResult, MetadataError, MetadataRepository, NewDeleteMarker,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -355,7 +357,7 @@ pub trait ObjectStore: Send + Sync {
     /// Inspects bounded metadata/data consistency without mutating state.
     async fn inspect(&self, maximum_entries: usize) -> Result<StorageInspection, StorageError>;
 
-    /// Removes only positively identified unreferenced OES payloads when not a dry run.
+    /// Removes only positively identified unreferenced Record Store payloads when not a dry run.
     async fn repair(
         &self,
         request: StorageRepairRequest,
@@ -423,7 +425,7 @@ struct PublicationRecord {
 const STORAGE_FORMAT_VERSION: u32 = 1;
 const OBJECT_ENCRYPTION_FORMAT_VERSION: u32 = 1;
 const OBJECT_ENCRYPTION_ALGORITHM: &str = "AES-256-GCM-ENVELOPE-CHUNKED";
-const ENCRYPTED_PAYLOAD_MAGIC: &[u8; 8] = b"OESOBJ01";
+const ENCRYPTED_PAYLOAD_MAGIC: &[u8; 8] = b"RSOBJV01";
 const ENCRYPTED_PAYLOAD_HEADER_LEN: usize = 124;
 const ENCRYPTED_PAYLOAD_CHUNK_SIZE: usize = 64 * 1024;
 const AES_GCM_TAG_LEN: usize = 16;
@@ -903,7 +905,7 @@ impl ObjectStore for LocalFilesystemStore {
             size: written.size,
             checksum: actual_checksum,
             payload_format: written.payload_format,
-            durability: oes_core::DurabilityProfile::Single,
+            durability: record_store_core::DurabilityProfile::Single,
             etag,
             content_type: request.content_type,
             custom_metadata: request.custom_metadata,
@@ -1938,7 +1940,8 @@ async fn initialize_object_encryption(
 }
 
 fn derive_object_encryption(master_key: &[u8]) -> Result<ObjectEncryption, StorageError> {
-    let derivation = hkdf::Hkdf::<Sha256>::new(Some(b"oes-object-encryption-v1"), master_key);
+    let derivation =
+        hkdf::Hkdf::<Sha256>::new(Some(b"record-store-object-encryption-v1"), master_key);
     let mut key = Zeroizing::new([0_u8; 32]);
     derivation
         .expand(b"object-key-encryption-key", &mut *key)
@@ -2570,8 +2573,8 @@ fn verifying_stream(body: DownloadStream, expected: Checksum) -> DownloadStream 
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use oes_core::{Bucket, BucketName, BucketQuota, OrganizationId, VersioningState};
-    use oes_metadata::RedbMetadataRepository;
+    use record_store_core::{Bucket, BucketName, BucketQuota, OrganizationId, VersioningState};
+    use record_store_metadata::RedbMetadataRepository;
     use tempfile::tempdir;
 
     use super::*;

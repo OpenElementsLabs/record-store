@@ -1,27 +1,27 @@
 [workspace]
 resolver = "3"
 members = [
-    "apps/oes-cli",
-    "apps/oes-server",
-    "crates/oes-api",
-    "crates/oes-audit",
-    "crates/oes-cluster",
-    "crates/oes-consensus",
-    "crates/oes-events",
-    "crates/oes-erasure",
-    "crates/oes-lifecycle",
-    "crates/oes-auth",
-    "crates/oes-config",
-    "crates/oes-core",
-    "crates/oes-metadata",
-    "crates/oes-observability",
-    "crates/oes-protocol",
-    "crates/oes-replication",
-    "crates/oes-rpc",
-    "crates/oes-s3",
-    "crates/oes-service",
-    "crates/oes-sharing",
-    "crates/oes-storage",
+    "apps/record-store-cli",
+    "apps/record-store-server",
+    "crates/record-store-api",
+    "crates/record-store-audit",
+    "crates/record-store-cluster",
+    "crates/record-store-consensus",
+    "crates/record-store-events",
+    "crates/record-store-erasure",
+    "crates/record-store-lifecycle",
+    "crates/record-store-auth",
+    "crates/record-store-config",
+    "crates/record-store-core",
+    "crates/record-store-metadata",
+    "crates/record-store-observability",
+    "crates/record-store-protocol",
+    "crates/record-store-replication",
+    "crates/record-store-rpc",
+    "crates/record-store-s3",
+    "crates/record-store-service",
+    "crates/record-store-sharing",
+    "crates/record-store-storage",
 ]
 
 [workspace.package]
@@ -29,7 +29,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
-authors = ["OES contributors"]
+authors = ["Record Store contributors"]
 
 [workspace.dependencies]
 aes-gcm = "0.10.3"

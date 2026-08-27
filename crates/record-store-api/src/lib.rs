@@ -23,26 +23,26 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use oes_audit::{AuditEvent, AuditQuery, AuditRepository, AuditResult};
-use oes_auth::{CredentialManager, Policy, PolicyStatement, ServiceAccountInfo};
-use oes_cluster::ClusterOperationKind;
-use oes_config::DeploymentMode;
-use oes_consensus::MetadataConsensus;
-use oes_core::{
+use record_store_audit::{AuditEvent, AuditQuery, AuditRepository, AuditResult};
+use record_store_auth::{CredentialManager, Policy, PolicyStatement, ServiceAccountInfo};
+use record_store_cluster::ClusterOperationKind;
+use record_store_config::DeploymentMode;
+use record_store_consensus::MetadataConsensus;
+use record_store_core::{
     Bucket, BucketName, BucketQuota, ClusterId, ExpirationDays, LifecycleRule, LifecycleRuleId,
     NodeId, ObjectKey, ObjectMetadata, OrganizationId, PreviewKind, ServiceAccountId, StorageUsage,
     VersionId, VersioningState, WebhookId,
 };
-use oes_events::{
+use record_store_events::{
     CreateWebhookRequest, CreatedWebhook, EventRepository, WebhookDeliveryLog, WebhookSubscription,
 };
-use oes_metadata::MetadataRepository;
-use oes_replication::{
+use record_store_metadata::MetadataRepository;
+use record_store_replication::{
     ClusterContext, ClusterOperations, ClusterStatus, OperationError, TaskHealth,
 };
-use oes_service::{ServiceError, ServiceListRequest, Services};
-use oes_sharing::redact_capability_path;
-use oes_storage::{
+use record_store_service::{ServiceError, ServiceListRequest, Services};
+use record_store_sharing::redact_capability_path;
+use record_store_storage::{
     ObjectStore, StorageInspection, StorageRepairRequest, StorageRepairResult, StorageStatus,
 };
 use serde::{Deserialize, Serialize};
@@ -322,7 +322,7 @@ struct RolePermissions {
     /// Whether this role may create and withdraw share and embed links.
     ///
     /// Separate from `manage_objects` because the two are different authorities:
-    /// one changes what OES stores, the other decides who outside OES can read
+    /// one changes what Record Store stores, the other decides who outside Record Store can read
     /// it. A role can reasonably have either without the other.
     manage_sharing: bool,
 }
@@ -898,7 +898,7 @@ async fn system_info(
     };
     let capabilities = Capabilities::detect(&state);
     Ok(Json(SystemInfoResponse {
-        name: "oes",
+        name: "record-store",
         version: state.version,
         status: "ready",
         mode: state.mode,
@@ -920,17 +920,17 @@ async fn cluster_initialize(
 ) -> Result<Json<ClusterStatus>, ApiError> {
     // Cluster-mode servers form and persist their initial one-member consensus
     // group before accepting HTTP traffic. Keeping this endpoint idempotent
-    // gives operators one stable `oes cluster init` workflow without allowing a
+    // gives operators one stable `record-store cluster init` workflow without allowing a
     // second cluster identity to be created accidentally.
     Ok(Json(collect_cluster_status(&state, request_id).await?))
 }
 
 #[derive(Serialize)]
 struct ClusterHealthResponse {
-    health: oes_cluster::ClusterHealth,
+    health: record_store_cluster::ClusterHealth,
     reasons: Vec<String>,
-    metadata: oes_consensus::MetadataQuorum,
-    data: oes_cluster::DataHealth,
+    metadata: record_store_consensus::MetadataQuorum,
+    data: record_store_cluster::DataHealth,
 }
 
 async fn cluster_health(
@@ -949,7 +949,7 @@ async fn cluster_health(
 async fn list_cluster_nodes(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
-) -> Result<Json<Vec<oes_replication::NodeStatus>>, ApiError> {
+) -> Result<Json<Vec<record_store_replication::NodeStatus>>, ApiError> {
     Ok(Json(
         collect_cluster_status(&state, request_id).await?.nodes,
     ))
@@ -959,7 +959,7 @@ async fn inspect_cluster_node(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Extension(request_id): Extension<RequestId>,
-) -> Result<Json<oes_replication::NodeStatus>, ApiError> {
+) -> Result<Json<record_store_replication::NodeStatus>, ApiError> {
     let node_id = parse_node_id(&id, request_id.clone())?;
     collect_cluster_status(&state, request_id.clone())
         .await?
@@ -981,7 +981,7 @@ async fn drain_cluster_node(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Extension(request_id): Extension<RequestId>,
-) -> Result<Json<oes_cluster::ClusterOperation>, ApiError> {
+) -> Result<Json<record_store_cluster::ClusterOperation>, ApiError> {
     let node_id = parse_node_id(&id, request_id.clone())?;
     let operation = cluster_management(&state, request_id.clone())?
         .operations
@@ -1030,7 +1030,7 @@ async fn decommission_cluster_node(
     Path(id): Path<String>,
     Extension(request_id): Extension<RequestId>,
     input: Option<Json<DecommissionInput>>,
-) -> Result<Json<oes_cluster::ClusterOperation>, ApiError> {
+) -> Result<Json<record_store_cluster::ClusterOperation>, ApiError> {
     let node_id = parse_node_id(&id, request_id.clone())?;
     let force = input.map(|Json(input)| input.force).unwrap_or_default();
     let operation = cluster_management(&state, request_id.clone())?
@@ -1044,7 +1044,7 @@ async fn decommission_cluster_node(
 async fn repair_status(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
-) -> Result<Json<oes_replication::RepairStatus>, ApiError> {
+) -> Result<Json<record_store_replication::RepairStatus>, ApiError> {
     Ok(Json(
         collect_cluster_status(&state, request_id).await?.repair,
     ))
@@ -1053,7 +1053,7 @@ async fn repair_status(
 async fn start_rebalance(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
-) -> Result<Json<oes_cluster::ClusterOperation>, ApiError> {
+) -> Result<Json<record_store_cluster::ClusterOperation>, ApiError> {
     let operation = cluster_management(&state, request_id.clone())?
         .operations
         .rebalance()
@@ -1065,7 +1065,7 @@ async fn start_rebalance(
 async fn rebalance_status(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
-) -> Result<Json<Vec<oes_cluster::ClusterOperation>>, ApiError> {
+) -> Result<Json<Vec<record_store_cluster::ClusterOperation>>, ApiError> {
     let operations = collect_cluster_status(&state, request_id)
         .await?
         .operations
@@ -1089,7 +1089,7 @@ const fn default_join_token_lifetime() -> u64 {
 
 #[derive(Serialize)]
 struct IssuedJoinTokenResponse {
-    id: oes_core::JoinTokenId,
+    id: record_store_core::JoinTokenId,
     token: String,
     expires_at: chrono::DateTime<chrono::Utc>,
 }
@@ -1099,8 +1099,8 @@ async fn issue_cluster_join_token(
     Extension(request_id): Extension<RequestId>,
     Json(input): Json<JoinTokenInput>,
 ) -> Result<(StatusCode, Json<IssuedJoinTokenResponse>), ApiError> {
-    if !(oes_cluster::JoinToken::MINIMUM_LIFETIME_SECONDS
-        ..=oes_cluster::JoinToken::MAXIMUM_LIFETIME_SECONDS)
+    if !(record_store_cluster::JoinToken::MINIMUM_LIFETIME_SECONDS
+        ..=record_store_cluster::JoinToken::MAXIMUM_LIFETIME_SECONDS)
         .contains(&input.lifetime_seconds)
     {
         return Err(ApiError::bad_request(
@@ -1132,7 +1132,7 @@ fn cluster_management(
         ApiError::new(
             StatusCode::CONFLICT,
             "CLUSTER_MODE_DISABLED",
-            "This OES process is running in standalone mode",
+            "This Record Store process is running in standalone mode",
             request_id,
         )
     })
@@ -1161,7 +1161,7 @@ fn parse_node_id(value: &str, request_id: RequestId) -> Result<NodeId, ApiError>
         ApiError::bad_request(
             request_id,
             "INVALID_NODE_ID",
-            "Node ID must be a valid OES node identifier",
+            "Node ID must be a valid Record Store node identifier",
         )
     })
 }
@@ -1345,7 +1345,7 @@ async fn download_bucket_object(
 ///
 /// Preview and download are two different promises. Download hands an operator
 /// an attachment whatever the bytes turn out to be; preview asks a browser to
-/// interpret them, and so it is only ever offered for media types OES is willing
+/// interpret them, and so it is only ever offered for media types Record Store is willing
 /// to be responsible for. This route therefore refuses far more than the
 /// download route does, and its refusals are the point rather than a gap.
 async fn preview_bucket_object(
@@ -1491,8 +1491,8 @@ async fn verify_preview_signature(
     }
     let probe_length = metadata
         .size
-        .min(oes_core::CONTENT_SIGNATURE_PROBE_BYTES as u64);
-    let Ok(range) = oes_core::ByteRange::new(0, probe_length) else {
+        .min(record_store_core::CONTENT_SIGNATURE_PROBE_BYTES as u64);
+    let Ok(range) = record_store_core::ByteRange::new(0, probe_length) else {
         return Ok(());
     };
     let result = match version_id {
@@ -1516,7 +1516,7 @@ async fn verify_preview_signature(
         error!(%error, request_id = %request_id, "content signature probe failed");
         ApiError::internal(request_id.clone())
     })?;
-    if oes_core::content_signature_matches(content_type, &prefix) {
+    if record_store_core::content_signature_matches(content_type, &prefix) {
         Ok(())
     } else {
         Err(ApiError::new(
@@ -1547,13 +1547,13 @@ async fn upload_bucket_object(
     let result = state
         .services
         .objects
-        .put(oes_service::ServicePutRequest {
+        .put(record_store_service::ServicePutRequest {
             bucket: name,
             key: object_key,
             content_type,
             custom_metadata: std::collections::BTreeMap::new(),
             expected_checksum: None,
-            body: oes_storage::upload_stream(stream),
+            body: record_store_storage::upload_stream(stream),
         })
         .await
         .map_err(|error| service_to_api_error(error, request_id))?;
@@ -1614,7 +1614,7 @@ async fn list_bucket_object_versions(
     let result = state
         .services
         .objects
-        .list_versions(oes_service::ServiceListVersionsRequest {
+        .list_versions(record_store_service::ServiceListVersionsRequest {
             bucket: name,
             prefix: query.prefix,
             key_marker: query.key_marker,
@@ -1630,7 +1630,7 @@ async fn list_bucket_object_versions(
             .map(|listed| {
                 let is_latest = listed.is_latest;
                 match listed.record {
-                    oes_core::ObjectVersionRecord::Object { metadata, is_null } => {
+                    record_store_core::ObjectVersionRecord::Object { metadata, is_null } => {
                         ObjectVersionEntry {
                             key: metadata.key.to_string(),
                             version_id: metadata.version_id,
@@ -1643,7 +1643,7 @@ async fn list_bucket_object_versions(
                             checksum: Some(metadata.checksum.to_string()),
                         }
                     }
-                    oes_core::ObjectVersionRecord::DeleteMarker { marker, is_null } => {
+                    record_store_core::ObjectVersionRecord::DeleteMarker { marker, is_null } => {
                         ObjectVersionEntry {
                             key: marker.key.to_string(),
                             version_id: marker.version_id,
@@ -1704,7 +1704,7 @@ async fn list_storage_events(
         }
     };
     let page = events
-        .list_events(oes_events::EventQuery {
+        .list_events(record_store_events::EventQuery {
             since: query.since,
             until: query.until,
             bucket: query.bucket,
@@ -1956,8 +1956,8 @@ struct CreateServiceAccountRequest {
 
 #[derive(Serialize)]
 struct IssuedServiceAccountResponse {
-    account: oes_auth::ServiceAccount,
-    credential: oes_auth::Credential,
+    account: record_store_auth::ServiceAccount,
+    credential: record_store_auth::Credential,
     secret_access_key: String,
 }
 
@@ -2603,16 +2603,16 @@ async fn copy_object(
     state
         .services
         .objects
-        .copy(oes_service::ServiceCopyRequest {
+        .copy(record_store_service::ServiceCopyRequest {
             source_bucket,
             source_key,
             source_version_id: input.source_version_id,
             destination_bucket,
             destination_key,
             metadata_directive: if replaces_metadata {
-                oes_service::CopyMetadataDirective::Replace
+                record_store_service::CopyMetadataDirective::Replace
             } else {
-                oes_service::CopyMetadataDirective::Copy
+                record_store_service::CopyMetadataDirective::Copy
             },
             content_type: input.content_type,
             replacement_metadata: input.custom_metadata.unwrap_or_default(),
@@ -2770,7 +2770,7 @@ struct ClusterMetrics {
     quorum_writable: bool,
     under_replicated_objects: u64,
     /// Repair tasks currently running. Exposed to Prometheus under the older
-    /// name `oes_replication_queue_depth`, which is kept for existing scrapers.
+    /// name `record_store_replication_queue_depth`, which is kept for existing scrapers.
     repair_active_tasks: u64,
     node_capacity_bytes: u64,
     node_used_bytes: u64,
@@ -2804,7 +2804,7 @@ async fn gather_metrics(
                 let available = local.map_or(0, |node| node.available_bytes);
                 cluster_metrics = Some(ClusterMetrics {
                     nodes: status.nodes.len() as u64,
-                    healthy: status.health == oes_cluster::ClusterHealth::Healthy,
+                    healthy: status.health == record_store_cluster::ClusterHealth::Healthy,
                     quorum_writable: status.metadata.status.writable,
                     under_replicated_objects: status.replication.under_replicated_payloads,
                     repair_active_tasks: status.repair.active_tasks,
@@ -2882,116 +2882,152 @@ fn prometheus_exposition(snapshot: &MetricsSnapshot) -> String {
     let mut gauge = |name: &str, kind: &str, value: u64| {
         body.push_str(&format!("# TYPE {name} {kind}\n{name} {value}\n"));
     };
-    gauge("oes_s3_requests_total", "counter", snapshot.requests);
-    gauge("oes_requests_total", "counter", snapshot.requests);
-    gauge("oes_errors_total", "counter", snapshot.errors);
-    gauge("oes_objects_total", "gauge", snapshot.storage.object_count);
-    gauge("oes_storage_bytes", "gauge", snapshot.storage.logical_bytes);
     gauge(
-        "oes_versions_total",
-        "gauge",
-        snapshot.storage.version_count,
+        "record_store_s3_requests_total",
+        "counter",
+        snapshot.requests,
     );
-    gauge("oes_buckets_total", "gauge", snapshot.storage.bucket_count);
+    gauge("record_store_requests_total", "counter", snapshot.requests);
+    gauge("record_store_errors_total", "counter", snapshot.errors);
     gauge(
-        "oes_storage_logical_bytes",
+        "record_store_objects_total",
+        "gauge",
+        snapshot.storage.object_count,
+    );
+    gauge(
+        "record_store_storage_bytes",
         "gauge",
         snapshot.storage.logical_bytes,
     );
     gauge(
-        "oes_storage_physical_bytes",
+        "record_store_versions_total",
+        "gauge",
+        snapshot.storage.version_count,
+    );
+    gauge(
+        "record_store_buckets_total",
+        "gauge",
+        snapshot.storage.bucket_count,
+    );
+    gauge(
+        "record_store_storage_logical_bytes",
+        "gauge",
+        snapshot.storage.logical_bytes,
+    );
+    gauge(
+        "record_store_storage_physical_bytes",
         "gauge",
         snapshot.storage.physical_bytes,
     );
     gauge(
-        "oes_multipart_bytes",
+        "record_store_multipart_bytes",
         "gauge",
         snapshot.storage.multipart_bytes,
     );
     gauge(
-        "oes_preview_requests_total",
+        "record_store_preview_requests_total",
         "counter",
         snapshot.sharing.preview_requests,
     );
     gauge(
-        "oes_preview_failures_total",
+        "record_store_preview_failures_total",
         "counter",
         snapshot.sharing.preview_failures,
     );
     gauge(
-        "oes_share_links_created_total",
+        "record_store_share_links_created_total",
         "counter",
         snapshot.sharing.shares_created,
     );
     gauge(
-        "oes_share_access_total",
+        "record_store_share_access_total",
         "counter",
         snapshot.sharing.share_access,
     );
     gauge(
-        "oes_share_access_denied_total",
+        "record_store_share_access_denied_total",
         "counter",
         snapshot.sharing.share_access_denied,
     );
     gauge(
-        "oes_share_links_active",
+        "record_store_share_links_active",
         "gauge",
         snapshot.sharing.share_links_active,
     );
     gauge(
-        "oes_embeds_created_total",
+        "record_store_embeds_created_total",
         "counter",
         snapshot.sharing.embeds_created,
     );
     gauge(
-        "oes_embed_requests_total",
+        "record_store_embed_requests_total",
         "counter",
         snapshot.sharing.embed_requests,
     );
     gauge(
-        "oes_embed_denied_total",
+        "record_store_embed_denied_total",
         "counter",
         snapshot.sharing.embed_denied,
     );
-    gauge("oes_embeds_active", "gauge", snapshot.sharing.embeds_active);
-    gauge("oes_upload_bytes_total", "counter", snapshot.upload_bytes);
     gauge(
-        "oes_download_bytes_total",
+        "record_store_embeds_active",
+        "gauge",
+        snapshot.sharing.embeds_active,
+    );
+    gauge(
+        "record_store_upload_bytes_total",
+        "counter",
+        snapshot.upload_bytes,
+    );
+    gauge(
+        "record_store_download_bytes_total",
         "counter",
         snapshot.download_bytes,
     );
     if let Some(cluster) = &snapshot.cluster {
         gauge(
-            "oes_node_capacity_bytes",
+            "record_store_node_capacity_bytes",
             "gauge",
             cluster.node_capacity_bytes,
         );
-        gauge("oes_node_used_bytes", "gauge", cluster.node_used_bytes);
         gauge(
-            "oes_node_available_bytes",
+            "record_store_node_used_bytes",
+            "gauge",
+            cluster.node_used_bytes,
+        );
+        gauge(
+            "record_store_node_available_bytes",
             "gauge",
             cluster.node_available_bytes,
         );
-        gauge("oes_node_health", "gauge", u64::from(cluster.healthy));
-        gauge("oes_cluster_nodes", "gauge", cluster.nodes);
         gauge(
-            "oes_under_replicated_objects",
+            "record_store_node_health",
+            "gauge",
+            u64::from(cluster.healthy),
+        );
+        gauge("record_store_cluster_nodes", "gauge", cluster.nodes);
+        gauge(
+            "record_store_under_replicated_objects",
             "gauge",
             cluster.under_replicated_objects,
         );
         gauge(
-            "oes_replication_queue_depth",
+            "record_store_replication_queue_depth",
             "gauge",
             cluster.repair_active_tasks,
         );
         gauge(
-            "oes_metadata_quorum_health",
+            "record_store_metadata_quorum_health",
             "gauge",
             u64::from(cluster.quorum_writable),
         );
-        gauge("oes_cluster_logical_bytes", "gauge", cluster.logical_bytes);
         gauge(
-            "oes_cluster_physical_bytes",
+            "record_store_cluster_logical_bytes",
+            "gauge",
+            cluster.logical_bytes,
+        );
+        gauge(
+            "record_store_cluster_physical_bytes",
             "gauge",
             cluster.physical_bytes,
         );
@@ -3156,7 +3192,7 @@ struct AuditQueryParameters {
     source_ip: Option<String>,
     request_id: Option<String>,
     after_time: Option<chrono::DateTime<chrono::Utc>>,
-    after_id: Option<oes_core::AuditEventId>,
+    after_id: Option<record_store_core::AuditEventId>,
     #[serde(default = "default_audit_limit")]
     limit: usize,
 }
@@ -3169,7 +3205,7 @@ const fn default_audit_limit() -> usize {
 struct AuditEventsResponse {
     events: Vec<AuditEvent>,
     next_time: Option<chrono::DateTime<chrono::Utc>>,
-    next_id: Option<oes_core::AuditEventId>,
+    next_id: Option<record_store_core::AuditEventId>,
 }
 
 async fn list_audit_events(
@@ -3282,7 +3318,7 @@ async fn request_context(
             _ => AuditResult::Failure,
         };
         let event = AuditEvent {
-            event_id: oes_core::AuditEventId::new(),
+            event_id: record_store_core::AuditEventId::new(),
             timestamp: chrono::Utc::now(),
             request_id: Some(request_id.to_string()),
             principal: response
@@ -3468,7 +3504,7 @@ const fn default_object_limit() -> usize {
 
 /// One page of a prefix listing.
 ///
-/// Prefixes are logical groupings derived from the delimiter; OES stores no
+/// Prefixes are logical groupings derived from the delimiter; Record Store stores no
 /// directories, so they are reported separately from objects rather than being
 /// presented as entries of the same kind.
 #[derive(Debug, Serialize)]
@@ -3498,7 +3534,7 @@ pub(crate) fn parse_preview_range(
     headers: &header::HeaderMap,
     size: u64,
     request_id: &RequestId,
-) -> Result<Option<oes_core::ByteRange>, ApiError> {
+) -> Result<Option<record_store_core::ByteRange>, ApiError> {
     let Some(value) = headers.get(header::RANGE) else {
         return Ok(None);
     };
@@ -3556,7 +3592,7 @@ pub(crate) fn parse_preview_range(
             end.saturating_sub(offset).min(size.saturating_sub(offset)),
         )
     };
-    oes_core::ByteRange::new(offset, length)
+    record_store_core::ByteRange::new(offset, length)
         .map(Some)
         .map_err(|_| ApiError::bad_request(request_id.clone(), "INVALID_RANGE", "Range is invalid"))
 }
@@ -3594,19 +3630,19 @@ struct EventQueryParameters {
     until: Option<chrono::DateTime<chrono::Utc>>,
     bucket: Option<String>,
     #[serde(rename = "type")]
-    event_type: Option<oes_events::StorageEventType>,
+    event_type: Option<record_store_events::StorageEventType>,
     prefix: Option<String>,
     after_time: Option<chrono::DateTime<chrono::Utc>>,
-    after_id: Option<oes_core::EventId>,
+    after_id: Option<record_store_core::EventId>,
     #[serde(default = "default_audit_limit")]
     limit: usize,
 }
 
 #[derive(Debug, Serialize)]
 struct EventsResponse {
-    events: Vec<oes_events::StorageEvent>,
+    events: Vec<record_store_events::StorageEvent>,
     next_time: Option<chrono::DateTime<chrono::Utc>>,
-    next_id: Option<oes_core::EventId>,
+    next_id: Option<record_store_core::EventId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3791,16 +3827,16 @@ fn internal_service_error(error_value: ServiceError, request_id: RequestId) -> A
 #[derive(Debug, Error)]
 enum ReadinessError {
     #[error("storage dependency failed: {0}")]
-    Storage(oes_storage::StorageError),
+    Storage(record_store_storage::StorageError),
     #[error("metadata dependency failed: {0}")]
-    Metadata(oes_metadata::MetadataError),
+    Metadata(record_store_metadata::MetadataError),
     #[error("audit dependency failed: {0}")]
-    Audit(oes_audit::AuditError),
+    Audit(record_store_audit::AuditError),
     /// The capability store is not reachable.
     #[error("sharing dependency failed: {0}")]
     Sharing(String),
     #[error("event dependency failed: {0}")]
-    Events(oes_events::EventError),
+    Events(record_store_events::EventError),
     #[error("cluster dependency failed: {0}")]
     Cluster(String),
 }

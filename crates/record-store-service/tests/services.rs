@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use futures_util::{TryStreamExt, stream};
-use oes_core::{BucketName, ObjectKey, OrganizationId};
-use oes_metadata::{MetadataRepository, RedbMetadataRepository};
-use oes_service::{ServiceError, ServiceLimits, ServicePutRequest, Services};
-use oes_storage::{LocalFilesystemStore, ObjectStore, upload_stream};
+use record_store_core::{BucketName, ObjectKey, OrganizationId};
+use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
+use record_store_service::{ServiceError, ServiceLimits, ServicePutRequest, Services};
+use record_store_storage::{LocalFilesystemStore, ObjectStore, upload_stream};
 use tempfile::TempDir;
 use tokio::time::timeout;
 

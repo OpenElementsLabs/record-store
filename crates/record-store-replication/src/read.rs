@@ -7,12 +7,12 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use oes_cluster::{
+use record_store_cluster::{
     ClusterCommand, PayloadPlacement, ReplicaState, ReplicaTaskKind, ReplicaTaskPriority,
 };
-use oes_consensus::ClusterWrite;
-use oes_core::{ByteRange, Checksum, NodeId, ObjectId, PayloadFormat, ResolvedByteRange};
-use oes_storage::{DownloadStream, ReadReplicaRequest, StorageError};
+use record_store_consensus::ClusterWrite;
+use record_store_core::{ByteRange, Checksum, NodeId, ObjectId, PayloadFormat, ResolvedByteRange};
+use record_store_storage::{DownloadStream, ReadReplicaRequest, StorageError};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
@@ -36,7 +36,7 @@ pub struct ReadCandidate {
 #[must_use]
 pub fn read_candidates(
     placement: &PayloadPlacement,
-    topology: &oes_cluster::ClusterTopology,
+    topology: &record_store_cluster::ClusterTopology,
     local_node: NodeId,
 ) -> Vec<ReadCandidate> {
     let mut candidates: Vec<(bool, [u8; 32], ReadCandidate)> = placement
@@ -235,7 +235,7 @@ async fn open_remote(
 /// check is appended after the last chunk, so a mismatch fails the read instead
 /// of silently returning damaged content.
 fn remote_stream(
-    stream: oes_rpc::RemoteReadStream,
+    stream: record_store_rpc::RemoteReadStream,
     expectation: Option<(u64, Checksum)>,
 ) -> DownloadStream {
     use futures_util::{TryStreamExt, stream};
@@ -362,7 +362,7 @@ pub async fn report_damage(
             warn!(%object_id, %error, "could not record replica damage");
             return;
         }
-        let task = oes_cluster::ReplicaTask::queued(
+        let task = record_store_cluster::ReplicaTask::queued(
             object_id,
             kind,
             ReplicaTaskPriority::classify(kind, healthy, desired),

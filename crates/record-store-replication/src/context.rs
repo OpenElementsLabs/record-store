@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-use oes_cluster::{
+use record_store_cluster::{
     ClusterConfig, ClusterTopology, PayloadPlacement, PlacementPolicy, StorageClass,
 };
-use oes_consensus::{ClusterStore, ClusterWrite, ConsensusError, MetadataConsensus};
-use oes_core::{NodeId, ObjectId};
-use oes_metadata::MetadataRepository;
-use oes_rpc::{ReplicaTarget, ReplicaTransport};
-use oes_storage::{ReplicaStore, StorageError};
+use record_store_consensus::{ClusterStore, ClusterWrite, ConsensusError, MetadataConsensus};
+use record_store_core::{NodeId, ObjectId};
+use record_store_metadata::MetadataRepository;
+use record_store_rpc::{ReplicaTarget, ReplicaTransport};
+use record_store_storage::{ReplicaStore, StorageError};
 
 /// Everything the distributed data plane needs to serve one node's requests.
 pub struct ClusterContext {
@@ -93,7 +93,7 @@ impl ClusterContext {
             StorageError::ClusterUnavailable("this node has no metadata consensus".to_owned())
         })?;
         match consensus.write(write).await {
-            Ok(oes_consensus::ClusterWriteResponse::Rejected(rejection)) => {
+            Ok(record_store_consensus::ClusterWriteResponse::Rejected(rejection)) => {
                 Err(StorageError::Metadata(rejection.into_metadata_error()))
             }
             Ok(_) => Ok(()),

@@ -41,7 +41,7 @@ export function DurabilityScreen() {
     <>
       <PageHeader
         title="Durability"
-        description="How many copies of your data exist, and what OES is doing about any shortfall."
+        description="How many copies of your data exist, and what Record Store is doing about any shortfall."
         actions={
           <Button
             size="sm"
@@ -188,8 +188,8 @@ export function DurabilityScreen() {
                 data behind it.
               */}
               <p className="mt-3 type-meta-subtle">
-                OES reports repair as queue counts. Per-job detail and throughput are not exposed by
-                the management API.
+                Record Store reports repair as queue counts. Per-job detail and throughput are not
+                exposed by the management API.
               </p>
             </CardContent>
           </Card>

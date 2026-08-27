@@ -9,14 +9,14 @@
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
-use oes_cluster::{
+use record_store_cluster::{
     ClusterCommand, ClusterOperationKind, ClusterOperationState, ClusterTopology,
     DecommissionSafety, ObjectPlacementRequest, OperationProgress, PayloadPlacement,
     RebalanceCandidate, ReplicaState, ReplicaTask, ReplicaTaskKind, ReplicaTaskPriority,
     ReplicaTaskState, evaluate_node, plan_rebalance,
 };
-use oes_consensus::{ClusterWrite, MetadataConsensus};
-use oes_core::{NodeId, ObjectId};
+use record_store_consensus::{ClusterWrite, MetadataConsensus};
+use record_store_core::{NodeId, ObjectId};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -189,7 +189,7 @@ impl Coordinator {
         let draining: BTreeSet<NodeId> = topology
             .nodes
             .iter()
-            .filter(|node| node.state == oes_cluster::NodeState::Draining)
+            .filter(|node| node.state == record_store_cluster::NodeState::Draining)
             .map(|node| node.node_id)
             .collect();
         let drains_pending = placement
@@ -383,7 +383,7 @@ impl Coordinator {
             {
                 self.apply(ClusterCommand::SetNodeState {
                     node_id,
-                    state: oes_cluster::NodeState::Decommissioned,
+                    state: record_store_cluster::NodeState::Decommissioned,
                     reason: Some("decommission completed".into()),
                     at: Utc::now(),
                 })
@@ -395,7 +395,7 @@ impl Coordinator {
 
     async fn progress_rebalance(
         &self,
-        operation: &oes_cluster::ClusterOperation,
+        operation: &record_store_cluster::ClusterOperation,
     ) -> Result<(), String> {
         let page = self
             .context
@@ -429,7 +429,7 @@ impl Coordinator {
     /// Plans capacity rebalancing and queues the resulting movements.
     pub async fn rebalance(
         &self,
-        operation_id: Option<oes_core::ClusterOperationId>,
+        operation_id: Option<record_store_core::ClusterOperationId>,
     ) -> Result<usize, String> {
         let topology = self.context.topology().await.map_err(display)?;
         let page = self
@@ -587,6 +587,6 @@ pub fn coordination_interval(topology: &ClusterTopology) -> Duration {
 
 /// Returns the last time a node was seen, for operator-facing output.
 #[must_use]
-pub fn last_seen(node: &oes_cluster::NodeRecord) -> DateTime<Utc> {
+pub fn last_seen(node: &record_store_cluster::NodeRecord) -> DateTime<Utc> {
     node.last_heartbeat_at.unwrap_or(node.joined_at)
 }

@@ -3,7 +3,7 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 compatibility_root="$repository_root/tests/compatibility"
-run_directory="$(mktemp -d "${TMPDIR:-/tmp}/oes-compat.XXXXXXXX")"
+run_directory="$(mktemp -d "${TMPDIR:-/tmp}/record-store-compat.XXXXXXXX")"
 server_pid=""
 
 cleanup() {
@@ -25,13 +25,13 @@ trap cleanup EXIT
 # the suite race whatever the developer already has running, and because the
 # readiness probe is just an HTTP call it would happily verify a foreign server
 # and then test that instead of the binary just built.
-s3_port="${OES_COMPAT_S3_PORT:-47610}"
-api_port="${OES_COMPAT_API_PORT:-47611}"
-rpc_port="${OES_COMPAT_RPC_PORT:-47613}"
-management_token="oes-compat-management-token-at-least-thirty-two-bytes"
+s3_port="${RECORD_STORE_COMPAT_S3_PORT:-47610}"
+api_port="${RECORD_STORE_COMPAT_API_PORT:-47611}"
+rpc_port="${RECORD_STORE_COMPAT_RPC_PORT:-47613}"
+management_token="record-store-compat-management-token-at-least-thirty-two-bytes"
 
-for entry in "S3:$s3_port:OES_COMPAT_S3_PORT" "management:$api_port:OES_COMPAT_API_PORT" \
-  "RPC:$rpc_port:OES_COMPAT_RPC_PORT"; do
+for entry in "S3:$s3_port:RECORD_STORE_COMPAT_S3_PORT" "management:$api_port:RECORD_STORE_COMPAT_API_PORT" \
+  "RPC:$rpc_port:RECORD_STORE_COMPAT_RPC_PORT"; do
   label="${entry%%:*}"
   rest="${entry#*:}"
   candidate="${rest%%:*}"
@@ -52,29 +52,29 @@ finally:
   fi
 done
 
-export OES_ROOT_ACCESS_KEY="oes-compat-root"
-export OES_ROOT_SECRET_KEY="oes-compat-root-secret-at-least-sixteen"
-export OES_CREDENTIAL_MASTER_KEY="oes-compat-stable-master-key-at-least-thirty-two-bytes"
-export OES_MANAGEMENT_SYSTEM_TOKEN="$management_token"
-export OES_STORAGE_DATA_DIRECTORY="$run_directory/data"
-export OES_STORAGE_ENCRYPTION_ENABLED="true"
-export OES_MODE="standalone"
-export OES_S3_BIND="127.0.0.1:$s3_port"
-export OES_API_BIND="127.0.0.1:$api_port"
-export OES_RPC_BIND="127.0.0.1:$rpc_port"
-export OES_COMPAT_ENDPOINT="http://127.0.0.1:$s3_port"
+export RECORD_STORE_ROOT_ACCESS_KEY="record-store-compat-root"
+export RECORD_STORE_ROOT_SECRET_KEY="record-store-compat-root-secret-at-least-sixteen"
+export RECORD_STORE_CREDENTIAL_MASTER_KEY="record-store-compat-stable-master-key-at-least-thirty-two-bytes"
+export RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN="$management_token"
+export RECORD_STORE_STORAGE_DATA_DIRECTORY="$run_directory/data"
+export RECORD_STORE_STORAGE_ENCRYPTION_ENABLED="true"
+export RECORD_STORE_MODE="standalone"
+export RECORD_STORE_S3_BIND="127.0.0.1:$s3_port"
+export RECORD_STORE_API_BIND="127.0.0.1:$api_port"
+export RECORD_STORE_RPC_BIND="127.0.0.1:$rpc_port"
+export RECORD_STORE_COMPAT_ENDPOINT="http://127.0.0.1:$s3_port"
 export AWS_REQUEST_CHECKSUM_CALCULATION="WHEN_REQUIRED"
 export AWS_RESPONSE_CHECKSUM_VALIDATION="WHEN_REQUIRED"
 
-cargo build --manifest-path "$repository_root/Cargo.toml" --bin oes-server --release --locked
-"$repository_root/target/release/oes-server" >"$run_directory/server.log" 2>&1 &
+cargo build --manifest-path "$repository_root/Cargo.toml" --bin record-store-server --release --locked
+"$repository_root/target/release/record-store-server" >"$run_directory/server.log" 2>&1 &
 server_pid=$!
 
 # Liveness is checked before readiness: a dead child with a reachable port means
 # something else is answering, which must fail rather than be tested against.
 for _ in {1..100}; do
   if ! kill -0 "$server_pid" 2>/dev/null; then
-    echo "OES exited before becoming ready" >&2
+    echo "Record Store exited before becoming ready" >&2
     exit 1
   fi
   if curl --fail --silent "http://127.0.0.1:$api_port/ready" >/dev/null; then
@@ -82,14 +82,14 @@ for _ in {1..100}; do
   fi
   sleep 0.1
 done
-kill -0 "$server_pid" 2>/dev/null || { echo "OES exited before becoming ready" >&2; exit 1; }
+kill -0 "$server_pid" 2>/dev/null || { echo "Record Store exited before becoming ready" >&2; exit 1; }
 curl --fail --silent "http://127.0.0.1:$api_port/ready" >/dev/null
 
 # Confirm the server answering is the one just started, in the mode expected.
 identity="$(curl --fail --silent -H "authorization: Bearer $management_token" \
   "http://127.0.0.1:$api_port/api/v1/system/info")"
 case "$identity" in
-  *'"name":"oes"'*'"mode":"standalone"'*) ;;
+  *'"name":"record-store"'*'"mode":"standalone"'*) ;;
   *)
     echo "unexpected backend on 127.0.0.1:$api_port: $identity" >&2
     exit 1

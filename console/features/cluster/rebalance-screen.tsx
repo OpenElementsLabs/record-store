@@ -150,7 +150,7 @@ export function RebalanceScreen() {
         open={confirming}
         onOpenChange={setConfirming}
         title="Start a rebalance"
-        description="OES will move replicas between nodes to even out capacity. Movement is throttled and can be left running; it does not change how many copies of an object exist."
+        description="Record Store will move replicas between nodes to even out capacity. Movement is throttled and can be left running; it does not change how many copies of an object exist."
         confirmLabel="Start rebalance"
         strength="acknowledge"
         pending={start.isPending}

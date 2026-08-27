@@ -1,7 +1,7 @@
 import { forwardToManagementApi } from '@/lib/server/proxy';
 
 /**
- * Forwards browser requests to the OES management API.
+ * Forwards browser requests to the Record Store management API.
  *
  * Keeping this on the console's own origin means the session credential can live
  * in an HTTP-only cookie, and the management API needs no cross-origin

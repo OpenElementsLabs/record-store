@@ -55,7 +55,7 @@ export function previewKind(contentType: string | null | undefined): PreviewKind
   return CLASSIFICATION[essence] ?? 'unsupported';
 }
 
-/** Whether OES will render this classification inline. */
+/** Whether Record Store will render this classification inline. */
 export function isPreviewable(kind: PreviewKind): boolean {
   return (
     kind === 'image' ||

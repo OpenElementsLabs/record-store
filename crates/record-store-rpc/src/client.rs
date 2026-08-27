@@ -2,7 +2,7 @@
 //!
 //! Connections are created lazily, cached per peer address, and always carry
 //! this node's identity, protocol version, and credential. Callers work with
-//! OES-owned request and response types; no other crate sees a transport type.
+//! Record Store-owned request and response types; no other crate sees a transport type.
 
 use std::{
     collections::HashMap,
@@ -11,8 +11,8 @@ use std::{
 };
 
 use bytes::Bytes;
-use oes_core::{Checksum, ObjectId};
-use oes_protocol::{
+use record_store_core::{Checksum, ObjectId};
+use record_store_protocol::{
     consensus_v1::consensus_service_client::ConsensusServiceClient,
     replica_v1::replica_service_client::ReplicaServiceClient,
     system_v1::{
@@ -65,7 +65,7 @@ pub enum RpcClientError {
         /// Failure detail.
         status: String,
     },
-    /// The peer returned a response OES could not interpret.
+    /// The peer returned a response Record Store could not interpret.
     #[error("internal peer {address} returned an unusable response: {reason}")]
     Response {
         /// Peer that returned the response.
@@ -362,7 +362,7 @@ impl PeerPool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicaTarget {
     /// Node holding or receiving the replica.
-    pub node_id: oes_core::NodeId,
+    pub node_id: record_store_core::NodeId,
     /// Internal RPC address of that node.
     pub address: String,
 }
@@ -489,7 +489,7 @@ impl ReplicaTransport for RpcReplicaTransport {
         mut body: TransferStream,
     ) -> Result<RemoteReplicaWrite, RpcClientError> {
         use futures_util::StreamExt;
-        use oes_protocol::replica_v1::{
+        use record_store_protocol::replica_v1::{
             ReplicaDescriptor, WriteReplicaChunk, WriteReplicaCommit, WriteReplicaHeader,
             write_replica_chunk,
         };
@@ -616,7 +616,7 @@ impl ReplicaTransport for RpcReplicaTransport {
         checksum: &Checksum,
     ) -> Result<RemoteReadStream, RpcClientError> {
         use futures_util::StreamExt;
-        use oes_protocol::replica_v1::ReadReplicaRequest;
+        use record_store_protocol::replica_v1::ReadReplicaRequest;
 
         let mut client = self.pool.replica(&target.address).await?;
         let request = self
@@ -651,7 +651,7 @@ impl ReplicaTransport for RpcReplicaTransport {
         target: &ReplicaTarget,
         object_id: ObjectId,
     ) -> Result<bool, RpcClientError> {
-        use oes_protocol::replica_v1::DeleteReplicaRequest;
+        use record_store_protocol::replica_v1::DeleteReplicaRequest;
 
         let mut client = self.pool.replica(&target.address).await?;
         let request = self
@@ -677,7 +677,7 @@ impl ReplicaTransport for RpcReplicaTransport {
         size: u64,
         checksum: &Checksum,
     ) -> Result<RemoteReplicaVerification, RpcClientError> {
-        use oes_protocol::replica_v1::VerifyReplicaRequest;
+        use record_store_protocol::replica_v1::VerifyReplicaRequest;
 
         let mut client = self.pool.replica(&target.address).await?;
         let request = self
@@ -710,7 +710,7 @@ impl ReplicaTransport for RpcReplicaTransport {
         after: Option<ObjectId>,
         limit: usize,
     ) -> Result<Vec<ObjectId>, RpcClientError> {
-        use oes_protocol::replica_v1::ListLocalPayloadsRequest;
+        use record_store_protocol::replica_v1::ListLocalPayloadsRequest;
 
         let mut client = self.pool.replica(&target.address).await?;
         let request = self

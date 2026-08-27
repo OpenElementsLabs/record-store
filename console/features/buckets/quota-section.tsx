@@ -109,8 +109,8 @@ function QuotaForm({ record }: { readonly record: Bucket }) {
       <CardHeader className="flex-col items-start">
         <CardTitle>Quota</CardTitle>
         <CardDescription>
-          Limits are enforced by OES when an object version is published, so an upload that would
-          exceed a limit is refused rather than stored and cleaned up later.
+          Limits are enforced by Record Store when an object version is published, so an upload that
+          would exceed a limit is refused rather than stored and cleaned up later.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">

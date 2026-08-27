@@ -39,7 +39,7 @@ import type { AuditEvent, AuditResult } from '@/types/api';
 const RESULTS = ['success', 'denied', 'failure'] as const;
 
 /**
- * The security audit trail: who asked for what, and what OES decided.
+ * The security audit trail: who asked for what, and what Record Store decided.
  *
  * The history is unbounded, so every query is server side with a cursor. The
  * console never holds more than one page.
@@ -77,7 +77,7 @@ export function AuditScreen() {
     <>
       <PageHeader
         title="Audit log"
-        description="Authenticated management and storage operations, with the decision OES made."
+        description="Authenticated management and storage operations, with the decision Record Store made."
       />
 
       <Card>

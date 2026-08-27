@@ -19,7 +19,7 @@ const MIB = 1024 * 1024;
 const BOUNDARY = 10 * MIB;
 const SIZES = [BOUNDARY - 1, BOUNDARY, BOUNDARY + 1, 40 * MIB];
 
-const MANAGEMENT_URL = process.env.OES_E2E_MANAGEMENT_URL ?? 'http://127.0.0.1:47601';
+const MANAGEMENT_URL = process.env.RECORD_STORE_E2E_MANAGEMENT_URL ?? 'http://127.0.0.1:47601';
 
 function payload(size: number): { buffer: Buffer; checksum: string } {
   const buffer = randomBytes(size);
@@ -104,7 +104,7 @@ test.describe('upload integrity across the 10 MiB boundary', () => {
   }
 
   // Control: the direct backend path was never affected by the console bug, so
-  // this isolates future regressions to the proxy/frontend rather than OES itself.
+  // this isolates future regressions to the proxy/frontend rather than Record Store itself.
   test('direct backend upload stores the complete object (control)', async () => {
     const bucket = uniqueBucket('integrity-direct');
     await createBucketDirect(bucket);

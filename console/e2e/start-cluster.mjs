@@ -1,4 +1,4 @@
-/** Starts and verifies a disposable three-storage-node OES cluster. */
+/** Starts and verifies a disposable three-storage-node Record Store cluster. */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
@@ -8,11 +8,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
-const runDirectory = mkdtempSync(join(tmpdir(), 'oes-e2e-cluster-'));
+const runDirectory = mkdtempSync(join(tmpdir(), 'record-store-e2e-cluster-'));
 const host = '127.0.0.1';
-const consolePort = port('OES_CLUSTER_E2E_CONSOLE_PORT', 18_602);
-const harnessPort = port('OES_CLUSTER_E2E_HARNESS_PORT', 18_604);
-const managementToken = process.env.OES_E2E_TOKEN ?? 'e2e-management-system-token-32-bytes-long';
+const consolePort = port('RECORD_STORE_CLUSTER_E2E_CONSOLE_PORT', 18_602);
+const harnessPort = port('RECORD_STORE_CLUSTER_E2E_HARNESS_PORT', 18_604);
+const managementToken =
+  process.env.RECORD_STORE_E2E_TOKEN ?? 'e2e-management-system-token-32-bytes-long';
 const nodes = [
   nodePorts(1, 18_600, 18_601, 18_603),
   nodePorts(2, 18_700, 18_701, 18_703),
@@ -44,16 +45,16 @@ for (const node of nodes.slice(1)) {
 await verifyCluster(apiUrl(nodes[0]), 3);
 readinessServer = createHttpServer((_request, response) => {
   response.writeHead(200, { 'content-type': 'text/plain' });
-  response.end('verified three-node OES cluster\n');
+  response.end('verified three-node Record Store cluster\n');
 }).listen(harnessPort, host);
-process.stdout.write(`Verified three-node OES cluster through ${apiUrl(nodes[0])}\n`);
+process.stdout.write(`Verified three-node Record Store cluster through ${apiUrl(nodes[0])}\n`);
 
 function nodePorts(number, s3Fallback, apiFallback, rpcFallback) {
   return {
     number,
-    s3: port(`OES_CLUSTER_E2E_NODE_${number}_S3_PORT`, s3Fallback),
-    api: port(`OES_CLUSTER_E2E_NODE_${number}_API_PORT`, apiFallback),
-    rpc: port(`OES_CLUSTER_E2E_NODE_${number}_RPC_PORT`, rpcFallback),
+    s3: port(`RECORD_STORE_CLUSTER_E2E_NODE_${number}_S3_PORT`, s3Fallback),
+    api: port(`RECORD_STORE_CLUSTER_E2E_NODE_${number}_API_PORT`, apiFallback),
+    rpc: port(`RECORD_STORE_CLUSTER_E2E_NODE_${number}_RPC_PORT`, rpcFallback),
   };
 }
 
@@ -81,35 +82,35 @@ function assertPortFree(value, label) {
 }
 
 function spawnNode(node, joinToken) {
-  const child = spawn('cargo', ['run', '--quiet', '--bin', 'oes-server'], {
+  const child = spawn('cargo', ['run', '--quiet', '--bin', 'record-store-server'], {
     cwd: repositoryRoot,
     env: {
       ...process.env,
-      OES_MODE: 'cluster',
-      OES_STORAGE_DATA_DIRECTORY: join(runDirectory, `node-${node.number}`),
-      OES_S3_BIND: `${host}:${node.s3}`,
-      OES_API_BIND: `${host}:${node.api}`,
-      OES_RPC_BIND: `${host}:${node.rpc}`,
-      OES_RPC_ADVERTISE: `${host}:${node.rpc}`,
-      OES_CLUSTER_S3_ENDPOINT: `http://${host}:${node.s3}`,
-      OES_CLUSTER_FAILURE_DOMAIN: `region=e2e,zone=z${node.number},rack=r${node.number}`,
-      OES_CLUSTER_REPLICATION_FACTOR: '3',
-      OES_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT: '98',
-      OES_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT: '99',
-      OES_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT: '100',
+      RECORD_STORE_MODE: 'cluster',
+      RECORD_STORE_STORAGE_DATA_DIRECTORY: join(runDirectory, `node-${node.number}`),
+      RECORD_STORE_S3_BIND: `${host}:${node.s3}`,
+      RECORD_STORE_API_BIND: `${host}:${node.api}`,
+      RECORD_STORE_RPC_BIND: `${host}:${node.rpc}`,
+      RECORD_STORE_RPC_ADVERTISE: `${host}:${node.rpc}`,
+      RECORD_STORE_CLUSTER_S3_ENDPOINT: `http://${host}:${node.s3}`,
+      RECORD_STORE_CLUSTER_FAILURE_DOMAIN: `region=e2e,zone=z${node.number},rack=r${node.number}`,
+      RECORD_STORE_CLUSTER_REPLICATION_FACTOR: '3',
+      RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT: '98',
+      RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT: '99',
+      RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT: '100',
       ...(node.number > 1
         ? {
-            OES_CLUSTER_SEEDS: `${host}:${nodes[0].rpc}`,
-            OES_CLUSTER_JOIN_TOKEN: joinToken,
+            RECORD_STORE_CLUSTER_SEEDS: `${host}:${nodes[0].rpc}`,
+            RECORD_STORE_CLUSTER_JOIN_TOKEN: joinToken,
           }
         : {}),
-      OES_ROOT_ACCESS_KEY: 'e2e-root-access',
-      OES_ROOT_SECRET_KEY: 'e2e-root-secret-at-least-sixteen',
-      OES_CREDENTIAL_MASTER_KEY: 'e2e-credential-master-key-at-least-32-bytes',
-      OES_MANAGEMENT_SYSTEM_TOKEN: managementToken,
-      OES_MANAGEMENT_AUDITOR_TOKEN: 'e2e-management-auditor-token-32-bytes-long',
-      OES_METRICS_SCRAPE_TOKEN: 'e2e-dedicated-metrics-token-at-least-32-bytes',
-      OES_LOG: 'oes=warn',
+      RECORD_STORE_ROOT_ACCESS_KEY: 'e2e-root-access',
+      RECORD_STORE_ROOT_SECRET_KEY: 'e2e-root-secret-at-least-sixteen',
+      RECORD_STORE_CREDENTIAL_MASTER_KEY: 'e2e-credential-master-key-at-least-32-bytes',
+      RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN: managementToken,
+      RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN: 'e2e-management-auditor-token-32-bytes-long',
+      RECORD_STORE_METRICS_SCRAPE_TOKEN: 'e2e-dedicated-metrics-token-at-least-32-bytes',
+      RECORD_STORE_LOG: 'record_store=warn',
     },
     stdio: 'inherit',
   });
@@ -117,7 +118,7 @@ function spawnNode(node, joinToken) {
   child.once('exit', (code, signal) => {
     if (!shuttingDown) {
       console.error(
-        `OES cluster node ${node.number} exited before shutdown (code=${code}, signal=${signal})`,
+        `Record Store cluster node ${node.number} exited before shutdown (code=${code}, signal=${signal})`,
       );
       shutdown(code ?? 1);
     }
@@ -150,7 +151,7 @@ async function verifyBackend(baseUrl, expectedMode) {
         if (!response.ok) throw new Error(`identity endpoint returned HTTP ${response.status}`);
         const identity = await response.json();
         if (
-          identity?.name !== 'oes' ||
+          identity?.name !== 'record-store' ||
           identity?.mode !== expectedMode ||
           typeof identity?.version !== 'string' ||
           typeof identity?.cluster_id !== 'string'

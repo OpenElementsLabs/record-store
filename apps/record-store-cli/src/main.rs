@@ -2,12 +2,16 @@ use std::{env, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use oes_config::{Config, DeploymentMode, SecretValue};
-use oes_core::Bucket;
+use record_store_config::{Config, DeploymentMode, SecretValue};
+use record_store_core::Bucket;
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
-#[command(name = "oes", version, about = "Operational CLI for OES")]
+#[command(
+    name = "record-store",
+    version,
+    about = "Operational CLI for Record Store"
+)]
 struct Cli {
     /// Emit JSON suitable for automation.
     #[arg(long, global = true)]
@@ -18,9 +22,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Print the OES CLI version.
+    /// Print the Record Store CLI version.
     Version,
-    /// Start or validate the OES server.
+    /// Start or validate the Record Store server.
     Server(ServerArgs),
     /// Query a running server's readiness.
     Status(EndpointArgs),
@@ -56,7 +60,7 @@ enum Command {
         #[command(subcommand)]
         command: VerifyCommand,
     },
-    /// Inspect or explicitly repair OES-owned storage state.
+    /// Inspect or explicitly repair Record Store-owned storage state.
     Storage {
         #[command(subcommand)]
         command: StorageCommand,
@@ -86,7 +90,7 @@ enum Command {
 #[derive(Args)]
 struct ServerArgs {
     /// TOML configuration file. Environment variables override file values.
-    #[arg(long, env = "OES_CONFIG_FILE")]
+    #[arg(long, env = "RECORD_STORE_CONFIG_FILE")]
     config: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<ServerCommand>,
@@ -104,7 +108,7 @@ enum ServerCommand {
 
 #[derive(Args, Clone)]
 struct EndpointArgs {
-    /// OES native management endpoint.
+    /// Record Store native management endpoint.
     #[arg(long, default_value = "http://127.0.0.1:7601")]
     endpoint: String,
 }
@@ -316,7 +320,7 @@ enum ClusterCommand {
     IssueJoinToken {
         #[arg(long, default_value_t = 3_600)]
         lifetime_seconds: u64,
-        #[arg(long, default_value = "oes node join")]
+        #[arg(long, default_value = "record-store node join")]
         description: String,
         #[command(flatten)]
         endpoint: EndpointArgs,
@@ -330,11 +334,11 @@ enum NodeCommand {
         /// Existing member's internal RPC address (normally host:7603).
         #[arg(long)]
         control: String,
-        /// Short-lived token issued by `oes cluster issue-join-token`.
+        /// Short-lived token issued by `record-store cluster issue-join-token`.
         #[arg(long)]
         token: String,
         /// TOML configuration file for this node.
-        #[arg(long, env = "OES_CONFIG_FILE")]
+        #[arg(long, env = "RECORD_STORE_CONFIG_FILE")]
         config: Option<PathBuf>,
     },
     /// List registered nodes.
@@ -400,32 +404,34 @@ async fn main() -> Result<()> {
     let arguments = Cli::parse();
     let json = arguments.json;
     match arguments.command {
-        Command::Version => println!("oes {}", env!("CARGO_PKG_VERSION")),
+        Command::Version => println!("record-store {}", env!("CARGO_PKG_VERSION")),
         Command::Server(arguments) => match arguments.command {
             Some(ServerCommand::CheckConfig) => {
                 Config::load(arguments.config.as_deref()).context("configuration is invalid")?;
                 println!("configuration is valid");
             }
             Some(ServerCommand::BackupMetadata { output }) => {
-                let config =
-                    Config::load(arguments.config.as_deref()).context("load OES configuration")?;
-                oes_server::backup_metadata(&config, &output).context("back up OES metadata")?;
+                let config = Config::load(arguments.config.as_deref())
+                    .context("load Record Store configuration")?;
+                record_store_server::backup_metadata(&config, &output)
+                    .context("back up Record Store metadata")?;
                 println!("metadata backup created at {}", output.display());
             }
             Some(ServerCommand::RestoreMetadata { input }) => {
-                let config =
-                    Config::load(arguments.config.as_deref()).context("load OES configuration")?;
-                oes_server::restore_metadata(&config, &input).context("restore OES metadata")?;
+                let config = Config::load(arguments.config.as_deref())
+                    .context("load Record Store configuration")?;
+                record_store_server::restore_metadata(&config, &input)
+                    .context("restore Record Store metadata")?;
                 println!("metadata restored from {}", input.display());
             }
             None => {
-                let config =
-                    Config::load(arguments.config.as_deref()).context("load OES configuration")?;
-                oes_observability::init(&config.observability)
+                let config = Config::load(arguments.config.as_deref())
+                    .context("load Record Store configuration")?;
+                record_store_observability::init(&config.observability)
                     .context("initialize observability")?;
-                oes_server::run(&config, oes_server::shutdown_signal())
+                record_store_server::run(&config, record_store_server::shutdown_signal())
                     .await
-                    .context("run OES server")?;
+                    .context("run Record Store server")?;
             }
         },
         Command::Status(endpoint) => status(&endpoint.endpoint).await?,
@@ -453,11 +459,13 @@ fn client() -> Result<reqwest::Client> {
 }
 
 fn admin_request(builder: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
-    if let Ok(token) = env::var("OES_MANAGEMENT_TOKEN") {
+    if let Ok(token) = env::var("RECORD_STORE_MANAGEMENT_TOKEN") {
         return Ok(builder.bearer_auth(token));
     }
-    let access = env::var("OES_ROOT_ACCESS_KEY").context("OES_ROOT_ACCESS_KEY is required")?;
-    let secret = env::var("OES_ROOT_SECRET_KEY").context("OES_ROOT_SECRET_KEY is required")?;
+    let access = env::var("RECORD_STORE_ROOT_ACCESS_KEY")
+        .context("RECORD_STORE_ROOT_ACCESS_KEY is required")?;
+    let secret = env::var("RECORD_STORE_ROOT_SECRET_KEY")
+        .context("RECORD_STORE_ROOT_SECRET_KEY is required")?;
     Ok(builder.basic_auth(access, Some(secret)))
 }
 
@@ -939,17 +947,19 @@ async fn node(command: NodeCommand, json: bool) -> Result<()> {
             token,
             config,
         } => {
-            let mut config = Config::load(config.as_deref()).context("load OES configuration")?;
+            let mut config =
+                Config::load(config.as_deref()).context("load Record Store configuration")?;
             config.server.mode = DeploymentMode::Cluster;
             config.cluster.seeds = vec![control];
             config.cluster.join_token = Some(SecretValue::new(token));
             config
                 .validate()
                 .context("validate joined-node configuration")?;
-            oes_observability::init(&config.observability).context("initialize observability")?;
-            return oes_server::run(&config, oes_server::shutdown_signal())
+            record_store_observability::init(&config.observability)
+                .context("initialize observability")?;
+            return record_store_server::run(&config, record_store_server::shutdown_signal())
                 .await
-                .context("run joined OES node");
+                .context("run joined Record Store node");
         }
         other => other,
     };

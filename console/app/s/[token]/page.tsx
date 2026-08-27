@@ -13,7 +13,7 @@ type Params = { params: Promise<{ token: string }> };
  * The page a share recipient opens.
  *
  * Nothing about the object reaches this page until the backend has authorized
- * the token, and nothing about OES reaches it at all: no bucket, no key path, no
+ * the token, and nothing about Record Store reaches it at all: no bucket, no key path, no
  * version identifier, no node, no administrative navigation. A recipient needs
  * to recognise the file and decide whether to open it, and that is the whole of
  * what is disclosed.

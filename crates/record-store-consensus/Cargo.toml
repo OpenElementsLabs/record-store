@@ -1,5 +1,5 @@
 [package]
-name = "oes-consensus"
+name = "record-store-consensus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,9 +8,9 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
-oes-cluster = { path = "../oes-cluster" }
-oes-core = { path = "../oes-core" }
-oes-metadata = { path = "../oes-metadata" }
+record-store-cluster = { path = "../record-store-cluster" }
+record-store-core = { path = "../record-store-core" }
+record-store-metadata = { path = "../record-store-metadata" }
 openraft.workspace = true
 redb.workspace = true
 serde.workspace = true

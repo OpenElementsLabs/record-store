@@ -1,5 +1,5 @@
 /**
- * The console's representation of an OES management API failure.
+ * The console's representation of a Record Store management API failure.
  *
  * The API always answers with `{ error: { code, message, request_id } }`, so the
  * console can show an actionable message and keep the request identifier for
@@ -118,7 +118,7 @@ function fallbackMessage(status: number): string {
     case 404:
       return 'The requested resource was not found.';
     case 503:
-      return 'OES is not ready to serve this request yet.';
+      return 'Record Store is not ready to serve this request yet.';
     default:
       return `The management API returned an unexpected status (${status}).`;
   }
@@ -129,7 +129,7 @@ export function networkError(): ApiError {
   return new ApiError({
     status: 0,
     code: 'NETWORK_UNREACHABLE',
-    message: 'The OES management API is unreachable.',
+    message: 'The Record Store management API is unreachable.',
     requestId: null,
   });
 }

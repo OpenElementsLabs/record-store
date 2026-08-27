@@ -1,21 +1,21 @@
-x-oes-environment: &oes-environment
-  OES_ROOT_ACCESS_KEY: "${OES_ROOT_ACCESS_KEY:-local-admin}"
-  OES_ROOT_SECRET_KEY: "${OES_ROOT_SECRET_KEY:-local-development-secret-change-me}"
-  OES_CREDENTIAL_MASTER_KEY: "${OES_CREDENTIAL_MASTER_KEY:-local-development-master-key-change-me}"
-  OES_MANAGEMENT_SYSTEM_TOKEN: "${OES_MANAGEMENT_SYSTEM_TOKEN:-local-development-management-token-change-me}"
-  OES_MANAGEMENT_STORAGE_TOKEN: "${OES_MANAGEMENT_STORAGE_TOKEN:-local-development-storage-token-change-me}"
-  OES_MANAGEMENT_AUDITOR_TOKEN: "${OES_MANAGEMENT_AUDITOR_TOKEN:-local-development-auditor-token-change-me}"
-  OES_METRICS_SCRAPE_TOKEN: "${OES_METRICS_SCRAPE_TOKEN:-local-development-metrics-token-change-me}"
-  OES_STORAGE_ENCRYPTION_ENABLED: "${OES_STORAGE_ENCRYPTION_ENABLED:-true}"
-  OES_ROOT_S3_ENABLED: "${OES_ROOT_S3_ENABLED:-true}"
-  OES_RPC_BIND: "0.0.0.0:7603"
-  OES_CLUSTER_REPLICATION_FACTOR: "3"
-  OES_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT: "${OES_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT:-80}"
-  OES_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT: "${OES_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT:-90}"
-  OES_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT: "${OES_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT:-95}"
-  OES_LOG_JSON: "${OES_LOG_JSON:-true}"
+x-record-store-environment: &record-store-environment
+  RECORD_STORE_ROOT_ACCESS_KEY: "${RECORD_STORE_ROOT_ACCESS_KEY:-local-admin}"
+  RECORD_STORE_ROOT_SECRET_KEY: "${RECORD_STORE_ROOT_SECRET_KEY:-local-development-secret-change-me}"
+  RECORD_STORE_CREDENTIAL_MASTER_KEY: "${RECORD_STORE_CREDENTIAL_MASTER_KEY:-local-development-master-key-change-me}"
+  RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN: "${RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN:-local-development-management-token-change-me}"
+  RECORD_STORE_MANAGEMENT_STORAGE_TOKEN: "${RECORD_STORE_MANAGEMENT_STORAGE_TOKEN:-local-development-storage-token-change-me}"
+  RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN: "${RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN:-local-development-auditor-token-change-me}"
+  RECORD_STORE_METRICS_SCRAPE_TOKEN: "${RECORD_STORE_METRICS_SCRAPE_TOKEN:-local-development-metrics-token-change-me}"
+  RECORD_STORE_STORAGE_ENCRYPTION_ENABLED: "${RECORD_STORE_STORAGE_ENCRYPTION_ENABLED:-true}"
+  RECORD_STORE_ROOT_S3_ENABLED: "${RECORD_STORE_ROOT_S3_ENABLED:-true}"
+  RECORD_STORE_RPC_BIND: "0.0.0.0:7603"
+  RECORD_STORE_CLUSTER_REPLICATION_FACTOR: "3"
+  RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT: "${RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT:-80}"
+  RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT: "${RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT:-90}"
+  RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT: "${RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT:-95}"
+  RECORD_STORE_LOG_JSON: "${RECORD_STORE_LOG_JSON:-true}"
 
-x-oes-node: &oes-node
+x-record-store-node: &record-store-node
   build:
     context: ../..
     dockerfile: deploy/docker/Dockerfile
@@ -28,20 +28,20 @@ x-oes-node: &oes-node
 
 services:
   storage-1:
-    <<: *oes-node
+    <<: *record-store-node
     ports:
       - "7600:7600"
     environment:
-      <<: *oes-environment
-      OES_MODE: cluster
-      OES_RPC_ADVERTISE: storage-1:7603
-      OES_CLUSTER_FAILURE_DOMAIN: region=local,zone=z1,rack=r1
-      OES_CLUSTER_S3_ENDPOINT: http://localhost:7600
+      <<: *record-store-environment
+      RECORD_STORE_MODE: cluster
+      RECORD_STORE_RPC_ADVERTISE: storage-1:7603
+      RECORD_STORE_CLUSTER_FAILURE_DOMAIN: region=local,zone=z1,rack=r1
+      RECORD_STORE_CLUSTER_S3_ENDPOINT: http://localhost:7600
     volumes:
-      - storage-1-data:/var/lib/oes
+      - storage-1-data:/var/lib/record-store
 
   bootstrap:
-    <<: *oes-node
+    <<: *record-store-node
     restart: "no"
     depends_on:
       storage-1:
@@ -50,7 +50,7 @@ services:
     command:
       - |
         issue() {
-          oes --json cluster issue-join-token \
+          record-store --json cluster issue-join-token \
             --endpoint http://storage-1:7601 \
             --description "compose $$1" \
             | sed -n 's/.*"token": "\([^"]*\)".*/\1/p' > "/join/$$1"
@@ -60,67 +60,67 @@ services:
         issue storage-3
         issue control
     environment:
-      <<: *oes-environment
-      OES_MANAGEMENT_TOKEN: "${OES_MANAGEMENT_SYSTEM_TOKEN:-local-development-management-token-change-me}"
+      <<: *record-store-environment
+      RECORD_STORE_MANAGEMENT_TOKEN: "${RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN:-local-development-management-token-change-me}"
     volumes:
       - join-tokens:/join
 
   storage-2:
-    <<: *oes-node
+    <<: *record-store-node
     depends_on:
       bootstrap:
         condition: service_completed_successfully
     entrypoint: ["/bin/sh", "-ec"]
     command:
-      - export OES_CLUSTER_JOIN_TOKEN="$$(cat /join/storage-2)"; exec oes server
+      - export RECORD_STORE_CLUSTER_JOIN_TOKEN="$$(cat /join/storage-2)"; exec record-store server
     environment:
-      <<: *oes-environment
-      OES_MODE: cluster
-      OES_RPC_ADVERTISE: storage-2:7603
-      OES_CLUSTER_SEEDS: storage-1:7603
-      OES_CLUSTER_FAILURE_DOMAIN: region=local,zone=z2,rack=r2
-      OES_CLUSTER_S3_ENDPOINT: http://storage-2:7600
+      <<: *record-store-environment
+      RECORD_STORE_MODE: cluster
+      RECORD_STORE_RPC_ADVERTISE: storage-2:7603
+      RECORD_STORE_CLUSTER_SEEDS: storage-1:7603
+      RECORD_STORE_CLUSTER_FAILURE_DOMAIN: region=local,zone=z2,rack=r2
+      RECORD_STORE_CLUSTER_S3_ENDPOINT: http://storage-2:7600
     volumes:
-      - storage-2-data:/var/lib/oes
+      - storage-2-data:/var/lib/record-store
       - join-tokens:/join:ro
 
   storage-3:
-    <<: *oes-node
+    <<: *record-store-node
     depends_on:
       bootstrap:
         condition: service_completed_successfully
     entrypoint: ["/bin/sh", "-ec"]
     command:
-      - export OES_CLUSTER_JOIN_TOKEN="$$(cat /join/storage-3)"; exec oes server
+      - export RECORD_STORE_CLUSTER_JOIN_TOKEN="$$(cat /join/storage-3)"; exec record-store server
     environment:
-      <<: *oes-environment
-      OES_MODE: cluster
-      OES_RPC_ADVERTISE: storage-3:7603
-      OES_CLUSTER_SEEDS: storage-1:7603
-      OES_CLUSTER_FAILURE_DOMAIN: region=local,zone=z3,rack=r3
-      OES_CLUSTER_S3_ENDPOINT: http://storage-3:7600
+      <<: *record-store-environment
+      RECORD_STORE_MODE: cluster
+      RECORD_STORE_RPC_ADVERTISE: storage-3:7603
+      RECORD_STORE_CLUSTER_SEEDS: storage-1:7603
+      RECORD_STORE_CLUSTER_FAILURE_DOMAIN: region=local,zone=z3,rack=r3
+      RECORD_STORE_CLUSTER_S3_ENDPOINT: http://storage-3:7600
     volumes:
-      - storage-3-data:/var/lib/oes
+      - storage-3-data:/var/lib/record-store
       - join-tokens:/join:ro
 
   control:
-    <<: *oes-node
+    <<: *record-store-node
     depends_on:
       bootstrap:
         condition: service_completed_successfully
     entrypoint: ["/bin/sh", "-ec"]
     command:
-      - export OES_CLUSTER_JOIN_TOKEN="$$(cat /join/control)"; exec oes server
+      - export RECORD_STORE_CLUSTER_JOIN_TOKEN="$$(cat /join/control)"; exec record-store server
     ports:
       - "7601:7601"
     environment:
-      <<: *oes-environment
-      OES_MODE: control
-      OES_RPC_ADVERTISE: control:7603
-      OES_CLUSTER_SEEDS: storage-1:7603
-      OES_CLUSTER_FAILURE_DOMAIN: region=local,zone=control,rack=control
+      <<: *record-store-environment
+      RECORD_STORE_MODE: control
+      RECORD_STORE_RPC_ADVERTISE: control:7603
+      RECORD_STORE_CLUSTER_SEEDS: storage-1:7603
+      RECORD_STORE_CLUSTER_FAILURE_DOMAIN: region=local,zone=control,rack=control
     volumes:
-      - control-data:/var/lib/oes
+      - control-data:/var/lib/record-store
       - join-tokens:/join:ro
 
   console:
@@ -141,8 +141,8 @@ services:
     environment:
       # Browser requests stay same-origin; the console server reaches the
       # management-only control process over the private Compose network.
-      OES_API_URL: "http://control:7601"
-      OES_CONSOLE_SECURE_COOKIES: "${OES_CONSOLE_SECURE_COOKIES:-false}"
+      RECORD_STORE_API_URL: "http://control:7601"
+      RECORD_STORE_CONSOLE_SECURE_COOKIES: "${RECORD_STORE_CONSOLE_SECURE_COOKIES:-false}"
 
 volumes:
   storage-1-data:

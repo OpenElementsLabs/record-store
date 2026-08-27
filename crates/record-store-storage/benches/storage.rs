@@ -4,12 +4,12 @@ use bytes::Bytes;
 use chrono::Utc;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_util::{TryStreamExt, stream};
-use oes_core::{
+use record_store_core::{
     Bucket, BucketId, BucketName, BucketQuota, ByteRange, ObjectKey, OrganizationId,
     VersioningState,
 };
-use oes_metadata::{MetadataRepository, RedbMetadataRepository};
-use oes_storage::{
+use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
+use record_store_storage::{
     GetObjectRequest, LocalFilesystemStore, ObjectStore, PutObjectRequest, upload_stream,
 };
 use tempfile::TempDir;

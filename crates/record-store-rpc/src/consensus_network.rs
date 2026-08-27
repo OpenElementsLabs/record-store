@@ -2,17 +2,12 @@
 //!
 //! Consensus messages are carried as opaque payloads. Mirroring an external
 //! library's internal message shapes in a protobuf contract would create a
-//! second source of truth for a protocol OES does not own; the protocol version
+//! second source of truth for a protocol Record Store does not own; the protocol version
 //! carried on every connection is what guards compatibility instead.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use oes_consensus::{
-    ClusterWrite, ClusterWriteResponse, ConsensusError, LeaderForwarder, MemberId, MemberNode,
-    OesTypeConfig,
-};
-use oes_protocol::consensus_v1::{ConsensusEnvelope, ForwardWriteRequest, ReadBarrierRequest};
 use openraft::{
     RaftNetwork, RaftNetworkFactory,
     error::{InstallSnapshotError, NetworkError, RPCError, RaftError, Unreachable},
@@ -21,6 +16,13 @@ use openraft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
         InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
+};
+use record_store_consensus::{
+    ClusterWrite, ClusterWriteResponse, ConsensusError, LeaderForwarder, MemberId, MemberNode,
+    RecordStoreTypeConfig,
+};
+use record_store_protocol::consensus_v1::{
+    ConsensusEnvelope, ForwardWriteRequest, ReadBarrierRequest,
 };
 use tracing::debug;
 
@@ -90,10 +92,10 @@ fn unreachable<E: std::error::Error + 'static>(
     RPCError::Unreachable(Unreachable::new(&error))
 }
 
-impl RaftNetwork<OesTypeConfig> for ConsensusConnection {
+impl RaftNetwork<RecordStoreTypeConfig> for ConsensusConnection {
     async fn append_entries(
         &mut self,
-        request: AppendEntriesRequest<OesTypeConfig>,
+        request: AppendEntriesRequest<RecordStoreTypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<MemberId>, RPCError<MemberId, MemberNode, RaftError<MemberId>>>
     {
@@ -114,7 +116,7 @@ impl RaftNetwork<OesTypeConfig> for ConsensusConnection {
 
     async fn install_snapshot(
         &mut self,
-        request: InstallSnapshotRequest<OesTypeConfig>,
+        request: InstallSnapshotRequest<RecordStoreTypeConfig>,
         _option: RPCOption,
     ) -> Result<
         InstallSnapshotResponse<MemberId>,
@@ -126,7 +128,7 @@ impl RaftNetwork<OesTypeConfig> for ConsensusConnection {
     }
 }
 
-impl RaftNetworkFactory<OesTypeConfig> for ConsensusNetwork {
+impl RaftNetworkFactory<RecordStoreTypeConfig> for ConsensusNetwork {
     type Network = ConsensusConnection;
 
     async fn new_client(&mut self, target: MemberId, node: &MemberNode) -> Self::Network {

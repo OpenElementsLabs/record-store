@@ -10,13 +10,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use oes_cluster::{
+use record_store_cluster::{
     ClusterConfig, FailureDomain, NodeCapacity, NodeRegistration, NodeVersions, ProtocolVersion,
     StorageClass,
 };
-use oes_consensus::{ClusterWrite, ConsensusError, MetadataConsensus};
-use oes_core::{Checksum, ClusterId, NodeId, ObjectId, PayloadFormat};
-use oes_protocol::{
+use record_store_consensus::{ClusterWrite, ConsensusError, MetadataConsensus};
+use record_store_core::{Checksum, ClusterId, NodeId, ObjectId, PayloadFormat};
+use record_store_protocol::{
     consensus_v1::{
         ConsensusEnvelope, ConsensusReply, ForwardWriteRequest, ForwardWriteResponse,
         ReadBarrierRequest, ReadBarrierResponse, consensus_service_server::ConsensusService,
@@ -32,7 +32,7 @@ use oes_protocol::{
         PingRequest, PingResponse, system_service_server::SystemService,
     },
 };
-use oes_storage::{ReplicaCommitment, ReplicaStore, StorageError, WriteReplicaRequest};
+use record_store_storage::{ReplicaCommitment, ReplicaStore, StorageError, WriteReplicaRequest};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming, metadata::MetadataMap};
@@ -359,7 +359,7 @@ impl ReplicaService for ReplicaRpcService {
                 }
             });
 
-            let body = oes_storage::upload_stream(ReceiverStream::new(data_receiver));
+            let body = record_store_storage::upload_stream(ReceiverStream::new(data_receiver));
             let request = match declared {
                 Some(commitment) => WriteReplicaRequest::known(
                     operation_id.clone(),
@@ -416,13 +416,13 @@ impl ReplicaService for ReplicaRpcService {
             None
         } else {
             Some(
-                oes_core::ByteRange::new(input.offset, input.length)
+                record_store_core::ByteRange::new(input.offset, input.length)
                     .map_err(|error| Status::invalid_argument(error.to_string()))?,
             )
         };
         let opened = self
             .storage
-            .read_replica(oes_storage::ReadReplicaRequest {
+            .read_replica(record_store_storage::ReadReplicaRequest {
                 object_id,
                 size: input.size,
                 payload_format: self.payload_format,

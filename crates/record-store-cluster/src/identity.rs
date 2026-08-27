@@ -11,7 +11,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use oes_core::{ClusterId, NodeId};
+use record_store_core::{ClusterId, NodeId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -27,7 +27,7 @@ const MAXIMUM_IDENTITY_BYTES: u64 = 8 * 1024;
 ///
 /// The consensus implementation requires a small dense identifier. It is
 /// assigned once and stored next to the opaque [`NodeId`], which remains the
-/// identity used by every OES API.
+/// identity used by every Record Store API.
 pub type RaftNodeId = u64;
 
 /// The durable identity of one storage node.
@@ -300,7 +300,7 @@ fn write_atomically(
     })?;
     if let Ok(directory) = std::fs::File::open(parent) {
         // A failure to fsync the directory is not fatal: the rename is already
-        // durable on every filesystem OES supports for its data directory.
+        // durable on every filesystem Record Store supports for its data directory.
         let _ = directory.sync_all();
     }
     Ok(())

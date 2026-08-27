@@ -41,7 +41,7 @@ export const auditorPermissions: RolePermissions = {
 
 export function systemInfo(overrides: Partial<SystemInfo> = {}): SystemInfo {
   return {
-    name: 'oes',
+    name: 'record-store',
     version: '0.1.0',
     status: 'ready',
     mode: 'standalone',

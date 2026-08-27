@@ -56,7 +56,7 @@ function headingFor(error: ApiError | null): string {
     case 'not-found':
       return 'Not found';
     case 'unavailable':
-      return 'OES is not ready';
+      return 'Record Store is not ready';
     case 'conflict':
       return 'Conflicts with current state';
     case 'invalid':

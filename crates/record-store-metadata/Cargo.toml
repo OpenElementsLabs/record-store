@@ -1,5 +1,5 @@
 [package]
-name = "oes-metadata"
+name = "record-store-metadata"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
-oes-core = { path = "../oes-core" }
+record-store-core = { path = "../record-store-core" }
 redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true

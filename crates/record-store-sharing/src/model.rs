@@ -3,13 +3,13 @@
 //! Shares and embeds are modelled as two distinct capabilities rather than one
 //! with a flag. They differ in who holds them (a person versus a website), in
 //! what they may carry (a password and an access budget versus an origin
-//! allowlist and caching), and in how they are delivered (an OES page versus raw
+//! allowlist and caching), and in how they are delivered (a Record Store page versus raw
 //! bytes). Collapsing them would force every one of those differences to become
 //! a conditional, and the first time one of the conditionals was forgotten the
 //! result would be a security decision applied to the wrong capability.
 
 use chrono::{DateTime, Utc};
-use oes_core::{BucketId, BucketName, EmbedLinkId, ObjectKey, ShareLinkId, VersionId};
+use record_store_core::{BucketId, BucketName, EmbedLinkId, ObjectKey, ShareLinkId, VersionId};
 use serde::{Deserialize, Serialize};
 
 use crate::{origin::AllowedOrigin, password::PasswordHash};

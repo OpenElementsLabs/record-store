@@ -9,14 +9,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use oes_cluster::{
+use record_store_cluster::{
     ClusterCommand, ClusterOutcome, NodeCredential, NodeIdentityStore, NodeVersions,
     check_compatibility, parse_join_token,
 };
-use oes_consensus::{ClusterWrite, ConsensusError, MetadataConsensus, rejection_error};
-use oes_core::NodeId;
-use oes_protocol::system_v1::NodeDescriptor;
-use oes_rpc::{ClusterAdmission, JoinOutcome, NodeJoinRequest};
+use record_store_consensus::{ClusterWrite, ConsensusError, MetadataConsensus, rejection_error};
+use record_store_core::NodeId;
+use record_store_protocol::system_v1::NodeDescriptor;
+use record_store_rpc::{ClusterAdmission, JoinOutcome, NodeJoinRequest};
 use tracing::{info, warn};
 
 use crate::context::ClusterContext;
@@ -55,7 +55,7 @@ impl ClusterAdmission for JoinCoordinator {
     async fn join(&self, request: NodeJoinRequest) -> Result<JoinOutcome, ConsensusError> {
         check_compatibility(&self.local, &request.versions).map_err(|error| {
             rejection_error(
-                oes_consensus::RejectionKind::InvalidConfiguration,
+                record_store_consensus::RejectionKind::InvalidConfiguration,
                 error.to_string(),
             )
         })?;
@@ -67,14 +67,14 @@ impl ClusterAdmission for JoinCoordinator {
             .map_err(|error| ConsensusError::Internal(error.to_string()))?
             .ok_or_else(|| {
                 rejection_error(
-                    oes_consensus::RejectionKind::ClusterNotInitialized,
+                    record_store_consensus::RejectionKind::ClusterNotInitialized,
                     "this cluster has not been initialized",
                 )
             })?;
 
         let token_id = parse_join_token(&request.join_token).map_err(|error| {
             rejection_error(
-                oes_consensus::RejectionKind::JoinTokenNotFound,
+                record_store_consensus::RejectionKind::JoinTokenNotFound,
                 error.to_string(),
             )
         })?;
@@ -86,14 +86,14 @@ impl ClusterAdmission for JoinCoordinator {
             .map_err(|error| ConsensusError::Internal(error.to_string()))?
             .ok_or_else(|| {
                 rejection_error(
-                    oes_consensus::RejectionKind::JoinTokenNotFound,
+                    record_store_consensus::RejectionKind::JoinTokenNotFound,
                     "the join token is not recognized",
                 )
             })?;
         let now = Utc::now();
         token.verify(&request.join_token, now).map_err(|error| {
             rejection_error(
-                oes_consensus::RejectionKind::JoinTokenNotFound,
+                record_store_consensus::RejectionKind::JoinTokenNotFound,
                 error.to_string(),
             )
         })?;
@@ -138,7 +138,7 @@ impl ClusterAdmission for JoinCoordinator {
             .map_err(|error| ConsensusError::Internal(error.to_string()))?
             .ok_or_else(|| {
                 rejection_error(
-                    oes_consensus::RejectionKind::ClusterNotInitialized,
+                    record_store_consensus::RejectionKind::ClusterNotInitialized,
                     "cluster configuration is missing",
                 )
             })?;
@@ -172,13 +172,13 @@ impl ClusterAdmission for JoinCoordinator {
             .map_err(|error| ConsensusError::Internal(error.to_string()))?
             .ok_or_else(|| {
                 rejection_error(
-                    oes_consensus::RejectionKind::NodeNotFound,
+                    record_store_consensus::RejectionKind::NodeNotFound,
                     format!("node {node_id} is not a cluster member"),
                 )
             })?;
         if record.raft_id != member_id {
             return Err(rejection_error(
-                oes_consensus::RejectionKind::NodeNotFound,
+                record_store_consensus::RejectionKind::NodeNotFound,
                 format!(
                     "node {node_id} is consensus member {} and cannot activate as member {member_id}",
                     record.raft_id
@@ -229,7 +229,7 @@ impl ClusterAdmission for JoinCoordinator {
 /// stops stale local data from being presented as a new member's state.
 pub fn bind_identity(
     store: &NodeIdentityStore,
-    cluster_id: oes_core::ClusterId,
+    cluster_id: record_store_core::ClusterId,
     member_id: u64,
 ) -> Result<(), String> {
     store

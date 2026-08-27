@@ -6,14 +6,14 @@
  * baked into a client bundle.
  */
 
-/** Where the OES management API lives. */
+/** Where the Record Store management API lives. */
 export function managementApiUrl(): string {
-  const configured = process.env.OES_API_URL ?? 'http://127.0.0.1:7601';
+  const configured = process.env.RECORD_STORE_API_URL ?? 'http://127.0.0.1:7601';
   return configured.replace(/\/+$/, '');
 }
 
 /** Name of the HTTP-only cookie carrying the management session. */
-export const SESSION_COOKIE = 'oes_session';
+export const SESSION_COOKIE = 'record_store_session';
 
 /**
  * Name of the cookie carrying proof that a share password was entered.
@@ -23,7 +23,7 @@ export const SESSION_COOKIE = 'oes_session';
  * Every request it accompanies is still checked against the share's durable
  * state, so a stolen ticket stops working the instant the link is revoked.
  */
-export const SHARE_TICKET_COOKIE = 'oes_share_ticket';
+export const SHARE_TICKET_COOKIE = 'record_store_share_ticket';
 
 /**
  * Whether cookies must be marked `Secure`.
@@ -32,7 +32,7 @@ export const SHARE_TICKET_COOKIE = 'oes_share_ticket';
  * and overridable for deployments that terminate TLS elsewhere.
  */
 export function secureCookies(): boolean {
-  const override = process.env.OES_CONSOLE_SECURE_COOKIES;
+  const override = process.env.RECORD_STORE_CONSOLE_SECURE_COOKIES;
   if (override === 'true') return true;
   if (override === 'false') return false;
   return process.env.NODE_ENV === 'production';

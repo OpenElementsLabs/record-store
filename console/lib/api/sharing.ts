@@ -169,7 +169,7 @@ export function deleteEmbed(id: string): Promise<void> {
  *
  * The management API returns a path when no public base address is configured,
  * because guessing an external address from a request header is how links end up
- * pointing at somewhere OES was never deployed. The browser, unlike the backend,
+ * pointing at somewhere Record Store was never deployed. The browser, unlike the backend,
  * genuinely knows which origin the operator is using.
  */
 export function absoluteCapabilityUrl(url: string): string {

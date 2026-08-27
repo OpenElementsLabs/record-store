@@ -106,7 +106,7 @@ function rateOf(samples: readonly Sample[], read: (metrics: SystemMetrics) => nu
 /**
  * Polls the counters and differentiates them into rates.
  *
- * OES exposes counters, not rates, so a rate can only come from comparing two
+ * Record Store exposes counters, not rates, so a rate can only come from comparing two
  * readings — which is what a scraper does too. The window is however long the
  * console has been observing, and the screen says so rather than implying a
  * server-side average.

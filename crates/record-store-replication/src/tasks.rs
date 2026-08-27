@@ -9,13 +9,13 @@ use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
 use futures_util::TryStreamExt;
-use oes_cluster::{
+use record_store_cluster::{
     ClusterCommand, PayloadPlacement, Replica, ReplicaState, ReplicaTask, ReplicaTaskKind,
     ReplicaTaskState,
 };
-use oes_consensus::ClusterWrite;
-use oes_core::{Checksum, NodeId, ObjectId, PayloadFormat};
-use oes_storage::{StorageError, WriteReplicaRequest, upload_stream};
+use record_store_consensus::ClusterWrite;
+use record_store_core::{Checksum, NodeId, ObjectId, PayloadFormat};
+use record_store_storage::{StorageError, WriteReplicaRequest, upload_stream};
 use tracing::{debug, info, warn};
 
 use crate::{context::ClusterContext, read::open_specific_replica};
@@ -317,7 +317,7 @@ fn operation_id(task: &ReplicaTask) -> String {
 /// Throttling here rather than in the transport keeps foreground traffic
 /// unaffected: only background movement is slowed.
 fn throttled(
-    body: oes_storage::DownloadStream,
+    body: record_store_storage::DownloadStream,
     bytes_per_second: u64,
 ) -> impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send {
     body.map_err(std::io::Error::other).and_then(move |chunk| {

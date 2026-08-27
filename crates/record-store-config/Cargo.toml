@@ -1,5 +1,5 @@
 [package]
-name = "oes-config"
+name = "record-store-config"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

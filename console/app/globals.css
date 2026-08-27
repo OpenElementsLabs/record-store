@@ -1,7 +1,7 @@
 @import 'tailwindcss';
 
 /*
- * OES console design tokens.
+ * Record Store console design tokens.
  *
  * Infrastructure software is read under pressure, so the palette stays close to
  * neutral and reserves saturated colour for state. Every status is also carried
@@ -34,7 +34,7 @@
   --color-foreground: oklch(0.22 0.012 255);
   --color-foreground-muted: oklch(0.5 0.012 255);
   --color-foreground-subtle: oklch(0.62 0.01 255);
-  /* shadcn-conventional aliases over the OES palette, so components written
+  /* shadcn-conventional aliases over the Record Store palette, so components written
      against either vocabulary resolve to the same colours. */
   --color-card: var(--color-surface);
   --color-card-foreground: var(--color-foreground);

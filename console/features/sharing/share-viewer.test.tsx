@@ -29,7 +29,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('ShareViewer', () => {
-  it('shows the file and its two actions, and nothing about OES itself', () => {
+  it('shows the file and its two actions, and nothing about Record Store itself', () => {
     const { container } = render(<ShareViewer token={TOKEN} initial={openShare} />);
 
     expect(screen.getByRole('heading', { name: 'annual-report.pdf' })).toBeTruthy();
@@ -85,9 +85,9 @@ describe('ShareViewer', () => {
     // in the browser.
     const second = fetchMock.mock.calls[1];
     expect(String(second?.[0])).toBe(`/s/${TOKEN}/descriptor`);
-    expect(new Headers((second?.[1] as RequestInit).headers).get('x-oes-share-ticket')).toBe(
-      'ticket-value',
-    );
+    expect(
+      new Headers((second?.[1] as RequestInit).headers).get('x-record-store-share-ticket'),
+    ).toBe('ticket-value');
   });
 
   it('publishes the unlock ticket before the viewer asks for any bytes', async () => {
@@ -132,7 +132,7 @@ describe('ShareViewer', () => {
 
     expect(await screen.findByText('the file body')).toBeTruthy();
     expect(writesBeforeFirstFetch).toBe(1);
-    expect(written[0]).toContain('oes_share_ticket=ticket-value');
+    expect(written[0]).toContain('record_store_share_ticket=ticket-value');
     expect(written[0]).toContain(`Path=/s/${TOKEN}`);
     expect(written[0]).toContain('SameSite=Strict');
 

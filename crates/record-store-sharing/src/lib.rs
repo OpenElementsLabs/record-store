@@ -1,6 +1,6 @@
 //! Secure, revocable external access to stored objects.
 //!
-//! OES objects are reachable three ways once this crate is wired in. An
+//! Record Store objects are reachable three ways once this crate is wired in. An
 //! administrator previews them inside the console under their own management
 //! session; a person opens a *share link*; an application or website loads an
 //! *embed link*. Only the first is authenticated in the ordinary sense. The
@@ -23,7 +23,9 @@ mod token;
 use std::{sync::Arc, time::Duration as StdDuration};
 
 use chrono::{DateTime, Duration, Utc};
-use oes_core::{BucketId, BucketName, EmbedLinkId, ObjectKey, PreviewKind, ShareLinkId, VersionId};
+use record_store_core::{
+    BucketId, BucketName, EmbedLinkId, ObjectKey, PreviewKind, ShareLinkId, VersionId,
+};
 use thiserror::Error;
 
 pub use crate::{

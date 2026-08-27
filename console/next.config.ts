@@ -53,7 +53,7 @@ const viewerHeaders = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  // The console is deployed as a container image alongside the OES server.
+  // The console is deployed as a container image alongside the Record Store server.
   output: 'standalone',
   async headers() {
     return [
@@ -66,7 +66,7 @@ const nextConfig: NextConfig = {
       // paths that serve stored bytes for viewing. Both are same-origin frames
       // in a page this console controls.
       {
-        source: '/api/oes/v1/buckets/:bucket/object-preview/:path*',
+        source: '/api/record-store/v1/buckets/:bucket/object-preview/:path*',
         headers: viewerHeaders,
       },
       { source: '/s/:token/content', headers: viewerHeaders },

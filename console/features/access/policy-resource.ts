@@ -9,7 +9,7 @@
 /**
  * Why a resource pattern is not a resource pattern.
  *
- * The rule mirrors what `oes-auth` enforces, so the editor refuses a pattern
+ * The rule mirrors what `record-store-auth` enforces, so the editor refuses a pattern
  * the API would reject rather than letting the operator discover it from a 400.
  * The backend remains the authority; this only spares a round trip.
  */

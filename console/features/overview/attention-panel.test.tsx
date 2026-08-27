@@ -86,7 +86,7 @@ describe('AttentionPanel', () => {
 
     const finding = await screen.findByText(/80 of 1,000 requests failed/);
     expect(finding.textContent).toMatch(/since this server started/i);
-    // A per-second figure would be invented: OES exposes counters only.
+    // A per-second figure would be invented: Record Store exposes counters only.
     expect(document.body.textContent ?? '').not.toMatch(/per second|\/s\b|req\/s/i);
   });
 

@@ -17,18 +17,6 @@ use std::{
 
 use async_trait::async_trait;
 use chrono::Utc;
-use oes_cluster::{
-    ClusterCommand, ClusterConfig, ClusterIdentity, ClusterOutcome, FailureDomain, NodeCapacity,
-    NodeRegistration, NodeVersions, StorageClass,
-};
-use oes_consensus::{
-    ClusterWrite, ClusterWriteResponse, ConsensusError, ConsensusSettings, LeaderForwarder,
-    MemberId, MemberNode, MetadataConsensus, OesTypeConfig,
-};
-use oes_core::{
-    Bucket, BucketName, BucketQuota, ClusterId, NodeId, OrganizationId, VersioningState,
-};
-use oes_metadata::{MetadataCommand, MetadataRepository};
 use openraft::{
     RaftNetwork, RaftNetworkFactory,
     error::{RPCError, RaftError, Unreachable},
@@ -38,6 +26,18 @@ use openraft::{
         InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
 };
+use record_store_cluster::{
+    ClusterCommand, ClusterConfig, ClusterIdentity, ClusterOutcome, FailureDomain, NodeCapacity,
+    NodeRegistration, NodeVersions, StorageClass,
+};
+use record_store_consensus::{
+    ClusterWrite, ClusterWriteResponse, ConsensusError, ConsensusSettings, LeaderForwarder,
+    MemberId, MemberNode, MetadataConsensus, RecordStoreTypeConfig,
+};
+use record_store_core::{
+    Bucket, BucketName, BucketQuota, ClusterId, NodeId, OrganizationId, VersioningState,
+};
+use record_store_metadata::{MetadataCommand, MetadataRepository};
 
 type Registry = Arc<Mutex<BTreeMap<MemberId, Arc<MetadataConsensus>>>>;
 type Partitions = Arc<Mutex<BTreeSet<(MemberId, MemberId)>>>;
@@ -97,10 +97,10 @@ impl Connection {
     }
 }
 
-impl RaftNetwork<OesTypeConfig> for Connection {
+impl RaftNetwork<RecordStoreTypeConfig> for Connection {
     async fn append_entries(
         &mut self,
-        request: AppendEntriesRequest<OesTypeConfig>,
+        request: AppendEntriesRequest<RecordStoreTypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<MemberId>, RPCError<MemberId, MemberNode, RaftError<MemberId>>>
     {
@@ -112,7 +112,7 @@ impl RaftNetwork<OesTypeConfig> for Connection {
 
     async fn install_snapshot(
         &mut self,
-        request: InstallSnapshotRequest<OesTypeConfig>,
+        request: InstallSnapshotRequest<RecordStoreTypeConfig>,
         _option: RPCOption,
     ) -> Result<
         InstallSnapshotResponse<MemberId>,
@@ -147,7 +147,7 @@ impl RaftNetwork<OesTypeConfig> for Connection {
     }
 }
 
-impl RaftNetworkFactory<OesTypeConfig> for Router {
+impl RaftNetworkFactory<RecordStoreTypeConfig> for Router {
     type Network = Connection;
 
     async fn new_client(&mut self, target: MemberId, _node: &MemberNode) -> Self::Network {
@@ -312,14 +312,14 @@ impl Harness {
 fn identity() -> ClusterIdentity {
     ClusterIdentity {
         cluster_id: ClusterId::new(),
-        cluster_format_version: oes_cluster::CLUSTER_FORMAT_VERSION,
+        cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
         created_at: Utc::now(),
     }
 }
 
 fn bucket(name: &str) -> Bucket {
     Bucket {
-        id: oes_core::BucketId::new(),
+        id: record_store_core::BucketId::new(),
         organization_id: OrganizationId::from_uuid(uuid::Uuid::from_u128(1)),
         name: BucketName::new(name).expect("bucket name"),
         created_at: Utc::now(),

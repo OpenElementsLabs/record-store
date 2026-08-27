@@ -30,24 +30,24 @@ use base64::{
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use futures_util::TryStreamExt;
 use hmac::{Hmac, Mac};
-use oes_audit::{AuditEvent, AuditRepository, AuditResult};
-use oes_auth::{
+use percent_encoding::percent_decode_str;
+use record_store_audit::{AuditEvent, AuditRepository, AuditResult};
+use record_store_auth::{
     Action, AuthorizationContext, Authorizer, CredentialLookupError, Permission, Principal,
     SigningCredentialProvider, SigningSecret,
 };
-use oes_core::{
+use record_store_core::{
     BucketName, ByteRange, Checksum, CompletedPart, CorsConfiguration, CorsGrant, CorsMethod,
     CorsPattern, CorsRule, ETag, ObjectKey, ObjectMetadata, ObjectVersionRecord, PartNumber,
     UploadId, VersionId, VersioningState, parse_requested_headers,
 };
-use oes_service::{
+use record_store_service::{
     CopyMetadataDirective, ServiceCompleteMultipartRequest, ServiceCopyRequest,
     ServiceCreateMultipartRequest, ServiceError, ServiceGetResult,
     ServiceListMultipartUploadsRequest, ServiceListRequest, ServiceListVersionsRequest,
     ServicePutRequest, ServiceUploadPartRequest, Services,
 };
-use oes_storage::upload_stream;
-use percent_encoding::percent_decode_str;
+use record_store_storage::upload_stream;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -526,7 +526,7 @@ async fn append_s3_audit(
         _ => AuditResult::Failure,
     };
     let event = AuditEvent {
-        event_id: oes_core::AuditEventId::new(),
+        event_id: record_store_core::AuditEventId::new(),
         timestamp: Utc::now(),
         request_id: Some(request_id.0.clone()),
         principal,
@@ -2520,7 +2520,7 @@ fn service_error(error: ServiceError, request_id: S3RequestId, resource: &str) -
         ServiceError::MetadataTooLarge | ServiceError::InvalidRequest(_) => {
             S3ErrorKind::InvalidRequest
         }
-        ServiceError::Storage(oes_storage::StorageError::ChecksumMismatch { .. }) => {
+        ServiceError::Storage(record_store_storage::StorageError::ChecksumMismatch { .. }) => {
             S3ErrorKind::BadDigest
         }
         ServiceError::ClusterUnavailable(_) | ServiceError::DurabilityNotMet(_) => {
@@ -2747,7 +2747,7 @@ struct CorsRuleDocument {
 }
 
 impl TryFrom<CorsConfigurationDocument> for CorsConfiguration {
-    type Error = oes_core::CoreError;
+    type Error = record_store_core::CoreError;
 
     fn try_from(document: CorsConfigurationDocument) -> Result<Self, Self::Error> {
         let rules = document
@@ -3117,12 +3117,12 @@ mod tests {
 
     use axum::http::Request as HttpRequest;
     use http_body_util::BodyExt;
-    use oes_auth::{Action, Authorizer, CredentialManager, PolicyEffect, PolicyStatement};
-    use oes_core::OrganizationId;
-    use oes_metadata::{MetadataRepository, RedbMetadataRepository};
-    use oes_service::ServiceLimits;
-    use oes_storage::{LocalFilesystemStore, ObjectStore};
     use proptest::prelude::*;
+    use record_store_auth::{Action, Authorizer, CredentialManager, PolicyEffect, PolicyStatement};
+    use record_store_core::OrganizationId;
+    use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
+    use record_store_service::ServiceLimits;
+    use record_store_storage::{LocalFilesystemStore, ObjectStore};
     use tempfile::{TempDir, tempdir};
     use tower::ServiceExt;
 

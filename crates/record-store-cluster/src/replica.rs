@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
-use oes_core::{Checksum, NodeId, ObjectId};
+use record_store_core::{Checksum, NodeId, ObjectId};
 use serde::{Deserialize, Serialize};
 
 use crate::topology::{ClusterTopology, FailureDomainScope, StorageClass};
@@ -382,7 +382,7 @@ impl Tombstone {
 #[cfg(test)]
 mod tests {
     use chrono::TimeDelta;
-    use oes_core::ClusterId;
+    use record_store_core::ClusterId;
 
     use super::*;
     use crate::{

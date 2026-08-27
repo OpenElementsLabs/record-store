@@ -42,7 +42,7 @@ export type UploadHandle = {
 };
 
 /**
- * How object bytes reach OES.
+ * How object bytes reach Record Store.
  *
  * The queue, progress, retry, and cancellation UI all sit above this one
  * function. Replacing it replaces the transfer strategy and nothing else.

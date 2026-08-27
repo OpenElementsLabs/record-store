@@ -76,11 +76,11 @@ describe('ObjectDetails', () => {
     expect(screen.getByText('4096 bytes')).toBeTruthy();
     const download = screen.getByRole('link', { name: 'Download' });
     expect(download.getAttribute('href')).toBe(
-      '/api/oes/v1/buckets/records/object-content/reports/annual%20report.pdf',
+      '/api/record-store/v1/buckets/records/object-content/reports/annual%20report.pdf',
     );
   });
 
-  it('opens on Preview for an object OES can render', async () => {
+  it('opens on Preview for an object Record Store can render', async () => {
     // A screen that opens on a checksum table when the object is a document
     // makes its reader do the work.
     renderWithProviders(<ObjectDetails bucket="records" objectKey={object.key} />);
@@ -88,7 +88,7 @@ describe('ObjectDetails', () => {
     await waitFor(() => expect(preview.getAttribute('aria-selected')).toBe('true'));
     const frame = await screen.findByTitle(/Preview of annual report\.pdf/);
     expect(frame.getAttribute('src')).toBe(
-      '/api/oes/v1/buckets/records/object-preview/reports/annual%20report.pdf',
+      '/api/record-store/v1/buckets/records/object-preview/reports/annual%20report.pdf',
     );
   });
 

@@ -1,4 +1,4 @@
-//! Cluster domain model for distributed OES.
+//! Cluster domain model for distributed Record Store.
 //!
 //! This crate owns everything a cluster needs to reason about itself without any
 //! network or consensus dependency:
@@ -12,7 +12,7 @@
 //! * the replicated cluster catalog and its deterministic command set.
 //!
 //! Keeping these decisions free of I/O is what makes them testable in isolation,
-//! which matters more for distributed behaviour than for anything else in OES.
+//! which matters more for distributed behaviour than for anything else in Record Store.
 
 pub mod catalog;
 pub mod command;

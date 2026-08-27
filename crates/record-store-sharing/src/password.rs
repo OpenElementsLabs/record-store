@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 
 use crate::SharingError;
 
-/// Smallest password OES will accept on a share.
+/// Smallest password Record Store will accept on a share.
 ///
 /// Short enough not to be an obstacle for a link sent alongside its password,
 /// long enough that the rate limiter is defending a search space rather than a

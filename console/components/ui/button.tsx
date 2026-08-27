@@ -44,10 +44,10 @@ const buttonVariants = cva(
 );
 
 /**
- * shadcn's variant names, mapped onto the OES ones.
+ * shadcn's variant names, mapped onto the Record Store ones.
  *
  * The registry generates components against these names, so accepting them
- * means a pasted component renders in the OES palette rather than failing to
+ * means a pasted component renders in the Record Store palette rather than failing to
  * compile or falling back to Tailwind's defaults.
  */
 const VARIANT_ALIAS = {
@@ -56,12 +56,12 @@ const VARIANT_ALIAS = {
   outline: 'secondary',
 } as const;
 
-type OesVariant = NonNullable<VariantProps<typeof buttonVariants>['variant']>;
-type OesSize = NonNullable<VariantProps<typeof buttonVariants>['size']>;
+type RecordStoreVariant = NonNullable<VariantProps<typeof buttonVariants>['variant']>;
+type RecordStoreSize = NonNullable<VariantProps<typeof buttonVariants>['size']>;
 
 export type ButtonProps = Omit<React.ComponentProps<'button'>, 'type'> & {
-  readonly variant?: OesVariant | keyof typeof VARIANT_ALIAS;
-  readonly size?: OesSize | 'default';
+  readonly variant?: RecordStoreVariant | keyof typeof VARIANT_ALIAS;
+  readonly size?: RecordStoreSize | 'default';
   readonly type?: React.ComponentProps<'button'>['type'];
   /** Renders the child element instead of a `button`, keeping the styling. */
   readonly asChild?: boolean;
@@ -69,11 +69,11 @@ export type ButtonProps = Omit<React.ComponentProps<'button'>, 'type'> & {
 
 export function Button({ className, variant, size, asChild = false, type, ...props }: ButtonProps) {
   const Component = asChild ? Slot : 'button';
-  const resolvedVariant: OesVariant | undefined =
+  const resolvedVariant: RecordStoreVariant | undefined =
     variant && variant in VARIANT_ALIAS
       ? VARIANT_ALIAS[variant as keyof typeof VARIANT_ALIAS]
-      : (variant as OesVariant | undefined);
-  const resolvedSize: OesSize | undefined = size === 'default' ? 'md' : size;
+      : (variant as RecordStoreVariant | undefined);
+  const resolvedSize: RecordStoreSize | undefined = size === 'default' ? 'md' : size;
 
   return (
     <Component

@@ -11,20 +11,20 @@ use std::{
 
 use chrono::Utc;
 use futures_util::{StreamExt, TryStreamExt};
-use oes_core::{
+use record_store_core::{
     Bucket, BucketId, BucketName, BucketQuota, Checksum, CompletedPart, CoreError,
     CorsConfiguration, MultipartUpload, MultipartUploadState, ObjectKey, ObjectMetadata,
     ObjectVersionRecord, OrganizationId, PartNumber, StorageUsage, UploadId, UploadedPart,
     VersionId, VersioningState,
 };
-use oes_events::{EventRepository, StorageEvent, StorageEventType};
-use oes_metadata::{
+use record_store_events::{EventRepository, StorageEvent, StorageEventType};
+use record_store_metadata::{
     ListMultipartUploadsRequest as MetadataMultipartListRequest,
     ListObjectVersionsRequest as MetadataVersionListRequest,
     ListObjectsRequest as MetadataListRequest, ListedObjectVersion, MetadataError,
     MetadataRepository,
 };
-use oes_storage::{
+use record_store_storage::{
     CompleteMultipartRequest, DeleteObjectRequest, DeleteObjectVersionRequest, DownloadStream,
     GetObjectRequest, GetObjectVersionRequest, HeadObjectRequest, ObjectStore,
     PutMultipartPartRequest, PutObjectRequest, PutObjectResult, StorageError, StorageInspection,
@@ -382,7 +382,7 @@ impl ObjectService {
         &self,
         bucket_name: &BucketName,
         key: ObjectKey,
-        range: Option<oes_core::ByteRange>,
+        range: Option<record_store_core::ByteRange>,
     ) -> Result<ServiceGetResult, ServiceError> {
         self.metrics.requests.fetch_add(1, Ordering::Relaxed);
         let permit = self.acquire().await?;
@@ -423,7 +423,7 @@ impl ObjectService {
         bucket_name: &BucketName,
         key: ObjectKey,
         version_id: VersionId,
-        range: Option<oes_core::ByteRange>,
+        range: Option<record_store_core::ByteRange>,
     ) -> Result<ServiceGetResult, ServiceError> {
         self.metrics.requests.fetch_add(1, Ordering::Relaxed);
         let permit = self.acquire().await?;
@@ -464,7 +464,7 @@ impl ObjectService {
         &self,
         bucket_name: &BucketName,
         key: ObjectKey,
-        range: Option<oes_core::ByteRange>,
+        range: Option<record_store_core::ByteRange>,
     ) -> Result<ServiceGetResult, ServiceError> {
         let bucket = self.resolve_bucket(bucket_name).await?;
         let record = self
@@ -1195,7 +1195,7 @@ pub struct ServicePutRequest {
     /// Caller custom metadata.
     pub custom_metadata: std::collections::BTreeMap<String, String>,
     /// Optional expected SHA-256 checksum.
-    pub expected_checksum: Option<oes_core::Checksum>,
+    pub expected_checksum: Option<record_store_core::Checksum>,
     /// Streaming body.
     pub body: UploadStream,
 }
@@ -1286,7 +1286,7 @@ pub struct ServiceGetResult {
     /// Persisted metadata.
     pub metadata: ObjectMetadata,
     /// Resolved range.
-    pub range: Option<oes_core::ResolvedByteRange>,
+    pub range: Option<record_store_core::ResolvedByteRange>,
     /// Streaming payload.
     pub body: DownloadStream,
 }
@@ -1294,7 +1294,7 @@ pub struct ServiceGetResult {
 /// Detailed ordinary-delete outcome for S3 delete-marker headers.
 #[derive(Debug, Clone)]
 pub struct ServiceDeleteResult {
-    pub delete_marker: Option<oes_core::DeleteMarker>,
+    pub delete_marker: Option<record_store_core::DeleteMarker>,
     pub previously_visible: bool,
 }
 

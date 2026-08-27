@@ -1378,459 +1378,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oes-api"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64",
- "chrono",
- "futures-util",
- "http",
- "http-body-util",
- "oes-audit",
- "oes-auth",
- "oes-cluster",
- "oes-config",
- "oes-consensus",
- "oes-core",
- "oes-events",
- "oes-metadata",
- "oes-replication",
- "oes-service",
- "oes-sharing",
- "oes-storage",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "oes-audit"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "oes-core",
- "redb",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "oes-auth"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "async-trait",
- "base64",
- "chrono",
- "hkdf",
- "oes-core",
- "redb",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "oes-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "oes-config",
- "oes-core",
- "oes-observability",
- "oes-server",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "oes-cluster"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "hex",
- "oes-core",
- "proptest",
- "redb",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "oes-config"
-version = "0.1.0"
-dependencies = [
- "serde",
- "tempfile",
- "thiserror 2.0.20",
- "toml",
-]
-
-[[package]]
-name = "oes-consensus"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "oes-cluster",
- "oes-core",
- "oes-metadata",
- "openraft",
- "redb",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "oes-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "hex",
- "proptest",
- "serde",
- "thiserror 2.0.20",
- "uuid",
-]
-
-[[package]]
-name = "oes-erasure"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "futures-util",
- "md-5",
- "oes-core",
- "oes-storage",
- "proptest",
- "reed-solomon-simd",
- "serde",
- "sha2",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "oes-events"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "async-trait",
- "base64",
- "chrono",
- "hex",
- "hkdf",
- "hmac",
- "oes-core",
- "redb",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "oes-lifecycle"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "oes-audit",
- "oes-core",
- "oes-metadata",
- "oes-service",
- "oes-storage",
- "redb",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "oes-metadata"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "oes-core",
- "redb",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "oes-observability"
-version = "0.1.0"
-dependencies = [
- "oes-config",
- "thiserror 2.0.20",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "oes-protocol"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-build",
- "protoc-bin-vendored",
- "tonic",
- "tonic-build",
-]
-
-[[package]]
-name = "oes-replication"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "chrono",
- "futures-util",
- "hex",
- "md-5",
- "oes-audit",
- "oes-cluster",
- "oes-consensus",
- "oes-core",
- "oes-metadata",
- "oes-protocol",
- "oes-rpc",
- "oes-storage",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "oes-rpc"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "chrono",
- "futures-util",
- "hex",
- "oes-cluster",
- "oes-consensus",
- "oes-core",
- "oes-protocol",
- "oes-storage",
- "openraft",
- "prost",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-stream",
- "tonic",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "oes-s3"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64",
- "bytes",
- "chrono",
- "futures-util",
- "hex",
- "hmac",
- "http",
- "http-body-util",
- "oes-audit",
- "oes-auth",
- "oes-core",
- "oes-metadata",
- "oes-service",
- "oes-storage",
- "percent-encoding",
- "proptest",
- "quick-xml",
- "serde",
- "sha2",
- "subtle",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tower",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "oes-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "bytes",
- "chrono",
- "clap",
- "fs2",
- "futures-util",
- "hex",
- "oes-api",
- "oes-audit",
- "oes-auth",
- "oes-cluster",
- "oes-config",
- "oes-consensus",
- "oes-core",
- "oes-events",
- "oes-lifecycle",
- "oes-metadata",
- "oes-observability",
- "oes-protocol",
- "oes-replication",
- "oes-rpc",
- "oes-s3",
- "oes-service",
- "oes-sharing",
- "oes-storage",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "oes-service"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "chrono",
- "futures-util",
- "oes-core",
- "oes-events",
- "oes-metadata",
- "oes-storage",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "oes-sharing"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "argon2",
- "async-trait",
- "base64",
- "chrono",
- "getrandom 0.4.3",
- "hkdf",
- "hmac",
- "oes-core",
- "redb",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "oes-storage"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "async-trait",
- "bytes",
- "chrono",
- "criterion",
- "fs2",
- "futures-core",
- "futures-util",
- "hex",
- "hkdf",
- "md-5",
- "oes-core",
- "oes-metadata",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
- "zeroize",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2402,6 +1949,459 @@ name = "readme-rustdocifier"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08ad765b21a08b1a8e5cdce052719188a23772bcbefb3c439f0baaf62c56ceac"
+
+[[package]]
+name = "record-store-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "chrono",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "record-store-audit",
+ "record-store-auth",
+ "record-store-cluster",
+ "record-store-config",
+ "record-store-consensus",
+ "record-store-core",
+ "record-store-events",
+ "record-store-metadata",
+ "record-store-replication",
+ "record-store-service",
+ "record-store-sharing",
+ "record-store-storage",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-audit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "record-store-core",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-auth"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "base64",
+ "chrono",
+ "hkdf",
+ "record-store-core",
+ "redb",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "record-store-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "record-store-config",
+ "record-store-core",
+ "record-store-observability",
+ "record-store-server",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "record-store-cluster"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "proptest",
+ "record-store-core",
+ "redb",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml",
+]
+
+[[package]]
+name = "record-store-consensus"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "openraft",
+ "record-store-cluster",
+ "record-store-core",
+ "record-store-metadata",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "proptest",
+ "serde",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-erasure"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-util",
+ "md-5",
+ "proptest",
+ "record-store-core",
+ "record-store-storage",
+ "reed-solomon-simd",
+ "serde",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "record-store-events"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "base64",
+ "chrono",
+ "hex",
+ "hkdf",
+ "hmac",
+ "record-store-core",
+ "redb",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "record-store-audit",
+ "record-store-core",
+ "record-store-metadata",
+ "record-store-service",
+ "record-store-storage",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "record-store-metadata"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "record-store-core",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-observability"
+version = "0.1.0"
+dependencies = [
+ "record-store-config",
+ "thiserror 2.0.20",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "record-store-protocol"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "protoc-bin-vendored",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "record-store-replication"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "hex",
+ "md-5",
+ "record-store-audit",
+ "record-store-cluster",
+ "record-store-consensus",
+ "record-store-core",
+ "record-store-metadata",
+ "record-store-protocol",
+ "record-store-rpc",
+ "record-store-storage",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-rpc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "hex",
+ "openraft",
+ "prost",
+ "record-store-cluster",
+ "record-store-consensus",
+ "record-store-core",
+ "record-store-protocol",
+ "record-store-storage",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-s3"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "hex",
+ "hmac",
+ "http",
+ "http-body-util",
+ "percent-encoding",
+ "proptest",
+ "quick-xml",
+ "record-store-audit",
+ "record-store-auth",
+ "record-store-core",
+ "record-store-metadata",
+ "record-store-service",
+ "record-store-storage",
+ "serde",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "chrono",
+ "clap",
+ "fs2",
+ "futures-util",
+ "hex",
+ "record-store-api",
+ "record-store-audit",
+ "record-store-auth",
+ "record-store-cluster",
+ "record-store-config",
+ "record-store-consensus",
+ "record-store-core",
+ "record-store-events",
+ "record-store-lifecycle",
+ "record-store-metadata",
+ "record-store-observability",
+ "record-store-protocol",
+ "record-store-replication",
+ "record-store-rpc",
+ "record-store-s3",
+ "record-store-service",
+ "record-store-sharing",
+ "record-store-storage",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "record-store-service"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "chrono",
+ "futures-util",
+ "record-store-core",
+ "record-store-events",
+ "record-store-metadata",
+ "record-store-storage",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "record-store-sharing"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "async-trait",
+ "base64",
+ "chrono",
+ "getrandom 0.4.3",
+ "hkdf",
+ "hmac",
+ "record-store-core",
+ "redb",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "record-store-storage"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "criterion",
+ "fs2",
+ "futures-core",
+ "futures-util",
+ "hex",
+ "hkdf",
+ "md-5",
+ "record-store-core",
+ "record-store-metadata",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
 
 [[package]]
 name = "redb"

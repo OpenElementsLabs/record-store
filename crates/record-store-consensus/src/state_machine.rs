@@ -5,7 +5,7 @@
 )]
 
 //!
-//! The state machine is the existing durable OES catalogs, applied through
+//! The state machine is the existing durable Record Store catalogs, applied through
 //! deterministic commands. Reusing the catalogs rather than reimplementing them
 //! is what keeps versioning, multipart, and quota semantics identical between a
 //! standalone node and a cluster.
@@ -20,13 +20,13 @@ use std::{
     sync::Arc,
 };
 
-use oes_cluster::{ClusterCatalog, ClusterCommand, apply_command_tx as apply_cluster_tx};
-use oes_metadata::{
-    MetadataCommand, RedbMetadataRepository, apply_command_tx as apply_metadata_tx,
-};
 use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
     StorageIOError, storage::RaftStateMachine,
+};
+use record_store_cluster::{ClusterCatalog, ClusterCommand, apply_command_tx as apply_cluster_tx};
+use record_store_metadata::{
+    MetadataCommand, RedbMetadataRepository, apply_command_tx as apply_metadata_tx,
 };
 use redb::{Database, TableDefinition, WriteTransaction};
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ use crate::{
         ClusterWrite, ClusterWriteResponse, classify_cluster_error, classify_metadata_error,
         is_durable_cluster_failure, is_durable_metadata_failure,
     },
-    types::{ConsensusEntry, ConsensusMembership, MemberId, MemberNode, OesTypeConfig},
+    types::{ConsensusEntry, ConsensusMembership, MemberId, MemberNode, RecordStoreTypeConfig},
 };
 
 const APPLIED: TableDefinition<&str, &[u8]> = TableDefinition::new("raft.applied.v1");
@@ -58,8 +58,8 @@ struct SnapshotDocument {
     snapshot_format_version: u32,
     last_applied: Option<LogId<MemberId>>,
     last_membership: ConsensusMembership,
-    metadata: Vec<oes_metadata::MetadataEntry>,
-    cluster: Vec<oes_cluster::CatalogEntry>,
+    metadata: Vec<record_store_metadata::MetadataEntry>,
+    cluster: Vec<record_store_cluster::CatalogEntry>,
 }
 
 /// Failures raised while opening the replicated state machine.
@@ -73,10 +73,10 @@ pub enum StateMachineError {
     Open(String),
     /// The object catalog could not be opened.
     #[error("object catalog could not be opened: {0}")]
-    Metadata(#[from] oes_metadata::MetadataError),
+    Metadata(#[from] record_store_metadata::MetadataError),
     /// The cluster catalog could not be opened.
     #[error("cluster catalog could not be opened: {0}")]
-    Cluster(#[from] oes_cluster::ClusterCatalogError),
+    Cluster(#[from] record_store_cluster::ClusterCatalogError),
     /// A blocking state task could not finish.
     #[error("consensus state task failed: {0}")]
     Task(#[from] tokio::task::JoinError),
@@ -302,8 +302,10 @@ struct SnapshotPointer {
     last_membership: ConsensusMembership,
 }
 
-impl RaftSnapshotBuilder<OesTypeConfig> for StateMachineStore {
-    async fn build_snapshot(&mut self) -> Result<Snapshot<OesTypeConfig>, StorageError<MemberId>> {
+impl RaftSnapshotBuilder<RecordStoreTypeConfig> for StateMachineStore {
+    async fn build_snapshot(
+        &mut self,
+    ) -> Result<Snapshot<RecordStoreTypeConfig>, StorageError<MemberId>> {
         let sequence = {
             let mut guard = self.state.snapshot_sequence.lock().await;
             *guard = guard.saturating_add(1);
@@ -316,8 +318,8 @@ impl RaftSnapshotBuilder<OesTypeConfig> for StateMachineStore {
                 // blocking command application.
                 let read = database.begin_read().map_err(io)?;
                 let (last_applied, last_membership) = read_applied_state(&read)?;
-                let metadata = oes_metadata::export_tx(&read).map_err(io)?;
-                let cluster = oes_cluster::export_tx(&read).map_err(io)?;
+                let metadata = record_store_metadata::export_tx(&read).map_err(io)?;
+                let cluster = record_store_cluster::export_tx(&read).map_err(io)?;
                 Ok(SnapshotDocument {
                     snapshot_format_version: SNAPSHOT_FORMAT_VERSION,
                     last_applied,
@@ -408,7 +410,7 @@ fn persist_snapshot(
     Ok(())
 }
 
-impl RaftStateMachine<OesTypeConfig> for StateMachineStore {
+impl RaftStateMachine<RecordStoreTypeConfig> for StateMachineStore {
     type SnapshotBuilder = Self;
 
     async fn applied_state(
@@ -545,8 +547,8 @@ impl RaftStateMachine<OesTypeConfig> for StateMachineStore {
         let last_log_id = meta.last_log_id;
         tokio::task::spawn_blocking(move || -> Result<(), std::io::Error> {
             let write = database.begin_write().map_err(io)?;
-            oes_metadata::import_tx(&write, &document.metadata).map_err(io)?;
-            oes_cluster::import_tx(&write, &document.cluster).map_err(io)?;
+            record_store_metadata::import_tx(&write, &document.metadata).map_err(io)?;
+            record_store_cluster::import_tx(&write, &document.cluster).map_err(io)?;
             if let Some(log_id) = last_log_id {
                 record_applied(&write, log_id)?;
             }
@@ -577,7 +579,7 @@ impl RaftStateMachine<OesTypeConfig> for StateMachineStore {
 
     async fn get_current_snapshot(
         &mut self,
-    ) -> Result<Option<Snapshot<OesTypeConfig>>, StorageError<MemberId>> {
+    ) -> Result<Option<Snapshot<RecordStoreTypeConfig>>, StorageError<MemberId>> {
         let pointer_path = self.current_snapshot_pointer();
         let directory = self.state.snapshot_directory.clone();
         let loaded = tokio::task::spawn_blocking(

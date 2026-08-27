@@ -1,5 +1,5 @@
 [package]
-name = "oes-replication"
+name = "record-store-replication"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,14 +12,14 @@ chrono.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 md-5.workspace = true
-oes-audit = { path = "../oes-audit" }
-oes-cluster = { path = "../oes-cluster" }
-oes-consensus = { path = "../oes-consensus" }
-oes-core = { path = "../oes-core" }
-oes-metadata = { path = "../oes-metadata" }
-oes-protocol = { path = "../oes-protocol" }
-oes-rpc = { path = "../oes-rpc" }
-oes-storage = { path = "../oes-storage" }
+record-store-audit = { path = "../record-store-audit" }
+record-store-cluster = { path = "../record-store-cluster" }
+record-store-consensus = { path = "../record-store-consensus" }
+record-store-core = { path = "../record-store-core" }
+record-store-metadata = { path = "../record-store-metadata" }
+record-store-protocol = { path = "../record-store-protocol" }
+record-store-rpc = { path = "../record-store-rpc" }
+record-store-storage = { path = "../record-store-storage" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

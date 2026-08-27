@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt::Display, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use oes_core::AuditEventId;
+use record_store_core::AuditEventId;
 use redb::{Database, TableDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

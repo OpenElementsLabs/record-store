@@ -86,7 +86,7 @@ describe('BucketsScreen', () => {
     // The heading names the condition; the body repeats it with the product
     // name, so both nodes legitimately match a loose query.
     expect(await screen.findByText('The management API is unreachable')).toBeTruthy();
-    expect(screen.getByText('The OES management API is unreachable.')).toBeTruthy();
+    expect(screen.getByText('The Record Store management API is unreachable.')).toBeTruthy();
   });
 
   it('creates a bucket and refreshes the list', async () => {

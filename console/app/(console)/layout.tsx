@@ -43,10 +43,10 @@ export default async function ConsoleLayout({ children }: { children: React.Reac
     return (
       <main className="flex min-h-screen items-center justify-center px-4">
         <div className="max-w-md space-y-2 text-center" role="alert">
-          <h1 className="text-lg font-semibold text-ink">OES is unreachable</h1>
+          <h1 className="text-lg font-semibold text-ink">Record Store is unreachable</h1>
           <p className="text-sm text-ink-muted">
-            The console could not reach the OES management API. It will work again as soon as the
-            API responds; no console state has been lost.
+            The console could not reach the Record Store management API. It will work again as soon
+            as the API responds; no console state has been lost.
           </p>
         </div>
       </main>

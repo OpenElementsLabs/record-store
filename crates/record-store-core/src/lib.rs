@@ -1,4 +1,4 @@
-//! Fundamental domain types shared by OES components.
+//! Fundamental domain types shared by Record Store components.
 
 mod cors;
 
@@ -43,10 +43,10 @@ pub enum CoreError {
         /// UUID parsing failure.
         reason: String,
     },
-    /// A bucket name violated S3/OES naming constraints.
+    /// A bucket name violated S3/Record Store naming constraints.
     #[error("invalid bucket name: {0}")]
     InvalidBucketName(String),
-    /// An object key violated the OES key constraints.
+    /// An object key violated the Record Store key constraints.
     #[error("invalid object key: {0}")]
     InvalidObjectKey(String),
     /// A checksum was malformed or unsupported.
@@ -168,7 +168,7 @@ uuid_identifier!(ShardId, "erasure shard");
 pub struct ShardIndex(u16);
 
 impl ShardIndex {
-    /// OES deliberately keeps initial profiles small enough for one shard per node.
+    /// Record Store deliberately keeps initial profiles small enough for one shard per node.
     pub const MAX: u16 = 31;
 
     /// Creates a shard index within the supported on-disk format.
@@ -534,7 +534,7 @@ fn validate_bucket_name(value: &str) -> Result<(), CoreError> {
         || value.starts_with("sthree-")
         || value.ends_with("-s3alias")
         || value.ends_with("--ol-s3")
-        || matches!(value, "oes-system" | "oes-internal")
+        || matches!(value, "record-store-system" | "record-store-internal")
     {
         return Err(invalid(
             "name uses a reserved prefix, suffix, or internal name",
@@ -1038,7 +1038,7 @@ pub enum PayloadFormat {
     /// Historical and explicitly unencrypted payload bytes.
     #[default]
     Plaintext,
-    /// OES envelope encryption format 1 using chunked AES-256-GCM.
+    /// Record Store envelope encryption format 1 using chunked AES-256-GCM.
     Aes256GcmEnvelopeV1,
 }
 
@@ -1165,7 +1165,7 @@ pub struct UploadedPart {
     pub upload_id: UploadId,
     /// Validated one-based part number.
     pub number: PartNumber,
-    /// OES-controlled immutable payload identifier.
+    /// Record Store-controlled immutable payload identifier.
     pub object_id: ObjectId,
     /// Part size in bytes.
     pub size: u64,
@@ -1286,7 +1286,7 @@ pub enum PreviewKind {
     Text,
     /// JSON rendered as escaped, optionally reformatted, text.
     Json,
-    /// A media type OES declines to render inline because the format can carry
+    /// A media type Record Store declines to render inline because the format can carry
     /// active content. Such objects are download-only.
     UnsafeInline,
     /// A media type with no safe inline representation.
@@ -1335,7 +1335,7 @@ impl PreviewKind {
         }
     }
 
-    /// Returns the canonical media type OES will actually emit for this type.
+    /// Returns the canonical media type Record Store will actually emit for this type.
     ///
     /// Returning the normalised essence rather than the stored string means a
     /// caller-supplied `Content-Type` cannot smuggle parameters into a response
@@ -1409,7 +1409,7 @@ impl PreviewKind {
     }
 }
 
-/// Bytes OES needs from the front of an object to corroborate its media type.
+/// Bytes Record Store needs from the front of an object to corroborate its media type.
 ///
 /// Small and fixed: enough to reach an MP4 `ftyp` box or a WebM EBML header,
 /// and never enough for the check itself to become a large read.
@@ -1618,7 +1618,7 @@ mod tests {
             "trailing-",
             "192.168.1.1",
             "a..b",
-            "oes-system",
+            "record-store-system",
             "xn--reserved",
         ] {
             assert!(

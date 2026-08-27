@@ -19,30 +19,30 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
 use futures_util::StreamExt;
-use oes_cluster::{
+use record_store_cluster::{
     CapacityAwarePlacement, ClusterCommand, ClusterConfig, ClusterIdentity, FailureDomain,
     NodeCapacity, NodeRegistration, NodeState, NodeVersions, ReplicaState, ReplicaTaskState,
     StorageClass, WriteAcknowledgement,
 };
-use oes_consensus::{
+use record_store_consensus::{
     ClusterStore, ClusterWrite, ConsensusSettings, MetadataConsensus, ReplicatedClusterStore,
     ReplicatedMetadataRepository,
 };
-use oes_core::{
+use record_store_core::{
     Bucket, BucketId, BucketName, BucketQuota, Checksum, ClusterId, NodeId, ObjectId, ObjectKey,
     OrganizationId, PayloadFormat, VersioningState,
 };
-use oes_metadata::MetadataRepository;
-use oes_replication::{
+use record_store_metadata::MetadataRepository;
+use record_store_replication::{
     ClusterContext, DistributedObjectStore, DistributedSettings, TaskExecutor,
     tasks::MovementLimits,
 };
-use oes_rpc::{
+use record_store_rpc::{
     ConsensusNetwork, PeerHeaders, PeerPool, RemoteReadStream, RemoteReplicaVerification,
     RemoteReplicaWrite, ReplicaTarget, ReplicaTransport, RpcClientError, RpcClientSettings,
     TlsSettings, TransferExpectation, TransferStream,
 };
-use oes_storage::{
+use record_store_storage::{
     LocalFilesystemStore, ObjectStore, PutObjectRequest, ReplicaStore, StorageError, upload_stream,
 };
 use sha2::{Digest, Sha256};
@@ -395,7 +395,7 @@ impl Harness {
             .write(ClusterWrite::cluster(ClusterCommand::InitializeCluster {
                 identity: ClusterIdentity {
                     cluster_id: ClusterId::new(),
-                    cluster_format_version: oes_cluster::CLUSTER_FORMAT_VERSION,
+                    cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
                     created_at: Utc::now(),
                 },
                 config: Box::new(config),
@@ -475,7 +475,7 @@ impl Harness {
         &self,
         key: &str,
         payload: &[u8],
-    ) -> Result<oes_storage::PutObjectResult, StorageError> {
+    ) -> Result<record_store_storage::PutObjectResult, StorageError> {
         let chunk = Bytes::copy_from_slice(payload);
         self.store
             .put(PutObjectRequest {
@@ -509,7 +509,7 @@ impl Harness {
     async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
         let result = self
             .store
-            .get(oes_storage::GetObjectRequest {
+            .get(record_store_storage::GetObjectRequest {
                 bucket_id: self.bucket_id,
                 key: ObjectKey::new(key).expect("valid key"),
                 range: None,
@@ -951,7 +951,7 @@ async fn a_read_is_served_from_the_local_replica_without_contacting_a_peer() {
 
     let stream = harness
         .store
-        .get(oes_storage::GetObjectRequest {
+        .get(record_store_storage::GetObjectRequest {
             bucket_id: harness.bucket_id,
             key: ObjectKey::new("local-read").expect("key"),
             range: None,
@@ -966,7 +966,7 @@ async fn a_read_is_served_from_the_local_replica_without_contacting_a_peer() {
     );
 }
 
-async fn collect(mut stream: oes_storage::DownloadStream) -> Vec<u8> {
+async fn collect(mut stream: record_store_storage::DownloadStream) -> Vec<u8> {
     let mut collected = Vec::new();
     while let Some(chunk) = stream.next().await {
         collected.extend_from_slice(&chunk.expect("read chunk"));

@@ -70,7 +70,7 @@ describe('IntegrityScreen', () => {
 
     expect(await screen.findByText('Objects are missing their payloads')).toBeTruthy();
     expect(screen.getByText(/single copy of each object/)).toBeTruthy();
-    expect(screen.getByText(/restoring from a backup outside OES/)).toBeTruthy();
+    expect(screen.getByText(/restoring from a backup outside Record Store/)).toBeTruthy();
     // The misleading opposite must not appear.
     expect(document.body.textContent ?? '').not.toMatch(/may be recoverable from another replica/);
   });

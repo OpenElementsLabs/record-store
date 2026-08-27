@@ -132,7 +132,7 @@ export function AppShell({
 }
 
 /** Where the collapsed preference is remembered. */
-const COLLAPSE_KEY = 'oes.sidebar.collapsed';
+const COLLAPSE_KEY = 'record-store.sidebar.collapsed';
 
 /**
  * Reads the stored collapse preference.
@@ -199,10 +199,10 @@ function Sidebar({
           href="/"
           onClick={onNavigate}
           className="flex min-w-0 items-center gap-2.5 rounded-control"
-          aria-label="OES console home"
+          aria-label="Record Store console home"
         >
           <BrandMark className="size-8" />
-          {collapsed ? null : <span className="type-wordmark truncate">OES</span>}
+          {collapsed ? null : <span className="type-wordmark truncate">Record Store</span>}
         </Link>
         {onToggleCollapsed && !collapsed ? (
           <Button

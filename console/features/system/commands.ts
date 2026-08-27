@@ -23,7 +23,7 @@ export type SearchableEntities = {
  *
  * Buckets, service accounts, policies, and nodes are bounded administrative
  * sets, so searching them locally is honest. Object keys are deliberately
- * absent: a bucket can hold millions, and OES filters them by prefix on the
+ * absent: a bucket can hold millions, and Record Store filters them by prefix on the
  * server, so the palette sends the operator to that bucket's browser instead of
  * pretending to search a dataset it never loaded.
  */

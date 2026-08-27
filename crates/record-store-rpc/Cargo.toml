@@ -1,5 +1,5 @@
 [package]
-name = "oes-rpc"
+name = "record-store-rpc"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,11 +11,11 @@ bytes.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 hex.workspace = true
-oes-cluster = { path = "../oes-cluster" }
-oes-consensus = { path = "../oes-consensus" }
-oes-core = { path = "../oes-core" }
-oes-protocol = { path = "../oes-protocol" }
-oes-storage = { path = "../oes-storage" }
+record-store-cluster = { path = "../record-store-cluster" }
+record-store-consensus = { path = "../record-store-consensus" }
+record-store-core = { path = "../record-store-core" }
+record-store-protocol = { path = "../record-store-protocol" }
+record-store-storage = { path = "../record-store-storage" }
 openraft.workspace = true
 prost.workspace = true
 serde.workspace = true

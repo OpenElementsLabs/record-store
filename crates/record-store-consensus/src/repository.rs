@@ -9,18 +9,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use oes_cluster::{
+use record_store_cluster::{
     ClusterCatalogError, ClusterCommand, ClusterConfig, ClusterIdentity, ClusterOutcome,
     ClusterTopology, ClusterUsage, JoinToken, NodeCredential, NodeRecord, PayloadPlacement,
     PlacementPage, RaftNodeId, ReplicaTask, TaskPage, Tombstone,
 };
-use oes_core::{
+use record_store_core::{
     Bucket, BucketId, BucketName, BucketQuota, ClusterOperationId, CorsConfiguration, JoinTokenId,
     LifecycleRule, LifecycleRuleId, MultipartUpload, NodeCredentialId, NodeId, ObjectId, ObjectKey,
     ObjectMetadata, ObjectVersionRecord, PartNumber, ReplicaTaskId, StorageUsage, UploadId,
     UploadedPart, VersionId, VersioningState,
 };
-use oes_metadata::{
+use record_store_metadata::{
     DeleteObjectResult, DeleteVersionResult, ListMultipartUploadsRequest,
     ListObjectVersionsRequest, ListObjectsRequest, MetadataCommand, MetadataError, MetadataOutcome,
     MetadataRepository, MultipartCleanupResult, MultipartUploadPage, NewDeleteMarker,
@@ -339,7 +339,10 @@ impl MetadataRepository for ReplicatedMetadataRepository {
     async fn bucket_usage(
         &self,
     ) -> Result<
-        std::collections::BTreeMap<oes_core::BucketId, oes_metadata::BucketUsageSummary>,
+        std::collections::BTreeMap<
+            record_store_core::BucketId,
+            record_store_metadata::BucketUsageSummary,
+        >,
         MetadataError,
     > {
         // Accounting counters tolerate a locally applied view: they inform
@@ -471,13 +474,13 @@ pub trait ClusterStore: Send + Sync {
     async fn operation(
         &self,
         operation_id: ClusterOperationId,
-    ) -> Result<Option<oes_cluster::ClusterOperation>, ClusterCatalogError>;
+    ) -> Result<Option<record_store_cluster::ClusterOperation>, ClusterCatalogError>;
 
     /// Returns recorded operations, newest first.
     async fn operations(
         &self,
         limit: usize,
-    ) -> Result<Vec<oes_cluster::ClusterOperation>, ClusterCatalogError>;
+    ) -> Result<Vec<record_store_cluster::ClusterOperation>, ClusterCatalogError>;
 
     /// Returns a join token record.
     async fn join_token(
@@ -523,7 +526,7 @@ fn cluster_error(error: ConsensusError) -> ClusterCatalogError {
 /// A [`ClusterStore`] whose writes go through consensus.
 pub struct ReplicatedClusterStore {
     consensus: Arc<MetadataConsensus>,
-    local: oes_cluster::ClusterCatalog,
+    local: record_store_cluster::ClusterCatalog,
 }
 
 impl ReplicatedClusterStore {
@@ -650,14 +653,14 @@ impl ClusterStore for ReplicatedClusterStore {
     async fn operation(
         &self,
         operation_id: ClusterOperationId,
-    ) -> Result<Option<oes_cluster::ClusterOperation>, ClusterCatalogError> {
+    ) -> Result<Option<record_store_cluster::ClusterOperation>, ClusterCatalogError> {
         self.local.operation(operation_id).await
     }
 
     async fn operations(
         &self,
         limit: usize,
-    ) -> Result<Vec<oes_cluster::ClusterOperation>, ClusterCatalogError> {
+    ) -> Result<Vec<record_store_cluster::ClusterOperation>, ClusterCatalogError> {
         self.local.operations(limit).await
     }
 
@@ -700,13 +703,13 @@ impl ClusterStore for ReplicatedClusterStore {
 /// Standalone deployments use this so a single-node installation never pays for
 /// consensus it does not need.
 pub struct LocalClusterStore {
-    catalog: oes_cluster::ClusterCatalog,
+    catalog: record_store_cluster::ClusterCatalog,
 }
 
 impl LocalClusterStore {
     /// Wraps a local catalog.
     #[must_use]
-    pub const fn new(catalog: oes_cluster::ClusterCatalog) -> Self {
+    pub const fn new(catalog: record_store_cluster::ClusterCatalog) -> Self {
         Self { catalog }
     }
 }
@@ -815,14 +818,14 @@ impl ClusterStore for LocalClusterStore {
     async fn operation(
         &self,
         operation_id: ClusterOperationId,
-    ) -> Result<Option<oes_cluster::ClusterOperation>, ClusterCatalogError> {
+    ) -> Result<Option<record_store_cluster::ClusterOperation>, ClusterCatalogError> {
         self.catalog.operation(operation_id).await
     }
 
     async fn operations(
         &self,
         limit: usize,
-    ) -> Result<Vec<oes_cluster::ClusterOperation>, ClusterCatalogError> {
+    ) -> Result<Vec<record_store_cluster::ClusterOperation>, ClusterCatalogError> {
         self.catalog.operations(limit).await
     }
 

@@ -1,5 +1,5 @@
 [package]
-name = "oes-erasure"
+name = "record-store-erasure"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,8 +10,8 @@ async-trait.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 md-5.workspace = true
-oes-core = { path = "../oes-core" }
-oes-storage = { path = "../oes-storage" }
+record-store-core = { path = "../record-store-core" }
+record-store-storage = { path = "../record-store-storage" }
 reed-solomon-simd.workspace = true
 serde.workspace = true
 sha2.workspace = true

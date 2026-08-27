@@ -7,7 +7,7 @@
 //! both a scaling problem and a privacy one.
 //!
 //! A ticket instead carries its own proof: the share it unlocks and the instant
-//! it stops working, authenticated by a key only OES holds. It grants nothing on
+//! it stops working, authenticated by a key only Record Store holds. It grants nothing on
 //! its own — every request it accompanies still re-reads the share and re-checks
 //! revocation, expiry, permission, and budget — so a stolen ticket is worth
 //! exactly as much as the link it was issued against, and not one request more
@@ -16,7 +16,7 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use oes_core::ShareLinkId;
+use record_store_core::ShareLinkId;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;

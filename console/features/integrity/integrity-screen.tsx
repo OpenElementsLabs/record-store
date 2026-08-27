@@ -60,7 +60,7 @@ export function IntegrityScreen() {
     <>
       <PageHeader
         title="Integrity"
-        description="Cross-checks what OES records against the bytes it actually holds."
+        description="Cross-checks what Record Store records against the bytes it actually holds."
         actions={
           <Button
             size="sm"
@@ -117,7 +117,7 @@ function StatusCard({
           <p className="text-sm font-medium text-ink">{headline}</p>
           <p className="max-w-2xl text-sm text-ink-muted">
             {severity === 'healthy'
-              ? `Every one of the ${formatCount(inspection.metadata_payloads_scanned)} objects scanned has the bytes OES recorded for it.`
+              ? `Every one of the ${formatCount(inspection.metadata_payloads_scanned)} objects scanned has the bytes Record Store recorded for it.`
               : severity === 'reclaimable'
                 ? 'Some payloads on disk are not referenced by any object. They occupy space but no object depends on them.'
                 : 'These objects cannot be read. A checksum proves bytes are wrong or missing; it cannot rebuild them.'}
@@ -126,7 +126,7 @@ function StatusCard({
             <p className="max-w-2xl text-sm text-ink-muted">
               {clustered
                 ? 'This deployment stores redundant copies, so affected objects may be recoverable from another replica. Check replication and repair status.'
-                : 'This deployment keeps a single copy of each object, so there is no redundant copy to rebuild from. Recovery requires restoring from a backup outside OES.'}
+                : 'This deployment keeps a single copy of each object, so there is no redundant copy to rebuild from. Recovery requires restoring from a backup outside Record Store.'}
             </p>
           ) : null}
           {inspection.truncated ? (
@@ -176,7 +176,7 @@ function FindingsCard({ inspection }: { readonly inspection: StorageInspection |
           label: 'Missing payloads',
           value: inspection.metadata_without_data,
           tone: 'danger',
-          hint: 'OES records the object but its bytes are not on disk.',
+          hint: 'Record Store records the object but its bytes are not on disk.',
         },
         {
           label: 'Orphaned payloads',
@@ -188,7 +188,7 @@ function FindingsCard({ inspection }: { readonly inspection: StorageInspection |
           label: 'Unrecognised data entries',
           value: inspection.unknown_data_entries,
           tone: 'warn',
-          hint: 'Files in the data directory OES did not write.',
+          hint: 'Files in the data directory Record Store did not write.',
         },
         {
           label: 'Abandoned uploads',

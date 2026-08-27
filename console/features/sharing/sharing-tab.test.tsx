@@ -162,7 +162,7 @@ describe('SharingTab', () => {
       shares: [activeShare],
       override: (url) =>
         url.includes('/v1/shares/share-1/url')
-          ? jsonResponse({ url: 'https://oes.example.com/s/AbCdEf', available: true })
+          ? jsonResponse({ url: 'https://record-store.example.com/s/AbCdEf', available: true })
           : null,
     });
     await screen.findByText('Board review');
@@ -174,7 +174,9 @@ describe('SharingTab', () => {
         fetchMock.mock.calls.some(([url]) => String(url).includes('/shares/share-1/url')),
       ).toBe(true);
     });
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('https://oes.example.com/s/AbCdEf');
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      'https://record-store.example.com/s/AbCdEf',
+    );
   });
 
   it('says so when a link can no longer be displayed instead of showing nothing', async () => {

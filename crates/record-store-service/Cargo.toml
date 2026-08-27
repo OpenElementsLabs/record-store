@@ -1,5 +1,5 @@
 [package]
-name = "oes-service"
+name = "record-store-service"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,10 +9,10 @@ license.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
-oes-core = { path = "../oes-core" }
-oes-events = { path = "../oes-events" }
-oes-metadata = { path = "../oes-metadata" }
-oes-storage = { path = "../oes-storage" }
+record-store-core = { path = "../record-store-core" }
+record-store-events = { path = "../record-store-events" }
+record-store-metadata = { path = "../record-store-metadata" }
+record-store-storage = { path = "../record-store-storage" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

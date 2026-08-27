@@ -4,8 +4,8 @@
 //! it: they are streamed directly between storage nodes and referenced from the
 //! committed metadata.
 
-use oes_cluster::{ClusterCatalogError, ClusterCommand, ClusterOutcome};
-use oes_metadata::{MetadataCommand, MetadataError, MetadataOutcome};
+use record_store_cluster::{ClusterCatalogError, ClusterCommand, ClusterOutcome};
+use record_store_metadata::{MetadataCommand, MetadataError, MetadataOutcome};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -171,7 +171,7 @@ impl CommandRejection {
     }
 }
 
-/// Stable rejection categories shared by every OES layer.
+/// Stable rejection categories shared by every Record Store layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RejectionKind {

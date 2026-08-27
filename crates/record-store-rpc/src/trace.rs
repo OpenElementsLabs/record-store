@@ -2,7 +2,7 @@
 //!
 //! Distributed operations are only debuggable if a single identifier follows a
 //! request across every node it touches. The W3C header format is used directly
-//! so the trace identifiers OES emits line up with any OpenTelemetry collector
+//! so the trace identifiers Record Store emits line up with any OpenTelemetry collector
 //! without pulling an SDK into the data path.
 
 use std::fmt::{self, Display, Formatter};

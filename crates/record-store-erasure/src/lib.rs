@@ -1,4 +1,4 @@
-//! Bounded, integrity-checked Reed-Solomon stripes for OES.
+//! Bounded, integrity-checked Reed-Solomon stripes for Record Store.
 //!
 //! The external codec is deliberately hidden behind [`ErasureCodec`]. Object
 //! storage owns identifiers, checksums, stripe layout, async isolation, and
@@ -15,11 +15,11 @@ use std::{
 
 use futures_util::StreamExt;
 use md5::{Digest as _, Md5};
-use oes_core::{
+use record_store_core::{
     ByteRange, Checksum, ETag, ErasureProfile, ResolvedByteRange, ShardId, ShardIndex, ShardKind,
     ShardState, StripeId,
 };
-use oes_storage::UploadStream;
+use record_store_storage::UploadStream;
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -206,7 +206,7 @@ pub struct DecodedStripe {
     pub reconstructed: bool,
 }
 
-/// Synchronous coding boundary owned by OES.
+/// Synchronous coding boundary owned by Record Store.
 pub trait ErasureCodec: Send + Sync + 'static {
     /// Generates all parity shards from equally sized systematic data shards.
     fn encode(
@@ -431,7 +431,7 @@ impl ErasureEngine {
         )
     }
 
-    /// Injects a codec for deterministic testing while preserving all OES checks.
+    /// Injects a codec for deterministic testing while preserving all Record Store checks.
     #[must_use]
     pub fn with_codec(
         codec: Arc<dyn ErasureCodec>,
@@ -833,7 +833,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use oes_storage::upload_stream;
+    use record_store_storage::upload_stream;
 
     fn profile(k: u8, m: u8) -> ErasureProfile {
         ErasureProfile::new(k, m).expect("valid profile")

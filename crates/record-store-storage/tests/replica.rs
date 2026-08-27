@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::{TryStreamExt, stream};
-use oes_core::{Checksum, ObjectId, PayloadFormat};
-use oes_metadata::RedbMetadataRepository;
-use oes_storage::{
+use record_store_core::{Checksum, ObjectId, PayloadFormat};
+use record_store_metadata::RedbMetadataRepository;
+use record_store_storage::{
     DownloadStream, LocalFilesystemStore, ReadReplicaRequest, ReplicaCommitment, ReplicaStore,
     StorageError, WriteReplicaRequest, upload_stream,
 };
@@ -31,7 +31,7 @@ async fn store() -> (tempfile::TempDir, LocalFilesystemStore) {
     (directory, storage)
 }
 
-fn body(chunks: &[&'static [u8]]) -> oes_storage::UploadStream {
+fn body(chunks: &[&'static [u8]]) -> record_store_storage::UploadStream {
     let chunks = chunks
         .iter()
         .map(|chunk| Ok(Bytes::from_static(chunk)))

@@ -1,4 +1,4 @@
-"""Real boto3 compatibility exercise against a running OES node."""
+"""Real boto3 compatibility exercise against a running Record Store node."""
 
 import os
 import urllib.request
@@ -8,9 +8,9 @@ import boto3
 from botocore.config import Config
 
 
-ENDPOINT = os.environ.get("OES_COMPAT_ENDPOINT", "http://127.0.0.1:7600")
-ACCESS_KEY = os.environ["OES_ROOT_ACCESS_KEY"]
-SECRET_KEY = os.environ["OES_ROOT_SECRET_KEY"]
+ENDPOINT = os.environ.get("RECORD_STORE_COMPAT_ENDPOINT", "http://127.0.0.1:7600")
+ACCESS_KEY = os.environ["RECORD_STORE_ROOT_ACCESS_KEY"]
+SECRET_KEY = os.environ["RECORD_STORE_ROOT_SECRET_KEY"]
 
 
 def require(condition: bool, message: str) -> None:
@@ -32,7 +32,7 @@ def main() -> None:
             response_checksum_validation="when_required",
         ),
     )
-    bucket = f"oes-boto3-{uuid.uuid4().hex[:16]}"
+    bucket = f"record-store-boto3-{uuid.uuid4().hex[:16]}"
     client.create_bucket(Bucket=bucket)
 
     client.put_object(Bucket=bucket, Key="single.txt", Body=b"boto3-single")

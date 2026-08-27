@@ -4,7 +4,7 @@ use std::{fmt::Display, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use oes_core::{
+use record_store_core::{
     Bucket, BucketId, BucketName, BucketQuota, CorsConfiguration, DeleteMarker, LifecycleRule,
     LifecycleRuleId, MultipartUpload, MultipartUploadState, ObjectId, ObjectKey, ObjectMetadata,
     ObjectVersionRecord, PartNumber, StorageUsage, UploadId, UploadedPart, VersionId,
@@ -333,7 +333,7 @@ pub enum MetadataError {
     Task(#[from] tokio::task::JoinError),
 }
 
-/// Redb-backed durable catalog for a standalone OES node.
+/// Redb-backed durable catalog for a standalone Record Store node.
 #[derive(Clone)]
 pub struct RedbMetadataRepository {
     database: Arc<Database>,
@@ -356,7 +356,7 @@ impl RedbMetadataRepository {
         .await?
     }
 
-    /// Opens a catalog that shares a database with other durable OES state.
+    /// Opens a catalog that shares a database with other durable Record Store state.
     ///
     /// Sharing one database is what allows a consensus state machine to commit
     /// object metadata, cluster metadata, and the applied log position in a
@@ -1343,7 +1343,7 @@ struct LegacyObjectMetadata {
     key: ObjectKey,
     version_id: VersionId,
     size: u64,
-    checksum: oes_core::Checksum,
+    checksum: record_store_core::Checksum,
     content_type: Option<String>,
     custom_metadata: std::collections::BTreeMap<String, String>,
     created_at: chrono::DateTime<Utc>,
@@ -1359,7 +1359,7 @@ fn decode_migrating_object(bytes: &[u8]) -> Result<ObjectMetadata, MetadataError
         .checksum
         .to_string()
         .split_once(':')
-        .and_then(|(_, digest)| oes_core::ETag::new(digest).ok())
+        .and_then(|(_, digest)| record_store_core::ETag::new(digest).ok())
         .ok_or_else(|| MetadataError::Database {
             operation: "migrate ETag",
             reason: "invalid legacy checksum".into(),
@@ -1371,8 +1371,8 @@ fn decode_migrating_object(bytes: &[u8]) -> Result<ObjectMetadata, MetadataError
         version_id: old.version_id,
         size: old.size,
         checksum: old.checksum,
-        payload_format: oes_core::PayloadFormat::Plaintext,
-        durability: oes_core::DurabilityProfile::Single,
+        payload_format: record_store_core::PayloadFormat::Plaintext,
+        durability: record_store_core::DurabilityProfile::Single,
         etag,
         content_type: old.content_type,
         custom_metadata: old.custom_metadata,
@@ -3013,7 +3013,7 @@ pub fn import_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oes_core::{Checksum, CorsMethod, CorsPattern, CorsRule, ETag, OrganizationId};
+    use record_store_core::{Checksum, CorsMethod, CorsPattern, CorsRule, ETag, OrganizationId};
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
@@ -3038,8 +3038,8 @@ mod tests {
             version_id: VersionId::new(),
             size,
             checksum: Checksum::sha256([1; 32]),
-            payload_format: oes_core::PayloadFormat::Plaintext,
-            durability: oes_core::DurabilityProfile::Single,
+            payload_format: record_store_core::PayloadFormat::Plaintext,
+            durability: record_store_core::DurabilityProfile::Single,
             etag: ETag::from_md5([2; 16]),
             content_type: None,
             custom_metadata: BTreeMap::new(),
@@ -3254,7 +3254,7 @@ mod tests {
             object_id: ObjectId::new(),
             size: 12,
             checksum: Checksum::sha256([3; 32]),
-            payload_format: oes_core::PayloadFormat::Plaintext,
+            payload_format: record_store_core::PayloadFormat::Plaintext,
             etag: ETag::from_md5([4; 16]),
             modified_at: Utc::now(),
         };
