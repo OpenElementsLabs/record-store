@@ -21,7 +21,7 @@ describe('middleware', () => {
 
     const policy = policyFor('/buckets');
     expect(policy).toMatch(/script-src 'self' 'nonce-[A-Za-z0-9+/=]+' 'strict-dynamic'/);
-    // The browser reaches OES only through this server's own origin.
+    // The browser reaches Record Store only through this server's own origin.
     expect(policy).toContain("connect-src 'self'");
     expect(policy).toContain("frame-ancestors 'none'");
   });
@@ -63,11 +63,11 @@ describe('middleware', () => {
 
   it('leaves API routes out of the middleware entirely', () => {
     // This middleware re-issues the request, which caps how large a body may
-    // be. An object upload streaming through `/api/oes` would be truncated at
+    // be. An object upload streaming through `/api/record-store` would be truncated at
     // that cap — silently, because the truncated request still succeeds.
-    expect(matches('/api/oes/v1/buckets/uploads/object/archive/backup.tar')).toBe(false);
+    expect(matches('/api/record-store/v1/buckets/uploads/object/archive/backup.tar')).toBe(false);
     expect(matches('/api/auth/login')).toBe(false);
-    expect(matches('/api/oes/v1/system/info')).toBe(false);
+    expect(matches('/api/record-store/v1/system/info')).toBe(false);
   });
 
   it('skips assets that need no policy', () => {

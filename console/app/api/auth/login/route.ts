@@ -34,7 +34,7 @@ export async function POST(request: Request): Promise<Response> {
     if (verified.status === 503) {
       return json(503, {
         code: 'MANAGEMENT_API_UNREACHABLE',
-        message: 'The OES management API is unreachable.',
+        message: 'The Record Store management API is unreachable.',
       });
     }
     return json(401, {

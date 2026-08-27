@@ -45,7 +45,7 @@ describe('design tokens', () => {
 
   /*
    * The sign-in screen was written against shadcn's token names while the theme
-   * defined only the OES ones, so its card, muted text, and primary button
+   * defined only the Record Store ones, so its card, muted text, and primary button
    * rendered with no colour at all. Both vocabularies must resolve, in both
    * themes — the dark block redefines the palette it aliases, so one set in
    * `:root` would leave dark mode pointing at light values.

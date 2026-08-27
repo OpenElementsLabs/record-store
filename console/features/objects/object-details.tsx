@@ -35,10 +35,10 @@ import { mergeSearch, readString } from '@/lib/search-params';
 import type { ObjectSummary } from '@/types/api';
 
 /**
- * One object, and everything OES can do with it.
+ * One object, and everything Record Store can do with it.
  *
  * The tabs are ordered by what an operator opening this page usually wants:
- * seeing the thing, then identifying it, then its history, then who outside OES
+ * seeing the thing, then identifying it, then its history, then who outside Record Store
  * can reach it. Preview leads when the object has one, because a screen that
  * opens on a checksum table when the object is a photograph is a screen that
  * makes its reader do the work.
@@ -349,8 +349,8 @@ function OverviewTab({
       <CardHeader className="flex-col items-start">
         <CardTitle>Object</CardTitle>
         <CardDescription>
-          Identifiers OES publishes for this version. Physical storage details are deliberately not
-          exposed here.
+          Identifiers Record Store publishes for this version. Physical storage details are
+          deliberately not exposed here.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

@@ -32,7 +32,7 @@ describe('RecentActivity', () => {
     expect(await screen.findByText('object.created')).toBeTruthy();
     expect(screen.getByText('reports/daily/result.csv')).toBeTruthy();
     expect(screen.getByText('2.05 kB')).toBeTruthy();
-    expect(String(fetch.mock.calls[0]?.[0])).toContain('/api/oes/v1/events?limit=8');
+    expect(String(fetch.mock.calls[0]?.[0])).toContain('/api/record-store/v1/events?limit=8');
   });
 
   it('does not fetch or render when events are unsupported', () => {

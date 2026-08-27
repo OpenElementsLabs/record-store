@@ -20,7 +20,7 @@ test.describe('real cluster deployment', () => {
   test('inspects a node and performs maintenance then resume through the console', async ({
     signedIn,
   }) => {
-    const managementUrl = process.env.OES_E2E_MANAGEMENT_URL as string;
+    const managementUrl = process.env.RECORD_STORE_E2E_MANAGEMENT_URL as string;
     const nodesResponse = await fetch(`${managementUrl}/api/v1/nodes`, {
       headers: { authorization: `Bearer ${MANAGEMENT_TOKEN}` },
     });

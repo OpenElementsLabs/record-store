@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package record_store.internal.consensus.v1;
+
+// A consensus protocol message.
+//
+// The payload is the consensus implementation's own encoding. Keeping it opaque
+// avoids mirroring an external library's internal types in this contract; the
+// protocol version carried on every connection is what guards compatibility.
+message ConsensusEnvelope {
+  bytes payload = 1;
+}
+
+message ConsensusReply {
+  bytes payload = 1;
+}
+
+// A metadata write forwarded to the current leader.
+message ForwardWriteRequest {
+  bytes command = 1;
+}
+
+message ForwardWriteResponse {
+  bytes response = 1;
+}
+
+// Asks the leader for the log position a linearizable read must observe.
+message ReadBarrierRequest {}
+
+message ReadBarrierResponse {
+  bool has_index = 1;
+  uint64 index = 2;
+}
+
+// Metadata consensus transport and leader redirection.
+service ConsensusService {
+  rpc AppendEntries(ConsensusEnvelope) returns (ConsensusReply);
+  rpc Vote(ConsensusEnvelope) returns (ConsensusReply);
+  rpc InstallSnapshot(ConsensusEnvelope) returns (ConsensusReply);
+  rpc ForwardWrite(ForwardWriteRequest) returns (ForwardWriteResponse);
+  rpc ReadBarrier(ReadBarrierRequest) returns (ReadBarrierResponse);
+}

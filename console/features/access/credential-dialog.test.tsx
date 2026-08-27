@@ -6,7 +6,7 @@ import { CredentialDialog } from './credential-dialog';
 import { renderWithProviders } from '@/test/render';
 import type { IssuedCredential } from '@/types/api';
 
-const SECRET = 'oes-secret-value-shown-once-1234';
+const SECRET = 'record-store-secret-value-shown-once-1234';
 
 const issued: IssuedCredential = {
   account: {
@@ -21,7 +21,7 @@ const issued: IssuedCredential = {
   credential: {
     id: 'cred-1',
     service_account_id: 'acc-1',
-    key_id: 'OESKEYID000001',
+    key_id: 'RSKEYID000001',
     disabled: false,
     created_at: '2026-08-01T10:00:00Z',
     expires_at: null,
@@ -64,11 +64,11 @@ describe('CredentialDialog', () => {
     expect(writeText).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole('button', { name: /copy access key ID/i }));
-    expect(writeText).toHaveBeenCalledWith('OESKEYID000001');
+    expect(writeText).toHaveBeenCalledWith('RSKEYID000001');
 
     await userEvent.click(screen.getByRole('button', { name: /copy environment variables/i }));
     expect(writeText).toHaveBeenLastCalledWith(
-      `AWS_ACCESS_KEY_ID=OESKEYID000001\nAWS_SECRET_ACCESS_KEY=${SECRET}`,
+      `AWS_ACCESS_KEY_ID=RSKEYID000001\nAWS_SECRET_ACCESS_KEY=${SECRET}`,
     );
     vi.unstubAllGlobals();
   });

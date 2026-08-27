@@ -184,7 +184,7 @@ function EmbedForm({
               <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warn" />
               <p className="text-xs text-ink">
                 {contentType ?? 'This object'} cannot be rendered inline safely, so this embed will
-                be served as a download. OES supports inline embeds for{' '}
+                be served as a download. Record Store supports inline embeds for{' '}
                 {settings.embeddable_content_types.join(', ')}.
               </p>
             </div>

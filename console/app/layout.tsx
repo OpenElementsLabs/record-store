@@ -8,8 +8,8 @@ import { Providers } from '@/components/providers';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: { default: 'OES Console', template: '%s · OES Console' },
-  description: 'Administrative console for OES object storage.',
+  title: { default: 'Record Store Console', template: '%s · Record Store Console' },
+  description: 'Administrative console for Record Store object storage.',
   robots: { index: false, follow: false },
 };
 
@@ -37,7 +37,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           // Applies the stored theme before first paint so the page never
           // flashes the wrong palette.
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('oes-theme');var d=t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);}catch(e){}})();`,
+            __html: `(function(){try{var t=localStorage.getItem('record-store-theme');var d=t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);}catch(e){}})();`,
           }}
         />
       </head>

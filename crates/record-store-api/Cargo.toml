@@ -1,0 +1,40 @@
+[package]
+name = "record-store-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+http.workspace = true
+record-store-auth = { path = "../record-store-auth" }
+record-store-audit = { path = "../record-store-audit" }
+record-store-cluster = { path = "../record-store-cluster" }
+record-store-config = { path = "../record-store-config" }
+record-store-consensus = { path = "../record-store-consensus" }
+record-store-core = { path = "../record-store-core" }
+record-store-events = { path = "../record-store-events" }
+record-store-metadata = { path = "../record-store-metadata" }
+record-store-replication = { path = "../record-store-replication" }
+record-store-service = { path = "../record-store-service" }
+record-store-sharing = { path = "../record-store-sharing" }
+record-store-storage = { path = "../record-store-storage" }
+serde.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

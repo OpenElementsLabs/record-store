@@ -8,7 +8,7 @@ import type { WebhookDeliveryLog, WebhookSubscription } from '@/types/api';
 
 const subscription: WebhookSubscription = {
   id: 'webhook-1',
-  target_url: 'https://hooks.example.test/oes',
+  target_url: 'https://hooks.example.test/record-store',
   event_types: ['object.created'],
   bucket_filter: 'reports',
   object_prefix_filter: 'daily/',
@@ -56,7 +56,7 @@ describe('WebhooksScreen', () => {
     const create = await screen.findByRole('dialog');
     await userEvent.type(
       within(create).getByLabelText('Endpoint URL'),
-      'https://hooks.example.test/oes',
+      'https://hooks.example.test/record-store',
     );
     await userEvent.type(within(create).getByLabelText('Bucket filter'), 'reports');
     await userEvent.type(within(create).getByLabelText('Key prefix filter'), 'daily/');
@@ -158,7 +158,7 @@ describe('WebhooksScreen', () => {
     expect(await screen.findByText('none recently')).toBeTruthy();
   });
 
-  it('offers no secret rotation or delivery retry, because OES has neither', async () => {
+  it('offers no secret rotation or delivery retry, because Record Store has neither', async () => {
     webhooks = [subscription];
     deliveries = [];
     renderWithProviders(<WebhooksScreen />);

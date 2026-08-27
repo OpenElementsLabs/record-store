@@ -26,7 +26,7 @@ import { keyBasename } from '@/lib/format';
 /**
  * Copies one object to a chosen bucket and key.
  *
- * OES streams the bytes internally, so the browser never carries them. The
+ * Record Store streams the bytes internally, so the browser never carries them. The
  * dialog therefore stays responsive for a multi-gigabyte object, and the only
  * thing being waited on is the server's own copy.
  */
@@ -100,8 +100,8 @@ function CopyForm({
       <DialogHeader>
         <DialogTitle>Copy object</DialogTitle>
         <DialogDescription>
-          OES copies the bytes itself. Nothing is downloaded to this browser, and the source is left
-          unchanged.
+          Record Store copies the bytes itself. Nothing is downloaded to this browser, and the
+          source is left unchanged.
         </DialogDescription>
       </DialogHeader>
       <form

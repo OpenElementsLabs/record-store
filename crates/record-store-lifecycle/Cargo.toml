@@ -1,0 +1,28 @@
+[package]
+name = "record-store-lifecycle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+record-store-audit = { path = "../record-store-audit" }
+record-store-core = { path = "../record-store-core" }
+record-store-metadata = { path = "../record-store-metadata" }
+record-store-service = { path = "../record-store-service" }
+redb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+record-store-storage = { path = "../record-store-storage" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -45,7 +45,7 @@ import { formatCount, formatDateTime } from '@/lib/format';
 import type { EmbedLink, ShareLink } from '@/types/api';
 
 /**
- * Everything currently pointing at one object from outside OES.
+ * Everything currently pointing at one object from outside Record Store.
  *
  * Shares and embeds are listed apart because they are different things: one is a
  * page a person opens, the other is a URL an application fetches. Merging them
@@ -102,7 +102,7 @@ export function SharingTab({
           <div className="min-w-0">
             <CardTitle>Share links</CardTitle>
             <CardDescription>
-              For people. Each link opens an OES page showing this object and nothing else.
+              For people. Each link opens a Record Store page showing this object and nothing else.
             </CardDescription>
           </div>
           {canManage && sharesEnabled && settings.data ? (
@@ -128,7 +128,7 @@ export function SharingTab({
               title="No share links"
               description={
                 sharesEnabled
-                  ? 'Create one to let someone read this object without an OES account.'
+                  ? 'Create one to let someone read this object without a Record Store account.'
                   : 'Share links are disabled for this deployment.'
               }
             />
@@ -360,7 +360,7 @@ function ShareRow({
         open={confirming === 'revoke'}
         onOpenChange={(open) => (open ? undefined : setConfirming(null))}
         title={`Revoke ${share.label}?`}
-        description="The next request against this link fails. Anyone who already downloaded the object keeps their copy — OES controls future access, not copies already made."
+        description="The next request against this link fails. Anyone who already downloaded the object keeps their copy — Record Store controls future access, not copies already made."
         confirmLabel="Revoke link"
         pending={withdrawal.isPending}
         error={withdrawal.error}

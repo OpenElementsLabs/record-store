@@ -1,8 +1,8 @@
 {
-  "name": "oes-console",
+  "name": "record-store-console",
   "version": "0.1.0",
   "private": true,
-  "description": "OES web console: the administrative interface for the OES management API.",
+  "description": "Record Store web console: the administrative interface for the Record Store management API.",
   "scripts": {
     "dev": "next dev --port 7602",
     "build": "next build",

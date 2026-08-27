@@ -1,0 +1,51 @@
+[package]
+name = "record-store-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+clap.workspace = true
+fs2.workspace = true
+hex.workspace = true
+record-store-api = { path = "../../crates/record-store-api" }
+record-store-audit = { path = "../../crates/record-store-audit" }
+record-store-auth = { path = "../../crates/record-store-auth" }
+record-store-cluster = { path = "../../crates/record-store-cluster" }
+record-store-config = { path = "../../crates/record-store-config" }
+record-store-consensus = { path = "../../crates/record-store-consensus" }
+record-store-core = { path = "../../crates/record-store-core" }
+record-store-events = { path = "../../crates/record-store-events" }
+record-store-lifecycle = { path = "../../crates/record-store-lifecycle" }
+record-store-metadata = { path = "../../crates/record-store-metadata" }
+record-store-observability = { path = "../../crates/record-store-observability" }
+record-store-protocol = { path = "../../crates/record-store-protocol" }
+record-store-replication = { path = "../../crates/record-store-replication" }
+record-store-rpc = { path = "../../crates/record-store-rpc" }
+record-store-s3 = { path = "../../crates/record-store-s3" }
+record-store-service = { path = "../../crates/record-store-service" }
+record-store-sharing = { path = "../../crates/record-store-sharing" }
+record-store-storage = { path = "../../crates/record-store-storage" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+bytes.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

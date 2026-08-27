@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { isElementEmbeddable, isPreviewable, previewKind, previewKindLabel } from './preview-kind';
 
 describe('previewKind', () => {
-  it('classifies the formats OES is prepared to render', () => {
+  it('classifies the formats Record Store is prepared to render', () => {
     expect(previewKind('image/png')).toBe('image');
     expect(previewKind('image/jpeg')).toBe('image');
     expect(previewKind('video/mp4')).toBe('video');

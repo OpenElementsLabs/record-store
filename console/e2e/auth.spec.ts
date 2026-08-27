@@ -18,13 +18,13 @@ test.describe('authentication', () => {
     await expect(page).toHaveURL(/\/login/);
     // No session cookie may exist after a refused sign-in.
     const cookies = await page.context().cookies();
-    expect(cookies.find((cookie) => cookie.name === 'oes_session')).toBeUndefined();
+    expect(cookies.find((cookie) => cookie.name === 'record_store_session')).toBeUndefined();
   });
 
   test('signing in stores the session in an HTTP-only cookie', async ({ page }) => {
     await signIn(page);
     const cookies = await page.context().cookies();
-    const sessionCookie = cookies.find((cookie) => cookie.name === 'oes_session');
+    const sessionCookie = cookies.find((cookie) => cookie.name === 'record_store_session');
     expect(sessionCookie).toBeDefined();
     // Script must never be able to read the credential.
     expect(sessionCookie?.httpOnly).toBe(true);
@@ -32,7 +32,9 @@ test.describe('authentication', () => {
 
     const visible = await page.evaluate(() => document.cookie);
     expect(visible).not.toContain(MANAGEMENT_TOKEN);
-    expect(await page.evaluate(() => window.localStorage.getItem('oes_session'))).toBeNull();
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('record_store_session')),
+    ).toBeNull();
   });
 
   test('a protected page keeps working after a refresh', async ({ page }) => {

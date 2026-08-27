@@ -331,7 +331,7 @@ function consequenceFor(pending: PendingAction | null): string | undefined {
     case 'maintenance':
       return undefined;
     case 'decommission':
-      return 'OES refuses this if it would drop object versions below their required durability. The refusal will be shown here rather than overridden.';
+      return 'Record Store refuses this if it would drop object versions below their required durability. The refusal will be shown here rather than overridden.';
   }
 }
 

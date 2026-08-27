@@ -17,13 +17,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-func TestOESCompatibility(t *testing.T) {
-	accessKey := os.Getenv("OES_ROOT_ACCESS_KEY")
-	secretKey := os.Getenv("OES_ROOT_SECRET_KEY")
+func TestRecordStoreCompatibility(t *testing.T) {
+	accessKey := os.Getenv("RECORD_STORE_ROOT_ACCESS_KEY")
+	secretKey := os.Getenv("RECORD_STORE_ROOT_SECRET_KEY")
 	if accessKey == "" || secretKey == "" {
-		t.Fatal("OES_ROOT_ACCESS_KEY and OES_ROOT_SECRET_KEY are required")
+		t.Fatal("RECORD_STORE_ROOT_ACCESS_KEY and RECORD_STORE_ROOT_SECRET_KEY are required")
 	}
-	endpoint := os.Getenv("OES_COMPAT_ENDPOINT")
+	endpoint := os.Getenv("RECORD_STORE_COMPAT_ENDPOINT")
 	if endpoint == "" {
 		endpoint = "http://127.0.0.1:7600"
 	}
@@ -40,7 +40,7 @@ func TestOESCompatibility(t *testing.T) {
 		options.BaseEndpoint = aws.String(endpoint)
 		options.UsePathStyle = true
 	})
-	bucket := fmt.Sprintf("oes-go-%d", time.Now().UnixNano())
+	bucket := fmt.Sprintf("record-store-go-%d", time.Now().UnixNano())
 	if _, err = client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
 		t.Fatal(err)
 	}

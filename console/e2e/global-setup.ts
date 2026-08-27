@@ -1,11 +1,11 @@
 import type { FullConfig } from '@playwright/test';
 
-/** Refuses to run UI tests until the owned backend proves its OES identity. */
+/** Refuses to run UI tests until the owned backend proves its Record Store identity. */
 export default async function globalSetup(_config: FullConfig): Promise<void> {
-  const managementUrl = required('OES_E2E_MANAGEMENT_URL');
-  const consoleUrl = required('OES_E2E_CONSOLE_URL');
-  const expectedMode = required('OES_E2E_EXPECTED_MODE');
-  const token = required('OES_E2E_TOKEN');
+  const managementUrl = required('RECORD_STORE_E2E_MANAGEMENT_URL');
+  const consoleUrl = required('RECORD_STORE_E2E_CONSOLE_URL');
+  const expectedMode = required('RECORD_STORE_E2E_EXPECTED_MODE');
+  const token = required('RECORD_STORE_E2E_TOKEN');
 
   const response = await fetch(`${managementUrl}/api/v1/system/info`, {
     headers: { authorization: `Bearer ${token}` },
@@ -15,7 +15,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
   }
   const identity = (await response.json()) as Record<string, unknown>;
   if (
-    identity.name !== 'oes' ||
+    identity.name !== 'record-store' ||
     identity.mode !== expectedMode ||
     typeof identity.version !== 'string'
   ) {

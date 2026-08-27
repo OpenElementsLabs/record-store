@@ -109,7 +109,7 @@ describe('QuotaSection', () => {
 
   it('round-trips a stored limit unchanged when it is not edited', async () => {
     // The stored value is not a whole number of GB, so a naive unit split would
-    // send back a different byte count than OES has recorded.
+    // send back a different byte count than Record Store has recorded.
     renderWithProviders(
       <QuotaSection
         record={bucket({

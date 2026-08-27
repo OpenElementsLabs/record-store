@@ -1,0 +1,35 @@
+[package]
+name = "record-store-rpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+record-store-cluster = { path = "../record-store-cluster" }
+record-store-consensus = { path = "../record-store-consensus" }
+record-store-core = { path = "../record-store-core" }
+record-store-protocol = { path = "../record-store-protocol" }
+record-store-storage = { path = "../record-store-storage" }
+openraft.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

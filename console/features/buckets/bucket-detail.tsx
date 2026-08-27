@@ -253,7 +253,7 @@ function BucketOverview({
 /**
  * Policies that can reach this bucket.
  *
- * OES scopes authorization by resource pattern, not by an access list attached
+ * Record Store scopes authorization by resource pattern, not by an access list attached
  * to the bucket. This therefore shows which policies match this bucket rather
  * than pretending the bucket owns a permission list of its own.
  */

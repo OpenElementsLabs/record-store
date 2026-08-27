@@ -37,6 +37,8 @@ describe('NodeDetails', () => {
     expect(screen.getByText('region=east')).toBeTruthy();
     expect(screen.getByText('zone=z2')).toBeTruthy();
     expect(screen.getByText('2.50 kB used of 10.0 kB')).toBeTruthy();
-    expect(String(fetch.mock.calls[0]?.[0])).toContain('/api/oes/v1/nodes/018f-node-identifier');
+    expect(String(fetch.mock.calls[0]?.[0])).toContain(
+      '/api/record-store/v1/nodes/018f-node-identifier',
+    );
   });
 });

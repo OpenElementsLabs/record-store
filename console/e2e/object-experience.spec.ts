@@ -13,9 +13,9 @@ import { createHash } from 'node:crypto';
 
 import { expect, MANAGEMENT_TOKEN, test, uniqueBucket } from './fixtures';
 
-const MANAGEMENT_URL = process.env.OES_E2E_MANAGEMENT_URL ?? 'http://127.0.0.1:47601';
+const MANAGEMENT_URL = process.env.RECORD_STORE_E2E_MANAGEMENT_URL ?? 'http://127.0.0.1:47601';
 /** Where object bytes are published, and therefore where embeds resolve. */
-const STORAGE_URL = `http://127.0.0.1:${process.env.OES_E2E_S3_PORT ?? '47600'}`;
+const STORAGE_URL = `http://127.0.0.1:${process.env.RECORD_STORE_E2E_S3_PORT ?? '47600'}`;
 
 /** A one-pixel PNG, which a browser will genuinely decode. */
 const PNG = Buffer.from(
@@ -84,7 +84,7 @@ test.describe('object preview', () => {
     await upload(bucket, 'brand/logo.png', 'image/png', PNG);
 
     await page.goto(objectPath(bucket, 'brand/logo.png'));
-    // Preview leads for an object OES can render.
+    // Preview leads for an object Record Store can render.
     await expect(page.getByRole('tab', { name: 'Preview' })).toHaveAttribute(
       'aria-selected',
       'true',
@@ -137,7 +137,7 @@ test.describe('object preview', () => {
     await expect(page.getByText('"replicas": 3')).toBeVisible();
 
     await page.goto(objectPath(bucket, 'broken.json'));
-    // A file that was never valid JSON says nothing about OES's storage.
+    // A file that was never valid JSON says nothing about Record Store's storage.
     await expect(page.getByText('not valid JSON')).toBeVisible();
     await expect(page.getByText(/corrupt/i)).toHaveCount(0);
   });
@@ -174,13 +174,13 @@ test.describe('object preview', () => {
       bucket,
       'page.html',
       'text/html',
-      '<script>window.__oesEscaped = true</script><h1>owned</h1>',
+      '<script>window.__recordStoreEscaped = true</script><h1>owned</h1>',
     );
     await upload(
       bucket,
       'drawing.svg',
       'image/svg+xml',
-      '<svg xmlns="http://www.w3.org/2000/svg" onload="window.__oesEscaped = true"></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" onload="window.__recordStoreEscaped = true"></svg>',
     );
 
     for (const key of ['page.html', 'drawing.svg']) {
@@ -188,7 +188,7 @@ test.describe('object preview', () => {
       await expect(page.getByRole('tab', { name: 'Preview' })).toHaveCount(0);
       await expect(page.getByText(/cannot be shown in the browser safely/)).toBeVisible();
       // Nothing from the object ran, and nothing from it was rendered.
-      expect(await page.evaluate(() => '__oesEscaped' in window)).toBe(false);
+      expect(await page.evaluate(() => '__recordStoreEscaped' in window)).toBe(false);
       await expect(page.getByRole('heading', { name: 'owned' })).toHaveCount(0);
     }
   });
@@ -292,7 +292,7 @@ test.describe('share links', () => {
     await visitorPage.goto(shareUrl);
     await expect(visitorPage.getByRole('heading', { name: 'summary.txt' })).toBeVisible();
     await expect(visitorPage.getByText('quarterly summary')).toBeVisible();
-    await expect(visitorPage.getByText('Shared securely through OES')).toBeVisible();
+    await expect(visitorPage.getByText('Shared securely through Record Store')).toBeVisible();
     // No administrative surface reaches a recipient.
     await expect(visitorPage.getByRole('navigation', { name: 'Console sections' })).toHaveCount(0);
     await expect(visitorPage.getByText(bucket)).toHaveCount(0);
@@ -384,7 +384,7 @@ test.describe('share links', () => {
 });
 
 test.describe('embeds', () => {
-  test('an embed renders on a page OES does not control, and stops when revoked', async ({
+  test('an embed renders on a page Record Store does not control, and stops when revoked', async ({
     signedIn,
     browser,
   }) => {
@@ -423,7 +423,7 @@ test.describe('embeds', () => {
       .poll(() => embedded.evaluate((element: HTMLImageElement) => element.naturalWidth))
       .toBeGreaterThan(0);
 
-    // The bytes are what OES stored, with the right type and no sniffing.
+    // The bytes are what Record Store stored, with the right type and no sniffing.
     const direct = await visitorPage.request.get(embedUrl);
     expect(direct.status()).toBe(200);
     expect(direct.headers()['content-type']).toBe('image/png');
@@ -556,7 +556,7 @@ test.describe('capability delivery', () => {
     ]);
     await upload(bucket, 'clip.mp4', 'video/mp4', body);
 
-    const previewUrl = `/api/oes/v1/buckets/${encodeURIComponent(bucket)}/object-preview/clip.mp4`;
+    const previewUrl = `/api/record-store/v1/buckets/${encodeURIComponent(bucket)}/object-preview/clip.mp4`;
     await page.goto(objectPath(bucket, 'clip.mp4'));
     const partial = await page.request.get(previewUrl, { headers: { range: 'bytes=0-99' } });
     expect(partial.status()).toBe(206);

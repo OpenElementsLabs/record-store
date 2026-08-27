@@ -1,8 +1,8 @@
 /**
  * The single entry point for every management API call the browser makes.
  *
- * Requests go to this application's own origin under `/api/oes`, which forwards
- * them to the OES management API with the session credential attached. That
+ * Requests go to this application's own origin under `/api/record-store`, which forwards
+ * them to the Record Store management API with the session credential attached. That
  * keeps the credential in an HTTP-only cookie the browser cannot read, avoids
  * cross-origin configuration, and means no component ever handles a token.
  */
@@ -10,7 +10,7 @@
 import { ApiError, apiErrorFromResponse, networkError } from './error';
 
 /** Path prefix served by the console's own forwarding route. */
-export const API_BASE = '/api/oes';
+export const API_BASE = '/api/record-store';
 
 export type QueryValue = string | number | boolean | null | undefined;
 

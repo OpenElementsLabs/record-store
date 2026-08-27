@@ -21,8 +21,8 @@ export function ClusterGuard({ children }: { readonly children: React.ReactNode 
       <CardContent className="flex flex-col items-center gap-3 px-6 py-12 text-center">
         <p className="text-sm font-medium text-ink">Cluster features are not enabled</p>
         <p className="max-w-md text-sm text-ink-muted">
-          This OES deployment is running standalone. Nodes, replication, repair, and rebalancing
-          exist only when the server runs in cluster mode.
+          This Record Store deployment is running standalone. Nodes, replication, repair, and
+          rebalancing exist only when the server runs in cluster mode.
         </p>
         <Button asChild size="sm">
           <Link href="/">Back to overview</Link>

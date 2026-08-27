@@ -12,7 +12,7 @@ function request(
   headers: Record<string, string> = {},
   body?: ReadableStream<Uint8Array>,
 ): Request {
-  return new Request('http://console.test/api/oes/v1/objects?version=4', {
+  return new Request('http://console.test/api/record-store/v1/objects?version=4', {
     method,
     headers: { host: 'console.test', ...headers },
     ...(body ? { body, duplex: 'half' } : {}),
@@ -21,13 +21,13 @@ function request(
 
 describe('management API proxy boundary', () => {
   beforeEach(() => {
-    process.env.OES_API_URL = 'http://management.test:7601/';
+    process.env.RECORD_STORE_API_URL = 'http://management.test:7601/';
     sessionToken.mockResolvedValue('server-session-token');
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    delete process.env.OES_API_URL;
+    delete process.env.RECORD_STORE_API_URL;
   });
 
   it('requires the HTTP-only session before contacting the upstream API', async () => {

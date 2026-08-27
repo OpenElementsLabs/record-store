@@ -1,7 +1,7 @@
-# The OES web console.
+# The Record Store web console.
 #
 # The console is a client of the management API, never a second source of truth.
-# It is deliberately a separate image so a headless OES deployment carries no
+# It is deliberately a separate image so a headless Record Store deployment carries no
 # frontend, and so the console can be upgraded independently.
 FROM node:24-bookworm-slim AS deps
 WORKDIR /app
@@ -29,7 +29,7 @@ COPY --from=builder --chown=console:console /app/public ./public
 ENV NODE_ENV=production \
     PORT=7602 \
     HOSTNAME=0.0.0.0 \
-    OES_API_URL=http://oes:7601
+    RECORD_STORE_API_URL=http://record-store:7601
 
 USER console:console
 EXPOSE 7602

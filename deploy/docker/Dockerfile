@@ -2,28 +2,28 @@ FROM rust:1.97-bookworm AS builder
 WORKDIR /src
 
 COPY . .
-RUN cargo build --locked --release --bin oes-server --bin oes
+RUN cargo build --locked --release --bin record-store-server --bin record-store
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 10001 oes \
-    && useradd --system --uid 10001 --gid oes --home-dir /nonexistent --shell /usr/sbin/nologin oes \
-    && install --directory --owner oes --group oes /var/lib/oes
+    && groupadd --system --gid 10001 record-store \
+    && useradd --system --uid 10001 --gid record-store --home-dir /nonexistent --shell /usr/sbin/nologin record-store \
+    && install --directory --owner record-store --group record-store /var/lib/record-store
 
-COPY --from=builder /src/target/release/oes-server /usr/local/bin/oes-server
-COPY --from=builder /src/target/release/oes /usr/local/bin/oes
+COPY --from=builder /src/target/release/record-store-server /usr/local/bin/record-store-server
+COPY --from=builder /src/target/release/record-store /usr/local/bin/record-store
 
-ENV OES_S3_BIND=0.0.0.0:7600 \
-    OES_API_BIND=0.0.0.0:7601 \
-    OES_STORAGE_DATA_DIRECTORY=/var/lib/oes \
-    OES_LOG_JSON=true
+ENV RECORD_STORE_S3_BIND=0.0.0.0:7600 \
+    RECORD_STORE_API_BIND=0.0.0.0:7601 \
+    RECORD_STORE_STORAGE_DATA_DIRECTORY=/var/lib/record-store \
+    RECORD_STORE_LOG_JSON=true
 
-USER oes:oes
-VOLUME ["/var/lib/oes"]
+USER record-store:record-store
+VOLUME ["/var/lib/record-store"]
 EXPOSE 7600 7601 7603
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD ["oes", "status", "--endpoint", "http://127.0.0.1:7601"]
-ENTRYPOINT ["oes", "server"]
+    CMD ["record-store", "status", "--endpoint", "http://127.0.0.1:7601"]
+ENTRYPOINT ["record-store", "server"]

@@ -1,5 +1,5 @@
 {
-  "name": "oes-aws-sdk-js-v3-compatibility",
+  "name": "record-store-aws-sdk-js-v3-compatibility",
   "private": true,
   "type": "module",
   "dependencies": {

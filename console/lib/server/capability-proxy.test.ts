@@ -12,12 +12,12 @@ function request(
 
 describe('public capability boundary', () => {
   beforeEach(() => {
-    process.env.OES_API_URL = 'http://management.test:7601/';
+    process.env.RECORD_STORE_API_URL = 'http://management.test:7601/';
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    delete process.env.OES_API_URL;
+    delete process.env.RECORD_STORE_API_URL;
   });
 
   it('never attaches a credential of any kind', async () => {
@@ -29,7 +29,7 @@ describe('public capability boundary', () => {
     await forwardCapabilityRequest(
       request('GET', {
         authorization: 'Bearer browser-supplied',
-        cookie: 'oes_session=a-management-session',
+        cookie: 'record_store_session=a-management-session',
       }),
       '/s/AbCdEf/content',
     );
@@ -49,7 +49,7 @@ describe('public capability boundary', () => {
         range: 'bytes=100-199',
         'if-none-match': '"etag-1"',
         origin: 'https://example.com',
-        'x-oes-share-ticket': 'ticket-value',
+        'x-record-store-share-ticket': 'ticket-value',
         'x-untrusted': 'drop-me',
       }),
       '/s/AbCdEf/content',
@@ -59,7 +59,7 @@ describe('public capability boundary', () => {
     expect(headers.get('range')).toBe('bytes=100-199');
     expect(headers.get('if-none-match')).toBe('"etag-1"');
     expect(headers.get('origin')).toBe('https://example.com');
-    expect(headers.get('x-oes-share-ticket')).toBe('ticket-value');
+    expect(headers.get('x-record-store-share-ticket')).toBe('ticket-value');
     expect(headers.get('x-untrusted')).toBeNull();
   });
 
@@ -119,7 +119,7 @@ describe('public capability boundary', () => {
   it('drops upstream headers that were never meant to reach the public', async () => {
     const fetch = vi.fn().mockResolvedValue(
       new Response('bytes', {
-        headers: { 'set-cookie': 'oes_session=leak', 'x-internal-node': 'node-3' },
+        headers: { 'set-cookie': 'record_store_session=leak', 'x-internal-node': 'node-3' },
       }),
     );
     vi.stubGlobal('fetch', fetch);
@@ -145,13 +145,17 @@ describe('public capability boundary', () => {
 
     await readShareDescriptor('AbCdEf', 'ticket-value');
     expect(
-      new Headers((fetch.mock.calls[0]?.[1] as RequestInit).headers).get('x-oes-share-ticket'),
+      new Headers((fetch.mock.calls[0]?.[1] as RequestInit).headers).get(
+        'x-record-store-share-ticket',
+      ),
     ).toBe('ticket-value');
 
     fetch.mockClear();
     await readShareDescriptor('AbCdEf', null);
     expect(
-      new Headers((fetch.mock.calls[0]?.[1] as RequestInit).headers).get('x-oes-share-ticket'),
+      new Headers((fetch.mock.calls[0]?.[1] as RequestInit).headers).get(
+        'x-record-store-share-ticket',
+      ),
     ).toBeNull();
   });
 });

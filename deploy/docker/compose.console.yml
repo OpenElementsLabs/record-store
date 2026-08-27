@@ -1,10 +1,10 @@
-# Standalone OES plus the web console.
+# Standalone Record Store plus the web console.
 #
 # The console talks only to the management API on 7601, over the Compose
 # network. The S3 API stays available to applications on 7600 and is not used by
 # the console for administration.
 services:
-  oes:
+  record-store:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
@@ -18,20 +18,20 @@ services:
       - "7600:7600"
       - "7601:7601"
     environment:
-      OES_ROOT_ACCESS_KEY: "${OES_ROOT_ACCESS_KEY:-local-admin}"
-      OES_ROOT_SECRET_KEY: "${OES_ROOT_SECRET_KEY:-local-development-secret-change-me}"
-      OES_CREDENTIAL_MASTER_KEY: "${OES_CREDENTIAL_MASTER_KEY:-local-development-master-key-change-me}"
-      OES_MANAGEMENT_SYSTEM_TOKEN: "${OES_MANAGEMENT_SYSTEM_TOKEN:-local-development-management-token-change-me}"
-      OES_MANAGEMENT_STORAGE_TOKEN: "${OES_MANAGEMENT_STORAGE_TOKEN:-local-development-storage-token-change-me}"
-      OES_MANAGEMENT_AUDITOR_TOKEN: "${OES_MANAGEMENT_AUDITOR_TOKEN:-local-development-auditor-token-change-me}"
-      OES_METRICS_SCRAPE_TOKEN: "${OES_METRICS_SCRAPE_TOKEN:-local-development-metrics-token-change-me}"
-      OES_STORAGE_ENCRYPTION_ENABLED: "${OES_STORAGE_ENCRYPTION_ENABLED:-true}"
-      OES_ROOT_S3_ENABLED: "${OES_ROOT_S3_ENABLED:-true}"
-      OES_LOG_JSON: "${OES_LOG_JSON:-true}"
+      RECORD_STORE_ROOT_ACCESS_KEY: "${RECORD_STORE_ROOT_ACCESS_KEY:-local-admin}"
+      RECORD_STORE_ROOT_SECRET_KEY: "${RECORD_STORE_ROOT_SECRET_KEY:-local-development-secret-change-me}"
+      RECORD_STORE_CREDENTIAL_MASTER_KEY: "${RECORD_STORE_CREDENTIAL_MASTER_KEY:-local-development-master-key-change-me}"
+      RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN: "${RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN:-local-development-management-token-change-me}"
+      RECORD_STORE_MANAGEMENT_STORAGE_TOKEN: "${RECORD_STORE_MANAGEMENT_STORAGE_TOKEN:-local-development-storage-token-change-me}"
+      RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN: "${RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN:-local-development-auditor-token-change-me}"
+      RECORD_STORE_METRICS_SCRAPE_TOKEN: "${RECORD_STORE_METRICS_SCRAPE_TOKEN:-local-development-metrics-token-change-me}"
+      RECORD_STORE_STORAGE_ENCRYPTION_ENABLED: "${RECORD_STORE_STORAGE_ENCRYPTION_ENABLED:-true}"
+      RECORD_STORE_ROOT_S3_ENABLED: "${RECORD_STORE_ROOT_S3_ENABLED:-true}"
+      RECORD_STORE_LOG_JSON: "${RECORD_STORE_LOG_JSON:-true}"
     volumes:
-      - oes-data:/var/lib/oes
+      - record-store-data:/var/lib/record-store
     healthcheck:
-      test: ["CMD", "oes", "status", "--endpoint", "http://127.0.0.1:7601"]
+      test: ["CMD", "record-store", "status", "--endpoint", "http://127.0.0.1:7601"]
       interval: 30s
       timeout: 5s
       start_period: 5s
@@ -48,16 +48,16 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
     depends_on:
-      oes:
+      record-store:
         condition: service_healthy
     ports:
       - "7602:7602"
     environment:
-      # The console reaches OES over the Compose network, not from the browser.
-      OES_API_URL: "http://oes:7601"
+      # The console reaches Record Store over the Compose network, not from the browser.
+      RECORD_STORE_API_URL: "http://record-store:7601"
       # Local development is plain HTTP on loopback. Leave this unset behind TLS
       # so the session cookie is marked Secure.
-      OES_CONSOLE_SECURE_COOKIES: "${OES_CONSOLE_SECURE_COOKIES:-false}"
+      RECORD_STORE_CONSOLE_SECURE_COOKIES: "${RECORD_STORE_CONSOLE_SECURE_COOKIES:-false}"
 
 volumes:
-  oes-data:
+  record-store-data:

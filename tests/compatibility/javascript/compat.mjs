@@ -15,7 +15,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import crypto from "node:crypto";
 
-const endpoint = process.env.OES_COMPAT_ENDPOINT ?? "http://127.0.0.1:7600";
+const endpoint = process.env.RECORD_STORE_COMPAT_ENDPOINT ?? "http://127.0.0.1:7600";
 const client = new S3Client({
   endpoint,
   region: "us-east-1",
@@ -23,11 +23,11 @@ const client = new S3Client({
   requestChecksumCalculation: "WHEN_REQUIRED",
   responseChecksumValidation: "WHEN_REQUIRED",
   credentials: {
-    accessKeyId: process.env.OES_ROOT_ACCESS_KEY,
-    secretAccessKey: process.env.OES_ROOT_SECRET_KEY,
+    accessKeyId: process.env.RECORD_STORE_ROOT_ACCESS_KEY,
+    secretAccessKey: process.env.RECORD_STORE_ROOT_SECRET_KEY,
   },
 });
-const bucket = `oes-js-${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+const bucket = `record-store-js-${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
 
 function require(condition, message) {
   if (!condition) throw new Error(message);

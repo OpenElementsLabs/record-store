@@ -1,0 +1,37 @@
+[package]
+name = "record-store-replication"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+md-5.workspace = true
+record-store-audit = { path = "../record-store-audit" }
+record-store-cluster = { path = "../record-store-cluster" }
+record-store-consensus = { path = "../record-store-consensus" }
+record-store-core = { path = "../record-store-core" }
+record-store-metadata = { path = "../record-store-metadata" }
+record-store-protocol = { path = "../record-store-protocol" }
+record-store-rpc = { path = "../record-store-rpc" }
+record-store-storage = { path = "../record-store-storage" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

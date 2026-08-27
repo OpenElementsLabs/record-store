@@ -20,7 +20,7 @@ import { formatBytes, formatCount, formatDuration, formatRatio } from '@/lib/for
 /**
  * Operational metrics.
  *
- * OES exposes counters. Rates are derived here by comparing readings, which is
+ * Record Store exposes counters. Rates are derived here by comparing readings, which is
  * the only way a rate can exist, and the screen says how long it has been
  * watching so nobody mistakes a short window for a server-side average.
  */

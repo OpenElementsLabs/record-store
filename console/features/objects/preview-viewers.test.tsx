@@ -69,7 +69,7 @@ describe('TextViewer', () => {
 
     fetchMock.mockResolvedValue(textResponse('{"a":'));
     render(<TextViewer url="/preview2" kind="json" size={5} limitBytes={1024} />);
-    // Invalid JSON says something about the file, not about OES's storage.
+    // Invalid JSON says something about the file, not about Record Store's storage.
     expect(await screen.findByText(/not valid JSON/)).toBeTruthy();
     expect(screen.queryByText(/corrupt/i)).toBeNull();
   });

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { embedSnippet, hasEmbedSnippet } from './embed-snippet';
 
-const URL = 'https://oes.example.com/e/AbCdEf';
+const URL = 'https://record-store.example.com/e/AbCdEf';
 
 describe('embedSnippet', () => {
   it('produces the element that actually renders each media type', () => {
@@ -19,7 +19,7 @@ describe('embedSnippet', () => {
 
   it('leaves alt text empty for the page author to write', () => {
     // A wrong alternative text is worse for a screen-reader user than an empty
-    // one they can replace, and OES does not know what the image means in
+    // one they can replace, and Record Store does not know what the image means in
     // somebody else's page.
     const snippet = embedSnippet(URL, 'image/png');
     expect(snippet?.code).toContain('alt=""');

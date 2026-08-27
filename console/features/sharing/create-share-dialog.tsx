@@ -164,8 +164,8 @@ function ShareForm({
       <DialogHeader>
         <DialogTitle>Create a share link</DialogTitle>
         <DialogDescription>
-          A share link lets someone read {keyBasename(objectKey)} without an OES account. It grants
-          nothing else, and you can revoke it at any time.
+          A share link lets someone read {keyBasename(objectKey)} without a Record Store account. It
+          grants nothing else, and you can revoke it at any time.
         </DialogDescription>
       </DialogHeader>
       <form

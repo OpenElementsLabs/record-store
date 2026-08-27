@@ -31,10 +31,10 @@ async function handle(request: Request, context: Context): Promise<Response> {
 
   const forwarded = new Request(request, {});
   const ticket =
-    request.headers.get('x-oes-share-ticket') ??
+    request.headers.get('x-record-store-share-ticket') ??
     (await cookies()).get(SHARE_TICKET_COOKIE)?.value ??
     null;
-  if (ticket) forwarded.headers.set('x-oes-share-ticket', ticket);
+  if (ticket) forwarded.headers.set('x-record-store-share-ticket', ticket);
 
   return forwardCapabilityRequest(forwarded, `/s/${token}/content`, { search: download });
 }

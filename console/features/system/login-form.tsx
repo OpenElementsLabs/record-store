@@ -43,7 +43,7 @@ export function LoginForm({ next }: { readonly next: string }) {
       setToken('');
       router.replace(safeRedirect(next));
     } catch {
-      setError('The console could not reach the OES management API.');
+      setError('The console could not reach the Record Store management API.');
     } finally {
       setPending(false);
     }
@@ -57,7 +57,7 @@ export function LoginForm({ next }: { readonly next: string }) {
         <p className="mb-3 type-eyebrow-accent">Secure access</p>
         <h1 className="type-display">Welcome back</h1>
         <p className="mt-3 text-sm leading-6 text-foreground-muted">
-          Sign in to administer this OES deployment.
+          Sign in to administer this Record Store deployment.
         </p>
       </div>
 

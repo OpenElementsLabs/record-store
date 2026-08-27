@@ -111,7 +111,7 @@ describe('singleRequestUpload', () => {
     const request = only();
     expect(request.method).toBe('PUT');
     // Same-origin path: the console server holds the management credential.
-    expect(request.url).toBe('/api/oes/v1/buckets/uploads/object/docs/notes.txt');
+    expect(request.url).toBe('/api/record-store/v1/buckets/uploads/object/docs/notes.txt');
     expect(request.withCredentials).toBe(true);
     expect(request.headers.get('content-type')).toBe('text/plain');
   });

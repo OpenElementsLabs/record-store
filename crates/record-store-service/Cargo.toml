@@ -1,0 +1,24 @@
+[package]
+name = "record-store-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+record-store-core = { path = "../record-store-core" }
+record-store-events = { path = "../record-store-events" }
+record-store-metadata = { path = "../record-store-metadata" }
+record-store-storage = { path = "../record-store-storage" }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

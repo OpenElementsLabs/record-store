@@ -1,7 +1,7 @@
 /**
  * Embed snippets, generated from the object's validated media type.
  *
- * A snippet is only produced for a shape OES actually serves: an `<img>` for an
+ * A snippet is only produced for a shape Record Store actually serves: an `<img>` for an
  * image, a media element for audio and video, and nothing at all for a type that
  * has no safe element. Offering markup that will not work — or worse, markup
  * that invites a browser to interpret stored bytes as a document — would be a
@@ -19,7 +19,7 @@ export type EmbedSnippet = {
  * Builds the markup for one embed URL.
  *
  * `alt` is left empty rather than filled with the file name: the page author
- * knows what the image means in their context and OES does not, and a wrong
+ * knows what the image means in their context and Record Store does not, and a wrong
  * alternative text is worse for a screen-reader user than an empty one they can
  * replace. The comment in the snippet says so.
  */

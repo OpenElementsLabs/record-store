@@ -8,7 +8,7 @@
 /**
  * Decimal byte units.
  *
- * OES reports raw byte counts. The console renders them in decimal units
+ * Record Store reports raw byte counts. The console renders them in decimal units
  * throughout, matching how storage capacity is normally quoted, and never mixes
  * decimal and binary prefixes.
  */
@@ -127,7 +127,7 @@ export function formatDuration(seconds: number): string {
 /**
  * Splits an object key into its logical prefix segments.
  *
- * OES stores no directories: these segments exist only because a delimiter was
+ * Record Store stores no directories: these segments exist only because a delimiter was
  * applied to the key, which is what makes breadcrumb navigation possible.
  */
 export function keySegments(prefix: string): readonly string[] {
