@@ -1998,12 +1998,14 @@ checksum = "08ad765b21a08b1a8e5cdce052719188a23772bcbefb3c439f0baaf62c56ceac"
 name = "record-store-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64",
  "chrono",
  "futures-util",
  "http",
  "http-body-util",
+ "openraft",
  "record-store-audit",
  "record-store-auth",
  "record-store-cluster",
@@ -2013,6 +2015,7 @@ dependencies = [
  "record-store-events",
  "record-store-metadata",
  "record-store-replication",
+ "record-store-rpc",
  "record-store-service",
  "record-store-sharing",
  "record-store-storage",
@@ -2291,6 +2294,7 @@ dependencies = [
  "record-store-cluster",
  "record-store-consensus",
  "record-store-core",
+ "record-store-metadata",
  "record-store-protocol",
  "record-store-storage",
  "serde",
@@ -2300,6 +2304,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tonic",
  "tracing",
  "uuid",

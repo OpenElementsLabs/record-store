@@ -500,4 +500,209 @@ mod tests {
         assert!(second.contains("<Key>c</Key>"));
         assert!(second.contains("<IsTruncated>false</IsTruncated>"));
     }
+
+    /// ListObjectsV2's delimiter is what makes a flat keyspace look like folders
+    /// to a client. Prefixes must be rolled up and not also listed as keys.
+    #[tokio::test]
+    async fn a_delimiter_rolls_nested_keys_up_into_common_prefixes() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        for key in ["top.txt", "a/one.txt", "a/two.txt", "b/one.txt"] {
+            put(&application, "photos", key, b"x").await;
+        }
+
+        let response = send(
+            &application,
+            Method::GET,
+            "/photos?list-type=2&delimiter=/",
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_text(response).await;
+        assert!(document.contains("<Prefix>a/</Prefix>"), "{document}");
+        assert!(document.contains("<Prefix>b/</Prefix>"), "{document}");
+        assert!(document.contains("<Key>top.txt</Key>"), "{document}");
+        assert!(
+            !document.contains("<Key>a/one.txt</Key>"),
+            "a rolled-up key must not also be listed: {document}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prefix_restricts_the_listing_to_its_own_keyspace() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        for key in ["a/one.txt", "a/two.txt", "b/one.txt"] {
+            put(&application, "photos", key, b"x").await;
+        }
+
+        let response = send(
+            &application,
+            Method::GET,
+            "/photos?list-type=2&prefix=a/",
+            b"",
+            &[],
+        )
+        .await;
+        let document = body_text(response).await;
+        assert!(document.contains("a/one.txt"), "{document}");
+        assert!(!document.contains("b/one.txt"), "{document}");
+        assert_eq!(xml_value(&document, "KeyCount"), Some("2"), "{document}");
+    }
+
+    /// `start-after` is how a client resumes without a token, so it must exclude
+    /// the key it names rather than repeating it.
+    #[tokio::test]
+    async fn start_after_excludes_the_key_it_names() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        for key in ["a", "b", "c"] {
+            put(&application, "photos", key, b"x").await;
+        }
+
+        let response = send(
+            &application,
+            Method::GET,
+            "/photos?list-type=2&start-after=a",
+            b"",
+            &[],
+        )
+        .await;
+        let document = body_text(response).await;
+        assert!(!document.contains("<Key>a</Key>"), "{document}");
+        assert!(document.contains("<Key>b</Key>"), "{document}");
+    }
+
+    #[tokio::test]
+    async fn an_unparseable_listing_query_is_refused() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        for query in [
+            "/photos?list-type=2&max-keys=lots",
+            "/photos?list-type=2&continuation-token=not-base64!!",
+        ] {
+            let response = send(&application, Method::GET, query, b"", &[]).await;
+            assert!(
+                response.status().is_client_error(),
+                "{query} was accepted: {}",
+                response.status()
+            );
+        }
+    }
+
+    /// Version listing is how a client sees history, including the delete
+    /// markers that hide an object without removing it.
+    #[tokio::test]
+    async fn version_listing_reports_versions_and_delete_markers() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        let enable = send(
+            &application,
+            Method::PUT,
+            "/photos?versioning",
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+            &[],
+        )
+        .await;
+        assert_eq!(enable.status(), StatusCode::OK);
+
+        put(&application, "photos", "note.txt", b"one").await;
+        put(&application, "photos", "note.txt", b"two").await;
+        let deleted = send(&application, Method::DELETE, "/photos/note.txt", b"", &[]).await;
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+        let response = send(&application, Method::GET, "/photos?versions", b"", &[]).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_text(response).await;
+        assert_eq!(
+            document.matches("<Version>").count(),
+            2,
+            "both writes must remain listed: {document}"
+        );
+        assert!(
+            document.contains("<DeleteMarker>"),
+            "the delete must appear as a marker: {document}"
+        );
+    }
+
+    /// Multipart listings are how a client discovers uploads it can resume or
+    /// must abort; an upload missing from either listing leaks storage.
+    #[tokio::test]
+    async fn in_progress_multipart_uploads_and_their_parts_are_listable() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let initiated = send(
+            &application,
+            Method::POST,
+            "/photos/big.bin?uploads",
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(initiated.status(), StatusCode::OK);
+        let document = body_text(initiated).await;
+        let upload_id = xml_value(&document, "UploadId")
+            .expect("upload id")
+            .to_owned();
+
+        let part = send(
+            &application,
+            Method::PUT,
+            &format!("/photos/big.bin?partNumber=1&uploadId={upload_id}"),
+            &[b'x'; 16],
+            &[],
+        )
+        .await;
+        assert_eq!(part.status(), StatusCode::OK);
+
+        let uploads = send(&application, Method::GET, "/photos?uploads", b"", &[]).await;
+        assert_eq!(uploads.status(), StatusCode::OK);
+        let document = body_text(uploads).await;
+        assert!(document.contains(&upload_id), "{document}");
+
+        let parts = send(
+            &application,
+            Method::GET,
+            &format!("/photos/big.bin?uploadId={upload_id}"),
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(parts.status(), StatusCode::OK);
+        let document = body_text(parts).await;
+        assert_eq!(xml_value(&document, "PartNumber"), Some("1"), "{document}");
+    }
+
+    #[tokio::test]
+    async fn listing_parts_of_an_unknown_upload_reports_no_such_upload() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        let response = send(
+            &application,
+            Method::GET,
+            "/photos/big.bin?uploadId=0195f0c8-0000-7000-8000-0000000000ff",
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let document = body_text(response).await;
+        assert_eq!(
+            xml_value(&document, "Code"),
+            Some("NoSuchUpload"),
+            "{document}"
+        );
+    }
+
+    #[tokio::test]
+    async fn listings_against_an_absent_bucket_report_no_such_bucket() {
+        let (_directory, application, _credentials) = test_router().await;
+        for uri in ["/absent?list-type=2", "/absent?versions", "/absent?uploads"] {
+            let response = send(&application, Method::GET, uri, b"", &[]).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
+    }
 }

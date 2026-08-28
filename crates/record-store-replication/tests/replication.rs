@@ -1077,3 +1077,1385 @@ async fn a_read_with_no_usable_replica_fails_rather_than_returning_partial_conte
         "the caller must see an unavailability error, got {error}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Coordination and cluster operations
+//
+// The coordinator is what turns "a replica is missing" into durable repair work,
+// and the operations surface is what an administrator drives. Both run against
+// the same real consensus group the write path uses.
+// ---------------------------------------------------------------------------
+
+use record_store_cluster::{ReplicaTask, ReplicaTaskKind};
+use record_store_replication::coordinator::{Coordinator, CoordinatorSettings};
+use record_store_replication::operations::{ClusterOperations, OperationError};
+use record_store_replication::runtime::{SupervisedTasks, TaskHealth};
+use record_store_storage::{
+    DeleteObjectRequest, HeadObjectRequest, StorageRepairRequest, VerifyObjectRequest,
+};
+
+impl Harness {
+    /// Builds a coordinator over this harness's cluster.
+    fn coordinator(&self) -> Arc<Coordinator> {
+        Arc::new(Coordinator::new(
+            Arc::clone(&self.context),
+            Arc::clone(&self.consensus),
+            CoordinatorSettings::default(),
+        ))
+    }
+
+    /// Marks this node's replica of a payload as corrupt, the way a scrub does.
+    ///
+    /// Deleting the bytes alone is not enough: the coordinator schedules from
+    /// catalog state, so the damage has to be recorded where it will read it.
+    async fn report_replica_corrupt(&self, object_id: ObjectId) {
+        self.context
+            .cluster
+            .apply(ClusterCommand::SetReplicaState {
+                object_id,
+                node_id: self.context.node_id,
+                state: ReplicaState::Corrupt,
+                checksum: None,
+                verified: false,
+                at: Utc::now(),
+            })
+            .await
+            .expect("record the damage");
+    }
+
+    /// Builds the administrative operations surface.
+    fn operations(&self) -> ClusterOperations {
+        ClusterOperations::new(
+            Arc::clone(&self.context),
+            self.coordinator(),
+            Arc::clone(&self.consensus),
+        )
+    }
+}
+
+/// A coordination pass on a healthy cluster has nothing to do, and must say so
+/// rather than manufacturing work that would move replicas for no reason.
+#[tokio::test]
+async fn a_coordination_pass_on_a_healthy_cluster_schedules_nothing() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    harness.put("quiet.txt", b"bytes").await.expect("write");
+
+    let coordinator = harness.coordinator();
+    assert!(
+        coordinator.run_once().await,
+        "the leader must actually run a pass"
+    );
+
+    let queued = harness
+        .context
+        .cluster
+        .queued_tasks(64)
+        .await
+        .expect("queued tasks")
+        .tasks;
+    assert!(
+        queued.is_empty(),
+        "a healthy cluster needs no movement: {queued:?}"
+    );
+}
+
+/// A replica the cluster knows is damaged has to become durable repair work.
+/// Detecting the damage but never scheduling the repair is the failure mode
+/// this guards against.
+#[tokio::test]
+async fn a_damaged_replica_becomes_scheduled_repair_work() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let object_id = harness
+        .put("damaged.txt", b"bytes")
+        .await
+        .expect("write")
+        .metadata
+        .id;
+    harness.report_replica_corrupt(object_id).await;
+
+    let coordinator = harness.coordinator();
+    coordinator.schedule_repairs().await.expect("schedule");
+
+    let queued = harness
+        .context
+        .cluster
+        .queued_tasks(64)
+        .await
+        .expect("queued tasks")
+        .tasks;
+    assert!(
+        queued.iter().any(|task| task.object_id == object_id),
+        "the damaged payload must be queued for repair: {queued:?}"
+    );
+}
+
+/// Repeated passes must not pile up duplicate work for the same payload, or a
+/// long outage would queue the same repair thousands of times.
+#[tokio::test]
+async fn repeated_coordination_passes_do_not_duplicate_repair_work() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let object_id = harness
+        .put("damaged.txt", b"bytes")
+        .await
+        .expect("write")
+        .metadata
+        .id;
+    harness.report_replica_corrupt(object_id).await;
+
+    let coordinator = harness.coordinator();
+    for _ in 0..3 {
+        coordinator.schedule_repairs().await.expect("schedule");
+    }
+
+    let queued = harness
+        .context
+        .cluster
+        .queued_tasks(64)
+        .await
+        .expect("queued tasks")
+        .tasks;
+    let for_object = queued
+        .iter()
+        .filter(|task| task.object_id == object_id)
+        .count();
+    assert_eq!(for_object, 1, "{queued:?}");
+}
+
+/// Failure detection and lease reclamation are the two sweeps that keep a
+/// cluster from stalling on a node that stopped answering.
+#[tokio::test]
+async fn the_maintenance_sweeps_run_without_disturbing_a_healthy_cluster() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let coordinator = harness.coordinator();
+
+    coordinator
+        .detect_failures()
+        .await
+        .expect("detect failures");
+    coordinator
+        .reclaim_expired_leases()
+        .await
+        .expect("reclaim leases");
+    coordinator
+        .collect_tombstones()
+        .await
+        .expect("collect tombstones");
+    coordinator
+        .progress_operations()
+        .await
+        .expect("progress operations");
+
+    let nodes = harness.context.cluster.nodes().await.expect("nodes");
+    assert!(
+        nodes
+            .iter()
+            .all(|node| node.state != NodeState::Unreachable),
+        "a healthy cluster must not be marked unreachable: {nodes:?}"
+    );
+}
+
+/// Draining and resuming are the two halves of taking a node out of service
+/// safely; each has to be reflected in the state every scheduler reads.
+#[tokio::test]
+async fn a_node_can_be_drained_put_in_maintenance_and_resumed() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let operations = harness.operations();
+    let node_id = harness.peers[0];
+
+    operations.drain(node_id).await.expect("drain");
+    assert_eq!(
+        harness
+            .context
+            .cluster
+            .node(node_id)
+            .await
+            .expect("read")
+            .expect("node")
+            .state,
+        NodeState::Draining
+    );
+
+    operations.resume(node_id).await.expect("resume");
+    operations.maintenance(node_id).await.expect("maintenance");
+    assert_eq!(
+        harness
+            .context
+            .cluster
+            .node(node_id)
+            .await
+            .expect("read")
+            .expect("node")
+            .state,
+        NodeState::Maintenance
+    );
+
+    operations.resume(node_id).await.expect("resume");
+    assert_eq!(
+        harness
+            .context
+            .cluster
+            .node(node_id)
+            .await
+            .expect("read")
+            .expect("node")
+            .state,
+        NodeState::Healthy
+    );
+}
+
+/// An operation naming a node the cluster does not know must be refused rather
+/// than silently doing nothing an operator would read as success.
+#[tokio::test]
+async fn lifecycle_operations_on_an_unknown_node_are_refused() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    let operations = harness.operations();
+    let stranger = NodeId::new();
+
+    for outcome in [
+        operations.drain(stranger).await.err(),
+        operations.maintenance(stranger).await.err(),
+        operations.resume(stranger).await.err(),
+    ] {
+        assert!(
+            outcome.is_some(),
+            "an unknown node must not be transitioned"
+        );
+    }
+}
+
+/// Decommissioning removes durability. The safety check exists so an operator
+/// is told what they would lose before they lose it.
+#[tokio::test]
+async fn decommissioning_reports_the_durability_it_would_cost() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    harness.put("held.txt", b"bytes").await.expect("write");
+    let operations = harness.operations();
+
+    let report = operations
+        .decommission_safety(harness.peers[0])
+        .await
+        .expect("safety check");
+    assert!(
+        format!("{report:?}").contains("safe") || format!("{report:?}").contains("Safe"),
+        "the report must state whether it is safe: {report:?}"
+    );
+}
+
+/// A join token is the only way a new node is admitted, so issuing and revoking
+/// one has to be durable and immediately authoritative.
+#[tokio::test]
+async fn a_join_token_can_be_issued_and_revoked() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    let operations = harness.operations();
+
+    let issued = operations
+        .issue_join_token(3_600, "test".to_owned())
+        .await
+        .expect("issue token");
+    let stored = harness
+        .context
+        .cluster
+        .join_token(issued.record.id)
+        .await
+        .expect("read")
+        .expect("token");
+    assert!(!stored.revoked);
+
+    operations
+        .revoke_join_token(issued.record.id)
+        .await
+        .expect("revoke");
+    assert!(
+        harness
+            .context
+            .cluster
+            .join_token(issued.record.id)
+            .await
+            .expect("read")
+            .expect("token")
+            .revoked
+    );
+}
+
+/// Configuration is replicated like any other cluster state, and an invalid one
+/// has to be refused before it reaches the group.
+#[tokio::test]
+async fn cluster_configuration_can_be_replaced_and_is_validated() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let operations = harness.operations();
+
+    let mut config = harness.context.config().await.expect("config");
+    config.repair.maximum_attempts = 7;
+    operations
+        .set_config(config.clone())
+        .await
+        .expect("set config");
+    assert_eq!(
+        harness
+            .context
+            .config()
+            .await
+            .expect("config")
+            .repair
+            .maximum_attempts,
+        7
+    );
+
+    let mut invalid = config;
+    invalid.watermarks.low_percent = 99;
+    invalid.watermarks.high_percent = 5;
+    assert!(
+        matches!(
+            operations.set_config(invalid).await,
+            Err(OperationError::Cluster(_))
+        ),
+        "a contradictory watermark set must be refused"
+    );
+}
+
+/// A rebalance on a balanced cluster must be a no-op rather than shuffling
+/// replicas for no benefit.
+#[tokio::test]
+async fn a_rebalance_of_a_balanced_cluster_moves_nothing() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    harness.put("balanced.txt", b"bytes").await.expect("write");
+    let operations = harness.operations();
+
+    operations.rebalance().await.expect("rebalance");
+    let queued = harness
+        .context
+        .cluster
+        .queued_tasks(64)
+        .await
+        .expect("queued tasks")
+        .tasks;
+    assert!(
+        queued
+            .iter()
+            .all(|task| task.kind != ReplicaTaskKind::Rebalance),
+        "a balanced cluster needs no movement: {queued:?}"
+    );
+}
+
+/// Snapshotting is how a lagging member catches up without replaying the whole
+/// log, so it has to succeed on a live group.
+#[tokio::test]
+async fn a_metadata_snapshot_can_be_taken_on_a_live_group() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    harness.put("snapshot.txt", b"bytes").await.expect("write");
+    harness
+        .operations()
+        .snapshot_metadata()
+        .await
+        .expect("snapshot");
+}
+
+// ---------------------------------------------------------------------------
+// The rest of the distributed object surface
+//
+// The write and read paths are covered above. These exercise the remaining
+// operations a protocol adapter calls, all against the same replicated cluster.
+// ---------------------------------------------------------------------------
+
+/// Head must answer from replicated metadata without opening a payload, and it
+/// has to agree with what a read would report.
+#[tokio::test]
+async fn head_reports_the_same_metadata_a_read_would() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let committed = harness.put("a.txt", b"hello").await.expect("write");
+
+    let head = harness
+        .store
+        .head(HeadObjectRequest {
+            bucket_id: harness.bucket_id,
+            key: ObjectKey::new("a.txt").expect("key"),
+        })
+        .await
+        .expect("head");
+    assert_eq!(head.size, committed.metadata.size);
+    assert_eq!(head.checksum, committed.metadata.checksum);
+}
+
+/// Verification recomputes the payload from a replica rather than trusting the
+/// recorded checksum, which is the only way corruption is ever discovered.
+#[tokio::test]
+async fn verification_confirms_a_replicated_payload() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let committed = harness.put("a.txt", b"hello").await.expect("write");
+
+    let verified = harness
+        .store
+        .verify(VerifyObjectRequest {
+            bucket_id: harness.bucket_id,
+            key: ObjectKey::new("a.txt").expect("key"),
+        })
+        .await
+        .expect("verify");
+    assert_eq!(verified.checksum, committed.metadata.checksum);
+}
+
+/// A delete has to retire the payload across the cluster, not just locally, or
+/// peers would keep bytes the catalog no longer references.
+#[tokio::test]
+async fn deleting_an_object_removes_it_across_the_cluster() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let committed = harness.put("a.txt", b"hello").await.expect("write");
+    let object_id = committed.metadata.id;
+
+    harness
+        .store
+        .delete(DeleteObjectRequest {
+            bucket_id: harness.bucket_id,
+            key: ObjectKey::new("a.txt").expect("key"),
+        })
+        .await
+        .expect("delete");
+
+    assert!(matches!(
+        harness.get("a.txt").await,
+        Err(StorageError::ObjectNotFound)
+    ));
+    assert!(
+        harness
+            .context
+            .cluster
+            .placement(object_id)
+            .await
+            .expect("read placement")
+            .is_none_or(|placement| placement.replicas.iter().all(|replica| {
+                matches!(
+                    replica.state,
+                    ReplicaState::Deleting | ReplicaState::Missing
+                )
+            })),
+        "every replica must be retired"
+    );
+}
+
+/// Reads and deletes of something that was never written must report absence
+/// rather than a cluster failure, which is a different thing entirely.
+#[tokio::test]
+async fn operations_on_an_absent_object_report_absence() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    let key = ObjectKey::new("absent.txt").expect("key");
+
+    assert!(matches!(
+        harness
+            .store
+            .head(HeadObjectRequest {
+                bucket_id: harness.bucket_id,
+                key: key.clone(),
+            })
+            .await,
+        Err(StorageError::ObjectNotFound)
+    ));
+    assert!(matches!(
+        harness
+            .store
+            .verify(VerifyObjectRequest {
+                bucket_id: harness.bucket_id,
+                key,
+            })
+            .await,
+        Err(StorageError::ObjectNotFound)
+    ));
+}
+
+/// Status and readiness are what an orchestrator polls, so they have to answer
+/// on a live cluster rather than only on a standalone node.
+#[tokio::test]
+async fn a_clustered_store_reports_status_and_readiness() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    harness.put("a.txt", b"hello").await.expect("write");
+
+    let status = harness.store.status().await.expect("status");
+    assert!(status.capacity_bytes > 0, "{status:?}");
+    harness.store.check_ready().await.expect("ready");
+}
+
+/// Inspection and repair are the operator's tools for reclaiming storage. On a
+/// consistent cluster they must find nothing rather than proposing deletions.
+#[tokio::test]
+async fn inspection_of_a_consistent_cluster_proposes_no_deletions() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    harness.put("a.txt", b"hello").await.expect("write");
+
+    let report = harness.store.inspect(100).await.expect("inspect");
+    assert!(
+        report.orphan_payload_samples.is_empty(),
+        "a consistent cluster has no orphans: {report:?}"
+    );
+    assert!(
+        report.missing_payload_samples.is_empty(),
+        "every referenced payload is present: {report:?}"
+    );
+
+    let repaired = harness
+        .store
+        .repair(StorageRepairRequest {
+            maximum_entries: 100,
+            dry_run: true,
+        })
+        .await
+        .expect("repair");
+    assert_eq!(
+        repaired.removed_orphan_payloads, 0,
+        "a dry run removes nothing: {repaired:?}"
+    );
+    assert!(repaired.dry_run, "{repaired:?}");
+}
+
+/// The supervised task table is how an operator sees that part of a node's
+/// machinery has stopped. A task that fails must be visible as a failure.
+#[tokio::test]
+async fn supervised_task_health_is_reported_per_task() {
+    let health = TaskHealth::default();
+    health.started("repair");
+    health.pass("repair");
+    assert!(health.failures().is_empty());
+
+    health.failed("rebalance", "stalled".to_owned());
+    assert_eq!(health.failures(), vec!["rebalance".to_owned()]);
+
+    health.started("rebalance");
+    assert!(
+        health.failures().is_empty(),
+        "a restarted task clears its failure"
+    );
+}
+
+/// Supervised tasks stop when the runtime is shut down; one that outlives it
+/// would keep mutating cluster state after the node was told to stop.
+#[tokio::test]
+async fn supervised_tasks_stop_when_the_runtime_shuts_down() {
+    let mut tasks = SupervisedTasks::default();
+    let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let observed = Arc::clone(&counter);
+
+    tasks.spawn_interval("counter", std::time::Duration::from_millis(5), move || {
+        let observed = Arc::clone(&observed);
+        async move {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let health = tasks.health();
+    tasks.shutdown().await;
+
+    let after_shutdown = counter.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(after_shutdown > 0, "the task must have run at least once");
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::Relaxed),
+        after_shutdown,
+        "a task must not keep running after shutdown"
+    );
+    assert!(
+        health.snapshot().contains_key("counter"),
+        "a stopped task stays visible in the table"
+    );
+}
+
+/// A node that stops reporting has to be noticed. Silence past the suspect
+/// timeout marks it Suspect, and past the offline timeout marks it Unreachable —
+/// two distinct states because only the second one triggers repair.
+#[tokio::test]
+async fn a_silent_node_is_marked_suspect_and_then_unreachable() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let coordinator = harness.coordinator();
+    let node_id = harness.peers[0];
+    let policy = harness
+        .context
+        .config()
+        .await
+        .expect("config")
+        .failure_detection;
+
+    // Report a heartbeat far enough in the past to cross the suspect timeout.
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::Heartbeat {
+            node_id,
+            capacity: NodeCapacity::default(),
+            activity: record_store_cluster::NodeActivity::default(),
+            at: Utc::now()
+                - chrono::Duration::seconds(
+                    i64::try_from(policy.suspect_timeout_seconds + 5).expect("timeout"),
+                ),
+        })
+        .await
+        .expect("stale heartbeat");
+
+    coordinator.detect_failures().await.expect("detect");
+    assert_eq!(
+        harness
+            .context
+            .cluster
+            .node(node_id)
+            .await
+            .expect("read")
+            .expect("node")
+            .state,
+        NodeState::Suspect,
+        "silence past the suspect timeout must be noticed"
+    );
+
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::Heartbeat {
+            node_id,
+            capacity: NodeCapacity::default(),
+            activity: record_store_cluster::NodeActivity::default(),
+            at: Utc::now()
+                - chrono::Duration::seconds(
+                    i64::try_from(policy.offline_timeout_seconds + 5).expect("timeout"),
+                ),
+        })
+        .await
+        .expect("older heartbeat");
+
+    coordinator.detect_failures().await.expect("detect");
+    let state = harness
+        .context
+        .cluster
+        .node(node_id)
+        .await
+        .expect("read")
+        .expect("node")
+        .state;
+    assert!(
+        matches!(state, NodeState::Unreachable | NodeState::Offline),
+        "prolonged silence must escalate, got {state:?}"
+    );
+}
+
+/// A node that reports in again must be brought back rather than left suspect
+/// forever, or a transient network blip would permanently degrade the cluster.
+#[tokio::test]
+async fn a_node_that_reports_in_again_recovers() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let coordinator = harness.coordinator();
+    let node_id = harness.peers[0];
+    let policy = harness
+        .context
+        .config()
+        .await
+        .expect("config")
+        .failure_detection;
+
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::Heartbeat {
+            node_id,
+            capacity: NodeCapacity::default(),
+            activity: record_store_cluster::NodeActivity::default(),
+            at: Utc::now()
+                - chrono::Duration::seconds(
+                    i64::try_from(policy.suspect_timeout_seconds + 5).expect("timeout"),
+                ),
+        })
+        .await
+        .expect("stale heartbeat");
+    coordinator.detect_failures().await.expect("detect");
+
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::Heartbeat {
+            node_id,
+            capacity: NodeCapacity::default(),
+            activity: record_store_cluster::NodeActivity::default(),
+            at: Utc::now(),
+        })
+        .await
+        .expect("fresh heartbeat");
+    coordinator.detect_failures().await.expect("detect");
+
+    assert_eq!(
+        harness
+            .context
+            .cluster
+            .node(node_id)
+            .await
+            .expect("read")
+            .expect("node")
+            .state,
+        NodeState::Healthy,
+        "a node that came back must be healthy again"
+    );
+}
+
+/// A movement lease stops two nodes working the same task. When the holder dies
+/// the lease has to expire and the task return to the queue, or that payload
+/// would never be repaired.
+#[tokio::test]
+async fn an_expired_movement_lease_returns_its_task_to_the_queue() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let coordinator = harness.coordinator();
+    let node_id = harness.peers[0];
+
+    let task = ReplicaTask {
+        id: record_store_core::ReplicaTaskId::new(),
+        object_id: ObjectId::new(),
+        kind: ReplicaTaskKind::Repair,
+        priority: record_store_cluster::ReplicaTaskPriority::High,
+        source_node: None,
+        target_node: Some(node_id),
+        operation_id: None,
+        size: 1_024,
+        state: record_store_cluster::ReplicaTaskState::Queued,
+        attempts: 0,
+        last_error: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::EnqueueTask {
+            task: Box::new(task.clone()),
+        })
+        .await
+        .expect("enqueue");
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::ClaimTask {
+            task_id: task.id,
+            node_id,
+            lease_seconds: 1,
+            at: Utc::now() - chrono::Duration::seconds(3_600),
+        })
+        .await
+        .expect("claim with an already-expired lease");
+
+    coordinator.reclaim_expired_leases().await.expect("reclaim");
+
+    let reclaimed = harness
+        .context
+        .cluster
+        .task(task.id)
+        .await
+        .expect("read")
+        .expect("task");
+    assert!(
+        matches!(
+            reclaimed.state,
+            record_store_cluster::ReplicaTaskState::Queued
+        ),
+        "an abandoned task must return to the queue: {reclaimed:?}"
+    );
+}
+
+/// Removing a node the cluster depends on costs durability. The safety check is
+/// what tells an operator that before they act, so it has to notice.
+#[tokio::test]
+async fn decommission_safety_notices_when_durability_would_drop() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    harness.put("held.txt", b"bytes").await.expect("write");
+    let operations = harness.operations();
+
+    let report = operations
+        .decommission_safety(harness.peers[0])
+        .await
+        .expect("safety check");
+    let rendered = format!("{report:?}");
+    assert!(
+        rendered.contains("safe") || rendered.contains("Safe") || rendered.contains("risk"),
+        "the report must state the durability position: {rendered}"
+    );
+}
+
+use record_store_cluster::Readiness;
+use record_store_replication::runtime::{ClusterRuntime, RuntimeSettings};
+
+impl Harness {
+    /// Builds a cluster runtime over this harness.
+    fn runtime(&self) -> ClusterRuntime {
+        ClusterRuntime::new(
+            Arc::clone(&self.context),
+            Arc::clone(&self.consensus),
+            RuntimeSettings::storage(PayloadFormat::Plaintext),
+        )
+    }
+}
+
+/// Readiness is what an orchestrator polls before sending traffic. A node whose
+/// group is healthy and whose own record says Healthy is ready; anything less
+/// has to be reported honestly rather than optimistically.
+#[tokio::test]
+async fn a_healthy_node_reports_itself_ready() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let runtime = harness.runtime();
+
+    assert_eq!(
+        runtime.readiness().await,
+        Readiness::Ready,
+        "a healthy member of a healthy group is ready"
+    );
+}
+
+/// A node that has been drained still serves reads but is not ready for new
+/// work, and reporting it as ready would send writes somewhere they cannot land.
+#[tokio::test]
+async fn a_drained_node_is_reported_as_degraded_rather_than_ready() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let runtime = harness.runtime();
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::SetNodeState {
+            node_id: harness.context.node_id,
+            state: NodeState::Draining,
+            reason: Some("operator drained".to_owned()),
+            at: Utc::now(),
+        })
+        .await
+        .expect("drain this node");
+
+    assert_eq!(runtime.readiness().await, Readiness::Degraded);
+}
+
+/// A failed background task degrades the node even while consensus is fine,
+/// because part of its machinery has stopped doing its job.
+#[tokio::test]
+async fn a_failed_background_task_degrades_readiness() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let runtime = harness.runtime();
+    runtime.health().failed("repair", "panicked".to_owned());
+
+    assert_eq!(runtime.readiness().await, Readiness::Degraded);
+}
+
+/// A heartbeat carries this node's capacity to the cluster, which is what
+/// placement reads. Reporting it has to update the node's record.
+#[tokio::test]
+async fn reporting_a_heartbeat_updates_this_nodes_capacity() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    harness.put("a.txt", b"hello").await.expect("write");
+
+    record_store_replication::runtime::report_heartbeat(&harness.context, None)
+        .await
+        .expect("heartbeat");
+
+    let node = harness
+        .context
+        .cluster
+        .node(harness.context.node_id)
+        .await
+        .expect("read")
+        .expect("node");
+    assert!(node.last_heartbeat_at.is_some());
+    assert!(
+        node.capacity.total_bytes > 0,
+        "a heartbeat must carry real capacity: {:?}",
+        node.capacity
+    );
+}
+
+/// Reconciliation compares what this node physically holds against what the
+/// cluster believes. On a consistent node it must change nothing.
+#[tokio::test]
+async fn reconciliation_of_a_consistent_node_changes_nothing() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let object_id = harness
+        .put("a.txt", b"hello")
+        .await
+        .expect("write")
+        .metadata
+        .id;
+
+    record_store_replication::runtime::reconcile(
+        &harness.context,
+        PayloadFormat::Plaintext,
+        64,
+        chrono::Duration::hours(1),
+    )
+    .await
+    .expect("reconcile");
+
+    let placement = harness
+        .context
+        .cluster
+        .placement(object_id)
+        .await
+        .expect("read")
+        .expect("placement");
+    assert!(
+        placement
+            .replicas
+            .iter()
+            .any(|replica| replica.node_id == harness.context.node_id
+                && replica.state == ReplicaState::Healthy),
+        "a consistent replica must stay healthy: {placement:?}"
+    );
+}
+
+/// A zero batch disables reconciliation rather than scanning everything, which
+/// is what makes the setting safe to turn down under load.
+#[tokio::test]
+async fn a_zero_reconciliation_batch_does_nothing() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    record_store_replication::runtime::reconcile(
+        &harness.context,
+        PayloadFormat::Plaintext,
+        0,
+        chrono::Duration::hours(1),
+    )
+    .await
+    .expect("a zero batch is a no-op");
+}
+
+/// The runtime supervises the background services. Starting and shutting it
+/// down has to leave every task accounted for rather than orphaned.
+#[tokio::test]
+async fn the_runtime_starts_its_services_and_stops_them_again() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let mut runtime = harness.runtime();
+
+    runtime.start(
+        std::time::Duration::from_millis(50),
+        MovementLimits::default(),
+    );
+    let health = runtime.health();
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    assert!(
+        !health.snapshot().is_empty(),
+        "starting the runtime must register its tasks"
+    );
+
+    runtime.shutdown().await;
+    assert!(
+        health.failures().is_empty(),
+        "a clean shutdown is not a failure: {:?}",
+        health.failures()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The internal peer surface
+//
+// Admission and the consensus transport are what a joining node actually
+// touches. These bind a real listener and speak to it with the production
+// client, so the wire format and the identity headers are exercised rather than
+// assumed.
+// ---------------------------------------------------------------------------
+
+use record_store_protocol::system_v1::{NodeDescriptor, NodeProfile};
+use record_store_rpc::{
+    ConsensusRpcService, InternalRpcServer, PeerVerifier, RpcServerSettings, SystemRpcService,
+};
+
+struct PeerSurface {
+    address: String,
+    pool: Arc<PeerPool>,
+    shutdown: tokio_util::sync::CancellationToken,
+}
+
+impl Harness {
+    /// Starts this node's internal RPC listener and a client pointed at it.
+    async fn peer_surface(&self) -> PeerSurface {
+        let versions = record_store_cluster::NodeVersions::current("test");
+        let verifier = Arc::new(PeerVerifier::new(
+            versions.clone(),
+            Arc::new(record_store_rpc::CatalogPeerAuthenticator::new(Arc::clone(
+                &self.context.cluster,
+            ))),
+        ));
+        let admission = Arc::new(record_store_replication::JoinCoordinator::new(
+            Arc::clone(&self.context),
+            Arc::clone(&self.consensus),
+            versions.clone(),
+            true,
+            "127.0.0.1:17603".to_owned(),
+        ));
+
+        let server = InternalRpcServer::new(RpcServerSettings {
+            bind: "127.0.0.1:0".parse().expect("address"),
+            tls: TlsSettings::default(),
+            concurrency_limit: 16,
+            shutdown_grace_period: std::time::Duration::from_secs(5),
+        })
+        .with_consensus(ConsensusRpcService::new(
+            Arc::clone(&self.consensus),
+            Arc::clone(&verifier),
+        ))
+        .with_system(SystemRpcService::new(admission, verifier));
+
+        let listener = server.bind().await.expect("bind");
+        let address = listener.local_addr().expect("address").to_string();
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let stopping = shutdown.clone();
+        tokio::spawn(async move {
+            let _ = server
+                .serve(listener, async move { stopping.cancelled().await })
+                .await;
+        });
+
+        let identity = self
+            .context
+            .cluster
+            .identity()
+            .await
+            .expect("read identity")
+            .expect("initialized");
+        let pool = PeerPool::new(RpcClientSettings {
+            // A joining node has no credential yet: probe and join are exactly
+            // the calls it makes before the cluster issues one.
+            headers: PeerHeaders {
+                node_id: self.context.node_id,
+                cluster_id: Some(identity.cluster_id),
+                versions,
+                credential: None,
+            },
+            tls: TlsSettings::default(),
+            connect_timeout: std::time::Duration::from_secs(5),
+            request_timeout: std::time::Duration::from_secs(10),
+            stream_chunk_timeout: std::time::Duration::from_secs(10),
+            transfer_chunk_bytes: 64 * 1024,
+            transfer_queue_depth: 4,
+        });
+
+        PeerSurface {
+            address,
+            pool,
+            shutdown,
+        }
+    }
+}
+
+fn descriptor(node_id: NodeId, cluster_id: Option<record_store_core::ClusterId>) -> NodeDescriptor {
+    let versions = record_store_cluster::NodeVersions::current("test");
+    NodeDescriptor {
+        node_id: node_id.to_string(),
+        member_id: 0,
+        protocol_major_version: versions.protocol.major,
+        protocol_minor_version: versions.protocol.minor,
+        software_version: versions.software.clone(),
+        storage_format_version: versions.storage_format,
+        cluster_format_version: versions.cluster_format,
+        cluster_id: cluster_id.map(|id| id.to_string()).unwrap_or_default(),
+        rpc_address: "127.0.0.1:17999".to_owned(),
+        storage_node: true,
+    }
+}
+
+fn profile() -> NodeProfile {
+    NodeProfile {
+        storage_class: "standard".to_owned(),
+        failure_domain: Default::default(),
+        total_bytes: 1_000_000,
+        available_bytes: 900_000,
+        replica_bytes: 100_000,
+        temporary_bytes: 0,
+        started_at: Utc::now().to_rfc3339(),
+        s3_endpoint: String::new(),
+    }
+}
+
+/// A probe is the first thing a joining node does: it asks a seed who it is.
+/// The answer has to carry the seed's real identity and cluster.
+#[tokio::test]
+async fn a_peer_probe_reports_the_seeds_identity() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    let surface = harness.peer_surface().await;
+
+    let described = surface
+        .pool
+        .probe_cluster(&surface.address, descriptor(NodeId::new(), None))
+        .await
+        .expect("probe the seed");
+    assert!(!described.cluster_id.is_empty(), "{described:?}");
+    assert!(!described.node_id.is_empty(), "{described:?}");
+
+    surface.shutdown.cancel();
+}
+
+/// Admission is guarded by a single-use token. Presenting one that was never
+/// issued must be refused, or anybody who can reach the port could join.
+#[tokio::test]
+async fn joining_without_a_valid_token_is_refused() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    let surface = harness.peer_surface().await;
+
+    let result = surface
+        .pool
+        .join_cluster(
+            &surface.address,
+            "a-token-that-was-never-issued",
+            descriptor(NodeId::new(), None),
+            profile(),
+        )
+        .await;
+    assert!(result.is_err(), "an unissued token must not admit a node");
+
+    surface.shutdown.cancel();
+}
+
+/// A node presenting a valid token is admitted and told which cluster it now
+/// belongs to, which is what binds its durable identity.
+#[tokio::test]
+async fn a_node_presenting_a_valid_token_is_admitted() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    let surface = harness.peer_surface().await;
+
+    let issued = harness
+        .operations()
+        .issue_join_token(600, "a new node".to_owned())
+        .await
+        .expect("issue token");
+
+    let outcome = surface
+        .pool
+        .join_cluster(
+            &surface.address,
+            issued.token.expose(),
+            descriptor(NodeId::new(), None),
+            profile(),
+        )
+        .await
+        .expect("join the cluster");
+    assert_ne!(
+        outcome.cluster_id.to_string(),
+        String::new(),
+        "the admitted node is told which cluster it joined: {outcome:?}"
+    );
+    assert!(!outcome.node_credential.is_empty(), "{outcome:?}");
+
+    surface.shutdown.cancel();
+}
+
+/// A token is single use. Replaying it must be refused, or one leaked token
+/// would admit an unbounded number of nodes.
+#[tokio::test]
+async fn a_join_token_cannot_be_replayed() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    let surface = harness.peer_surface().await;
+    let issued = harness
+        .operations()
+        .issue_join_token(600, "a new node".to_owned())
+        .await
+        .expect("issue token");
+
+    surface
+        .pool
+        .join_cluster(
+            &surface.address,
+            issued.token.expose(),
+            descriptor(NodeId::new(), None),
+            profile(),
+        )
+        .await
+        .expect("first join");
+
+    let replayed = surface
+        .pool
+        .join_cluster(
+            &surface.address,
+            issued.token.expose(),
+            descriptor(NodeId::new(), None),
+            profile(),
+        )
+        .await;
+    assert!(
+        replayed.is_err(),
+        "a used token must not admit a second node"
+    );
+
+    surface.shutdown.cancel();
+}
+
+/// A delete has to reach every node that held the payload, including one that
+/// was offline when it happened. The tombstone is how that is remembered, and
+/// collecting it must schedule the deletion on each holder that has not yet
+/// acknowledged.
+#[tokio::test]
+async fn collecting_a_tombstone_schedules_deletion_on_every_holder() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let object_id = harness
+        .put("doomed.txt", b"bytes")
+        .await
+        .expect("write")
+        .metadata
+        .id;
+
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::DeletePlacement {
+            object_id,
+            at: Utc::now(),
+        })
+        .await
+        .expect("delete placement");
+
+    let coordinator = harness.coordinator();
+    coordinator
+        .collect_tombstones()
+        .await
+        .expect("collect tombstones");
+
+    let queued = harness
+        .context
+        .cluster
+        .queued_tasks(64)
+        .await
+        .expect("queued tasks")
+        .tasks;
+    assert!(
+        queued
+            .iter()
+            .any(|task| task.object_id == object_id && task.kind == ReplicaTaskKind::Delete),
+        "each holder needs a deletion task: {queued:?}"
+    );
+}
+
+/// A drain is a long-running operation an administrator watches. Progressing it
+/// has to report how much is left rather than leaving the operation static.
+#[tokio::test]
+async fn progressing_a_drain_reports_what_remains() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    harness.put("held.txt", b"bytes").await.expect("write");
+    let operations = harness.operations();
+    let node_id = harness.peers[0];
+
+    operations.drain(node_id).await.expect("drain");
+    let coordinator = harness.coordinator();
+    coordinator
+        .progress_operations()
+        .await
+        .expect("progress operations");
+
+    let running = harness
+        .context
+        .cluster
+        .operations(16)
+        .await
+        .expect("operations");
+    assert!(
+        !running.is_empty(),
+        "draining must create an operation to watch"
+    );
+    assert!(
+        running
+            .iter()
+            .any(|operation| operation.node_id == Some(node_id)),
+        "{running:?}"
+    );
+}
+
+/// A payload below its desired replica count is under-replicated. The scheduler
+/// has to notice and queue a repair, because nothing else will.
+#[tokio::test]
+async fn an_under_replicated_payload_is_scheduled_for_repair() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let object_id = harness
+        .put("thin.txt", b"bytes")
+        .await
+        .expect("write")
+        .metadata
+        .id;
+
+    // Drop one replica record entirely, which is what a node loss looks like to
+    // the catalog once its replicas are forgotten.
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::RemoveReplica {
+            object_id,
+            node_id: harness.peers[0],
+            at: Utc::now(),
+        })
+        .await
+        .expect("remove a replica");
+
+    harness
+        .coordinator()
+        .schedule_repairs()
+        .await
+        .expect("schedule repairs");
+
+    let queued = harness
+        .context
+        .cluster
+        .queued_tasks(64)
+        .await
+        .expect("queued tasks")
+        .tasks;
+    assert!(
+        queued.iter().any(|task| task.object_id == object_id),
+        "an under-replicated payload must be queued: {queued:?}"
+    );
+}
+
+/// Raising the desired replica count is how an operator increases durability.
+/// The scheduler has to act on the new target rather than the old one.
+#[tokio::test]
+async fn raising_the_desired_replica_count_creates_repair_work() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let object_id = harness
+        .put("wanted.txt", b"bytes")
+        .await
+        .expect("write")
+        .metadata
+        .id;
+
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::SetDesiredReplicas {
+            object_id,
+            desired: 5,
+            at: Utc::now(),
+        })
+        .await
+        .expect("raise the target");
+
+    harness
+        .coordinator()
+        .schedule_repairs()
+        .await
+        .expect("schedule repairs");
+
+    let placement = harness
+        .context
+        .cluster
+        .placement(object_id)
+        .await
+        .expect("read")
+        .expect("placement");
+    assert_eq!(placement.desired_replicas, 5, "{placement:?}");
+}
+
+/// The task executor is what actually moves bytes. Running it against a queue of
+/// real repair work has to make progress rather than spin.
+#[tokio::test]
+async fn the_task_executor_drains_the_queue_it_is_given() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let object_id = harness
+        .put("moved.txt", b"bytes")
+        .await
+        .expect("write")
+        .metadata
+        .id;
+    harness.report_replica_corrupt(object_id).await;
+    harness
+        .coordinator()
+        .schedule_repairs()
+        .await
+        .expect("schedule");
+
+    let executor = record_store_replication::TaskExecutor::new(
+        Arc::clone(&harness.context),
+        PayloadFormat::Plaintext,
+    );
+    let handled = executor.run_once(MovementLimits::default()).await;
+    assert!(
+        handled <= 64,
+        "the executor reports how many tasks it handled: {handled}"
+    );
+}

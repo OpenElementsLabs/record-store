@@ -978,4 +978,539 @@ mod tests {
             .expect("download multipart");
         assert_eq!(body_text(downloaded).await, "streamed-part");
     }
+
+    /// Conditional requests are how a client caches. Each precondition has its
+    /// own status, and getting one wrong makes a client either re-download
+    /// everything or serve stale bytes.
+    #[tokio::test]
+    async fn conditional_reads_honour_the_stored_entity_tag() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        put(&application, "photos", "a.txt", b"hello").await;
+
+        let head = send(&application, Method::HEAD, "/photos/a.txt", b"", &[]).await;
+        assert_eq!(head.status(), StatusCode::OK);
+        let etag = head
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok())
+            .expect("etag")
+            .to_owned();
+
+        let unmodified = send(
+            &application,
+            Method::GET,
+            "/photos/a.txt",
+            b"",
+            &[("if-none-match", etag.as_str())],
+        )
+        .await;
+        assert_eq!(unmodified.status(), StatusCode::NOT_MODIFIED);
+
+        let matched = send(
+            &application,
+            Method::GET,
+            "/photos/a.txt",
+            b"",
+            &[("if-match", etag.as_str())],
+        )
+        .await;
+        assert_eq!(matched.status(), StatusCode::OK);
+
+        let mismatched = send(
+            &application,
+            Method::GET,
+            "/photos/a.txt",
+            b"",
+            &[("if-match", "\"0000\"")],
+        )
+        .await;
+        assert_eq!(mismatched.status(), StatusCode::PRECONDITION_FAILED);
+    }
+
+    /// A range request must return only the requested bytes with the partial
+    /// status, and an unsatisfiable range must say so rather than truncating.
+    #[tokio::test]
+    async fn range_requests_return_only_the_requested_bytes() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        put(&application, "photos", "a.txt", b"0123456789").await;
+
+        let partial = send(
+            &application,
+            Method::GET,
+            "/photos/a.txt",
+            b"",
+            &[("range", "bytes=2-5")],
+        )
+        .await;
+        assert_eq!(partial.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(body_text(partial).await, "2345");
+
+        let suffix = send(
+            &application,
+            Method::GET,
+            "/photos/a.txt",
+            b"",
+            &[("range", "bytes=-3")],
+        )
+        .await;
+        assert_eq!(suffix.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(body_text(suffix).await, "789");
+
+        let impossible = send(
+            &application,
+            Method::GET,
+            "/photos/a.txt",
+            b"",
+            &[("range", "bytes=100-200")],
+        )
+        .await;
+        assert_eq!(impossible.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    }
+
+    /// A client-supplied checksum is a promise about the bytes. Honouring a
+    /// wrong one would store corruption under a checksum that says it is fine.
+    #[tokio::test]
+    async fn a_mismatched_client_checksum_refuses_the_write() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let wrong = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0_u8; 32]);
+        let response = send(
+            &application,
+            Method::PUT,
+            "/photos/a.txt",
+            b"hello",
+            &[("x-amz-checksum-sha256", wrong.as_str())],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let document = body_text(response).await;
+        assert_eq!(
+            xml_value(&document, "Code"),
+            Some("BadDigest"),
+            "{document}"
+        );
+
+        let absent = send(&application, Method::HEAD, "/photos/a.txt", b"", &[]).await;
+        assert_eq!(
+            absent.status(),
+            StatusCode::NOT_FOUND,
+            "a refused write must store nothing"
+        );
+    }
+
+    /// Custom metadata travels on `x-amz-meta-` headers and has to come back on
+    /// the read, or a client loses information it believes it stored.
+    #[tokio::test]
+    async fn custom_metadata_and_content_type_survive_a_round_trip() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let stored = send(
+            &application,
+            Method::PUT,
+            "/photos/a.txt",
+            b"hello",
+            &[
+                ("content-type", "text/plain"),
+                ("x-amz-meta-owner", "finance"),
+            ],
+        )
+        .await;
+        assert_eq!(stored.status(), StatusCode::OK);
+
+        let head = send(&application, Method::HEAD, "/photos/a.txt", b"", &[]).await;
+        assert_eq!(
+            head.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain")
+        );
+        assert_eq!(
+            head.headers()
+                .get("x-amz-meta-owner")
+                .and_then(|v| v.to_str().ok()),
+            Some("finance")
+        );
+    }
+
+    /// Deleting is idempotent in S3: a client retrying a delete must not be told
+    /// the object is missing, because that would look like a different failure.
+    #[tokio::test]
+    async fn deleting_an_object_twice_reports_success_both_times() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        put(&application, "photos", "a.txt", b"hello").await;
+
+        for _ in 0..2 {
+            let response = send(&application, Method::DELETE, "/photos/a.txt", b"", &[]).await;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        }
+    }
+
+    #[tokio::test]
+    async fn reading_an_object_that_does_not_exist_reports_no_such_key() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let response = send(&application, Method::GET, "/photos/absent.txt", b"", &[]).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let document = body_text(response).await;
+        assert_eq!(
+            xml_value(&document, "Code"),
+            Some("NoSuchKey"),
+            "{document}"
+        );
+
+        let head = send(&application, Method::HEAD, "/photos/absent.txt", b"", &[]).await;
+        assert_eq!(
+            head.status(),
+            StatusCode::NOT_FOUND,
+            "HEAD carries the status without a body"
+        );
+    }
+
+    #[tokio::test]
+    async fn writing_into_a_bucket_that_does_not_exist_reports_no_such_bucket() {
+        let (_directory, application, _credentials) = test_router().await;
+        let response = send(&application, Method::PUT, "/absent/a.txt", b"hello", &[]).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let document = body_text(response).await;
+        assert_eq!(
+            xml_value(&document, "Code"),
+            Some("NoSuchBucket"),
+            "{document}"
+        );
+    }
+
+    /// A server-side copy must reproduce the bytes without the client streaming
+    /// them, and must refuse a source that is not there.
+    #[tokio::test]
+    async fn a_copy_reproduces_the_source_and_refuses_a_missing_one() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        put(&application, "photos", "original.txt", b"source").await;
+
+        let copied = send(
+            &application,
+            Method::PUT,
+            "/photos/duplicate.txt",
+            b"",
+            &[("x-amz-copy-source", "/photos/original.txt")],
+        )
+        .await;
+        assert_eq!(copied.status(), StatusCode::OK);
+
+        let read = send(&application, Method::GET, "/photos/duplicate.txt", b"", &[]).await;
+        assert_eq!(body_text(read).await, "source");
+
+        let missing = send(
+            &application,
+            Method::PUT,
+            "/photos/x.txt",
+            b"",
+            &[("x-amz-copy-source", "/photos/absent.txt")],
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Aborting releases the parts. An upload that survives its abort keeps
+    /// consuming storage nobody can see.
+    #[tokio::test]
+    async fn aborting_a_multipart_upload_makes_it_unusable() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let initiated = send(
+            &application,
+            Method::POST,
+            "/photos/big.bin?uploads",
+            b"",
+            &[],
+        )
+        .await;
+        let document = body_text(initiated).await;
+        let upload_id = xml_value(&document, "UploadId")
+            .expect("upload id")
+            .to_owned();
+
+        let aborted = send(
+            &application,
+            Method::DELETE,
+            &format!("/photos/big.bin?uploadId={upload_id}"),
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(aborted.status(), StatusCode::NO_CONTENT);
+
+        let after = send(
+            &application,
+            Method::GET,
+            &format!("/photos/big.bin?uploadId={upload_id}"),
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(after.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The whole point of multipart is assembling one object from parts. The
+    /// completed object has to be the concatenation, in manifest order.
+    #[tokio::test]
+    async fn a_completed_multipart_upload_assembles_its_parts_in_order() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let initiated = send(
+            &application,
+            Method::POST,
+            "/photos/big.bin?uploads",
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(initiated.status(), StatusCode::OK);
+        let document = body_text(initiated).await;
+        let upload_id = xml_value(&document, "UploadId")
+            .expect("upload id")
+            .to_owned();
+
+        let first = vec![b'a'; 5 * 1024 * 1024];
+        let mut etags = Vec::new();
+        for (number, body) in [(1_u16, first.as_slice()), (2, b"tail".as_slice())] {
+            let response = send(
+                &application,
+                Method::PUT,
+                &format!("/photos/big.bin?partNumber={number}&uploadId={upload_id}"),
+                body,
+                &[],
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "part {number}");
+            let etag = response
+                .headers()
+                .get("etag")
+                .and_then(|value| value.to_str().ok())
+                .expect("etag")
+                .trim_matches('"')
+                .to_owned();
+            etags.push((number, etag));
+        }
+
+        let manifest = etags
+            .iter()
+            .map(|(number, etag)| {
+                format!("<Part><PartNumber>{number}</PartNumber><ETag>{etag}</ETag></Part>")
+            })
+            .collect::<String>();
+        let completed = send(
+            &application,
+            Method::POST,
+            &format!("/photos/big.bin?uploadId={upload_id}"),
+            format!("<CompleteMultipartUpload>{manifest}</CompleteMultipartUpload>").as_bytes(),
+            &[],
+        )
+        .await;
+        assert_eq!(completed.status(), StatusCode::OK);
+
+        let head = send(&application, Method::HEAD, "/photos/big.bin", b"", &[]).await;
+        assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(
+            head.headers()
+                .get("content-length")
+                .and_then(|value| value.to_str().ok()),
+            Some((first.len() + 4).to_string().as_str()),
+            "the object is the concatenation of its parts"
+        );
+    }
+
+    /// A manifest naming a part that was never uploaded must not commit a
+    /// partial object; the client would believe it stored bytes it did not.
+    #[tokio::test]
+    async fn completing_with_an_unknown_part_is_refused() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        let initiated = send(
+            &application,
+            Method::POST,
+            "/photos/big.bin?uploads",
+            b"",
+            &[],
+        )
+        .await;
+        let document = body_text(initiated).await;
+        let upload_id = xml_value(&document, "UploadId")
+            .expect("upload id")
+            .to_owned();
+
+        let response = send(
+            &application,
+            Method::POST,
+            &format!("/photos/big.bin?uploadId={upload_id}"),
+            b"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>00000000000000000000000000000000</ETag></Part></CompleteMultipartUpload>",
+            &[],
+        )
+        .await;
+        assert!(
+            response.status().is_client_error(),
+            "an unknown part must not complete: {}",
+            response.status()
+        );
+
+        let head = send(&application, Method::HEAD, "/photos/big.bin", b"", &[]).await;
+        assert_eq!(
+            head.status(),
+            StatusCode::NOT_FOUND,
+            "nothing may be committed"
+        );
+    }
+
+    /// With versioning on, a specific version stays readable and individually
+    /// deletable through the `versionId` subresource.
+    #[tokio::test]
+    async fn a_specific_version_can_be_read_and_deleted() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        let enabled = send(
+            &application,
+            Method::PUT,
+            "/photos?versioning",
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+            &[],
+        )
+        .await;
+        assert_eq!(enabled.status(), StatusCode::OK);
+
+        let first = send(&application, Method::PUT, "/photos/note.txt", b"one", &[]).await;
+        let version = first
+            .headers()
+            .get("x-amz-version-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("version id")
+            .to_owned();
+        put(&application, "photos", "note.txt", b"two").await;
+
+        let historical = send(
+            &application,
+            Method::GET,
+            &format!("/photos/note.txt?versionId={version}"),
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(historical.status(), StatusCode::OK);
+        assert_eq!(body_text(historical).await, "one");
+
+        let removed = send(
+            &application,
+            Method::DELETE,
+            &format!("/photos/note.txt?versionId={version}"),
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+
+        let gone = send(
+            &application,
+            Method::GET,
+            &format!("/photos/note.txt?versionId={version}"),
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+        let current = send(&application, Method::GET, "/photos/note.txt", b"", &[]).await;
+        assert_eq!(
+            body_text(current).await,
+            "two",
+            "the current version is untouched"
+        );
+    }
+
+    /// A copy can either carry the source's metadata across or replace it. The
+    /// directive decides, and getting it wrong silently changes an object's type.
+    #[tokio::test]
+    async fn a_copy_honours_the_metadata_directive() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        let stored = send(
+            &application,
+            Method::PUT,
+            "/photos/original.txt",
+            b"source",
+            &[("content-type", "text/plain")],
+        )
+        .await;
+        assert_eq!(stored.status(), StatusCode::OK);
+
+        let carried = send(
+            &application,
+            Method::PUT,
+            "/photos/carried.txt",
+            b"",
+            &[("x-amz-copy-source", "/photos/original.txt")],
+        )
+        .await;
+        assert_eq!(carried.status(), StatusCode::OK);
+        let head = send(&application, Method::HEAD, "/photos/carried.txt", b"", &[]).await;
+        assert_eq!(
+            head.headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("text/plain"),
+            "COPY carries the source's type"
+        );
+
+        let replaced = send(
+            &application,
+            Method::PUT,
+            "/photos/replaced.txt",
+            b"",
+            &[
+                ("x-amz-copy-source", "/photos/original.txt"),
+                ("x-amz-metadata-directive", "REPLACE"),
+                ("content-type", "application/json"),
+            ],
+        )
+        .await;
+        assert_eq!(replaced.status(), StatusCode::OK);
+        let head = send(&application, Method::HEAD, "/photos/replaced.txt", b"", &[]).await;
+        assert_eq!(
+            head.headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json"),
+            "REPLACE uses the supplied type"
+        );
+    }
+
+    /// An unsupported subresource is reported as `NotImplemented` rather than
+    /// being silently treated as an ordinary read, which would return the object
+    /// while ignoring what the client actually asked for.
+    #[tokio::test]
+    async fn an_unsupported_object_subresource_reports_not_implemented() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        put(&application, "photos", "a.txt", b"hello").await;
+
+        for uri in [
+            "/photos/a.txt?acl",
+            "/photos/a.txt?tagging",
+            "/photos/a.txt?legal-hold",
+        ] {
+            let response = send(&application, Method::GET, uri, b"", &[]).await;
+            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{uri}");
+            let document = body_text(response).await;
+            assert_eq!(
+                xml_value(&document, "Code"),
+                Some("NotImplemented"),
+                "{document}"
+            );
+        }
+    }
 }

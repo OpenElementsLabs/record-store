@@ -705,7 +705,10 @@ pub fn rejection_error(kind: RejectionKind, message: impl Into<String>) -> Conse
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+    use crate::command::ClusterWrite;
 
     fn settings() -> ConsensusSettings {
         ConsensusSettings::new(1, "127.0.0.1:7603", "/tmp/record-store-consensus")
@@ -805,5 +808,111 @@ mod tests {
         };
         assert_eq!(rejection.kind, RejectionKind::BucketNotFound);
         assert_eq!(rejection.message, "no such bucket");
+    }
+
+    /// A single member that has initialized itself leads its own group, and the
+    /// quorum view has to say so: an operator reading "no leader" on a healthy
+    /// node would start chasing a problem that is not there.
+    #[tokio::test]
+    async fn a_single_member_leads_its_own_group() {
+        let (_directory, consensus) = crate::test_support::consensus().await;
+
+        assert!(consensus.is_initialized().await.expect("initialized"));
+        assert!(consensus.is_leader().await);
+        assert_eq!(
+            consensus.current_leader().await.map(|(member, _)| member),
+            Some(1)
+        );
+
+        let quorum = consensus.quorum().await;
+        assert_eq!(quorum.member_id, 1);
+        assert_eq!(quorum.members.len(), 1);
+        assert!(quorum.members[0].voter);
+        assert_eq!(quorum.role, "leader");
+    }
+
+    /// Initialization is idempotent so a restarted node does not create a second
+    /// cluster identity by calling it again.
+    #[tokio::test]
+    async fn initializing_an_already_initialized_group_is_accepted() {
+        let (_directory, consensus) = crate::test_support::consensus().await;
+        consensus
+            .initialize_single_member()
+            .await
+            .expect("a second initialization must be accepted");
+        assert!(consensus.is_initialized().await.expect("initialized"));
+    }
+
+    /// A read barrier is what makes a follower's read linearizable. On the
+    /// leader it must still resolve rather than blocking forever.
+    #[tokio::test]
+    async fn a_read_barrier_resolves_on_the_leader() {
+        let (_directory, consensus) = crate::test_support::consensus().await;
+
+        consensus
+            .ensure_read_consistency()
+            .await
+            .expect("read barrier");
+        let index = consensus.read_barrier_index().await.expect("barrier index");
+        assert!(index.is_some(), "a committed group has a barrier index");
+    }
+
+    /// A committed write has to be visible in the applied state, which is what
+    /// every local read depends on.
+    #[tokio::test]
+    async fn a_committed_write_advances_the_applied_state() {
+        let (_directory, consensus) = crate::test_support::consensus().await;
+        let before = consensus.quorum().await.applied_index;
+
+        consensus
+            .write(ClusterWrite::Noop)
+            .await
+            .expect("commit a no-op");
+
+        let after = consensus.quorum().await.applied_index;
+        assert!(
+            after > before,
+            "committing must advance the applied index: {before:?} -> {after:?}"
+        );
+    }
+
+    /// Waiting for a leader must return promptly when one already leads, rather
+    /// than always burning its whole timeout.
+    #[tokio::test]
+    async fn waiting_for_a_leader_returns_immediately_when_one_leads() {
+        let (_directory, consensus) = crate::test_support::consensus().await;
+        consensus
+            .wait_for_leader(Duration::from_secs(5))
+            .await
+            .expect("a leader is already elected");
+    }
+
+    /// Snapshotting compacts the log. Triggering it on a live group must succeed
+    /// rather than being reserved for some internal path.
+    #[tokio::test]
+    async fn a_snapshot_can_be_triggered_on_a_live_group() {
+        let (_directory, consensus) = crate::test_support::consensus().await;
+        consensus.write(ClusterWrite::Noop).await.expect("commit");
+        consensus.trigger_snapshot().await.expect("snapshot");
+    }
+
+    /// Shutdown has to stop the group cleanly; a raft that keeps running after
+    /// the node was told to stop would keep mutating durable state.
+    #[tokio::test]
+    async fn a_group_can_be_shut_down() {
+        let (_directory, consensus) = crate::test_support::consensus().await;
+        consensus.shutdown().await;
+    }
+
+    /// The applied state is the catalog every local read consults, so the handle
+    /// has to be reachable from the consensus surface.
+    #[tokio::test]
+    async fn the_applied_state_is_reachable() {
+        let (_directory, consensus) = crate::test_support::consensus().await;
+        let state = consensus.state();
+        state
+            .applied_state()
+            .await
+            .expect("the applied position is readable");
     }
 }

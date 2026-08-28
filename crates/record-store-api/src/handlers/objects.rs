@@ -595,3 +595,268 @@ pub(crate) fn decode_cursor(value: &str, request_id: &RequestId) -> Result<Strin
     let decoded = URL_SAFE_NO_PAD.decode(value).map_err(|_| invalid())?;
     String::from_utf8(decoded).map_err(|_| invalid())
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use serde_json::json;
+
+    use crate::test_support::{
+        SYSTEM_TOKEN, admin, api, call, expect_status, json_body, make_bucket, put_object,
+    };
+
+    async fn body_text(response: axum::response::Response<Body>) -> String {
+        use http_body_util::BodyExt;
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        String::from_utf8(bytes.to_vec()).expect("UTF-8")
+    }
+
+    fn download(uri: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("authorization", format!("Bearer {SYSTEM_TOKEN}"))
+            .body(Body::empty())
+            .expect("request")
+    }
+
+    #[tokio::test]
+    async fn an_uploaded_object_can_be_listed_described_and_downloaded() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        put_object(&api, "photos", "a.txt", b"hello").await;
+
+        let listed = expect_status(
+            &api,
+            admin("GET", "/api/v1/buckets/photos/objects", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(listed["objects"].as_array().expect("objects").len(), 1);
+
+        let described = expect_status(
+            &api,
+            admin("GET", "/api/v1/buckets/photos/object/a.txt", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(described["size"], 5, "{described}");
+
+        let response = call(
+            &api,
+            download("/api/v1/buckets/photos/object-content/a.txt"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_text(response).await, "hello");
+    }
+
+    /// Listing is paginated so a bucket with many objects never hands a caller
+    /// the whole keyspace. The cursor has to be lossless across the boundary.
+    #[tokio::test]
+    async fn object_listing_pages_without_losing_or_repeating_a_key() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        for key in ["a", "b", "c", "d"] {
+            put_object(&api, "photos", key, b"x").await;
+        }
+
+        let first = expect_status(
+            &api,
+            admin("GET", "/api/v1/buckets/photos/objects?limit=2", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(first["objects"].as_array().expect("objects").len(), 2);
+        let cursor = first["next_continuation_token"]
+            .as_str()
+            .expect("a truncated page must offer a cursor")
+            .to_owned();
+
+        let second = expect_status(
+            &api,
+            admin(
+                "GET",
+                &format!("/api/v1/buckets/photos/objects?limit=2&continuation_token={cursor}"),
+                None,
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        let seen: Vec<&str> = first["objects"]
+            .as_array()
+            .expect("objects")
+            .iter()
+            .chain(second["objects"].as_array().expect("objects"))
+            .map(|object| object["key"].as_str().expect("key"))
+            .collect();
+        assert_eq!(seen, vec!["a", "b", "c", "d"]);
+    }
+
+    #[tokio::test]
+    async fn a_prefix_filter_does_not_leak_neighbouring_keys() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        for key in ["a/1", "a/2", "b/1"] {
+            put_object(&api, "photos", key, b"x").await;
+        }
+
+        let listed = expect_status(
+            &api,
+            admin("GET", "/api/v1/buckets/photos/objects?prefix=a/", None),
+            StatusCode::OK,
+        )
+        .await;
+        let keys: Vec<&str> = listed["objects"]
+            .as_array()
+            .expect("objects")
+            .iter()
+            .map(|object| object["key"].as_str().expect("key"))
+            .collect();
+        assert_eq!(keys, vec!["a/1", "a/2"], "{listed}");
+    }
+
+    #[tokio::test]
+    async fn deleting_an_object_removes_it_from_the_listing() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        put_object(&api, "photos", "a.txt", b"hello").await;
+
+        expect_status(
+            &api,
+            admin("DELETE", "/api/v1/buckets/photos/object/a.txt", None),
+            StatusCode::NO_CONTENT,
+        )
+        .await;
+        let listed = expect_status(
+            &api,
+            admin("GET", "/api/v1/buckets/photos/objects", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert!(listed["objects"].as_array().expect("objects").is_empty());
+    }
+
+    /// With versioning on, every write keeps the previous one addressable. A
+    /// version listing that lost history would make restore impossible.
+    #[tokio::test]
+    async fn versions_accumulate_and_remain_individually_addressable() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        expect_status(
+            &api,
+            admin(
+                "PUT",
+                "/api/v1/buckets/photos/versioning",
+                Some(json!({"versioning": "enabled"})),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        let first = put_object(&api, "photos", "note.txt", b"one").await;
+        put_object(&api, "photos", "note.txt", b"two").await;
+
+        let versions = expect_status(
+            &api,
+            admin("GET", "/api/v1/buckets/photos/object-versions", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(versions["versions"].as_array().expect("versions").len(), 2);
+
+        let version = first["version_id"].as_str().expect("version id");
+        expect_status(
+            &api,
+            admin(
+                "DELETE",
+                &format!("/api/v1/buckets/photos/object-versions/note.txt?version_id={version}"),
+                None,
+            ),
+            StatusCode::NO_CONTENT,
+        )
+        .await;
+        let remaining = expect_status(
+            &api,
+            admin("GET", "/api/v1/buckets/photos/object-versions", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(remaining["versions"].as_array().expect("versions").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn requests_for_absent_buckets_and_objects_are_not_found() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin("GET", "/api/v1/buckets/absent/objects", None),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+
+        make_bucket(&api, "photos").await;
+        expect_status(
+            &api,
+            admin("GET", "/api/v1/buckets/photos/object/absent.txt", None),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    /// The key is attacker-influenced, so a traversal attempt has to be refused
+    /// by the domain type rather than reaching the store.
+    #[tokio::test]
+    async fn a_key_that_tries_to_escape_the_bucket_is_refused() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        let response = call(
+            &api,
+            admin(
+                "GET",
+                "/api/v1/buckets/photos/object/../../etc/passwd",
+                None,
+            ),
+        )
+        .await;
+        assert!(
+            response.status().is_client_error(),
+            "a traversal key must be refused: {}",
+            response.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_continuation_token_is_refused_rather_than_ignored() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        let response = call(
+            &api,
+            admin(
+                "GET",
+                "/api/v1/buckets/photos/objects?continuation_token=not-base64!!",
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(response).await;
+        assert!(body["error"]["code"].as_str().is_some(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn the_storage_event_log_is_readable() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        put_object(&api, "photos", "a.txt", b"hello").await;
+
+        let events =
+            expect_status(&api, admin("GET", "/api/v1/events", None), StatusCode::OK).await;
+        assert!(events["events"].is_array(), "{events}");
+    }
+}

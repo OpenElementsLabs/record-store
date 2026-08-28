@@ -743,7 +743,9 @@ mod tests {
     use crate::command::{ClusterCommand, ClusterOutcome};
     use crate::replica::{PayloadPlacement, Replica};
     use crate::tasks::{ReplicaTask, ReplicaTaskKind, ReplicaTaskPriority};
+    use crate::topology::NodeCapacity;
     use crate::topology::StorageClass;
+    use record_store_core::ReplicaTaskId;
 
     #[tokio::test]
     async fn initialization_is_idempotent_and_refuses_a_foreign_cluster() {
@@ -961,5 +963,727 @@ mod tests {
         );
         let usage = catalog.usage().await.expect("usage");
         assert_eq!(usage.active_tasks, 1);
+    }
+
+    /// A node's lifecycle is a state machine an operator drives. Every
+    /// transition must be durable and readable back, because placement and
+    /// read routing both key off it.
+    #[tokio::test]
+    async fn node_lifecycle_transitions_are_durable() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+
+        for state in [
+            NodeState::Healthy,
+            NodeState::Draining,
+            NodeState::Maintenance,
+            NodeState::Unreachable,
+        ] {
+            catalog
+                .apply(ClusterCommand::SetNodeState {
+                    node_id,
+                    state,
+                    reason: Some(format!("moved to {state:?}")),
+                    at: now,
+                })
+                .await
+                .expect("set state");
+            let node = catalog.node(node_id).await.expect("read").expect("node");
+            assert_eq!(node.state, state);
+            assert!(node.state_reason.is_some());
+        }
+    }
+
+    /// A heartbeat is how the cluster learns a node is alive and how full it is.
+    /// Losing either would make failure detection and placement blind.
+    #[tokio::test]
+    async fn a_heartbeat_records_liveness_and_capacity() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+
+        let later = now + chrono::Duration::seconds(30);
+        catalog
+            .apply(ClusterCommand::Heartbeat {
+                node_id,
+                capacity: NodeCapacity {
+                    total_bytes: 1_000,
+                    available_bytes: 750,
+                    replica_bytes: 250,
+                    ..NodeCapacity::default()
+                },
+                activity: crate::topology::NodeActivity::default(),
+                at: later,
+            })
+            .await
+            .expect("heartbeat");
+
+        let node = catalog.node(node_id).await.expect("read").expect("node");
+        assert_eq!(node.last_heartbeat_at, Some(later));
+        assert_eq!(node.capacity.replica_bytes, 250);
+        assert_eq!(
+            crate::catalog::silence(&node, later),
+            chrono::TimeDelta::zero()
+        );
+    }
+
+    /// A heartbeat from a node the cluster does not know must not implicitly
+    /// enrol it, or an unauthorised process could join by simply reporting in.
+    #[tokio::test]
+    async fn a_heartbeat_from_an_unknown_node_is_refused() {
+        let (_directory, catalog) = initialized().await;
+        let result = catalog
+            .apply(ClusterCommand::Heartbeat {
+                node_id: NodeId::new(),
+                capacity: NodeCapacity::default(),
+                activity: crate::topology::NodeActivity::default(),
+                at: Utc::now(),
+            })
+            .await;
+        assert!(matches!(result, Err(ClusterCatalogError::NodeNotFound(_))));
+    }
+
+    /// A task moves through claim, completion, and purge. Each step has to be
+    /// durable so a coordinator restart does not redo finished work.
+    #[tokio::test]
+    async fn a_task_moves_through_its_lifecycle() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let task = ReplicaTask {
+            id: ReplicaTaskId::new(),
+            object_id: ObjectId::new(),
+            kind: ReplicaTaskKind::Repair,
+            priority: ReplicaTaskPriority::High,
+            source_node: None,
+            target_node: Some(node_id),
+            operation_id: None,
+            size: 1_024,
+            state: ReplicaTaskState::Queued,
+            attempts: 0,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        };
+        catalog
+            .apply(ClusterCommand::EnqueueTask {
+                task: Box::new(task.clone()),
+            })
+            .await
+            .expect("enqueue");
+
+        catalog
+            .apply(ClusterCommand::ClaimTask {
+                task_id: task.id,
+                node_id,
+                lease_seconds: 60,
+                at: now,
+            })
+            .await
+            .expect("claim");
+        assert_eq!(
+            catalog
+                .task(task.id)
+                .await
+                .expect("read")
+                .expect("task")
+                .state,
+            ReplicaTaskState::Running {
+                node_id,
+                started_at: now,
+                lease_expires_at: now + chrono::Duration::seconds(60),
+            }
+        );
+
+        catalog
+            .apply(ClusterCommand::CompleteTask {
+                task_id: task.id,
+                at: now,
+            })
+            .await
+            .expect("complete");
+        assert!(
+            matches!(
+                catalog
+                    .task(task.id)
+                    .await
+                    .expect("read")
+                    .expect("task")
+                    .state,
+                ReplicaTaskState::Completed { .. }
+            ),
+            "a completed task keeps its completion time"
+        );
+
+        catalog
+            .apply(ClusterCommand::PurgeTask { task_id: task.id })
+            .await
+            .expect("purge");
+        assert!(catalog.task(task.id).await.expect("read").is_none());
+    }
+
+    /// A failed task records why and how many times, so an operator can see a
+    /// task that keeps failing rather than one that silently disappears.
+    #[tokio::test]
+    async fn a_failed_task_records_its_attempts_and_reason() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let task = ReplicaTask {
+            id: ReplicaTaskId::new(),
+            object_id: ObjectId::new(),
+            kind: ReplicaTaskKind::Repair,
+            priority: ReplicaTaskPriority::Low,
+            source_node: None,
+            target_node: Some(node_id),
+            operation_id: None,
+            size: 1,
+            state: ReplicaTaskState::Queued,
+            attempts: 0,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        };
+        catalog
+            .apply(ClusterCommand::EnqueueTask {
+                task: Box::new(task.clone()),
+            })
+            .await
+            .expect("enqueue");
+        catalog
+            .apply(ClusterCommand::FailTask {
+                task_id: task.id,
+                reason: "peer refused".to_owned(),
+                maximum_attempts: 3,
+                at: now,
+            })
+            .await
+            .expect("fail");
+
+        let stored = catalog.task(task.id).await.expect("read").expect("task");
+        assert_eq!(stored.attempts, 1);
+        assert_eq!(stored.last_error.as_deref(), Some("peer refused"));
+
+        catalog
+            .apply(ClusterCommand::RequeueTask {
+                task_id: task.id,
+                reason: None,
+                at: now,
+            })
+            .await
+            .expect("requeue");
+        assert_eq!(
+            catalog
+                .task(task.id)
+                .await
+                .expect("read")
+                .expect("task")
+                .state,
+            ReplicaTaskState::Queued
+        );
+
+        catalog
+            .apply(ClusterCommand::CancelTask {
+                task_id: task.id,
+                reason: "operator cancelled".to_owned(),
+                at: now,
+            })
+            .await
+            .expect("cancel");
+        assert!(
+            matches!(
+                catalog
+                    .task(task.id)
+                    .await
+                    .expect("read")
+                    .expect("task")
+                    .state,
+                ReplicaTaskState::Cancelled { .. }
+            ),
+            "cancellation records why"
+        );
+    }
+
+    /// A join token is single-use by policy. Consuming it past its ceiling, or
+    /// after revocation, would let one leaked token enrol many nodes.
+    #[tokio::test]
+    async fn a_join_token_is_bounded_by_its_use_count_and_revocation() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let token = join_token(now, 1);
+        catalog
+            .apply(ClusterCommand::IssueJoinToken {
+                token: Box::new(token.clone()),
+            })
+            .await
+            .expect("issue");
+
+        catalog
+            .apply(ClusterCommand::ConsumeJoinToken {
+                token_id: token.id,
+                at: now,
+            })
+            .await
+            .expect("first use");
+        let stored = catalog
+            .join_token(token.id)
+            .await
+            .expect("read")
+            .expect("token");
+        assert_eq!(stored.uses, 1);
+
+        catalog
+            .apply(ClusterCommand::RevokeJoinToken {
+                token_id: token.id,
+                at: now,
+            })
+            .await
+            .expect("revoke");
+        assert!(
+            catalog
+                .join_token(token.id)
+                .await
+                .expect("read")
+                .expect("token")
+                .revoked
+        );
+
+        catalog
+            .apply(ClusterCommand::PurgeJoinToken { token_id: token.id })
+            .await
+            .expect("purge");
+        assert!(catalog.join_token(token.id).await.expect("read").is_none());
+    }
+
+    #[tokio::test]
+    async fn consuming_a_token_that_was_never_issued_is_refused() {
+        let (_directory, catalog) = initialized().await;
+        assert!(matches!(
+            catalog
+                .apply(ClusterCommand::ConsumeJoinToken {
+                    token_id: record_store_core::JoinTokenId::new(),
+                    at: Utc::now(),
+                })
+                .await,
+            Err(ClusterCatalogError::JoinTokenNotFound(_))
+        ));
+    }
+
+    /// A long-running operation is what an operator watches during a drain, so
+    /// its progress and terminal state have to be readable throughout.
+    #[tokio::test]
+    async fn a_cluster_operation_reports_progress_until_it_finishes() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let record = operation(crate::tasks::ClusterOperationKind::Drain, node_id, now);
+
+        catalog
+            .apply(ClusterCommand::StartOperation {
+                operation: Box::new(record.clone()),
+            })
+            .await
+            .expect("start");
+        assert_eq!(catalog.operations(10).await.expect("list").len(), 1);
+
+        catalog
+            .apply(ClusterCommand::UpdateOperation {
+                operation_id: record.id,
+                state: crate::tasks::ClusterOperationState::Completed,
+                progress: crate::tasks::OperationProgress {
+                    objects_moved: 5,
+                    ..crate::tasks::OperationProgress::default()
+                },
+                message: Some("done".to_owned()),
+                at: now,
+            })
+            .await
+            .expect("update");
+
+        let stored = catalog
+            .operation(record.id)
+            .await
+            .expect("read")
+            .expect("operation");
+        assert_eq!(stored.state, crate::tasks::ClusterOperationState::Completed);
+        assert_eq!(stored.progress.objects_moved, 5);
+        assert!(stored.completed_at.is_some());
+    }
+
+    /// A node credential is how a peer proves who it is, so revoking one has to
+    /// take effect in the catalog every other node reads.
+    #[tokio::test]
+    async fn a_node_credential_is_stored_and_addressable_two_ways() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let credential = crate::credentials::NodeCredential {
+            id: record_store_core::NodeCredentialId::new(),
+            node_id,
+            secret_digest: [3_u8; 32],
+            created_at: now,
+            rotated_at: None,
+            disabled: false,
+        };
+
+        catalog
+            .apply(ClusterCommand::PutNodeCredential {
+                credential: Box::new(credential.clone()),
+            })
+            .await
+            .expect("store credential");
+
+        let by_node = catalog
+            .node_credential(node_id)
+            .await
+            .expect("read")
+            .expect("credential");
+        let by_id = catalog
+            .node_credential_by_id(credential.id)
+            .await
+            .expect("read")
+            .expect("credential");
+        assert_eq!(by_node.id, credential.id);
+        assert_eq!(by_id.node_id, node_id);
+    }
+
+    /// Configuration changes are replicated commands like any other, and the
+    /// topology view every scheduler reads has to reflect them.
+    #[tokio::test]
+    async fn a_configuration_change_reaches_the_topology_view() {
+        let (_directory, catalog) = initialized().await;
+        let mut config = catalog.config().await.expect("read").expect("config");
+        config.replication_factor = 3;
+
+        catalog
+            .apply(ClusterCommand::UpdateConfig {
+                config: Box::new(config),
+                at: Utc::now(),
+            })
+            .await
+            .expect("update config");
+
+        let topology = catalog.topology().await.expect("topology");
+        assert_eq!(topology.config.replication_factor, 3);
+    }
+
+    #[tokio::test]
+    async fn usage_counters_are_readable_and_refreshable() {
+        let (_directory, catalog) = initialized().await;
+        let usage = catalog.usage().await.expect("usage");
+        assert_eq!(usage.payloads, 0);
+        catalog
+            .refresh_durability_counters()
+            .await
+            .expect("refresh");
+        catalog.check_ready().await.expect("ready");
+    }
+
+    fn replica_of(node_id: NodeId, state: ReplicaState, now: chrono::DateTime<Utc>) -> Replica {
+        Replica {
+            node_id,
+            state,
+            location: "opaque".to_owned(),
+            size: 1_024,
+            checksum: Some(Checksum::sha256([4_u8; 32])),
+            created_at: now,
+            verified_at: None,
+            generation: 0,
+        }
+    }
+
+    fn placement_of(
+        object_id: ObjectId,
+        replicas: Vec<Replica>,
+        now: chrono::DateTime<Utc>,
+    ) -> PayloadPlacement {
+        PayloadPlacement {
+            object_id,
+            size: 1_024,
+            checksum: Checksum::sha256([4_u8; 32]),
+            desired_replicas: 3,
+            storage_class: StorageClass::new("standard").expect("class"),
+            replicas,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Placement is the record of where a payload actually lives. Committing it
+    /// and reading it back is the contract every durability decision rests on.
+    #[tokio::test]
+    async fn placement_is_committed_and_readable() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let object_id = ObjectId::new();
+
+        catalog
+            .apply(ClusterCommand::PutPlacement {
+                placement: Box::new(placement_of(
+                    object_id,
+                    vec![replica_of(node_id, ReplicaState::Healthy, now)],
+                    now,
+                )),
+            })
+            .await
+            .expect("put placement");
+
+        let stored = catalog
+            .placement(object_id)
+            .await
+            .expect("read")
+            .expect("placement");
+        assert_eq!(stored.replicas.len(), 1);
+        assert_eq!(stored.replicas[0].node_id, node_id);
+        assert_eq!(catalog.node_replica_count(node_id).await.expect("count"), 1);
+    }
+
+    /// A replica record is upserted as its state changes during a transfer, and
+    /// each change has to replace the previous record rather than accumulate.
+    #[tokio::test]
+    async fn a_replica_record_is_replaced_rather_than_duplicated() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let object_id = ObjectId::new();
+        catalog
+            .apply(ClusterCommand::PutPlacement {
+                placement: Box::new(placement_of(object_id, Vec::new(), now)),
+            })
+            .await
+            .expect("put placement");
+
+        for state in [
+            ReplicaState::Pending,
+            ReplicaState::Repairing,
+            ReplicaState::Healthy,
+        ] {
+            catalog
+                .apply(ClusterCommand::UpsertReplica {
+                    object_id,
+                    replica: Box::new(replica_of(node_id, state, now)),
+                    at: now,
+                })
+                .await
+                .expect("upsert replica");
+            let stored = catalog
+                .placement(object_id)
+                .await
+                .expect("read")
+                .expect("placement");
+            assert_eq!(stored.replicas.len(), 1, "{stored:?}");
+            assert_eq!(stored.replicas[0].state, state);
+        }
+    }
+
+    /// Reporting a verification result is how a scrub records what it found, and
+    /// the observed checksum has to be kept for the next comparison.
+    #[tokio::test]
+    async fn a_verification_result_updates_the_replica_state() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let object_id = ObjectId::new();
+        catalog
+            .apply(ClusterCommand::PutPlacement {
+                placement: Box::new(placement_of(
+                    object_id,
+                    vec![replica_of(node_id, ReplicaState::Healthy, now)],
+                    now,
+                )),
+            })
+            .await
+            .expect("put placement");
+
+        catalog
+            .apply(ClusterCommand::SetReplicaState {
+                object_id,
+                node_id,
+                state: ReplicaState::Corrupt,
+                checksum: Some(Checksum::sha256([8_u8; 32])),
+                verified: true,
+                at: now,
+            })
+            .await
+            .expect("set replica state");
+
+        let stored = catalog
+            .placement(object_id)
+            .await
+            .expect("read")
+            .expect("placement");
+        assert_eq!(stored.replicas[0].state, ReplicaState::Corrupt);
+        assert!(stored.replicas[0].verified_at.is_some());
+    }
+
+    /// Removing a replica has to release the node's accounting too, or the
+    /// placement scheduler keeps believing the node is fuller than it is.
+    #[tokio::test]
+    async fn removing_a_replica_releases_the_nodes_accounting() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let object_id = ObjectId::new();
+        catalog
+            .apply(ClusterCommand::PutPlacement {
+                placement: Box::new(placement_of(
+                    object_id,
+                    vec![replica_of(node_id, ReplicaState::Healthy, now)],
+                    now,
+                )),
+            })
+            .await
+            .expect("put placement");
+        assert_eq!(catalog.node_replica_count(node_id).await.expect("count"), 1);
+
+        catalog
+            .apply(ClusterCommand::RemoveReplica {
+                object_id,
+                node_id,
+                at: now,
+            })
+            .await
+            .expect("remove replica");
+        assert_eq!(catalog.node_replica_count(node_id).await.expect("count"), 0);
+    }
+
+    /// Raising the desired count is how an operator increases durability, and
+    /// the new target has to be what the repair scheduler later reads.
+    #[tokio::test]
+    async fn the_desired_replica_count_can_be_changed() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let object_id = ObjectId::new();
+        catalog
+            .apply(ClusterCommand::PutPlacement {
+                placement: Box::new(placement_of(object_id, Vec::new(), now)),
+            })
+            .await
+            .expect("put placement");
+
+        catalog
+            .apply(ClusterCommand::SetDesiredReplicas {
+                object_id,
+                desired: 5,
+                at: now,
+            })
+            .await
+            .expect("set desired");
+        assert_eq!(
+            catalog
+                .placement(object_id)
+                .await
+                .expect("read")
+                .expect("placement")
+                .desired_replicas,
+            5
+        );
+    }
+
+    /// A tombstone is how a delete reaches a node that was offline when it
+    /// happened. It may only be purged once every holder has acknowledged it,
+    /// otherwise the returning node would keep bytes nobody can reach.
+    #[tokio::test]
+    async fn a_tombstone_survives_until_every_holder_acknowledges_it() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let object_id = ObjectId::new();
+        catalog
+            .apply(ClusterCommand::PutPlacement {
+                placement: Box::new(placement_of(
+                    object_id,
+                    vec![replica_of(node_id, ReplicaState::Healthy, now)],
+                    now,
+                )),
+            })
+            .await
+            .expect("put placement");
+
+        catalog
+            .apply(ClusterCommand::DeletePlacement { object_id, at: now })
+            .await
+            .expect("delete placement");
+        let pending = catalog.pending_tombstones(10).await.expect("pending");
+        assert!(
+            pending
+                .iter()
+                .any(|tombstone| tombstone.object_id == object_id),
+            "{pending:?}"
+        );
+
+        catalog
+            .apply(ClusterCommand::AcknowledgeTombstone {
+                object_id,
+                node_id,
+                at: now,
+            })
+            .await
+            .expect("acknowledge");
+
+        catalog
+            .apply(ClusterCommand::PurgeTombstone { object_id })
+            .await
+            .expect("purge");
+        assert!(catalog.tombstone(object_id).await.expect("read").is_none());
+    }
+
+    /// Commands naming a payload the cluster has no placement for must be
+    /// refused rather than creating one implicitly.
+    #[tokio::test]
+    async fn replica_commands_against_an_unknown_placement_are_refused() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let object_id = ObjectId::new();
+
+        assert!(matches!(
+            catalog
+                .apply(ClusterCommand::UpsertReplica {
+                    object_id,
+                    replica: Box::new(replica_of(node_id, ReplicaState::Healthy, now)),
+                    at: now,
+                })
+                .await,
+            Err(ClusterCatalogError::PlacementNotFound(_))
+        ));
+        assert!(matches!(
+            catalog
+                .apply(ClusterCommand::SetDesiredReplicas {
+                    object_id,
+                    desired: 2,
+                    at: now,
+                })
+                .await,
+            Err(ClusterCatalogError::PlacementNotFound(_))
+        ));
+    }
+
+    /// Listing placements is how the coordinator sweeps for repair work, so it
+    /// has to page rather than hand back the whole cluster at once.
+    #[tokio::test]
+    async fn placements_are_listed_in_pages() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        for _ in 0..3 {
+            catalog
+                .apply(ClusterCommand::PutPlacement {
+                    placement: Box::new(placement_of(ObjectId::new(), Vec::new(), now)),
+                })
+                .await
+                .expect("put placement");
+        }
+
+        let page = catalog.list_placements(None, 2).await.expect("list");
+        assert_eq!(page.placements.len(), 2, "{page:?}");
+        assert!(page.next_object_id.is_some(), "{page:?}");
+
+        let rest = catalog
+            .list_placements(page.next_object_id, 10)
+            .await
+            .expect("list");
+        assert_eq!(rest.placements.len(), 1, "{rest:?}");
     }
 }

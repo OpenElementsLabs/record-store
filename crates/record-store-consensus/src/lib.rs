@@ -23,6 +23,9 @@ mod repository;
 mod state_machine;
 mod types;
 
+#[cfg(test)]
+mod test_support;
+
 pub use command::{
     ClusterWrite, ClusterWriteResponse, CommandRejection, RejectionKind, classify_cluster_error,
     classify_metadata_error, is_durable_cluster_failure, is_durable_metadata_failure,

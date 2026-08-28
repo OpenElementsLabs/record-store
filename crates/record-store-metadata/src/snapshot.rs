@@ -264,4 +264,197 @@ mod tests {
         assert_eq!(usage.object_count, 1);
         assert_eq!(usage.bytes_used, 42);
     }
+
+    use crate::commands::NewDeleteMarker;
+    use record_store_core::{BucketName, ObjectKey, VersioningState};
+
+    /// A snapshot is how a lagging consensus member catches up without replaying
+    /// the whole log, so an export must carry everything an import needs to
+    /// reproduce the catalog exactly.
+    #[tokio::test]
+    async fn a_snapshot_reproduces_the_catalog_it_was_taken_from() {
+        let (source_directory, source, source_bucket) = catalog_with_bucket("snapshotted").await;
+        source
+            .set_bucket_versioning(source_bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable versioning");
+        source
+            .put_object(&object(source_bucket.id, "a.txt", 10))
+            .await
+            .expect("put");
+        source
+            .put_object(&object(source_bucket.id, "b.txt", 20))
+            .await
+            .expect("put");
+        let upload_record = upload(source_bucket.id, "big.bin");
+        source
+            .create_multipart_upload(&upload_record)
+            .await
+            .expect("create upload");
+        source
+            .put_multipart_part(&part(upload_record.id, 1, 64))
+            .await
+            .expect("put part");
+
+        let expected_objects = source.storage_usage().await.expect("usage").object_count;
+        drop(source);
+
+        let entries = {
+            let database = redb::Database::open(source_directory.path().join("metadata.redb"))
+                .expect("open source");
+            let read = database.begin_read().expect("read transaction");
+            export_tx(&read).expect("export")
+        };
+        assert!(!entries.is_empty());
+
+        let target_directory = tempfile::tempdir().expect("temporary directory");
+        let target_path = target_directory.path().join("metadata.redb");
+        RedbMetadataRepository::open(&target_path)
+            .await
+            .expect("initialise target");
+        {
+            let database = redb::Database::open(&target_path).expect("open target");
+            let write = database.begin_write().expect("write transaction");
+            import_tx(&write, &entries).expect("import");
+            write.commit().expect("commit");
+        }
+
+        let target = RedbMetadataRepository::open(&target_path)
+            .await
+            .expect("reopen target");
+        assert_eq!(
+            target
+                .get_bucket(source_bucket.id)
+                .await
+                .expect("read")
+                .expect("bucket")
+                .versioning,
+            VersioningState::Enabled
+        );
+        assert!(
+            target
+                .get_object(source_bucket.id, &ObjectKey::new("a.txt").expect("key"))
+                .await
+                .expect("read")
+                .is_some()
+        );
+        assert!(
+            target
+                .get_multipart_upload(upload_record.id)
+                .await
+                .expect("read")
+                .is_some(),
+            "in-flight uploads have to survive a snapshot"
+        );
+        assert_eq!(
+            target.storage_usage().await.expect("usage").object_count,
+            expected_objects,
+            "the counters have to match too"
+        );
+    }
+
+    /// Importing replaces whatever the target held. A snapshot that merged into
+    /// existing state would leave a catching-up member with data the leader
+    /// already deleted.
+    #[tokio::test]
+    async fn an_import_replaces_the_targets_existing_state() {
+        let (source_directory, source, source_bucket) = catalog_with_bucket("kept").await;
+        source
+            .put_object(&object(source_bucket.id, "kept.txt", 1))
+            .await
+            .expect("put");
+        drop(source);
+        let entries = {
+            let database = redb::Database::open(source_directory.path().join("metadata.redb"))
+                .expect("open source");
+            let read = database.begin_read().expect("read transaction");
+            export_tx(&read).expect("export")
+        };
+
+        let (target_directory, target, stale_bucket) = catalog_with_bucket("stale").await;
+        target
+            .put_object(&object(stale_bucket.id, "stale.txt", 1))
+            .await
+            .expect("put");
+        drop(target);
+
+        let target_path = target_directory.path().join("metadata.redb");
+        {
+            let database = redb::Database::open(&target_path).expect("open target");
+            let write = database.begin_write().expect("write transaction");
+            import_tx(&write, &entries).expect("import");
+            write.commit().expect("commit");
+        }
+
+        let target = RedbMetadataRepository::open(&target_path)
+            .await
+            .expect("reopen");
+        assert!(
+            target
+                .get_bucket_by_name(&BucketName::new("stale").expect("name"))
+                .await
+                .expect("read")
+                .is_none(),
+            "state the snapshot does not describe must be gone"
+        );
+        assert!(
+            target
+                .get_bucket_by_name(&BucketName::new("kept").expect("name"))
+                .await
+                .expect("read")
+                .is_some()
+        );
+    }
+
+    /// A snapshot naming a table this build does not have is a version mismatch,
+    /// and importing it blindly would corrupt the catalog.
+    #[tokio::test]
+    async fn a_snapshot_referencing_an_unknown_table_is_refused() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("metadata.redb");
+        RedbMetadataRepository::open(&path).await.expect("open");
+
+        let database = redb::Database::open(&path).expect("open");
+        let write = database.begin_write().expect("write transaction");
+        let result = import_tx(
+            &write,
+            &[MetadataEntry {
+                table: "not_a_table.v9".to_owned(),
+                key: b"k".to_vec(),
+                value: b"v".to_vec(),
+            }],
+        );
+        assert!(
+            matches!(result, Err(MetadataError::Database { .. })),
+            "{result:?}"
+        );
+    }
+
+    /// An empty snapshot is a legitimate state — a cluster that has committed
+    /// nothing yet — and importing it must leave an empty catalog, not fail.
+    #[tokio::test]
+    async fn an_empty_snapshot_imports_into_an_empty_catalog() {
+        let (directory, catalog, existing) = catalog_with_bucket("wiped").await;
+        catalog
+            .delete_object(
+                existing.id,
+                &ObjectKey::new("absent").expect("key"),
+                NewDeleteMarker::generate(),
+            )
+            .await
+            .ok();
+        drop(catalog);
+
+        let path = directory.path().join("metadata.redb");
+        {
+            let database = redb::Database::open(&path).expect("open");
+            let write = database.begin_write().expect("write transaction");
+            import_tx(&write, &[]).expect("import an empty snapshot");
+            write.commit().expect("commit");
+        }
+
+        let catalog = RedbMetadataRepository::open(&path).await.expect("reopen");
+        assert!(catalog.list_buckets().await.expect("list").is_empty());
+        let _ = bucket("unused");
+    }
 }

@@ -904,3 +904,495 @@ impl ObjectStore for LocalFilesystemStore {
         Ok(completed)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use futures_util::TryStreamExt;
+    use record_store_core::{ByteRange, Checksum, ObjectKey};
+
+    use super::*;
+    use crate::test_support::{open, put, store};
+    use crate::{DeleteObjectRequest, GetObjectRequest, HeadObjectRequest, VerifyObjectRequest};
+
+    async fn read(result: crate::GetObjectResult) -> Vec<u8> {
+        result
+            .body
+            .try_fold(Vec::new(), |mut buffer, chunk| async move {
+                buffer.extend_from_slice(&chunk);
+                Ok(buffer)
+            })
+            .await
+            .expect("stream body")
+    }
+
+    fn key(value: &str) -> ObjectKey {
+        ObjectKey::new(value).expect("key")
+    }
+
+    /// The bytes a caller reads back must be exactly the bytes it wrote, and the
+    /// checksum recorded at commit has to describe them.
+    #[tokio::test]
+    async fn stored_bytes_come_back_unchanged_with_their_checksum() {
+        let (_directory, store, bucket) = store().await;
+        let committed = put(&store, &bucket, "a.txt", b"hello world").await;
+        assert_eq!(committed.metadata.size, 11);
+
+        let fetched = store
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key("a.txt"),
+                range: None,
+            })
+            .await
+            .expect("get");
+        assert_eq!(read(fetched).await, b"hello world");
+
+        let verified = store
+            .verify(VerifyObjectRequest {
+                bucket_id: bucket.id,
+                key: key("a.txt"),
+            })
+            .await
+            .expect("verify");
+        assert_eq!(verified.checksum, committed.metadata.checksum);
+    }
+
+    /// A range read must not materialise the whole payload, and the slice has to
+    /// line up exactly with what was asked for.
+    #[tokio::test]
+    async fn a_range_read_returns_only_the_requested_slice() {
+        let (_directory, store, bucket) = store().await;
+        put(&store, &bucket, "a.txt", b"0123456789").await;
+
+        let fetched = store
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key("a.txt"),
+                range: Some(ByteRange::new(2, 4).expect("range")),
+            })
+            .await
+            .expect("get");
+        assert_eq!(read(fetched).await, b"2345");
+    }
+
+    /// A supplied checksum is a promise. Breaking it must abort the write and
+    /// leave nothing behind, or the store would hold bytes nobody vouched for.
+    #[tokio::test]
+    async fn a_mismatched_checksum_aborts_the_write_and_stores_nothing() {
+        let (_directory, store, bucket) = store().await;
+        let body = bytes::Bytes::from_static(b"hello");
+        let result = store
+            .put(crate::PutObjectRequest {
+                bucket_id: bucket.id,
+                key: key("a.txt"),
+                content_type: None,
+                custom_metadata: Default::default(),
+                expected_checksum: Some(Checksum::sha256([0_u8; 32])),
+                object_id: None,
+                protocol_etag: None,
+                body: crate::upload_stream(futures_util::stream::once(async move { Ok(body) })),
+            })
+            .await;
+        assert!(result.is_err(), "a broken promise must not commit");
+
+        assert!(matches!(
+            store
+                .head(HeadObjectRequest {
+                    bucket_id: bucket.id,
+                    key: key("a.txt"),
+                })
+                .await,
+            Err(crate::StorageError::ObjectNotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn head_reports_the_same_metadata_a_read_would() {
+        let (_directory, store, bucket) = store().await;
+        let committed = put(&store, &bucket, "a.txt", b"hello").await;
+        let head = store
+            .head(HeadObjectRequest {
+                bucket_id: bucket.id,
+                key: key("a.txt"),
+            })
+            .await
+            .expect("head");
+        assert_eq!(head.size, committed.metadata.size);
+        assert_eq!(head.checksum, committed.metadata.checksum);
+    }
+
+    #[tokio::test]
+    async fn reads_and_deletes_of_absent_objects_report_absence() {
+        let (_directory, store, bucket) = store().await;
+        for outcome in [
+            store
+                .get(GetObjectRequest {
+                    bucket_id: bucket.id,
+                    key: key("absent.txt"),
+                    range: None,
+                })
+                .await
+                .err(),
+            store
+                .head(HeadObjectRequest {
+                    bucket_id: bucket.id,
+                    key: key("absent.txt"),
+                })
+                .await
+                .err(),
+            store
+                .verify(VerifyObjectRequest {
+                    bucket_id: bucket.id,
+                    key: key("absent.txt"),
+                })
+                .await
+                .err(),
+        ] {
+            assert!(
+                matches!(outcome, Some(crate::StorageError::ObjectNotFound)),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    /// Overwriting replaces what a read returns while the previous payload is
+    /// released, which is what keeps a non-versioned bucket from growing.
+    #[tokio::test]
+    async fn overwriting_replaces_the_readable_bytes() {
+        let (_directory, store, bucket) = store().await;
+        put(&store, &bucket, "a.txt", b"first").await;
+        put(&store, &bucket, "a.txt", b"second-longer").await;
+
+        let fetched = store
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key("a.txt"),
+                range: None,
+            })
+            .await
+            .expect("get");
+        assert_eq!(read(fetched).await, b"second-longer");
+    }
+
+    #[tokio::test]
+    async fn deleting_an_object_makes_it_unreadable() {
+        let (_directory, store, bucket) = store().await;
+        put(&store, &bucket, "a.txt", b"hello").await;
+        store
+            .delete(DeleteObjectRequest {
+                bucket_id: bucket.id,
+                key: key("a.txt"),
+            })
+            .await
+            .expect("delete");
+
+        assert!(matches!(
+            store
+                .get(GetObjectRequest {
+                    bucket_id: bucket.id,
+                    key: key("a.txt"),
+                    range: None,
+                })
+                .await,
+            Err(crate::StorageError::ObjectNotFound)
+        ));
+    }
+
+    /// An encrypted store must return plaintext to its caller while never
+    /// writing plaintext to disk; finding the payload verbatim on disk would
+    /// mean encryption is not actually applied.
+    #[tokio::test]
+    async fn an_encrypted_store_round_trips_without_leaving_plaintext_on_disk() {
+        let key_material = b"object-encryption-master-key-32-bytes";
+        let (directory, store, bucket) = open(Some(key_material)).await;
+        let secret = b"the-quick-brown-fox-jumps-over-it";
+        put(&store, &bucket, "a.txt", secret).await;
+
+        let fetched = store
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key("a.txt"),
+                range: None,
+            })
+            .await
+            .expect("get");
+        assert_eq!(read(fetched).await, secret);
+
+        let mut found_plaintext = false;
+        for entry in walkdir(directory.path()) {
+            if let Ok(bytes) = std::fs::read(&entry)
+                && bytes
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_slice())
+            {
+                found_plaintext = true;
+            }
+        }
+        assert!(
+            !found_plaintext,
+            "the payload was written to disk in the clear"
+        );
+    }
+
+    /// A range read of an encrypted payload has to decrypt only the chunks it
+    /// needs and still return the right bytes.
+    #[tokio::test]
+    async fn an_encrypted_payload_supports_range_reads() {
+        let (_directory, store, bucket) =
+            open(Some(b"object-encryption-master-key-32-bytes")).await;
+        put(&store, &bucket, "a.txt", b"0123456789").await;
+
+        let fetched = store
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key("a.txt"),
+                range: Some(ByteRange::new(3, 3).expect("range")),
+            })
+            .await
+            .expect("get");
+        assert_eq!(read(fetched).await, b"345");
+    }
+
+    /// Reopening with a different master key must refuse rather than hand back
+    /// bytes it cannot actually decrypt.
+    #[tokio::test]
+    async fn reopening_an_encrypted_store_with_the_wrong_key_is_refused() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let metadata: Arc<dyn MetadataRepository> = Arc::new(
+            record_store_metadata::RedbMetadataRepository::open(
+                directory.path().join("metadata.redb"),
+            )
+            .await
+            .expect("metadata"),
+        );
+        LocalFilesystemStore::open_encrypted(
+            directory.path(),
+            directory.path().join("tmp"),
+            Arc::clone(&metadata),
+            b"the-original-master-key-at-least-32-bytes",
+        )
+        .await
+        .expect("first open");
+
+        let reopened = LocalFilesystemStore::open_encrypted(
+            directory.path(),
+            directory.path().join("tmp"),
+            metadata,
+            b"a-completely-different-master-key-32-by",
+        )
+        .await;
+        assert!(
+            matches!(reopened, Err(crate::StorageError::EncryptionKeyMismatch)),
+            "a mismatched key must be refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_reports_the_stored_footprint_and_readiness() {
+        let (_directory, store, bucket) = store().await;
+        put(&store, &bucket, "a.txt", b"hello").await;
+        let status = store.status().await.expect("status");
+        assert!(
+            status.capacity_bytes > 0,
+            "a real filesystem reports a capacity: {status:?}"
+        );
+        assert!(
+            status.available_bytes <= status.capacity_bytes,
+            "{status:?}"
+        );
+        store.check_ready().await.expect("ready");
+    }
+
+    /// Walks a directory tree, returning every file path.
+    fn walkdir(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(path) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    found.push(path);
+                }
+            }
+        }
+        found
+    }
+
+    /// Multipart is how a large object is written without buffering it. The
+    /// completed object has to be the concatenation of its parts, and the
+    /// checksum recorded at completion has to describe those assembled bytes.
+    #[tokio::test]
+    async fn a_completed_multipart_upload_assembles_its_parts() {
+        let (_directory, store, bucket) = store().await;
+        let metadata = crate::test_support::metadata_of(&store);
+        let upload = record_store_core::MultipartUpload {
+            id: record_store_core::UploadId::new(),
+            bucket_id: bucket.id,
+            key: key("big.bin"),
+            content_type: None,
+            custom_metadata: Default::default(),
+            initiated_at: chrono::Utc::now(),
+            state: record_store_core::MultipartUploadState::Active,
+        };
+        metadata
+            .create_multipart_upload(&upload)
+            .await
+            .expect("create upload");
+
+        let mut parts = Vec::new();
+        for (number, body) in [(1_u16, b"first-".as_slice()), (2, b"second".as_slice())] {
+            let owned = bytes::Bytes::copy_from_slice(body);
+            let stored = store
+                .put_multipart_part(crate::PutMultipartPartRequest {
+                    upload_id: upload.id,
+                    number: record_store_core::PartNumber::new(number).expect("part number"),
+                    expected_checksum: None,
+                    body: crate::upload_stream(futures_util::stream::once(
+                        async move { Ok(owned) },
+                    )),
+                })
+                .await
+                .expect("put part");
+            parts.push(stored);
+        }
+
+        let committed = store
+            .complete_multipart(crate::CompleteMultipartRequest {
+                upload: upload.clone(),
+                parts,
+            })
+            .await
+            .expect("complete");
+        assert_eq!(committed.metadata.size, 12);
+
+        let fetched = store
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key("big.bin"),
+                range: None,
+            })
+            .await
+            .expect("get");
+        assert_eq!(read(fetched).await, b"first-second");
+    }
+
+    /// A part whose bytes break the supplied checksum must not be stored, or a
+    /// completion would assemble an object from bytes nobody vouched for.
+    #[tokio::test]
+    async fn a_multipart_part_with_a_broken_checksum_is_refused() {
+        let (_directory, store, bucket) = store().await;
+        let metadata = crate::test_support::metadata_of(&store);
+        let upload = record_store_core::MultipartUpload {
+            id: record_store_core::UploadId::new(),
+            bucket_id: bucket.id,
+            key: key("big.bin"),
+            content_type: None,
+            custom_metadata: Default::default(),
+            initiated_at: chrono::Utc::now(),
+            state: record_store_core::MultipartUploadState::Active,
+        };
+        metadata
+            .create_multipart_upload(&upload)
+            .await
+            .expect("create upload");
+
+        let owned = bytes::Bytes::from_static(b"actual");
+        let result = store
+            .put_multipart_part(crate::PutMultipartPartRequest {
+                upload_id: upload.id,
+                number: record_store_core::PartNumber::new(1).expect("part number"),
+                expected_checksum: Some(Checksum::sha256([0_u8; 32])),
+                body: crate::upload_stream(futures_util::stream::once(async move { Ok(owned) })),
+            })
+            .await;
+        assert!(result.is_err(), "a broken promise must not store a part");
+    }
+
+    /// Multipart works the same way on an encrypted store: the assembled object
+    /// reads back as plaintext while nothing is written in the clear.
+    #[tokio::test]
+    async fn multipart_assembly_works_on_an_encrypted_store() {
+        let (_directory, store, bucket) =
+            open(Some(b"object-encryption-master-key-32-bytes")).await;
+        let metadata = crate::test_support::metadata_of(&store);
+        let upload = record_store_core::MultipartUpload {
+            id: record_store_core::UploadId::new(),
+            bucket_id: bucket.id,
+            key: key("big.bin"),
+            content_type: None,
+            custom_metadata: Default::default(),
+            initiated_at: chrono::Utc::now(),
+            state: record_store_core::MultipartUploadState::Active,
+        };
+        metadata
+            .create_multipart_upload(&upload)
+            .await
+            .expect("create upload");
+
+        let owned = bytes::Bytes::from_static(b"encrypted-parts");
+        let stored = store
+            .put_multipart_part(crate::PutMultipartPartRequest {
+                upload_id: upload.id,
+                number: record_store_core::PartNumber::new(1).expect("part number"),
+                expected_checksum: None,
+                body: crate::upload_stream(futures_util::stream::once(async move { Ok(owned) })),
+            })
+            .await
+            .expect("put part");
+
+        store
+            .complete_multipart(crate::CompleteMultipartRequest {
+                upload,
+                parts: vec![stored],
+            })
+            .await
+            .expect("complete");
+
+        let fetched = store
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key("big.bin"),
+                range: None,
+            })
+            .await
+            .expect("get");
+        assert_eq!(read(fetched).await, b"encrypted-parts");
+    }
+
+    /// Pending cleanup is what reclaims payloads a delete released. Running it
+    /// must remove exactly those and leave live payloads alone.
+    #[tokio::test]
+    async fn pending_cleanup_reclaims_only_released_payloads() {
+        let (_directory, store, bucket) = store().await;
+        let kept = put(&store, &bucket, "kept.txt", b"kept").await;
+        let released = put(&store, &bucket, "released.txt", b"released").await;
+
+        store
+            .delete(DeleteObjectRequest {
+                bucket_id: bucket.id,
+                key: key("released.txt"),
+            })
+            .await
+            .expect("delete");
+
+        store.cleanup_pending(10).await.expect("cleanup");
+
+        assert!(
+            store
+                .get(GetObjectRequest {
+                    bucket_id: bucket.id,
+                    key: key("kept.txt"),
+                    range: None,
+                })
+                .await
+                .is_ok(),
+            "the live object must survive cleanup"
+        );
+        assert_ne!(kept.metadata.id, released.metadata.id);
+    }
+}

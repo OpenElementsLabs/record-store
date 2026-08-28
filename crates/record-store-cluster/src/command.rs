@@ -423,3 +423,144 @@ pub fn enqueue_repair(
         task: Box::new(ReplicaTask::queued(object_id, kind, priority, size, at)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use record_store_core::{NodeId, ObjectId, ReplicaTaskId};
+
+    use super::*;
+    use crate::catalog::test_support::{identity, registration};
+    use crate::tasks::{ReplicaTaskKind, ReplicaTaskPriority, ReplicaTaskState};
+
+    fn sample_commands() -> Vec<(ClusterCommand, &'static str)> {
+        let now = Utc::now();
+        vec![
+            (
+                ClusterCommand::InitializeCluster {
+                    identity: identity(),
+                    config: Box::new(ClusterConfig::default()),
+                },
+                "initialize_cluster",
+            ),
+            (
+                ClusterCommand::UpdateConfig {
+                    config: Box::new(ClusterConfig::default()),
+                    at: now,
+                },
+                "update_config",
+            ),
+            (
+                ClusterCommand::RegisterNode {
+                    registration: Box::new(registration()),
+                    at: now,
+                },
+                "register_node",
+            ),
+            (
+                ClusterCommand::SetNodeState {
+                    node_id: NodeId::new(),
+                    state: crate::topology::NodeState::Draining,
+                    reason: None,
+                    at: now,
+                },
+                "set_node_state",
+            ),
+            (
+                ClusterCommand::ForgetNode {
+                    node_id: NodeId::new(),
+                },
+                "forget_node",
+            ),
+            (
+                ClusterCommand::PurgeTask {
+                    task_id: ReplicaTaskId::new(),
+                },
+                "purge_task",
+            ),
+        ]
+    }
+
+    /// The command name reaches tracing, metrics, and audit records. A rename
+    /// silently breaks an operator's dashboards and their audit queries at once.
+    #[test]
+    fn every_sampled_command_reports_its_stable_name() {
+        for (command, expected) in sample_commands() {
+            assert_eq!(command.name(), expected);
+        }
+    }
+
+    /// Commands cross the replication log, so each must survive the encoding a
+    /// follower decodes it with and still be the same command afterwards.
+    #[test]
+    fn commands_round_trip_through_their_encoded_form() {
+        for (command, expected) in sample_commands() {
+            let encoded = serde_json::to_vec(&command).expect("serialise");
+            let decoded: ClusterCommand = serde_json::from_slice(&encoded).expect("deserialise");
+            assert_eq!(decoded.name(), expected);
+        }
+    }
+
+    /// Each accessor answers for exactly one outcome shape. Returning a value
+    /// for the wrong one would let a caller act on a record it never received.
+    #[test]
+    fn an_outcome_accessor_answers_only_for_its_own_shape() {
+        let now = Utc::now();
+        let record = crate::topology::NodeRecord::joining(registration(), 1, true, now);
+        let task = ReplicaTask {
+            id: ReplicaTaskId::new(),
+            object_id: ObjectId::new(),
+            kind: ReplicaTaskKind::Repair,
+            priority: ReplicaTaskPriority::Low,
+            source_node: None,
+            target_node: None,
+            operation_id: None,
+            size: 0,
+            state: ReplicaTaskState::Queued,
+            attempts: 0,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        assert!(
+            ClusterOutcome::Node(Box::new(record.clone()))
+                .node()
+                .is_some()
+        );
+        assert!(
+            ClusterOutcome::Node(Box::new(record.clone()))
+                .task()
+                .is_none()
+        );
+        assert!(
+            ClusterOutcome::Node(Box::new(record.clone()))
+                .placement()
+                .is_none()
+        );
+        assert!(ClusterOutcome::Task(Box::new(task)).task().is_some());
+        assert!(ClusterOutcome::None.node().is_none());
+    }
+
+    /// A registration also yields the node record, because a joining node needs
+    /// its own descriptor back in the same round trip.
+    #[test]
+    fn a_registration_outcome_still_yields_the_node_record() {
+        let record = crate::topology::NodeRecord::joining(registration(), 1, true, Utc::now());
+        let outcome = ClusterOutcome::Registration {
+            record: Box::new(record.clone()),
+            raft_id: 1,
+            created: true,
+        };
+        assert_eq!(outcome.node().expect("record").node_id, record.node_id);
+    }
+
+    /// `changed` distinguishes a command that did something from one that was a
+    /// no-op, which is what keeps an idempotent retry from looking like work.
+    #[test]
+    fn changed_is_true_only_for_a_command_that_altered_state() {
+        assert!(ClusterOutcome::Changed(true).changed());
+        assert!(!ClusterOutcome::Changed(false).changed());
+        assert!(!ClusterOutcome::None.changed());
+    }
+}

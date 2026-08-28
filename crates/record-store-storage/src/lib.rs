@@ -16,6 +16,9 @@ mod object_store;
 mod replica;
 mod types;
 
+#[cfg(test)]
+mod test_support;
+
 pub use error::StorageError;
 pub use local_store::LocalFilesystemStore;
 pub use object_store::ObjectStore;

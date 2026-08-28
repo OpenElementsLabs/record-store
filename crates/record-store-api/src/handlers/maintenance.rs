@@ -184,3 +184,178 @@ pub(crate) async fn verify_bucket(
         failures,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    use crate::test_support::{admin, api, call, expect_status, make_bucket, put_object};
+
+    #[tokio::test]
+    async fn verifying_a_stored_object_confirms_its_checksum() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        put_object(&api, "photos", "a.txt", b"contents").await;
+
+        let verified = expect_status(
+            &api,
+            admin("POST", "/api/v1/verify/objects/photos/a.txt", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(verified["size"], 8, "{verified}");
+    }
+
+    #[tokio::test]
+    async fn verifying_a_whole_bucket_reports_every_object_it_checked() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        put_object(&api, "photos", "a.txt", b"one").await;
+        put_object(&api, "photos", "b.txt", b"two").await;
+
+        let report = expect_status(
+            &api,
+            admin("POST", "/api/v1/verify/buckets/photos", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(report["verified_objects"], 2, "{report}");
+        assert_eq!(report["failures"], 0, "{report}");
+    }
+
+    #[tokio::test]
+    async fn verifying_an_object_that_does_not_exist_is_a_not_found() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/verify/objects/photos/absent.txt", None),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    /// A copy reads one object and writes another; the destination must hold the
+    /// source's bytes without the caller ever streaming them.
+    #[tokio::test]
+    async fn a_server_side_copy_reproduces_the_source_object() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        put_object(&api, "photos", "original.txt", b"source-bytes").await;
+
+        let copied = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/buckets/photos/object-copy/duplicate.txt",
+                Some(json!({"source_bucket": "photos", "source_key": "original.txt"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        assert_eq!(copied["size"], 12, "{copied}");
+        assert_eq!(copied["key"], "duplicate.txt", "{copied}");
+    }
+
+    /// Supplying replacement metadata replaces the source's rather than merging,
+    /// which is the documented behaviour and the one an operator relies on when
+    /// correcting a wrong media type.
+    #[tokio::test]
+    async fn a_copy_can_replace_the_source_metadata() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        put_object(&api, "photos", "original.bin", b"bytes").await;
+
+        let copied = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/buckets/photos/object-copy/typed.bin",
+                Some(json!({
+                    "source_bucket": "photos",
+                    "source_key": "original.bin",
+                    "content_type": "text/plain",
+                })),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        assert_eq!(copied["content_type"], "text/plain", "{copied}");
+    }
+
+    #[tokio::test]
+    async fn copying_from_a_source_that_does_not_exist_is_a_not_found() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/buckets/photos/object-copy/x.txt",
+                Some(json!({"source_bucket": "photos", "source_key": "absent.txt"})),
+            ),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    /// Restoring makes an older version current again without destroying the
+    /// newer one, which is the whole point of keeping versions.
+    #[tokio::test]
+    async fn an_older_version_can_be_restored_as_the_current_one() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        expect_status(
+            &api,
+            admin(
+                "PUT",
+                "/api/v1/buckets/photos/versioning",
+                Some(json!({"versioning": "enabled"})),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+
+        let first = put_object(&api, "photos", "note.txt", b"first").await;
+        put_object(&api, "photos", "note.txt", b"second-longer").await;
+        let original = first["version_id"].as_str().expect("version id").to_owned();
+
+        let restored = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/restore/photos/note.txt",
+                Some(json!({"version_id": original})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        assert_eq!(
+            restored["size"], 5,
+            "the restored copy must carry the older version's bytes: {restored}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restoring_a_version_that_does_not_exist_is_refused() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        put_object(&api, "photos", "note.txt", b"only").await;
+
+        let response = call(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/restore/photos/note.txt",
+                Some(json!({"version_id": "0195f0c8-0000-7000-8000-0000000000ff"})),
+            ),
+        )
+        .await;
+        assert!(
+            response.status().is_client_error(),
+            "restoring an unknown version must not succeed: {}",
+            response.status()
+        );
+    }
+}

@@ -427,3 +427,229 @@ mod tests {
         assert!(!fs::try_exists(path).await.expect("removed"));
     }
 }
+
+#[cfg(test)]
+mod consistency_tests {
+    use record_store_core::{Checksum, ObjectId};
+    use sha2::{Digest, Sha256};
+
+    use crate::test_support::{put, store};
+    use crate::{ObjectStore, upload_stream};
+    use crate::{ReadReplicaRequest, ReplicaStore, StorageRepairRequest, WriteReplicaRequest};
+
+    fn commitment(body: &[u8]) -> (u64, Checksum) {
+        let digest: [u8; 32] = Sha256::digest(body).into();
+        (body.len() as u64, Checksum::sha256(digest))
+    }
+
+    fn stream(body: &[u8]) -> crate::UploadStream {
+        let owned = bytes::Bytes::copy_from_slice(body);
+        upload_stream(futures_util::stream::once(async move { Ok(owned) }))
+    }
+
+    /// Inspection is what an operator runs to find storage the catalog no longer
+    /// references. On a consistent store it must report nothing, or every run
+    /// would propose deleting live data.
+    #[tokio::test]
+    async fn inspection_of_a_consistent_store_finds_nothing() {
+        let (_directory, store, bucket) = store().await;
+        put(&store, &bucket, "a.txt", b"hello").await;
+
+        let report = store.inspect(100).await.expect("inspect");
+        assert_eq!(report.data_without_metadata, 0, "{report:?}");
+        assert_eq!(report.metadata_without_data, 0, "{report:?}");
+        assert!(report.orphan_payload_samples.is_empty(), "{report:?}");
+        assert!(report.data_payloads_scanned >= 1, "{report:?}");
+    }
+
+    /// A payload written as a replica but never committed to the catalog is an
+    /// orphan. Finding it is the whole point of inspection, and a dry run must
+    /// report it without removing anything.
+    #[tokio::test]
+    async fn an_uncommitted_replica_is_reported_as_an_orphan() {
+        let (_directory, store, _bucket) = store().await;
+        let object_id = ObjectId::new();
+        let body = b"orphaned bytes";
+        let (size, checksum) = commitment(body);
+
+        store
+            .write_replica(WriteReplicaRequest::known(
+                "op-1",
+                object_id,
+                size,
+                checksum,
+                stream(body),
+            ))
+            .await
+            .expect("write replica");
+
+        let report = store.inspect(100).await.expect("inspect");
+        assert!(
+            report.orphan_payload_samples.contains(&object_id),
+            "the uncommitted payload must be reported: {report:?}"
+        );
+
+        let dry_run = store
+            .repair(StorageRepairRequest {
+                maximum_entries: 100,
+                dry_run: true,
+            })
+            .await
+            .expect("dry run");
+        assert_eq!(dry_run.removed_orphan_payloads, 0, "{dry_run:?}");
+        assert!(dry_run.dry_run);
+
+        let applied = store
+            .repair(StorageRepairRequest {
+                maximum_entries: 100,
+                dry_run: false,
+            })
+            .await
+            .expect("repair");
+        assert_eq!(
+            applied.removed_orphan_payloads, 1,
+            "the orphan must be reclaimed: {applied:?}"
+        );
+
+        let after = store.inspect(100).await.expect("inspect");
+        assert!(after.orphan_payload_samples.is_empty(), "{after:?}");
+    }
+
+    /// Repair must never touch a payload the catalog still references, which is
+    /// the difference between reclaiming space and destroying data.
+    #[tokio::test]
+    async fn repair_never_removes_a_referenced_payload() {
+        let (_directory, store, bucket) = store().await;
+        let committed = put(&store, &bucket, "a.txt", b"live bytes").await;
+
+        store
+            .repair(StorageRepairRequest {
+                maximum_entries: 100,
+                dry_run: false,
+            })
+            .await
+            .expect("repair");
+
+        let read = store
+            .read_replica(ReadReplicaRequest {
+                object_id: committed.metadata.id,
+                size: committed.metadata.size,
+                payload_format: committed.metadata.payload_format,
+                range: None,
+                expected_checksum: Some(committed.metadata.checksum),
+            })
+            .await;
+        assert!(read.is_ok(), "a referenced payload must survive repair");
+    }
+
+    /// A replica is only published once its bytes match what the writer
+    /// promised, so a mismatched commitment must leave nothing behind.
+    #[tokio::test]
+    async fn a_replica_whose_bytes_break_the_promise_is_not_published() {
+        let (_directory, store, _bucket) = store().await;
+        let object_id = ObjectId::new();
+        let (size, _) = commitment(b"actual bytes");
+
+        let result = store
+            .write_replica(WriteReplicaRequest::known(
+                "op-1",
+                object_id,
+                size,
+                Checksum::sha256([0_u8; 32]),
+                stream(b"actual bytes"),
+            ))
+            .await;
+        assert!(result.is_err(), "a broken promise must not publish");
+
+        assert!(
+            store.stat_replica(object_id).await.expect("stat").is_none(),
+            "nothing may remain on disk"
+        );
+    }
+
+    /// A replica that is written, read back, verified, and deleted is the whole
+    /// peer-facing contract; each step has to agree about what is stored.
+    #[tokio::test]
+    async fn a_replica_round_trips_and_can_be_verified_then_deleted() {
+        let (_directory, store, _bucket) = store().await;
+        let object_id = ObjectId::new();
+        let body = b"replicated bytes";
+        let (size, checksum) = commitment(body);
+
+        let written = store
+            .write_replica(WriteReplicaRequest::known(
+                "op-1",
+                object_id,
+                size,
+                checksum.clone(),
+                stream(body),
+            ))
+            .await
+            .expect("write replica");
+        assert_eq!(written.size, size);
+
+        let stat = store
+            .stat_replica(object_id)
+            .await
+            .expect("stat")
+            .expect("present");
+        assert!(stat.physical_bytes >= size, "{stat:?}");
+
+        let verified = store
+            .verify_replica(
+                object_id,
+                size,
+                record_store_core::PayloadFormat::Plaintext,
+                checksum,
+            )
+            .await
+            .expect("verify");
+        assert!(verified.present && verified.matches, "{verified:?}");
+
+        let payloads = store
+            .list_local_payloads(None, 10)
+            .await
+            .expect("list payloads");
+        assert!(payloads.contains(&object_id), "{payloads:?}");
+
+        store
+            .delete_replica(object_id)
+            .await
+            .expect("delete replica");
+        assert!(store.stat_replica(object_id).await.expect("stat").is_none());
+    }
+
+    /// Reading a replica that is not held must report absence rather than
+    /// failing in a way a caller would read as a transport error.
+    #[tokio::test]
+    async fn reading_a_replica_this_node_does_not_hold_reports_absence() {
+        let (_directory, store, _bucket) = store().await;
+        let object_id = ObjectId::new();
+        assert!(store.stat_replica(object_id).await.expect("stat").is_none());
+        assert!(
+            store
+                .read_replica(ReadReplicaRequest {
+                    object_id,
+                    size: 10,
+                    payload_format: record_store_core::PayloadFormat::Plaintext,
+                    range: None,
+                    expected_checksum: None,
+                })
+                .await
+                .is_err()
+        );
+    }
+
+    /// Local capacity is what a heartbeat reports, so it has to describe the
+    /// real filesystem rather than a placeholder.
+    #[tokio::test]
+    async fn local_capacity_describes_the_real_filesystem() {
+        let (_directory, store, _bucket) = store().await;
+        let capacity = store.local_capacity().await.expect("capacity");
+        assert!(capacity.capacity_bytes > 0, "{capacity:?}");
+        assert!(
+            capacity.available_bytes <= capacity.capacity_bytes,
+            "{capacity:?}"
+        );
+    }
+}

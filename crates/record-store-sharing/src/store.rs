@@ -1074,3 +1074,340 @@ fn backend(operation: &'static str, error: impl std::fmt::Display) -> SharingErr
         reason: error.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use chrono::Utc;
+    use record_store_core::{BucketId, BucketName, ObjectKey, ShareLinkId};
+
+    use crate::test_support::{embed_request, service, share_request};
+    use crate::{CreateEmbedRequest, CreateShareRequest, SharingPolicy, SharingService};
+
+    async fn sharing() -> SharingService {
+        service(SharingPolicy::default()).await
+    }
+
+    fn other_object(mut request: CreateShareRequest) -> CreateShareRequest {
+        request.bucket_id = BucketId::new();
+        request.bucket = BucketName::from_str("elsewhere").expect("bucket");
+        request.key = ObjectKey::new("other/file.pdf").expect("key");
+        request
+    }
+
+    fn other_embed(mut request: CreateEmbedRequest) -> CreateEmbedRequest {
+        request.bucket_id = BucketId::new();
+        request.key = ObjectKey::new("brand/other.png").expect("key");
+        request
+    }
+
+    /// A capability is addressable three ways: by identifier for management, by
+    /// token digest for delivery, and through the per-object index the console
+    /// renders. All three have to agree or a link becomes unmanageable.
+    #[tokio::test]
+    async fn a_share_is_reachable_by_identifier_digest_and_object() {
+        let service = sharing().await;
+        let now = Utc::now();
+        let request = share_request();
+        let bucket_id = request.bucket_id;
+        let key = request.key.clone();
+        let issued = service.create_share(request, now).await.expect("create");
+        let store = service.store();
+
+        assert_eq!(
+            store
+                .get_share(issued.link.id)
+                .await
+                .expect("read")
+                .expect("share")
+                .id,
+            issued.link.id
+        );
+        assert_eq!(
+            store
+                .resolve_share(issued.token.digest())
+                .await
+                .expect("resolve")
+                .expect("share")
+                .id,
+            issued.link.id
+        );
+        assert_eq!(
+            store
+                .list_shares_for_object(bucket_id, &key)
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
+        assert_eq!(store.list_shares().await.expect("list").len(), 1);
+    }
+
+    /// The per-object index must not spill across objects, or a console page
+    /// would show links that belong to a different file.
+    #[tokio::test]
+    async fn the_object_index_never_returns_another_objects_capability() {
+        let service = sharing().await;
+        let now = Utc::now();
+        let first = share_request();
+        let bucket_id = first.bucket_id;
+        let key = first.key.clone();
+        service
+            .create_share(first.clone(), now)
+            .await
+            .expect("create");
+        service
+            .create_share(other_object(first), now)
+            .await
+            .expect("create");
+
+        let store = service.store();
+        assert_eq!(
+            store
+                .list_shares_for_object(bucket_id, &key)
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
+        assert_eq!(store.list_shares().await.expect("list").len(), 2);
+    }
+
+    /// Revocation is authoritative on the delivery path but keeps the record
+    /// visible to management, so an operator can see what they withdrew.
+    #[tokio::test]
+    async fn revoking_a_share_records_the_withdrawal_without_erasing_it() {
+        let service = sharing().await;
+        let now = Utc::now();
+        let issued = service
+            .create_share(share_request(), now)
+            .await
+            .expect("create");
+
+        service
+            .revoke_share(issued.link.id, now)
+            .await
+            .expect("revoke");
+        let stored = service
+            .store()
+            .get_share(issued.link.id)
+            .await
+            .expect("read")
+            .expect("share");
+        assert!(stored.revoked_at.is_some(), "{stored:?}");
+    }
+
+    #[tokio::test]
+    async fn revoking_the_same_share_twice_keeps_the_first_withdrawal_time() {
+        let service = sharing().await;
+        let now = Utc::now();
+        let issued = service
+            .create_share(share_request(), now)
+            .await
+            .expect("create");
+
+        service
+            .revoke_share(issued.link.id, now)
+            .await
+            .expect("revoke");
+        let first = service
+            .store()
+            .get_share(issued.link.id)
+            .await
+            .expect("read")
+            .expect("share")
+            .revoked_at;
+
+        let later = now + chrono::Duration::hours(1);
+        service
+            .revoke_share(issued.link.id, later)
+            .await
+            .expect("revoke again");
+        let second = service
+            .store()
+            .get_share(issued.link.id)
+            .await
+            .expect("read")
+            .expect("share")
+            .revoked_at;
+        assert_eq!(first, second, "revocation is idempotent");
+    }
+
+    #[tokio::test]
+    async fn deleting_a_share_removes_it_from_every_index() {
+        let service = sharing().await;
+        let now = Utc::now();
+        let request = share_request();
+        let bucket_id = request.bucket_id;
+        let key = request.key.clone();
+        let issued = service.create_share(request, now).await.expect("create");
+        let store = service.store();
+
+        assert!(store.delete_share(issued.link.id).await.expect("delete"));
+        assert!(
+            store
+                .get_share(issued.link.id)
+                .await
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            store
+                .resolve_share(issued.token.digest())
+                .await
+                .expect("resolve")
+                .is_none()
+        );
+        assert!(
+            store
+                .list_shares_for_object(bucket_id, &key)
+                .await
+                .expect("list")
+                .is_empty()
+        );
+        assert!(store.list_shares().await.expect("list").is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_share_that_is_already_gone_reports_that_it_did_nothing() {
+        let service = sharing().await;
+        assert!(
+            !service
+                .store()
+                .delete_share(ShareLinkId::new())
+                .await
+                .expect("delete")
+        );
+    }
+
+    /// The token is shown once at creation. Revealing it again is a deliberate
+    /// management action, and it must return the same token the recipient has.
+    #[tokio::test]
+    async fn a_token_can_be_revealed_again_and_matches_the_issued_one() {
+        let service = sharing().await;
+        let now = Utc::now();
+        let issued = service
+            .create_share(share_request(), now)
+            .await
+            .expect("create");
+
+        let revealed = service
+            .store()
+            .reveal_share_token(issued.link.id)
+            .await
+            .expect("reveal")
+            .expect("token");
+        assert_eq!(revealed.digest(), issued.token.digest());
+    }
+
+    #[tokio::test]
+    async fn revealing_a_token_for_a_share_that_does_not_exist_yields_nothing() {
+        let service = sharing().await;
+        assert!(
+            service
+                .store()
+                .reveal_share_token(ShareLinkId::new())
+                .await
+                .expect("reveal")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn embeds_are_reachable_by_identifier_digest_and_object() {
+        let service = sharing().await;
+        let now = Utc::now();
+        let request = embed_request("image/png");
+        let bucket_id = request.bucket_id;
+        let key = request.key.clone();
+        let issued = service
+            .create_embed(request.clone(), now)
+            .await
+            .expect("create");
+        service
+            .create_embed(other_embed(request), now)
+            .await
+            .expect("create");
+        let store = service.store();
+
+        assert!(
+            store
+                .get_embed(issued.link.id)
+                .await
+                .expect("read")
+                .is_some()
+        );
+        assert!(
+            store
+                .resolve_embed(issued.token.digest())
+                .await
+                .expect("resolve")
+                .is_some()
+        );
+        assert_eq!(
+            store
+                .list_embeds_for_object(bucket_id, &key)
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
+        assert_eq!(store.list_embeds().await.expect("list").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_deleted_embed_is_gone_from_every_index() {
+        let service = sharing().await;
+        let now = Utc::now();
+        let issued = service
+            .create_embed(embed_request("image/png"), now)
+            .await
+            .expect("create");
+        let store = service.store();
+
+        service
+            .revoke_embed(issued.link.id, now)
+            .await
+            .expect("revoke");
+        assert!(store.delete_embed(issued.link.id).await.expect("delete"));
+        assert!(
+            store
+                .get_embed(issued.link.id)
+                .await
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            store
+                .resolve_embed(issued.token.digest())
+                .await
+                .expect("resolve")
+                .is_none()
+        );
+        assert!(store.list_embeds().await.expect("list").is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_embed_token_can_be_revealed_again() {
+        let service = sharing().await;
+        let now = Utc::now();
+        let issued = service
+            .create_embed(embed_request("image/png"), now)
+            .await
+            .expect("create");
+        let revealed = service
+            .store()
+            .reveal_embed_token(issued.link.id)
+            .await
+            .expect("reveal")
+            .expect("token");
+        assert_eq!(revealed.digest(), issued.token.digest());
+    }
+
+    #[tokio::test]
+    async fn a_fresh_store_reports_itself_ready() {
+        let service = sharing().await;
+        service.store().check_ready().await.expect("ready");
+    }
+}

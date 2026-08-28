@@ -290,3 +290,249 @@ pub(crate) fn cluster_operation_error(
     };
     ApiError::new(status, code, error_value.to_string(), request_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    use crate::test_support::{admin, api, call, clustered_api, expect_status};
+
+    /// A deployment with no cluster wired in must say the feature is absent
+    /// rather than reporting an empty cluster, which reads as a healthy one.
+    /// The stable code is what a client branches on.
+    #[tokio::test]
+    async fn a_standalone_deployment_reports_cluster_administration_as_disabled() {
+        let (_directory, api) = api().await;
+        for uri in [
+            "/api/v1/cluster",
+            "/api/v1/cluster/health",
+            "/api/v1/nodes",
+            "/api/v1/repair/status",
+            "/api/v1/rebalance/status",
+        ] {
+            let body = expect_status(&api, admin("GET", uri, None), StatusCode::CONFLICT).await;
+            assert_eq!(
+                body["error"]["code"], "CLUSTER_MODE_DISABLED",
+                "{uri}: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_clustered_deployment_reports_its_status_and_health() {
+        let (_directory, api) = clustered_api().await;
+
+        let status =
+            expect_status(&api, admin("GET", "/api/v1/cluster", None), StatusCode::OK).await;
+        assert!(
+            status["cluster_id"].as_str().is_some() || status.is_object(),
+            "{status}"
+        );
+
+        let health = expect_status(
+            &api,
+            admin("GET", "/api/v1/cluster/health", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert!(health.is_object(), "{health}");
+    }
+
+    /// Initialization is idempotent: an operator or an orchestrator may call it
+    /// repeatedly, and the second call must not fail or change the identity.
+    #[tokio::test]
+    async fn initialization_is_idempotent() {
+        let (_directory, api) = clustered_api().await;
+
+        let first = expect_status(
+            &api,
+            admin("POST", "/api/v1/cluster/init", None),
+            StatusCode::OK,
+        )
+        .await;
+        let second = expect_status(
+            &api,
+            admin("POST", "/api/v1/cluster/init", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(first["cluster_id"], second["cluster_id"], "{second}");
+    }
+
+    #[tokio::test]
+    async fn nodes_are_listed_once_the_cluster_is_initialized() {
+        let (_directory, api) = clustered_api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/cluster/init", None),
+            StatusCode::OK,
+        )
+        .await;
+
+        let nodes = expect_status(&api, admin("GET", "/api/v1/nodes", None), StatusCode::OK).await;
+        assert!(nodes.is_array(), "{nodes}");
+    }
+
+    /// A join token is what admits a new node, so issuing one has to disclose
+    /// the secret exactly once and record its lifetime.
+    #[tokio::test]
+    async fn a_join_token_is_issued_with_its_lifetime() {
+        let (_directory, api) = clustered_api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/cluster/init", None),
+            StatusCode::OK,
+        )
+        .await;
+
+        let issued = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/cluster/join-tokens",
+                Some(json!({"lifetime_seconds": 600, "description": "a new node"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        assert!(
+            issued["token"]
+                .as_str()
+                .is_some_and(|token| !token.is_empty()),
+            "the token must be disclosed once: {issued}"
+        );
+    }
+
+    /// Node lifecycle routes name a node by identifier. An unknown or malformed
+    /// one must be refused rather than acted on.
+    #[tokio::test]
+    async fn node_lifecycle_routes_validate_their_identifier() {
+        let (_directory, api) = clustered_api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/cluster/init", None),
+            StatusCode::OK,
+        )
+        .await;
+
+        for action in ["drain", "maintenance", "resume"] {
+            let malformed = call(
+                &api,
+                admin("POST", &format!("/api/v1/nodes/not-a-uuid/{action}"), None),
+            )
+            .await;
+            assert_eq!(
+                malformed.status(),
+                StatusCode::BAD_REQUEST,
+                "{action} with a malformed id"
+            );
+
+            let unknown = call(
+                &api,
+                admin(
+                    "POST",
+                    &format!("/api/v1/nodes/0195f0c8-0000-7000-8000-0000000000ff/{action}"),
+                    None,
+                ),
+            )
+            .await;
+            assert!(
+                unknown.status().is_client_error(),
+                "{action} on an unknown node returned {}",
+                unknown.status()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn inspecting_a_node_that_does_not_exist_is_a_not_found() {
+        let (_directory, api) = clustered_api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/cluster/init", None),
+            StatusCode::OK,
+        )
+        .await;
+
+        expect_status(
+            &api,
+            admin(
+                "GET",
+                "/api/v1/nodes/0195f0c8-0000-7000-8000-0000000000ff",
+                None,
+            ),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    /// Repair and rebalance status are what an operator watches during recovery,
+    /// so they have to answer on a live cluster with nothing queued.
+    #[tokio::test]
+    async fn repair_and_rebalance_status_answer_on_a_quiet_cluster() {
+        let (_directory, api) = clustered_api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/cluster/init", None),
+            StatusCode::OK,
+        )
+        .await;
+
+        for uri in ["/api/v1/repair/status", "/api/v1/rebalance/status"] {
+            let body = expect_status(&api, admin("GET", uri, None), StatusCode::OK).await;
+            assert!(
+                body.is_object() || body.is_array(),
+                "{uri} returned neither a report nor a queue: {body}"
+            );
+        }
+    }
+
+    /// Starting a rebalance on a balanced cluster is allowed and must report
+    /// that it did so rather than failing.
+    #[tokio::test]
+    async fn a_rebalance_can_be_started_on_a_balanced_cluster() {
+        let (_directory, api) = clustered_api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/cluster/init", None),
+            StatusCode::OK,
+        )
+        .await;
+
+        let response = call(&api, admin("POST", "/api/v1/rebalance", None)).await;
+        assert!(
+            response.status().is_success(),
+            "starting a rebalance failed: {}",
+            response.status()
+        );
+    }
+
+    /// Decommissioning removes durability, so the destructive override has to be
+    /// an explicit field rather than a default.
+    #[tokio::test]
+    async fn decommissioning_requires_an_explicit_force_field() {
+        let (_directory, api) = clustered_api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/cluster/init", None),
+            StatusCode::OK,
+        )
+        .await;
+
+        let response = call(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/nodes/0195f0c8-0000-7000-8000-0000000000ff/decommission",
+                Some(json!({"force": false})),
+            ),
+        )
+        .await;
+        assert!(
+            response.status().is_client_error(),
+            "an unknown node must not be decommissioned: {}",
+            response.status()
+        );
+    }
+}

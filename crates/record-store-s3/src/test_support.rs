@@ -25,6 +25,7 @@ use record_store_storage::LocalFilesystemStore;
 use record_store_storage::ObjectStore;
 use sha2::{Digest, Sha256};
 use tempfile::{TempDir, tempdir};
+use tower::ServiceExt;
 
 use crate::sigv4::{aws_encode, calculate_signature, canonical_request};
 use crate::{S3State, router};
@@ -209,4 +210,54 @@ pub(crate) fn xml_value<'a>(document: &'a str, element: &str) -> Option<&'a str>
     let start = document.find(&start_tag)? + start_tag.len();
     let end = document[start..].find(&end_tag)? + start;
     Some(&document[start..end])
+}
+
+/// Sends a signed request and returns the response.
+pub(crate) async fn send(
+    application: &Router,
+    method: Method,
+    uri: &str,
+    payload: &[u8],
+    headers: &[(&str, &str)],
+) -> Response {
+    application
+        .clone()
+        .oneshot(signed_request(
+            method,
+            uri,
+            payload,
+            headers,
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            Utc::now(),
+        ))
+        .await
+        .expect("router responds")
+}
+
+/// Creates a bucket through the signed S3 surface.
+pub(crate) async fn make_bucket(application: &Router, bucket: &str) {
+    let response = send(application, Method::PUT, &format!("/{bucket}"), b"", &[]).await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "create bucket {bucket}"
+    );
+}
+
+/// Stores an object through the signed S3 surface.
+pub(crate) async fn put(application: &Router, bucket: &str, key: &str, body: &[u8]) {
+    let response = send(
+        application,
+        Method::PUT,
+        &format!("/{bucket}/{key}"),
+        body,
+        &[],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "put {bucket}/{key}"
+    );
 }

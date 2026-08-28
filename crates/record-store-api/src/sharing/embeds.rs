@@ -294,3 +294,214 @@ pub(crate) async fn delete_embed(
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    use crate::test_support::{admin, api, call, expect_status, make_bucket, put_typed_object};
+
+    /// A one-pixel PNG. Embeds are only issued for media the browser will
+    /// render inline, so the fixture has to be a real image.
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    async fn embedded(router: &axum::Router) -> serde_json::Value {
+        make_bucket(router, "assets").await;
+        put_typed_object(router, "assets", "logo.png", PNG, "image/png").await;
+        expect_status(
+            router,
+            admin(
+                "POST",
+                "/api/v1/buckets/assets/object-embeds/logo.png",
+                Some(json!({
+                    "label": "Company website",
+                    "allowed_origins": ["https://example.com"],
+                })),
+            ),
+            StatusCode::CREATED,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn creating_an_embed_returns_a_url_on_the_embed_host() {
+        let (_directory, api) = api().await;
+        let created = embedded(&api).await;
+        let url = created["url"].as_str().expect("url");
+        assert!(
+            url.starts_with("https://embed.example"),
+            "an embed is served from the storage host, not the console: {url}"
+        );
+    }
+
+    /// An embed is loaded by other people's pages, so the origin allowlist is
+    /// the whole access control. Narrowing it has to take effect.
+    #[tokio::test]
+    async fn the_origin_allowlist_can_be_narrowed_after_creation() {
+        let (_directory, api) = api().await;
+        let created = embedded(&api).await;
+        let id = created["embed"]["id"]
+            .as_str()
+            .expect("embed id")
+            .to_owned();
+
+        let updated = expect_status(
+            &api,
+            admin(
+                "PATCH",
+                &format!("/api/v1/embeds/{id}"),
+                Some(json!({"allowed_origins": ["https://other.example"]})),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        let origins = updated["allowed_origins"].as_array().expect("origins");
+        assert_eq!(origins.len(), 1, "{updated}");
+        assert_eq!(origins[0], "https://other.example", "{updated}");
+    }
+
+    /// Every entry is validated, so one bad origin must not be stored alongside
+    /// good ones and quietly widen the policy.
+    #[tokio::test]
+    async fn an_unusable_origin_is_refused_rather_than_stored() {
+        let (_directory, api) = api().await;
+        let created = embedded(&api).await;
+        let id = created["embed"]["id"]
+            .as_str()
+            .expect("embed id")
+            .to_owned();
+
+        for origins in [
+            json!(["not-a-url"]),
+            json!(["https://example.com", "javascript:alert(1)"]),
+            json!(["*"]),
+        ] {
+            let response = call(
+                &api,
+                admin(
+                    "PATCH",
+                    &format!("/api/v1/embeds/{id}"),
+                    Some(json!({"allowed_origins": origins})),
+                ),
+            )
+            .await;
+            assert!(
+                response.status().is_client_error(),
+                "accepted {origins}: {}",
+                response.status()
+            );
+        }
+    }
+
+    /// Active content in an embed would execute on someone else's page, so the
+    /// content type is checked at creation rather than at delivery.
+    #[tokio::test]
+    async fn an_embed_of_active_content_is_refused_at_creation() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "assets").await;
+        put_typed_object(
+            &api,
+            "assets",
+            "page.html",
+            b"<html><body>hi</body></html>",
+            "text/html",
+        )
+        .await;
+
+        let response = call(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/buckets/assets/object-embeds/page.html",
+                Some(json!({"label": "Page", "allowed_origins": ["https://example.com"]})),
+            ),
+        )
+        .await;
+        assert!(
+            response.status().is_client_error(),
+            "active content must not be embeddable: {}",
+            response.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn embeds_are_listed_against_their_object_and_can_be_revoked_then_deleted() {
+        let (_directory, api) = api().await;
+        let created = embedded(&api).await;
+        let id = created["embed"]["id"]
+            .as_str()
+            .expect("embed id")
+            .to_owned();
+
+        let listed = expect_status(
+            &api,
+            admin("GET", "/api/v1/buckets/assets/object-embeds/logo.png", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(listed.as_array().expect("array").len(), 1, "{listed}");
+
+        expect_status(
+            &api,
+            admin("POST", &format!("/api/v1/embeds/{id}/revoke"), None),
+            StatusCode::OK,
+        )
+        .await;
+        let revoked = expect_status(
+            &api,
+            admin("GET", &format!("/api/v1/embeds/{id}"), None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(revoked["status"], "revoked", "{revoked}");
+
+        expect_status(
+            &api,
+            admin("DELETE", &format!("/api/v1/embeds/{id}"), None),
+            StatusCode::NO_CONTENT,
+        )
+        .await;
+        expect_status(
+            &api,
+            admin("GET", &format!("/api/v1/embeds/{id}"), None),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_embed_url_can_be_copied_again() {
+        let (_directory, api) = api().await;
+        let created = embedded(&api).await;
+        let id = created["embed"]["id"]
+            .as_str()
+            .expect("embed id")
+            .to_owned();
+
+        let again = expect_status(
+            &api,
+            admin("GET", &format!("/api/v1/embeds/{id}/url"), None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(again["url"], created["url"], "{again}");
+    }
+
+    #[tokio::test]
+    async fn a_malformed_embed_identifier_is_refused() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin("GET", "/api/v1/embeds/not-a-uuid", None),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+}

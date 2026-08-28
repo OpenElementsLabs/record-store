@@ -240,3 +240,196 @@ pub(crate) async fn delete_bucket_cors(
         .map_err(|error| service_error(error, request_id, &bucket))?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{Method, StatusCode};
+
+    use crate::test_support::*;
+
+    /// The bucket surface is the first thing an S3 client touches. Each verb has
+    /// a distinct meaning and a distinct status, and a client branches on them.
+    #[tokio::test]
+    async fn the_bucket_lifecycle_reports_a_distinct_status_for_each_step() {
+        let (_directory, application, _credentials) = test_router().await;
+
+        let missing = send(&application, Method::HEAD, "/absent", b"", &[]).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        make_bucket(&application, "photos").await;
+        let present = send(&application, Method::HEAD, "/photos", b"", &[]).await;
+        assert_eq!(present.status(), StatusCode::OK);
+
+        let listed = send(&application, Method::GET, "/", b"", &[]).await;
+        assert_eq!(listed.status(), StatusCode::OK);
+        let document = body_text(listed).await;
+        assert_eq!(xml_value(&document, "Name"), Some("photos"), "{document}");
+
+        let removed = send(&application, Method::DELETE, "/photos", b"", &[]).await;
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+        let gone = send(&application, Method::HEAD, "/photos", b"", &[]).await;
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// S3 clients rely on these two failures being distinguishable: one means
+    /// "pick another name", the other means "empty it first".
+    #[tokio::test]
+    async fn a_duplicate_bucket_and_a_full_bucket_report_different_errors() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let duplicate = send(&application, Method::PUT, "/photos", b"", &[]).await;
+        assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+        let document = body_text(duplicate).await;
+        assert_eq!(
+            xml_value(&document, "Code"),
+            Some("BucketAlreadyExists"),
+            "{document}"
+        );
+
+        put(&application, "photos", "a.txt", b"x").await;
+        let occupied = send(&application, Method::DELETE, "/photos", b"", &[]).await;
+        assert_eq!(occupied.status(), StatusCode::CONFLICT);
+        let document = body_text(occupied).await;
+        assert_eq!(
+            xml_value(&document, "Code"),
+            Some("BucketNotEmpty"),
+            "{document}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_bucket_that_was_never_created_reports_no_such_bucket() {
+        let (_directory, application, _credentials) = test_router().await;
+        let response = send(&application, Method::DELETE, "/absent", b"", &[]).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let document = body_text(response).await;
+        assert_eq!(
+            xml_value(&document, "Code"),
+            Some("NoSuchBucket"),
+            "{document}"
+        );
+    }
+
+    /// Versioning is read back through the same subresource it is written to,
+    /// and an unset bucket must report the absence rather than inventing a state.
+    #[tokio::test]
+    async fn bucket_versioning_round_trips_through_its_subresource() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let initial = send(&application, Method::GET, "/photos?versioning", b"", &[]).await;
+        assert_eq!(initial.status(), StatusCode::OK);
+        let document = body_text(initial).await;
+        assert!(
+            xml_value(&document, "Status").is_none(),
+            "an unset bucket reports no status: {document}"
+        );
+
+        for state in ["Enabled", "Suspended"] {
+            let body = format!(
+                "<VersioningConfiguration><Status>{state}</Status></VersioningConfiguration>"
+            );
+            let applied = send(
+                &application,
+                Method::PUT,
+                "/photos?versioning",
+                body.as_bytes(),
+                &[],
+            )
+            .await;
+            assert_eq!(applied.status(), StatusCode::OK, "set {state}");
+
+            let read = send(&application, Method::GET, "/photos?versioning", b"", &[]).await;
+            let document = body_text(read).await;
+            assert_eq!(xml_value(&document, "Status"), Some(state), "{document}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_versioning_document_that_does_not_parse_is_refused() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        let response = send(
+            &application,
+            Method::PUT,
+            "/photos?versioning",
+            b"<not-a-versioning-document/>",
+            &[],
+        )
+        .await;
+        assert!(
+            response.status().is_client_error(),
+            "a malformed document must be refused: {}",
+            response.status()
+        );
+    }
+
+    /// A CORS policy decides which websites may read a bucket's objects, so it
+    /// has to survive a round trip exactly and be removable.
+    #[tokio::test]
+    async fn a_cors_policy_round_trips_and_can_be_deleted() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let absent = send(&application, Method::GET, "/photos?cors", b"", &[]).await;
+        assert_eq!(absent.status(), StatusCode::NOT_FOUND);
+
+        let policy = b"<CORSConfiguration><CORSRule><AllowedOrigin>https://example.com</AllowedOrigin><AllowedMethod>GET</AllowedMethod><MaxAgeSeconds>600</MaxAgeSeconds></CORSRule></CORSConfiguration>";
+        let applied = send(&application, Method::PUT, "/photos?cors", policy, &[]).await;
+        assert_eq!(applied.status(), StatusCode::OK);
+
+        let read = send(&application, Method::GET, "/photos?cors", b"", &[]).await;
+        assert_eq!(read.status(), StatusCode::OK);
+        let document = body_text(read).await;
+        assert_eq!(
+            xml_value(&document, "AllowedOrigin"),
+            Some("https://example.com"),
+            "{document}"
+        );
+
+        let removed = send(&application, Method::DELETE, "/photos?cors", b"", &[]).await;
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+        let gone = send(&application, Method::GET, "/photos?cors", b"", &[]).await;
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A rule allowing every origin to do anything is exactly the policy that
+    /// makes a bucket world-readable by accident, so the limits are enforced.
+    #[tokio::test]
+    async fn a_cors_policy_that_exceeds_the_configured_limits_is_refused() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let rules = (0..200)
+            .map(|index| {
+                format!(
+                    "<CORSRule><AllowedOrigin>https://{index}.example</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule>"
+                )
+            })
+            .collect::<String>();
+        let document = format!("<CORSConfiguration>{rules}</CORSConfiguration>");
+        let response = send(
+            &application,
+            Method::PUT,
+            "/photos?cors",
+            document.as_bytes(),
+            &[],
+        )
+        .await;
+        assert!(
+            response.status().is_client_error(),
+            "an unbounded rule set must be refused: {}",
+            response.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn bucket_subresources_on_an_absent_bucket_report_no_such_bucket() {
+        let (_directory, application, _credentials) = test_router().await;
+        for uri in ["/absent?versioning", "/absent?cors"] {
+            let response = send(&application, Method::GET, uri, b"", &[]).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
+    }
+}

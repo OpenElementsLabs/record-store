@@ -80,3 +80,79 @@ pub(crate) async fn list_audit_events(
         next_id,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    use crate::test_support::{AUDITOR_TOKEN, admin, api, call, expect_status, signed};
+
+    #[tokio::test]
+    async fn the_audit_trail_is_readable_and_starts_empty() {
+        let (_directory, api) = api().await;
+        let events = expect_status(
+            &api,
+            admin("GET", "/api/v1/audit/events", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert!(events["events"].as_array().expect("events").is_empty());
+    }
+
+    /// Reading the audit trail is exactly what an auditor exists to do, so the
+    /// auditor role must reach it.
+    #[tokio::test]
+    async fn an_auditor_can_read_the_audit_trail() {
+        let (_directory, api) = api().await;
+        let response = call(
+            &api,
+            signed("GET", "/api/v1/audit/events", AUDITOR_TOKEN, None),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn audit_filters_are_accepted_and_bounded() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin(
+                "GET",
+                "/api/v1/audit/events?limit=5&principal=root&operation=DeleteBucket",
+                None,
+            ),
+            StatusCode::OK,
+        )
+        .await;
+    }
+
+    /// Administrative changes have to leave a trail; an audit log that stays
+    /// empty while accounts are created is worse than no log at all.
+    #[tokio::test]
+    async fn administrative_changes_are_recorded() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/service-accounts",
+                Some(json!({"name": "audited"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+
+        let events = expect_status(
+            &api,
+            admin("GET", "/api/v1/audit/events", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert!(
+            !events["events"].as_array().expect("events").is_empty(),
+            "creating an account must be audited: {events}"
+        );
+    }
+}

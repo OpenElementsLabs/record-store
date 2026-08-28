@@ -867,7 +867,9 @@ mod tests {
     use super::*;
     use crate::commands::NewDeleteMarker;
     use crate::test_support::*;
-    use crate::types::{ListMultipartUploadsRequest, ListObjectsRequest};
+    use crate::types::{
+        ListMultipartUploadsRequest, ListObjectVersionsRequest, ListObjectsRequest,
+    };
     use crate::{MetadataRepository, RedbMetadataRepository};
     use record_store_core::{
         BucketQuota, ByteQuota, ExpirationDays, LifecycleRule, LifecycleRuleId, ObjectCountQuota,
@@ -1336,5 +1338,759 @@ mod tests {
     async fn a_fresh_catalog_reports_itself_ready() {
         let (_directory, catalog) = catalog().await;
         catalog.check_ready().await.expect("ready");
+    }
+
+    /// With versioning on, a write keeps the previous version addressable and a
+    /// delete hides the object behind a marker rather than destroying history.
+    #[tokio::test]
+    async fn versioned_writes_keep_history_and_deletes_leave_a_marker() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("versioned").await;
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable versioning");
+
+        let key = ObjectKey::new("note.txt").expect("key");
+        let first = object(bucket.id, "note.txt", 3);
+        let second = object(bucket.id, "note.txt", 5);
+        catalog.put_object(&first).await.expect("put");
+        catalog.put_object(&second).await.expect("put");
+
+        assert_eq!(
+            catalog
+                .get_object(bucket.id, &key)
+                .await
+                .expect("read")
+                .expect("current")
+                .version_id,
+            second.version_id,
+            "the newest write is current"
+        );
+        assert!(
+            catalog
+                .get_object_version(bucket.id, &key, first.version_id)
+                .await
+                .expect("read")
+                .is_some(),
+            "the older version stays addressable"
+        );
+
+        catalog
+            .delete_object(bucket.id, &key, NewDeleteMarker::generate())
+            .await
+            .expect("delete");
+        assert!(
+            catalog
+                .get_object(bucket.id, &key)
+                .await
+                .expect("read")
+                .is_none(),
+            "a delete marker hides the object"
+        );
+
+        let page = catalog
+            .list_object_versions(ListObjectVersionsRequest {
+                bucket_id: bucket.id,
+                prefix: String::new(),
+                key_marker: None,
+                version_id_marker: None,
+                limit: 10,
+            })
+            .await
+            .expect("list versions");
+        assert_eq!(
+            page.versions.len(),
+            3,
+            "two writes and one marker remain listed: {:?}",
+            page.versions
+        );
+    }
+
+    /// Deleting one version must not disturb the others, and deleting a version
+    /// that was never stored has to be reported as absent rather than as success.
+    #[tokio::test]
+    async fn a_single_version_can_be_removed_without_touching_the_rest() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("versioned").await;
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable versioning");
+        let key = ObjectKey::new("note.txt").expect("key");
+        let first = object(bucket.id, "note.txt", 3);
+        let second = object(bucket.id, "note.txt", 5);
+        catalog.put_object(&first).await.expect("put");
+        catalog.put_object(&second).await.expect("put");
+
+        let removed = catalog
+            .delete_object_version(bucket.id, &key, first.version_id)
+            .await
+            .expect("delete version");
+        assert!(removed.is_some());
+        assert!(
+            catalog
+                .get_object_version(bucket.id, &key, first.version_id)
+                .await
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            catalog
+                .get_object_version(bucket.id, &key, second.version_id)
+                .await
+                .expect("read")
+                .is_some(),
+            "the surviving version is untouched"
+        );
+
+        assert!(
+            catalog
+                .delete_object_version(bucket.id, &key, VersionId::new())
+                .await
+                .expect("delete version")
+                .is_none(),
+            "removing a version that was never stored reports absence"
+        );
+    }
+
+    /// Suspended versioning writes to the null version, replacing it in place
+    /// while leaving the versions written before suspension intact.
+    #[tokio::test]
+    async fn a_suspended_bucket_replaces_its_null_version_in_place() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("suspended").await;
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable");
+        let key = ObjectKey::new("note.txt").expect("key");
+        let versioned = object(bucket.id, "note.txt", 3);
+        catalog.put_object(&versioned).await.expect("put");
+
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Suspended)
+            .await
+            .expect("suspend");
+        let first_null = object(bucket.id, "note.txt", 5);
+        let second_null = object(bucket.id, "note.txt", 7);
+        catalog.put_object(&first_null).await.expect("put");
+        catalog.put_object(&second_null).await.expect("put");
+
+        assert!(
+            catalog
+                .get_object_version(bucket.id, &key, versioned.version_id)
+                .await
+                .expect("read")
+                .is_some(),
+            "history from before suspension survives"
+        );
+        assert!(
+            catalog
+                .get_null_version(bucket.id, &key)
+                .await
+                .expect("read")
+                .is_some()
+        );
+    }
+
+    /// Version listing pages like object listing does, and the marker pair has
+    /// to resume exactly where the previous page stopped.
+    #[tokio::test]
+    async fn version_listing_resumes_from_its_marker() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("versioned").await;
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable");
+        for _ in 0..3 {
+            catalog
+                .put_object(&object(bucket.id, "note.txt", 1))
+                .await
+                .expect("put");
+        }
+
+        let first = catalog
+            .list_object_versions(ListObjectVersionsRequest {
+                bucket_id: bucket.id,
+                prefix: String::new(),
+                key_marker: None,
+                version_id_marker: None,
+                limit: 2,
+            })
+            .await
+            .expect("list");
+        assert_eq!(first.versions.len(), 2);
+
+        let last = &first.versions.last().expect("entry").record;
+        let rest = catalog
+            .list_object_versions(ListObjectVersionsRequest {
+                bucket_id: bucket.id,
+                prefix: String::new(),
+                key_marker: Some(last.key().as_str().to_owned()),
+                version_id_marker: Some(last.version_id()),
+                limit: 10,
+            })
+            .await
+            .expect("list");
+        assert_eq!(rest.versions.len(), 1, "the last page holds the remainder");
+    }
+
+    /// Payload references are what garbage collection consults. A payload owned
+    /// by any surviving version must never be reported as collectable.
+    #[tokio::test]
+    async fn payload_references_follow_the_versions_that_own_them() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("payloads").await;
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable");
+        let key = ObjectKey::new("note.txt").expect("key");
+        let first = object(bucket.id, "note.txt", 3);
+        let second = object(bucket.id, "note.txt", 5);
+        catalog.put_object(&first).await.expect("put");
+        catalog.put_object(&second).await.expect("put");
+
+        assert!(catalog.payload_referenced(first.id).await.expect("read"));
+        assert!(catalog.payload_referenced(second.id).await.expect("read"));
+
+        let page = catalog
+            .list_payload_references(None, 10)
+            .await
+            .expect("list references");
+        assert!(page.object_ids.contains(&first.id), "{page:?}");
+        assert!(page.object_ids.contains(&second.id), "{page:?}");
+
+        catalog
+            .delete_object_version(bucket.id, &key, first.version_id)
+            .await
+            .expect("delete version");
+        assert!(
+            !catalog.payload_referenced(first.id).await.expect("read"),
+            "a removed version releases its payload"
+        );
+        assert!(
+            catalog.payload_referenced(second.id).await.expect("read"),
+            "the surviving version keeps its own"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_payload_nobody_ever_stored_is_not_referenced() {
+        let (_directory, catalog) = catalog().await;
+        assert!(
+            !catalog
+                .payload_referenced(record_store_core::ObjectId::new())
+                .await
+                .expect("read")
+        );
+    }
+
+    /// A part still held by an open multipart upload owns its payload, so
+    /// collection must not reclaim it mid-upload.
+    #[tokio::test]
+    async fn an_open_multipart_part_keeps_its_payload_referenced() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("multipart").await;
+        let upload = upload(bucket.id, "big.bin");
+        catalog
+            .create_multipart_upload(&upload)
+            .await
+            .expect("create upload");
+        let stored = part(upload.id, 1, 1_024);
+        catalog.put_multipart_part(&stored).await.expect("put part");
+
+        assert!(
+            catalog
+                .payload_referenced(stored.object_id)
+                .await
+                .expect("read"),
+            "an in-flight part owns its payload"
+        );
+
+        catalog
+            .abort_multipart_upload(upload.id)
+            .await
+            .expect("abort");
+        assert!(
+            !catalog
+                .payload_referenced(stored.object_id)
+                .await
+                .expect("read"),
+            "aborting releases it"
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_against_an_absent_object_report_absence_rather_than_failing() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("empty").await;
+        let key = ObjectKey::new("absent.txt").expect("key");
+        assert!(
+            catalog
+                .get_object(bucket.id, &key)
+                .await
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            catalog
+                .get_object_version(bucket.id, &key, VersionId::new())
+                .await
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            catalog
+                .get_null_version(bucket.id, &key)
+                .await
+                .expect("read")
+                .is_none()
+        );
+    }
+
+    /// Enabling versioning is reversible only as far as suspension. Going back
+    /// to disabled would strand the versions already written, so the transition
+    /// is refused outright rather than silently dropping history.
+    #[tokio::test]
+    async fn versioning_cannot_be_switched_back_off_once_enabled() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("versioned").await;
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable");
+
+        assert!(matches!(
+            catalog
+                .set_bucket_versioning(bucket.id, VersioningState::Disabled)
+                .await,
+            Err(MetadataError::InvalidVersioningTransition)
+        ));
+
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Suspended)
+            .await
+            .expect("suspending is allowed");
+        // Suspending first does permit a return to disabled. The guard only
+        // blocks the direct Enabled -> Disabled jump, which is the transition
+        // that would strand history without the operator having said so twice.
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Disabled)
+            .await
+            .expect("disabling from suspended is permitted");
+    }
+
+    /// A quota is enforced at publication, which is the only place it can be
+    /// enforced transactionally. Accepting a write past the limit would make the
+    /// quota advisory rather than real.
+    #[tokio::test]
+    async fn a_byte_quota_refuses_the_write_that_would_exceed_it() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("bounded").await;
+        catalog
+            .set_bucket_quota(
+                bucket.id,
+                BucketQuota {
+                    bytes: ByteQuota::Limit(100),
+                    objects: ObjectCountQuota::Unlimited,
+                },
+            )
+            .await
+            .expect("set quota");
+
+        catalog
+            .put_object(&object(bucket.id, "small.txt", 60))
+            .await
+            .expect("a write inside the budget is accepted");
+        assert!(matches!(
+            catalog
+                .put_object(&object(bucket.id, "large.txt", 60))
+                .await,
+            Err(MetadataError::QuotaExceeded)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_object_count_quota_refuses_the_object_that_would_exceed_it() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("counted").await;
+        catalog
+            .set_bucket_quota(
+                bucket.id,
+                BucketQuota {
+                    bytes: ByteQuota::Unlimited,
+                    objects: ObjectCountQuota::Limit(1),
+                },
+            )
+            .await
+            .expect("set quota");
+
+        catalog
+            .put_object(&object(bucket.id, "first.txt", 1))
+            .await
+            .expect("first");
+        assert!(matches!(
+            catalog
+                .put_object(&object(bucket.id, "second.txt", 1))
+                .await,
+            Err(MetadataError::QuotaExceeded)
+        ));
+    }
+
+    /// Setting a quota below what is already stored would leave the bucket
+    /// permanently over its limit, so it is refused rather than applied.
+    #[tokio::test]
+    async fn a_quota_below_current_usage_is_refused() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("occupied").await;
+        catalog
+            .put_object(&object(bucket.id, "a.txt", 500))
+            .await
+            .expect("put");
+
+        assert!(matches!(
+            catalog
+                .set_bucket_quota(
+                    bucket.id,
+                    BucketQuota {
+                        bytes: ByteQuota::Limit(100),
+                        objects: ObjectCountQuota::Unlimited,
+                    },
+                )
+                .await,
+            Err(MetadataError::QuotaExceeded)
+        ));
+    }
+
+    /// A multipart upload is a state machine. Uploading into a completed one, or
+    /// completing it twice, has to be refused or two writers could both believe
+    /// they own the object.
+    #[tokio::test]
+    async fn a_multipart_upload_refuses_conflicting_state_changes() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("multipart").await;
+        let upload = upload(bucket.id, "big.bin");
+        catalog
+            .create_multipart_upload(&upload)
+            .await
+            .expect("create");
+        catalog
+            .put_multipart_part(&part(upload.id, 1, 8))
+            .await
+            .expect("put part");
+
+        let committed = object(bucket.id, "big.bin", 8);
+        catalog
+            .begin_multipart_completion(upload.id, committed.id)
+            .await
+            .expect("begin completion");
+
+        assert!(
+            matches!(
+                catalog.put_multipart_part(&part(upload.id, 2, 8)).await,
+                Err(MetadataError::MultipartStateConflict)
+            ),
+            "parts cannot be added once completion has begun"
+        );
+    }
+
+    /// An upload whose completion was interrupted has to be recoverable, or a
+    /// crash mid-commit would leave the object permanently unreachable.
+    #[tokio::test]
+    async fn an_interrupted_completion_is_recoverable() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("multipart").await;
+        let upload = upload(bucket.id, "big.bin");
+        catalog
+            .create_multipart_upload(&upload)
+            .await
+            .expect("create");
+        catalog
+            .put_multipart_part(&part(upload.id, 1, 8))
+            .await
+            .expect("put part");
+        let committed = object(bucket.id, "big.bin", 8);
+        catalog
+            .begin_multipart_completion(upload.id, committed.id)
+            .await
+            .expect("begin completion");
+
+        let recovered = catalog
+            .recover_multipart_completions()
+            .await
+            .expect("recover");
+        assert!(
+            !recovered.parts.is_empty()
+                || catalog
+                    .get_multipart_upload(upload.id)
+                    .await
+                    .expect("read")
+                    .is_some(),
+            "an interrupted completion must leave something to recover: {recovered:?}"
+        );
+    }
+
+    /// A bucket's CORS policy decides which websites may read its objects, so it
+    /// has to survive a round trip exactly and be removable.
+    #[tokio::test]
+    async fn a_cors_policy_round_trips_and_can_be_cleared() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("cors").await;
+        catalog
+            .set_bucket_cors(bucket.id, Some(cors_configuration()))
+            .await
+            .expect("set cors");
+        assert!(
+            catalog
+                .get_bucket(bucket.id)
+                .await
+                .expect("read")
+                .expect("bucket")
+                .cors
+                .is_some()
+        );
+
+        catalog
+            .set_bucket_cors(bucket.id, None)
+            .await
+            .expect("clear cors");
+        assert!(
+            catalog
+                .get_bucket(bucket.id)
+                .await
+                .expect("read")
+                .expect("bucket")
+                .cors
+                .is_none()
+        );
+    }
+
+    /// A delete marker can itself be the current version, and writing again has
+    /// to make the new object current without disturbing the marker's place in
+    /// history. Getting this wrong makes a deleted object reappear or stay gone.
+    #[tokio::test]
+    async fn a_write_after_a_delete_marker_becomes_current_again() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("resurrect").await;
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable");
+        let key = ObjectKey::new("note.txt").expect("key");
+
+        catalog
+            .put_object(&object(bucket.id, "note.txt", 3))
+            .await
+            .expect("put");
+        catalog
+            .delete_object(bucket.id, &key, NewDeleteMarker::generate())
+            .await
+            .expect("delete");
+        assert!(
+            catalog
+                .get_object(bucket.id, &key)
+                .await
+                .expect("read")
+                .is_none()
+        );
+
+        let revived = object(bucket.id, "note.txt", 7);
+        catalog.put_object(&revived).await.expect("put");
+        assert_eq!(
+            catalog
+                .get_object(bucket.id, &key)
+                .await
+                .expect("read")
+                .expect("current")
+                .version_id,
+            revived.version_id
+        );
+
+        let page = catalog
+            .list_object_versions(ListObjectVersionsRequest {
+                bucket_id: bucket.id,
+                prefix: String::new(),
+                key_marker: None,
+                version_id_marker: None,
+                limit: 10,
+            })
+            .await
+            .expect("list versions");
+        assert_eq!(page.versions.len(), 3, "the marker stays in history");
+        assert!(
+            page.versions.first().expect("newest").is_latest,
+            "the newest entry is the current one"
+        );
+    }
+
+    /// Removing the current version has to promote the next one rather than
+    /// leaving the key with no current version at all.
+    #[tokio::test]
+    async fn deleting_the_current_version_promotes_the_previous_one() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("promote").await;
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable");
+        let key = ObjectKey::new("note.txt").expect("key");
+        let first = object(bucket.id, "note.txt", 3);
+        let second = object(bucket.id, "note.txt", 5);
+        catalog.put_object(&first).await.expect("put");
+        catalog.put_object(&second).await.expect("put");
+
+        catalog
+            .delete_object_version(bucket.id, &key, second.version_id)
+            .await
+            .expect("delete current");
+
+        assert_eq!(
+            catalog
+                .get_object(bucket.id, &key)
+                .await
+                .expect("read")
+                .expect("current")
+                .version_id,
+            first.version_id,
+            "the older version must become current"
+        );
+    }
+
+    /// Usage counters have to follow version deletion too, or a versioned bucket
+    /// would drift permanently over its quota as history is pruned.
+    #[tokio::test]
+    async fn usage_follows_version_deletion_in_a_versioned_bucket() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("counted").await;
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable");
+        let key = ObjectKey::new("note.txt").expect("key");
+        let first = object(bucket.id, "note.txt", 100);
+        let second = object(bucket.id, "note.txt", 200);
+        catalog.put_object(&first).await.expect("put");
+        catalog.put_object(&second).await.expect("put");
+
+        let usage = catalog.bucket_usage().await.expect("usage");
+        let before = usage.get(&bucket.id).expect("summary");
+        assert_eq!(before.version_count, 2);
+        assert_eq!(before.version_bytes, 300);
+
+        catalog
+            .delete_object_version(bucket.id, &key, first.version_id)
+            .await
+            .expect("delete version");
+
+        let usage = catalog.bucket_usage().await.expect("usage");
+        let after = usage.get(&bucket.id).expect("summary");
+        assert_eq!(after.version_count, 1);
+        assert_eq!(after.version_bytes, 200);
+    }
+
+    /// Listing has to page across keys as well as within one, so a marker naming
+    /// the last key of a page resumes at the next key rather than repeating it.
+    #[tokio::test]
+    async fn version_listing_pages_across_keys() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("paged").await;
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable");
+        for key in ["a", "b", "c"] {
+            catalog
+                .put_object(&object(bucket.id, key, 1))
+                .await
+                .expect("put");
+        }
+
+        let first = catalog
+            .list_object_versions(ListObjectVersionsRequest {
+                bucket_id: bucket.id,
+                prefix: String::new(),
+                key_marker: None,
+                version_id_marker: None,
+                limit: 2,
+            })
+            .await
+            .expect("list");
+        assert_eq!(first.versions.len(), 2);
+
+        let last = &first.versions.last().expect("entry").record;
+        let rest = catalog
+            .list_object_versions(ListObjectVersionsRequest {
+                bucket_id: bucket.id,
+                prefix: String::new(),
+                key_marker: Some(last.key().as_str().to_owned()),
+                version_id_marker: Some(last.version_id()),
+                limit: 10,
+            })
+            .await
+            .expect("list");
+        assert_eq!(rest.versions.len(), 1);
+        assert_ne!(
+            rest.versions[0].record.key().as_str(),
+            last.key().as_str(),
+            "the marker's own key must not repeat"
+        );
+    }
+
+    /// Multipart parts count towards the bucket's footprint while they are in
+    /// flight, so a stalled upload is visible rather than invisible storage.
+    #[tokio::test]
+    async fn in_flight_multipart_parts_are_counted_against_the_bucket() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("inflight").await;
+        let upload = upload(bucket.id, "big.bin");
+        catalog
+            .create_multipart_upload(&upload)
+            .await
+            .expect("create");
+        catalog
+            .put_multipart_part(&part(upload.id, 1, 4_096))
+            .await
+            .expect("put part");
+
+        let usage = catalog.bucket_usage().await.expect("usage");
+        let summary = usage.get(&bucket.id).expect("summary");
+        assert_eq!(summary.multipart_bytes, 4_096, "{summary:?}");
+
+        catalog
+            .abort_multipart_upload(upload.id)
+            .await
+            .expect("abort");
+        let usage = catalog.bucket_usage().await.expect("usage");
+        assert_eq!(
+            usage.get(&bucket.id).expect("summary").multipart_bytes,
+            0,
+            "aborting releases the reservation"
+        );
+    }
+
+    /// Parts enumerate from a marker so a client can resume listing a large
+    /// upload without re-reading what it already has.
+    #[tokio::test]
+    async fn multipart_parts_page_from_a_marker() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("paged-parts").await;
+        let upload = upload(bucket.id, "big.bin");
+        catalog
+            .create_multipart_upload(&upload)
+            .await
+            .expect("create");
+        for number in 1..=3 {
+            catalog
+                .put_multipart_part(&part(upload.id, number, 8))
+                .await
+                .expect("put part");
+        }
+
+        let first = catalog
+            .list_multipart_parts(upload.id, None, 2)
+            .await
+            .expect("list");
+        assert_eq!(
+            first
+                .iter()
+                .map(|part| part.number.get())
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let rest = catalog
+            .list_multipart_parts(upload.id, Some(first[1].number), 10)
+            .await
+            .expect("list");
+        assert_eq!(
+            rest.iter()
+                .map(|part| part.number.get())
+                .collect::<Vec<_>>(),
+            vec![3],
+            "the marker part must not repeat"
+        );
     }
 }

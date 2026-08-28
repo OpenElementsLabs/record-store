@@ -253,3 +253,198 @@ pub(crate) async fn delete_share(
     .await;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    use crate::test_support::{admin, api, call, expect_status, make_bucket, put_object};
+
+    async fn shared(router: &axum::Router) -> serde_json::Value {
+        make_bucket(router, "photos").await;
+        put_object(router, "photos", "report.pdf", b"contents").await;
+        expect_status(
+            router,
+            admin(
+                "POST",
+                "/api/v1/buckets/photos/object-shares/report.pdf",
+                Some(json!({"label": "Board review"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await
+    }
+
+    /// A share's URL is disclosed once at creation. The management view must
+    /// never carry the token again, or a screenshot of the console would leak
+    /// the capability.
+    #[tokio::test]
+    async fn creating_a_share_returns_its_url_but_later_reads_never_do() {
+        let (_directory, api) = api().await;
+        let created = shared(&api).await;
+        let id = created["share"]["id"]
+            .as_str()
+            .expect("share id")
+            .to_owned();
+        let url = created["url"].as_str().expect("url").to_owned();
+        assert!(url.starts_with("https://share.example"), "{url}");
+
+        let fetched = expect_status(
+            &api,
+            admin("GET", &format!("/api/v1/shares/{id}"), None),
+            StatusCode::OK,
+        )
+        .await;
+        assert!(
+            !fetched.to_string().contains("https://share.example/"),
+            "a later read must not carry the token: {fetched}"
+        );
+    }
+
+    /// Copying the link again is a deliberate management action and must return
+    /// the same URL the recipient already holds.
+    #[tokio::test]
+    async fn the_url_can_be_requested_again_on_its_own_route() {
+        let (_directory, api) = api().await;
+        let created = shared(&api).await;
+        let id = created["share"]["id"]
+            .as_str()
+            .expect("share id")
+            .to_owned();
+
+        let again = expect_status(
+            &api,
+            admin("GET", &format!("/api/v1/shares/{id}/url"), None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(again["url"], created["url"], "{again}");
+    }
+
+    #[tokio::test]
+    async fn shares_are_listed_against_the_object_they_target() {
+        let (_directory, api) = api().await;
+        shared(&api).await;
+        put_object(&api, "photos", "other.pdf", b"other").await;
+
+        let listed = expect_status(
+            &api,
+            admin(
+                "GET",
+                "/api/v1/buckets/photos/object-shares/report.pdf",
+                None,
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(listed.as_array().expect("array").len(), 1, "{listed}");
+
+        let elsewhere = expect_status(
+            &api,
+            admin(
+                "GET",
+                "/api/v1/buckets/photos/object-shares/other.pdf",
+                None,
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        assert!(
+            elsewhere.as_array().expect("array").is_empty(),
+            "{elsewhere}"
+        );
+    }
+
+    /// Revocation withdraws the capability but keeps the record; deletion
+    /// removes it entirely. An operator needs both, and they are not the same.
+    #[tokio::test]
+    async fn a_share_can_be_revoked_and_then_deleted() {
+        let (_directory, api) = api().await;
+        let created = shared(&api).await;
+        let id = created["share"]["id"]
+            .as_str()
+            .expect("share id")
+            .to_owned();
+
+        expect_status(
+            &api,
+            admin("POST", &format!("/api/v1/shares/{id}/revoke"), None),
+            StatusCode::OK,
+        )
+        .await;
+        let revoked = expect_status(
+            &api,
+            admin("GET", &format!("/api/v1/shares/{id}"), None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(revoked["status"], "revoked", "{revoked}");
+
+        expect_status(
+            &api,
+            admin("DELETE", &format!("/api/v1/shares/{id}"), None),
+            StatusCode::NO_CONTENT,
+        )
+        .await;
+        expect_status(
+            &api,
+            admin("GET", &format!("/api/v1/shares/{id}"), None),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_share_for_an_object_that_does_not_exist_is_refused() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/buckets/photos/object-shares/absent.pdf",
+                Some(json!({"label": "Nothing"})),
+            ),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    /// The label is operator-supplied text that appears in the console, so it is
+    /// validated rather than stored as typed.
+    #[tokio::test]
+    async fn an_unusable_label_is_refused() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        put_object(&api, "photos", "report.pdf", b"contents").await;
+
+        for label in ["", "   "] {
+            let response = call(
+                &api,
+                admin(
+                    "POST",
+                    "/api/v1/buckets/photos/object-shares/report.pdf",
+                    Some(json!({"label": label})),
+                ),
+            )
+            .await;
+            assert!(
+                response.status().is_client_error(),
+                "accepted label {label:?}: {}",
+                response.status()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_malformed_share_identifier_is_refused() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin("GET", "/api/v1/shares/not-a-uuid", None),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+}

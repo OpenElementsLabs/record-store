@@ -54,3 +54,53 @@ pub(crate) async fn initialized() -> (tempfile::TempDir, ClusterCatalog) {
         .expect("initialize cluster");
     (directory, catalog)
 }
+
+/// Registers a node and returns its identifier.
+pub(crate) async fn register(catalog: &ClusterCatalog, now: chrono::DateTime<Utc>) -> NodeId {
+    let registration = registration();
+    let node_id = registration.node_id;
+    catalog
+        .apply(ClusterCommand::RegisterNode {
+            registration: Box::new(registration),
+            at: now,
+        })
+        .await
+        .expect("register node");
+    node_id
+}
+
+/// Builds a join token record with the supplied bounds.
+pub(crate) fn join_token(
+    now: chrono::DateTime<Utc>,
+    maximum_uses: u32,
+) -> crate::credentials::JoinToken {
+    crate::credentials::JoinToken {
+        id: record_store_core::JoinTokenId::new(),
+        token_digest: [7_u8; 32],
+        created_at: now,
+        expires_at: now + chrono::Duration::hours(1),
+        maximum_uses,
+        uses: 0,
+        revoked: false,
+        description: "test token".to_owned(),
+    }
+}
+
+/// Builds a long-running operation record.
+pub(crate) fn operation(
+    kind: crate::tasks::ClusterOperationKind,
+    node_id: NodeId,
+    now: chrono::DateTime<Utc>,
+) -> crate::tasks::ClusterOperation {
+    crate::tasks::ClusterOperation {
+        id: record_store_core::ClusterOperationId::new(),
+        kind,
+        node_id: Some(node_id),
+        state: crate::tasks::ClusterOperationState::Planning,
+        progress: crate::tasks::OperationProgress::default(),
+        started_at: now,
+        updated_at: now,
+        completed_at: None,
+        message: None,
+    }
+}

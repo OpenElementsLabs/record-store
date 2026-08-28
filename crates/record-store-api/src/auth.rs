@@ -290,3 +290,156 @@ pub(crate) async fn auth_session(
         permissions: RolePermissions::of(principal.role),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    use super::*;
+    use crate::test_support::{
+        AUDITOR_TOKEN, STORAGE_TOKEN, SYSTEM_TOKEN, api, call, expect_status, signed,
+    };
+
+    /// The three roles exist to separate who may change credentials from who may
+    /// move data from who may only read the trail. If any role gained another's
+    /// authority the separation would be decorative.
+    #[test]
+    fn each_role_grants_exactly_its_own_authority() {
+        let system = RolePermissions::of(ManagementRole::SystemAdministrator);
+        assert!(system.manage_service_accounts && system.manage_policies);
+        assert!(system.manage_cluster && system.read_audit);
+
+        let storage = RolePermissions::of(ManagementRole::StorageAdministrator);
+        assert!(
+            storage.manage_buckets && storage.manage_objects && storage.manage_storage,
+            "a storage administrator moves data"
+        );
+        assert!(
+            !storage.manage_service_accounts && !storage.manage_policies,
+            "but must not change who may reach it"
+        );
+        assert!(!storage.manage_cluster, "nor reshape the cluster");
+
+        let auditor = RolePermissions::of(ManagementRole::Auditor);
+        assert!(auditor.read_audit, "an auditor reads the trail");
+        assert!(
+            !auditor.manage_buckets
+                && !auditor.manage_objects
+                && !auditor.manage_service_accounts
+                && !auditor.manage_policies
+                && !auditor.manage_webhooks
+                && !auditor.manage_cluster
+                && !auditor.manage_storage,
+            "and changes nothing"
+        );
+    }
+
+    /// The session endpoint is how a console learns what to offer. Reporting the
+    /// wrong role would show an operator buttons every click of which is refused.
+    #[tokio::test]
+    async fn the_session_endpoint_reports_the_presented_roles_authority() {
+        let (_directory, api) = api().await;
+        for (token, expects_accounts, expects_audit) in [
+            (SYSTEM_TOKEN, true, true),
+            (STORAGE_TOKEN, false, false),
+            (AUDITOR_TOKEN, false, true),
+        ] {
+            let response = call(&api, signed("GET", "/api/v1/auth/session", token, None)).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = crate::test_support::json_body(response).await;
+            assert_eq!(
+                body["permissions"]["manage_service_accounts"], expects_accounts,
+                "{body}"
+            );
+            assert_eq!(body["permissions"]["read_audit"], expects_audit, "{body}");
+        }
+    }
+
+    /// A credential that was never issued must be refused, and the refusal must
+    /// not reveal whether the token merely had the wrong role.
+    #[tokio::test]
+    async fn an_unknown_credential_is_refused_without_disclosing_why() {
+        let (_directory, api) = api().await;
+        let response = call(
+            &api,
+            signed("GET", "/api/v1/auth/session", "not-a-real-token", None),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let body = crate::test_support::json_body(response).await;
+        let rendered = body.to_string();
+        assert!(
+            !rendered.contains("role") && !rendered.contains("permission"),
+            "the refusal must not describe what was missing: {rendered}"
+        );
+    }
+
+    /// A malformed authorization header is a client error, not a crash, and must
+    /// be refused the same way an absent one is.
+    #[tokio::test]
+    async fn a_malformed_authorization_header_is_refused() {
+        let (_directory, api) = api().await;
+        for header in ["", "Bearer", "Basic abc", "Bearer  ", "Token abc"] {
+            let request = axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/v1/auth/session")
+                .header("authorization", header)
+                .body(axum::body::Body::empty())
+                .expect("request");
+            let response = call(&api, request).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "accepted header {header:?}"
+            );
+        }
+    }
+
+    /// A storage administrator may move data but must not be able to mint a
+    /// credential, which is the boundary the two roles exist to draw.
+    #[tokio::test]
+    async fn a_storage_administrator_cannot_mint_credentials() {
+        let (_directory, api) = api().await;
+
+        let allowed = call(
+            &api,
+            signed(
+                "POST",
+                "/api/v1/buckets",
+                STORAGE_TOKEN,
+                Some(json!({"name": "photos"})),
+            ),
+        )
+        .await;
+        assert_eq!(allowed.status(), StatusCode::CREATED);
+
+        let refused = call(
+            &api,
+            signed(
+                "POST",
+                "/api/v1/service-accounts",
+                STORAGE_TOKEN,
+                Some(json!({"name": "escalated"})),
+            ),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_request_without_any_credential_is_unauthorized() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/v1/auth/session")
+                .body(axum::body::Body::empty())
+                .expect("request"),
+            StatusCode::UNAUTHORIZED,
+        )
+        .await;
+    }
+}

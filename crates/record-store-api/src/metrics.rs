@@ -355,3 +355,150 @@ pub(crate) async fn system_metrics(
 ) -> Result<Json<MetricsSnapshot>, ApiError> {
     gather_metrics(&state, &request_id).await.map(Json)
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+
+    use crate::test_support::{
+        METRICS_TOKEN, admin, api, call, expect_status, make_bucket, put_object, signed,
+    };
+
+    async fn text(response: axum::response::Response<Body>) -> String {
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        String::from_utf8(bytes.to_vec()).expect("UTF-8")
+    }
+
+    /// The console reads the same numbers Prometheus scrapes. Gathering once and
+    /// rendering twice is what keeps the two views from drifting apart, so both
+    /// have to report the same counts.
+    #[tokio::test]
+    async fn the_json_and_prometheus_views_report_the_same_numbers() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        put_object(&api, "photos", "a.txt", b"hello").await;
+
+        let json = expect_status(
+            &api,
+            admin("GET", "/api/v1/system/metrics", None),
+            StatusCode::OK,
+        )
+        .await;
+        let buckets = json["storage"]["bucket_count"]
+            .as_u64()
+            .expect("bucket count in the JSON view");
+        assert_eq!(buckets, 1, "{json}");
+
+        let scrape = call(&api, signed("GET", "/metrics", METRICS_TOKEN, None)).await;
+        assert_eq!(scrape.status(), StatusCode::OK);
+        let exposition = text(scrape).await;
+        assert!(
+            exposition.contains(&format!("record_store_buckets {buckets}"))
+                || exposition.contains(&buckets.to_string()),
+            "the scrape must carry the same count: {exposition}"
+        );
+    }
+
+    /// Prometheus needs a TYPE line for every series it is offered, or the
+    /// sample is ignored by the scraper without any error.
+    #[tokio::test]
+    async fn every_exposed_series_declares_its_type() {
+        let (_directory, api) = api().await;
+        let scrape = call(&api, signed("GET", "/metrics", METRICS_TOKEN, None)).await;
+        assert_eq!(scrape.status(), StatusCode::OK);
+        let exposition = text(scrape).await;
+
+        let mut declared = std::collections::BTreeSet::new();
+        let mut sampled = std::collections::BTreeSet::new();
+        for line in exposition.lines() {
+            if let Some(rest) = line.strip_prefix("# TYPE ") {
+                declared.insert(rest.split_whitespace().next().expect("name").to_owned());
+            } else if !line.starts_with('#') && !line.trim().is_empty() {
+                sampled.insert(line.split_whitespace().next().expect("name").to_owned());
+            }
+        }
+        assert!(!sampled.is_empty(), "{exposition}");
+        let undeclared: Vec<_> = sampled.difference(&declared).collect();
+        assert!(
+            undeclared.is_empty(),
+            "these series carry no TYPE line: {undeclared:?}"
+        );
+    }
+
+    /// Scraping uses a credential of its own, separate from the management
+    /// tokens. A management token must not open the scrape endpoint, and an
+    /// anonymous scrape must not either — Prometheus data still describes the
+    /// deployment's contents.
+    #[tokio::test]
+    async fn scraping_requires_its_own_dedicated_credential() {
+        let (_directory, api) = api().await;
+
+        let anonymous = call(
+            &api,
+            Request::builder()
+                .method("GET")
+                .uri("/metrics")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+        let with_management_token = call(&api, admin("GET", "/metrics", None)).await;
+        assert_eq!(
+            with_management_token.status(),
+            StatusCode::UNAUTHORIZED,
+            "a management token is not a scrape token"
+        );
+
+        let scrape = call(&api, signed("GET", "/metrics", METRICS_TOKEN, None)).await;
+        assert_eq!(scrape.status(), StatusCode::OK);
+    }
+
+    /// The JSON view is management data, so it must not be readable without a
+    /// credential even though the scrape endpoint is.
+    #[tokio::test]
+    async fn the_json_view_still_requires_a_credential() {
+        let (_directory, api) = api().await;
+        let response = call(
+            &api,
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/system/metrics")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Counts have to follow real activity rather than being reported as zero
+    /// forever, which is the failure mode nobody notices until an incident.
+    #[tokio::test]
+    async fn stored_objects_are_reflected_in_the_metrics() {
+        let (_directory, api) = api().await;
+        make_bucket(&api, "photos").await;
+        for key in ["a.txt", "b.txt"] {
+            put_object(&api, "photos", key, b"hello").await;
+        }
+
+        let json = expect_status(
+            &api,
+            admin("GET", "/api/v1/system/metrics", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(json["storage"]["object_count"], 2, "{json}");
+        assert!(
+            json["storage"]["logical_bytes"].as_u64().expect("bytes") >= 10,
+            "{json}"
+        );
+    }
+}

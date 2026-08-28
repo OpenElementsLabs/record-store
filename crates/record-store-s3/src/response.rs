@@ -263,6 +263,13 @@ pub(crate) fn parse_range(value: &str, size: u64) -> Result<ByteRange, S3ErrorKi
         return ByteRange::new(size - length, length).map_err(|_| S3ErrorKind::InvalidRange);
     }
     let start: u64 = start.parse().map_err(|_| S3ErrorKind::InvalidRange)?;
+    // A start at or past the end is unsatisfiable. Catching it here is what
+    // turns it into a 416 for the client; left to the storage layer it arrives
+    // as an internal error, which tells a client to retry something that can
+    // never succeed.
+    if start >= size {
+        return Err(S3ErrorKind::InvalidRange);
+    }
     let length = if end.is_empty() {
         size.checked_sub(start).ok_or(S3ErrorKind::InvalidRange)?
     } else {
