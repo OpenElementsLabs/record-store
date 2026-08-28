@@ -15,7 +15,7 @@ mod snapshot;
 mod store;
 
 #[cfg(test)]
-mod tests;
+mod test_support;
 
 pub use commands::apply_command_tx;
 pub use error::ClusterCatalogError;

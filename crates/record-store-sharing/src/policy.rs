@@ -49,3 +49,69 @@ impl Default for SharingPolicy {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use chrono::{Duration, Utc};
+
+    use super::*;
+    use crate::test_support::*;
+    use crate::*;
+
+    #[tokio::test]
+    async fn deployment_policy_bounds_lifetime_and_can_require_expiry_and_passwords() {
+        let policy = SharingPolicy {
+            maximum_lifetime: Some(Duration::days(7)),
+            require_expiration: true,
+            require_share_password: true,
+            ..SharingPolicy::default()
+        };
+        let service = service(policy).await;
+        let now = Utc::now();
+
+        assert!(matches!(
+            service.create_share(share_request(), now).await,
+            Err(SharingError::PolicyRefused(_))
+        ));
+
+        let mut request = share_request();
+        request.expires_at = Some(now + Duration::days(30));
+        request.password = Some("open sesame please".to_owned());
+        assert!(matches!(
+            service.create_share(request, now).await,
+            Err(SharingError::PolicyRefused(_))
+        ));
+
+        let mut request = share_request();
+        request.expires_at = Some(now + Duration::days(3));
+        assert!(matches!(
+            service.create_share(request, now).await,
+            Err(SharingError::PolicyRefused(_))
+        ));
+
+        let mut request = share_request();
+        request.expires_at = Some(now + Duration::days(3));
+        request.password = Some("open sesame please".to_owned());
+        assert!(service.create_share(request, now).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn disabling_sharing_refuses_creation_rather_than_hiding_the_button() {
+        let policy = SharingPolicy {
+            shares_enabled: false,
+            embeds_enabled: false,
+            ..SharingPolicy::default()
+        };
+        let service = service(policy).await;
+        let now = Utc::now();
+        assert!(matches!(
+            service.create_share(share_request(), now).await,
+            Err(SharingError::PolicyRefused(_))
+        ));
+        assert!(matches!(
+            service.create_embed(embed_request("image/png"), now).await,
+            Err(SharingError::PolicyRefused(_))
+        ));
+    }
+}

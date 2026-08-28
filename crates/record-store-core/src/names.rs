@@ -183,3 +183,78 @@ impl From<ObjectKey> for String {
         value.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    #[test]
+    fn object_keys_reject_path_traversal_and_ambiguous_paths() {
+        for key in ["", "/root", "../secret", "a/../secret", "a//b", "a\\b"] {
+            assert!(ObjectKey::new(key).is_err(), "accepted invalid key: {key}");
+        }
+        assert_eq!(
+            ObjectKey::new("images/2026/photo.jpg")
+                .expect("valid object key")
+                .as_str(),
+            "images/2026/photo.jpg"
+        );
+    }
+
+    #[test]
+    fn bucket_names_follow_safe_s3_constraints() {
+        for name in [
+            "",
+            "ab",
+            "UPPERCASE",
+            "-leading",
+            "trailing-",
+            "192.168.1.1",
+            "a..b",
+            "record-store-system",
+            "xn--reserved",
+        ] {
+            assert!(
+                BucketName::new(name).is_err(),
+                "accepted invalid name: {name}"
+            );
+        }
+        assert_eq!(
+            BucketName::new("photos-2026.example")
+                .expect("valid bucket")
+                .as_str(),
+            "photos-2026.example"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn accepted_bucket_names_always_satisfy_storage_safety_invariants(value in any::<String>()) {
+            if let Ok(name) = BucketName::new(value) {
+                let value = name.as_str();
+                prop_assert!((BucketName::MIN_LENGTH..=BucketName::MAX_LENGTH).contains(&value.len()));
+                prop_assert!(value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'.')));
+                prop_assert!(!value.contains(".."));
+                prop_assert!(!value.starts_with('-') && !value.starts_with('.'));
+                prop_assert!(!value.ends_with('-') && !value.ends_with('.'));
+                prop_assert!(value.parse::<std::net::Ipv4Addr>().is_err());
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn accepted_object_keys_never_contain_unsafe_path_segments(value in any::<String>()) {
+            if let Ok(key) = ObjectKey::new(value) {
+                let value = key.as_str();
+                prop_assert!(!value.starts_with('/'));
+                prop_assert!(!value.contains('\\'));
+                prop_assert!(!value.chars().any(char::is_control));
+                prop_assert!(value.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != ".."));
+                prop_assert!(value.len() <= ObjectKey::MAX_LENGTH);
+            }
+        }
+    }
+}

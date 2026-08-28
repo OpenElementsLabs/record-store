@@ -372,3 +372,19 @@ pub(crate) fn sharing_to_api_error(error: &SharingError, request_id: RequestId) 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    use super::*;
+    use crate::dto::RequestId;
+
+    #[test]
+    fn every_unusable_share_state_produces_one_indistinguishable_answer() {
+        let request_id = RequestId::new();
+        let response = share_unavailable(request_id).into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}

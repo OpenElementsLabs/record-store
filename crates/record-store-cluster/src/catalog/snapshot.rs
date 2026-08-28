@@ -70,3 +70,50 @@ pub fn import_tx(write: &WriteTransaction, entries: &[CatalogEntry]) -> CatalogR
 pub fn silence(node: &NodeRecord, now: DateTime<Utc>) -> TimeDelta {
     now.signed_duration_since(node.last_heartbeat_at.unwrap_or(node.joined_at))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::Utc;
+
+    use super::*;
+    use crate::catalog::test_support::*;
+    use crate::command::ClusterCommand;
+
+    #[tokio::test]
+    async fn snapshot_export_and_import_round_trip() {
+        let (_directory, catalog) = initialized().await;
+        catalog
+            .apply(ClusterCommand::RegisterNode {
+                registration: Box::new(registration()),
+                at: Utc::now(),
+            })
+            .await
+            .expect("register");
+        let database = catalog.database();
+        let entries = tokio::task::spawn_blocking({
+            let database = Arc::clone(&database);
+            move || {
+                let read = database.begin_read().expect("begin");
+                export_tx(&read).expect("export")
+            }
+        })
+        .await
+        .expect("join");
+        assert!(!entries.is_empty());
+
+        let (_other_directory, other) = open_catalog().await;
+        let other_database = other.database();
+        tokio::task::spawn_blocking(move || {
+            let write = other_database.begin_write().expect("begin");
+            import_tx(&write, &entries).expect("import");
+            write.commit().expect("commit");
+        })
+        .await
+        .expect("join");
+        let restored = other.nodes().await.expect("nodes");
+        assert_eq!(restored.len(), 1);
+        assert!(other.identity().await.expect("identity").is_some());
+    }
+}

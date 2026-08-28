@@ -140,3 +140,104 @@ impl CredentialManager {
         .await?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use record_store_core::OrganizationId;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn policies_default_deny_scope_prefixes_and_prioritize_explicit_deny() {
+        let directory = tempdir().expect("temporary directory");
+        let manager = CredentialManager::open(
+            directory.path().join("credentials.redb"),
+            "root-access",
+            b"root-secret-at-least-sixteen",
+            Some(b"dedicated-master-key-at-least-thirty-two-bytes"),
+        )
+        .await
+        .expect("manager");
+        let issued = manager
+            .create_service_account("customer-app", OrganizationId::new())
+            .await
+            .expect("account");
+        let principal = Principal::ServiceAccount {
+            id: issued.info.account.id,
+            organization_id: issued.info.account.organization_id,
+            credential_id: Some(issued.info.credential.id),
+        };
+        let read = Permission {
+            action: Action::GetObject,
+            resource: "bucket:customers/customer-123/report.pdf".into(),
+        };
+        assert!(matches!(
+            manager
+                .authorize(AuthorizationContext {
+                    principal: &principal,
+                    permission: &read,
+                })
+                .await,
+            Err(AuthorizationError::Denied)
+        ));
+        let policy = manager
+            .create_policy(
+                "customer-read",
+                "prefix allow with a narrower deny",
+                vec![
+                    PolicyStatement {
+                        effect: PolicyEffect::Allow,
+                        actions: vec![Action::GetObject],
+                        resources: vec!["bucket:customers/customer-123/*".into()],
+                    },
+                    PolicyStatement {
+                        effect: PolicyEffect::Deny,
+                        actions: vec![Action::GetObject],
+                        resources: vec!["bucket:customers/customer-123/private/*".into()],
+                    },
+                ],
+            )
+            .await
+            .expect("policy");
+        manager
+            .attach_policy(issued.info.account.id, policy.id)
+            .await
+            .expect("binding");
+        assert!(
+            manager
+                .authorize(AuthorizationContext {
+                    principal: &principal,
+                    permission: &read,
+                })
+                .await
+                .is_ok()
+        );
+        let denied = Permission {
+            action: Action::GetObject,
+            resource: "bucket:customers/customer-123/private/secret.pdf".into(),
+        };
+        assert!(matches!(
+            manager
+                .authorize(AuthorizationContext {
+                    principal: &principal,
+                    permission: &denied,
+                })
+                .await,
+            Err(AuthorizationError::Denied)
+        ));
+        let escaped = Permission {
+            action: Action::GetObject,
+            resource: "bucket:customers/customer-124/report.pdf".into(),
+        };
+        assert!(matches!(
+            manager
+                .authorize(AuthorizationContext {
+                    principal: &principal,
+                    permission: &escaped,
+                })
+                .await,
+            Err(AuthorizationError::Denied)
+        ));
+    }
+}

@@ -10,6 +10,9 @@ mod object;
 mod services;
 mod types;
 
+#[cfg(test)]
+mod test_support;
+
 pub use bucket::BucketService;
 pub use error::ServiceError;
 pub use metrics::{ServiceMetrics, ServiceMetricsSnapshot};

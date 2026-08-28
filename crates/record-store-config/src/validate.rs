@@ -210,3 +210,140 @@ impl Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::Config;
+    use crate::test_support::*;
+
+    #[test]
+    fn metrics_use_a_dedicated_validated_secret() {
+        let mut environment = credentials().to_vec();
+        environment.push((
+            "RECORD_STORE_METRICS_SCRAPE_TOKEN",
+            "dedicated-test-metrics-token-at-least-32-bytes",
+        ));
+        let config =
+            Config::load_with_environment(None, environment).expect("metrics token configuration");
+        assert_eq!(
+            config
+                .auth
+                .metrics_scrape_token
+                .as_ref()
+                .expect("configured metrics token")
+                .expose(),
+            "dedicated-test-metrics-token-at-least-32-bytes"
+        );
+
+        let mut duplicate = credentials().to_vec();
+        duplicate.extend([
+            (
+                "RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN",
+                "one-shared-token-that-is-at-least-32-bytes",
+            ),
+            (
+                "RECORD_STORE_METRICS_SCRAPE_TOKEN",
+                "one-shared-token-that-is-at-least-32-bytes",
+            ),
+        ]);
+        assert!(matches!(
+            Config::load_with_environment(None, duplicate),
+            Err(ConfigError::Validation(message)) if message.contains("metrics_scrape_token")
+        ));
+    }
+
+    #[test]
+    fn unsafe_sharing_policy_values_are_refused_at_load() {
+        for (name, value) in [
+            ("RECORD_STORE_SHARING_MAXIMUM_ACCESS_COUNT", "0"),
+            ("RECORD_STORE_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", "0"),
+            ("RECORD_STORE_SHARING_TOKEN_PROBES_PER_MINUTE", "0"),
+            ("RECORD_STORE_SHARING_UNLOCK_LIFETIME_HOURS", "0"),
+            ("RECORD_STORE_SHARING_PREVIEW_TEXT_LIMIT_BYTES", "16"),
+            ("RECORD_STORE_SHARING_MAXIMUM_LIFETIME_DAYS", "100000"),
+            ("RECORD_STORE_SHARING_SHARE_BASE_URL", "javascript:alert(1)"),
+            (
+                "RECORD_STORE_SHARING_SHARE_BASE_URL",
+                "record-store.example.com",
+            ),
+            ("RECORD_STORE_SHARING_EMBED_BASE_URL", "javascript:alert(1)"),
+            ("RECORD_STORE_SHARING_EMBED_BASE_URL", "storage.example.com"),
+        ] {
+            let mut environment = credentials().to_vec();
+            environment.push((name, value));
+            assert!(
+                matches!(
+                    Config::load_with_environment(None, environment),
+                    Err(ConfigError::Validation(_))
+                ),
+                "accepted unsafe sharing value {name}={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn object_encryption_requires_the_explicit_master_key() {
+        let mut without_key = credentials().to_vec();
+        without_key.push(("RECORD_STORE_STORAGE_ENCRYPTION_ENABLED", "true"));
+        assert!(matches!(
+            Config::load_with_environment(None, without_key),
+            Err(ConfigError::Validation(message)) if message.contains("credential_master_key")
+        ));
+
+        let mut configured = credentials().to_vec();
+        configured.push(("RECORD_STORE_STORAGE_ENCRYPTION_ENABLED", "true"));
+        configured.push((
+            "RECORD_STORE_CREDENTIAL_MASTER_KEY",
+            "stable-test-master-key-at-least-thirty-two-bytes",
+        ));
+        let config = Config::load_with_environment(None, configured).expect("encrypted config");
+        assert!(config.storage.encryption_enabled);
+    }
+
+    #[test]
+    fn listeners_must_be_distinct_and_avoid_the_reserved_console_port() {
+        let mut config = valid_config();
+        config.server.rpc_bind = config.server.api_bind;
+        assert!(config.validate().is_err());
+
+        let mut config = valid_config();
+        config.server.rpc_bind = "0.0.0.0:7602".parse().expect("address");
+        let error = config
+            .validate()
+            .expect_err("the reserved console port must be refused");
+        assert!(error.to_string().contains("7602"));
+    }
+
+    #[test]
+    fn cluster_settings_are_validated_strictly() {
+        let mut config = valid_config();
+        config.cluster.replication_factor = 4;
+        assert!(config.validate().is_err());
+
+        let mut config = valid_config();
+        config.cluster.storage_class = "NVMe".to_owned();
+        assert!(config.validate().is_err());
+
+        let mut config = valid_config();
+        config.cluster.failure_domain = "rack".to_owned();
+        assert!(config.validate().is_err());
+
+        let mut config = valid_config();
+        config.cluster.election_timeout_min_millis = 100;
+        assert!(config.validate().is_err());
+
+        let mut config = valid_config();
+        config.server.mode = DeploymentMode::Control;
+        let error = config
+            .validate()
+            .expect_err("a control process without seeds cannot reach the cluster");
+        assert!(error.to_string().contains("cluster.seeds"));
+
+        let mut config = valid_config();
+        config.cluster.tls.certificate_path = Some(PathBuf::from("/tmp/cert.pem"));
+        assert!(config.validate().is_err());
+    }
+}

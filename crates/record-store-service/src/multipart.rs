@@ -225,3 +225,179 @@ impl ObjectService {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use record_store_core::{BucketName, CompletedPart, ETag, ObjectKey, PartNumber, UploadId};
+
+    use crate::test_support::{body, services};
+    use crate::{
+        ServiceCompleteMultipartRequest, ServiceCreateMultipartRequest, ServiceError,
+        ServiceUploadPartRequest, Services,
+    };
+
+    const MINIMUM_PART: usize = 5 * 1024 * 1024;
+
+    fn bucket() -> BucketName {
+        BucketName::new("multipart-tests").expect("bucket name")
+    }
+
+    fn key() -> ObjectKey {
+        ObjectKey::new("archive.bin").expect("object key")
+    }
+
+    /// Starts an upload and stores `sizes.len()` parts, returning the upload and
+    /// the ETag the store recorded for each part.
+    async fn upload_with(services: &Services, sizes: &[usize]) -> (UploadId, Vec<CompletedPart>) {
+        services.buckets.create(bucket()).await.expect("bucket");
+        let upload = services
+            .objects
+            .create_multipart(ServiceCreateMultipartRequest {
+                bucket: bucket(),
+                key: key(),
+                content_type: None,
+                custom_metadata: Default::default(),
+            })
+            .await
+            .expect("create multipart");
+
+        let mut manifest = Vec::new();
+        for (index, size) in sizes.iter().enumerate() {
+            let number = PartNumber::new(u16::try_from(index + 1).expect("part number"))
+                .expect("part number");
+            let stored = services
+                .objects
+                .upload_part(ServiceUploadPartRequest {
+                    bucket: bucket(),
+                    key: key(),
+                    upload_id: upload.id,
+                    number,
+                    expected_checksum: None,
+                    body: body(&vec![b'x'; *size]),
+                })
+                .await
+                .expect("upload part");
+            manifest.push(CompletedPart {
+                number,
+                etag: stored.etag,
+            });
+        }
+        (upload.id, manifest)
+    }
+
+    async fn complete(
+        services: &Services,
+        upload_id: UploadId,
+        manifest: Vec<CompletedPart>,
+    ) -> Result<(), ServiceError> {
+        services
+            .objects
+            .complete_multipart(ServiceCompleteMultipartRequest {
+                bucket: bucket(),
+                key: key(),
+                upload_id,
+                manifest,
+            })
+            .await
+            .map(|_| ())
+    }
+
+    /// The manifest is the client's assertion about assembly order. Accepting a
+    /// descending or repeated part number would silently produce an object whose
+    /// bytes are not what the client uploaded.
+    #[tokio::test]
+    async fn a_manifest_that_is_not_strictly_ascending_is_refused() {
+        let (_directory, services) = services().await;
+        let (upload_id, manifest) = upload_with(&services, &[MINIMUM_PART, 16]).await;
+
+        let mut descending = manifest.clone();
+        descending.reverse();
+        assert!(matches!(
+            complete(&services, upload_id, descending).await,
+            Err(ServiceError::InvalidPartOrder)
+        ));
+
+        let repeated = vec![manifest[0].clone(), manifest[0].clone()];
+        assert!(
+            matches!(
+                complete(&services, upload_id, repeated).await,
+                Err(ServiceError::InvalidPartOrder)
+            ),
+            "a repeated part number is not strictly ascending"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_manifest_is_refused_rather_than_committing_nothing() {
+        let (_directory, services) = services().await;
+        let (upload_id, _) = upload_with(&services, &[16]).await;
+        assert!(matches!(
+            complete(&services, upload_id, Vec::new()).await,
+            Err(ServiceError::InvalidPart)
+        ));
+    }
+
+    /// The ETag is what ties the manifest entry to the bytes actually stored.
+    /// A mismatch means the client is describing a part the store does not have.
+    #[tokio::test]
+    async fn a_manifest_entry_whose_etag_does_not_match_the_stored_part_is_refused() {
+        let (_directory, services) = services().await;
+        let (upload_id, mut manifest) = upload_with(&services, &[16]).await;
+        manifest[0].etag = ETag::new("00000000000000000000000000000000").expect("etag");
+        assert!(matches!(
+            complete(&services, upload_id, manifest).await,
+            Err(ServiceError::InvalidPart)
+        ));
+    }
+
+    /// S3 requires every part except the last to reach the minimum size. The
+    /// final part is deliberately exempt, so both halves of the rule are pinned.
+    #[tokio::test]
+    async fn only_the_final_part_may_be_below_the_minimum_size() {
+        let (_first_directory, first) = services().await;
+        let (small_first, manifest) = upload_with(&first, &[16, MINIMUM_PART]).await;
+        assert!(
+            matches!(
+                complete(&first, small_first, manifest).await,
+                Err(ServiceError::EntityTooSmall)
+            ),
+            "a small non-final part must be refused"
+        );
+
+        let (_second_directory, second) = services().await;
+        let (small_last, manifest) = upload_with(&second, &[MINIMUM_PART, 16]).await;
+        assert!(
+            complete(&second, small_last, manifest).await.is_ok(),
+            "a small final part is allowed"
+        );
+    }
+
+    /// An upload identifier is not a capability for any key. Completing against
+    /// a different key must not be able to reach another upload's parts.
+    #[tokio::test]
+    async fn an_upload_cannot_be_completed_against_a_different_key() {
+        let (_directory, services) = services().await;
+        let (upload_id, manifest) = upload_with(&services, &[16]).await;
+
+        let result = services
+            .objects
+            .complete_multipart(ServiceCompleteMultipartRequest {
+                bucket: bucket(),
+                key: ObjectKey::new("somewhere-else.bin").expect("object key"),
+                upload_id,
+                manifest,
+            })
+            .await;
+        assert!(matches!(result, Err(ServiceError::MultipartUploadNotFound)));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_upload_identifier_is_not_found() {
+        let (_directory, services) = services().await;
+        services.buckets.create(bucket()).await.expect("bucket");
+        assert!(matches!(
+            complete(&services, UploadId::new(), Vec::new()).await,
+            Err(ServiceError::MultipartUploadNotFound)
+        ));
+    }
+}

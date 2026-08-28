@@ -1011,3 +1011,70 @@ pub(crate) fn complete_cleanup_tx(
         .map_err(|e| backend("complete cleanup", e))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use record_store_core::VersioningState;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::RedbMetadataRepository;
+    use crate::test_support::*;
+
+    #[tokio::test]
+    async fn applying_the_same_commands_produces_identical_state() {
+        // Determinism is what makes the catalog usable as a consensus state
+        // machine: two members replaying one command sequence must agree.
+        let bucket_record = bucket("deterministic");
+        let first_object = object(bucket_record.id, "alpha", 10);
+        let second_object = object(bucket_record.id, "beta", 20);
+        let marker = NewDeleteMarker::generate();
+        let commands = vec![
+            MetadataCommand::CreateBucket {
+                bucket: Box::new(bucket_record.clone()),
+            },
+            MetadataCommand::SetBucketVersioning {
+                bucket_id: bucket_record.id,
+                state: VersioningState::Enabled,
+            },
+            MetadataCommand::SetBucketCors {
+                bucket_id: bucket_record.id,
+                configuration: Some(cors_configuration()),
+            },
+            MetadataCommand::PutObject {
+                metadata: Box::new(first_object.clone()),
+            },
+            MetadataCommand::PutObject {
+                metadata: Box::new(second_object.clone()),
+            },
+            MetadataCommand::DeleteObject {
+                bucket_id: bucket_record.id,
+                key: first_object.key.clone(),
+                marker,
+            },
+        ];
+
+        let mut snapshots = Vec::new();
+        for _ in 0..2 {
+            let dir = tempdir().expect("temp");
+            let repo = RedbMetadataRepository::open(dir.path().join("catalog.redb"))
+                .await
+                .expect("repo");
+            for command in commands.clone() {
+                repo.command(command).await.expect("apply command");
+            }
+            let database = repo.database();
+            let entries = tokio::task::spawn_blocking(move || {
+                let read = database.begin_read().expect("begin");
+                export_tx(&read).expect("export")
+            })
+            .await
+            .expect("join");
+            snapshots.push(entries);
+        }
+        assert_eq!(
+            snapshots[0], snapshots[1],
+            "replaying identical commands must produce identical durable state"
+        );
+    }
+}

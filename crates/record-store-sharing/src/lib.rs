@@ -45,7 +45,7 @@ mod service;
 mod support;
 
 #[cfg(test)]
-mod tests;
+mod test_support;
 
 pub use error::SharingError;
 pub use policy::SharingPolicy;
@@ -55,4 +55,3 @@ pub use request::{
 };
 pub use service::SharingService;
 pub use support::{MAXIMUM_LABEL_LENGTH, SharedSharingService, pinned_version};
-

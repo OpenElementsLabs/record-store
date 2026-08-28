@@ -36,3 +36,52 @@ pub(crate) fn validated_label(label: &str) -> Result<String, SharingError> {
 pub const fn pinned_version(target: &CapabilityTarget) -> Option<VersionId> {
     target.version.pinned()
 }
+
+#[cfg(test)]
+mod tests {
+
+    use chrono::Utc;
+    use record_store_core::VersionId;
+
+    use super::*;
+    use crate::test_support::*;
+
+    #[tokio::test]
+    async fn labels_are_validated_rather_than_stored_as_typed() {
+        let service = service(SharingPolicy::default()).await;
+        let now = Utc::now();
+        for label in ["", "   ", "with\u{0}control"] {
+            let mut request = share_request();
+            request.label = label.to_owned();
+            assert!(
+                service.create_share(request, now).await.is_err(),
+                "accepted label {label:?}"
+            );
+        }
+        let mut request = share_request();
+        request.label = "  Board review  ".to_owned();
+        let issued = service.create_share(request, now).await.expect("create");
+        assert_eq!(issued.link.label, "Board review");
+    }
+
+    #[tokio::test]
+    async fn a_pinned_share_records_the_exact_version_it_was_created_for() {
+        let service = service(SharingPolicy::default()).await;
+        let now = Utc::now();
+        let version = VersionId::new();
+        let mut request = share_request();
+        request.version = VersionMode::Pinned {
+            version_id: version,
+        };
+        let issued = service.create_share(request, now).await.expect("create");
+        assert_eq!(pinned_version(&issued.link.target), Some(version));
+
+        let resolved = service
+            .store()
+            .resolve_share(issued.token.digest())
+            .await
+            .expect("resolve")
+            .expect("share");
+        assert_eq!(resolved.target.version.pinned(), Some(version));
+    }
+}

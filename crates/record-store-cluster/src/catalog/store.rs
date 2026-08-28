@@ -499,3 +499,48 @@ impl ClusterCatalog {
         .await?
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use chrono::Utc;
+    use record_store_core::ObjectId;
+
+    use crate::catalog::test_support::*;
+    use crate::command::ClusterCommand;
+    use crate::tasks::{ReplicaTask, ReplicaTaskKind, ReplicaTaskPriority};
+
+    #[tokio::test]
+    async fn queued_tasks_are_returned_in_risk_order() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        for (kind, priority) in [
+            (ReplicaTaskKind::Rebalance, ReplicaTaskPriority::Low),
+            (ReplicaTaskKind::Repair, ReplicaTaskPriority::Unavailable),
+            (ReplicaTaskKind::Drain, ReplicaTaskPriority::Normal),
+        ] {
+            catalog
+                .apply(ClusterCommand::EnqueueTask {
+                    task: Box::new(ReplicaTask::queued(
+                        ObjectId::new(),
+                        kind,
+                        priority,
+                        10,
+                        now,
+                    )),
+                })
+                .await
+                .expect("enqueue");
+        }
+        let page = catalog.queued_tasks(10).await.expect("queued tasks");
+        let priorities: Vec<_> = page.tasks.iter().map(|task| task.priority).collect();
+        assert_eq!(
+            priorities,
+            vec![
+                ReplicaTaskPriority::Unavailable,
+                ReplicaTaskPriority::Normal,
+                ReplicaTaskPriority::Low
+            ]
+        );
+    }
+}

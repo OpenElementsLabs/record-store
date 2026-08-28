@@ -52,7 +52,7 @@ mod sharing;
 mod validate;
 
 #[cfg(test)]
-mod tests;
+mod test_support;
 
 pub use cluster::{ClusterConfig, ClusterTlsConfig};
 pub use deployment::DeploymentMode;
@@ -172,5 +172,19 @@ impl Config {
             .as_deref()
             .zip(self.auth.root_secret_key.as_ref())
             .ok_or_else(|| ConfigError::Validation("root credentials are required".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::credentials;
+
+    #[test]
+    fn secrets_are_redacted_from_debug_output() {
+        let config = Config::load_with_environment(None, credentials()).expect("configuration");
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("test-secret-at-least-sixteen"));
+        assert!(debug.contains("<redacted>"));
     }
 }

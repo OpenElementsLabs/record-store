@@ -1089,3 +1089,329 @@ async fn send_admin(builder: reqwest::RequestBuilder) -> Result<reqwest::Respons
         bail!("management API returned HTTP {status}: {body}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::*;
+
+    fn parse(arguments: &[&str]) -> Cli {
+        Cli::try_parse_from(arguments).expect("arguments must parse")
+    }
+
+    fn endpoint_of(arguments: &[&str]) -> String {
+        match parse(arguments).command {
+            Command::Status(endpoint) => endpoint.endpoint,
+            other => panic!("expected a status command, got {:?}", DebugCommand(&other)),
+        }
+    }
+
+    /// Renders just enough of a command to make a failing assertion legible;
+    /// the command tree itself deliberately does not derive `Debug`.
+    struct DebugCommand<'a>(&'a Command);
+
+    impl std::fmt::Debug for DebugCommand<'_> {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let name = match self.0 {
+                Command::Version => "version",
+                Command::Server(_) => "server",
+                Command::Status(_) => "status",
+                Command::Bucket { .. } => "bucket",
+                Command::ServiceAccount { .. } => "service-account",
+                Command::Credential { .. } => "credential",
+                Command::Policy { .. } => "policy",
+                Command::Webhook { .. } => "webhook",
+                Command::Audit(_) => "audit",
+                Command::Verify { .. } => "verify",
+                Command::Storage { .. } => "storage",
+                Command::Cluster { .. } => "cluster",
+                Command::Node { .. } => "node",
+                Command::Repair { .. } => "repair",
+                Command::Rebalance { .. } => "rebalance",
+            };
+            formatter.write_str(name)
+        }
+    }
+
+    /// Clap can only detect a contradictory definition at runtime. Without this
+    /// assertion, a duplicated flag or a bad default reaches an operator as a
+    /// panic on first use instead of failing the build.
+    #[test]
+    fn the_command_tree_is_internally_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    /// The binary takes no positional subcommand of its own beyond the listed
+    /// ones. Silently accepting an unknown word would run the wrong thing.
+    #[test]
+    fn an_unknown_subcommand_is_refused() {
+        assert!(Cli::try_parse_from(["record-store", "serve"]).is_err());
+        assert!(Cli::try_parse_from(["record-store", "server", "start"]).is_err());
+    }
+
+    #[test]
+    fn the_server_command_runs_with_no_arguments_at_all() {
+        let Command::Server(arguments) = parse(["record-store", "server"].as_slice()).command
+        else {
+            panic!("expected the server command");
+        };
+        assert!(arguments.config.is_none());
+        assert!(arguments.command.is_none());
+    }
+
+    #[test]
+    fn server_subcommands_carry_their_paths() {
+        let Command::Server(arguments) = parse(&[
+            "record-store",
+            "server",
+            "--config",
+            "/etc/record-store.toml",
+            "check-config",
+        ])
+        .command
+        else {
+            panic!("expected the server command");
+        };
+        assert_eq!(
+            arguments.config.as_deref(),
+            Some(std::path::Path::new("/etc/record-store.toml"))
+        );
+        assert!(matches!(
+            arguments.command,
+            Some(ServerCommand::CheckConfig)
+        ));
+
+        let Command::Server(backup) = parse(&[
+            "record-store",
+            "server",
+            "backup-metadata",
+            "/backups/today",
+        ])
+        .command
+        else {
+            panic!("expected the server command");
+        };
+        assert!(matches!(
+            backup.command,
+            Some(ServerCommand::BackupMetadata { output }) if output == *std::path::Path::new("/backups/today")
+        ));
+    }
+
+    /// The default endpoint is part of the operator contract: running a command
+    /// with no `--endpoint` must reach a local server's management port.
+    #[test]
+    fn commands_default_to_the_local_management_endpoint() {
+        assert_eq!(
+            endpoint_of(&["record-store", "status"]),
+            "http://127.0.0.1:7601"
+        );
+        assert_eq!(
+            endpoint_of(&[
+                "record-store",
+                "status",
+                "--endpoint",
+                "https://store.example"
+            ]),
+            "https://store.example"
+        );
+    }
+
+    /// `--json` is global, so it has to be accepted on either side of the
+    /// subcommand. Automation writes it both ways.
+    #[test]
+    fn the_json_flag_is_accepted_before_or_after_the_subcommand() {
+        assert!(parse(&["record-store", "--json", "status"]).json);
+        assert!(parse(&["record-store", "status", "--json"]).json);
+        assert!(!parse(&["record-store", "status"]).json);
+    }
+
+    #[test]
+    fn bucket_commands_bind_their_name_and_endpoint() {
+        let Command::Bucket { command } = parse(&[
+            "record-store",
+            "bucket",
+            "create",
+            "photos",
+            "--endpoint",
+            "http://node-a:7601",
+        ])
+        .command
+        else {
+            panic!("expected a bucket command");
+        };
+        let BucketCommand::Create { name, endpoint } = command else {
+            panic!("expected bucket create");
+        };
+        assert_eq!(name, "photos");
+        assert_eq!(endpoint.endpoint, "http://node-a:7601");
+    }
+
+    #[test]
+    fn bucket_versioning_is_a_three_state_switch() {
+        for (argument, expected) in [("get", "get"), ("enable", "enable"), ("suspend", "suspend")] {
+            let Command::Bucket { command } =
+                parse(&["record-store", "bucket", "versioning", argument, "photos"]).command
+            else {
+                panic!("expected a bucket command");
+            };
+            let BucketCommand::Versioning { command } = command else {
+                panic!("expected bucket versioning");
+            };
+            let actual = match command {
+                BucketVersioningCommand::Get { .. } => "get",
+                BucketVersioningCommand::Enable { .. } => "enable",
+                BucketVersioningCommand::Suspend { .. } => "suspend",
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+
+    /// Decommissioning can destroy durability, so the override must be an
+    /// explicit flag that defaults to off.
+    #[test]
+    fn decommissioning_a_node_requires_an_explicit_force_flag() {
+        let Command::Node { command } =
+            parse(&["record-store", "node", "decommission", "node-1"]).command
+        else {
+            panic!("expected a node command");
+        };
+        assert!(
+            matches!(command, NodeCommand::Decommission { force, .. } if !force),
+            "force must default to off"
+        );
+
+        let Command::Node { command } =
+            parse(&["record-store", "node", "decommission", "node-1", "--force"]).command
+        else {
+            panic!("expected a node command");
+        };
+        assert!(matches!(command, NodeCommand::Decommission { force, .. } if force));
+    }
+
+    /// Joining a cluster is the one command where both values are mandatory:
+    /// without them a node would silently start standalone.
+    #[test]
+    fn joining_a_cluster_requires_both_a_control_address_and_a_token() {
+        assert!(Cli::try_parse_from(["record-store", "node", "join"]).is_err());
+        assert!(
+            Cli::try_parse_from(["record-store", "node", "join", "--control", "node-a:7603"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(["record-store", "node", "join", "--token", "abc"]).is_err());
+
+        let Command::Node { command } = parse(&[
+            "record-store",
+            "node",
+            "join",
+            "--control",
+            "node-a:7603",
+            "--token",
+            "join-token",
+        ])
+        .command
+        else {
+            panic!("expected a node command");
+        };
+        assert!(matches!(
+            command,
+            NodeCommand::Join { control, token, .. } if control == "node-a:7603" && token == "join-token"
+        ));
+    }
+
+    #[test]
+    fn audit_queries_default_to_a_bounded_page() {
+        let Command::Audit(arguments) = parse(&["record-store", "audit"]).command else {
+            panic!("expected an audit command");
+        };
+        assert_eq!(arguments.limit, 100);
+        assert!(arguments.principal.is_none());
+        assert!(arguments.operation.is_none());
+
+        let Command::Audit(filtered) = parse(&[
+            "record-store",
+            "audit",
+            "--limit",
+            "5",
+            "--principal",
+            "root",
+            "--operation",
+            "DeleteBucket",
+        ])
+        .command
+        else {
+            panic!("expected an audit command");
+        };
+        assert_eq!(filtered.limit, 5);
+        assert_eq!(filtered.principal.as_deref(), Some("root"));
+        assert_eq!(filtered.operation.as_deref(), Some("DeleteBucket"));
+    }
+
+    #[test]
+    fn a_non_numeric_limit_is_refused_rather_than_silently_defaulted() {
+        assert!(Cli::try_parse_from(["record-store", "audit", "--limit", "many"]).is_err());
+    }
+
+    /// A trailing slash on an endpoint is the most common operator typo. It has
+    /// to collapse, or every request would be sent to a doubled path.
+    #[test]
+    fn endpoint_paths_are_joined_without_doubling_the_separator() {
+        let trailing = EndpointArgs {
+            endpoint: "http://127.0.0.1:7601/".to_owned(),
+        };
+        let bare = EndpointArgs {
+            endpoint: "http://127.0.0.1:7601".to_owned(),
+        };
+        assert_eq!(
+            api_url(&trailing, "/api/v1/buckets"),
+            "http://127.0.0.1:7601/api/v1/buckets"
+        );
+        assert_eq!(
+            api_url(&bare, "/api/v1/buckets"),
+            "http://127.0.0.1:7601/api/v1/buckets"
+        );
+        assert_eq!(
+            api_url(&trailing, "/api/v1/buckets"),
+            api_url(&bare, "/api/v1/buckets")
+        );
+    }
+
+    #[test]
+    fn repeated_trailing_slashes_all_collapse() {
+        let endpoint = EndpointArgs {
+            endpoint: "http://127.0.0.1:7601///".to_owned(),
+        };
+        assert_eq!(api_url(&endpoint, "/ready"), "http://127.0.0.1:7601/ready");
+    }
+
+    /// Operator output should read as plain text, not as a quoted JSON string,
+    /// while non-string values keep a faithful JSON rendering.
+    #[test]
+    fn scalars_render_for_humans_without_gaining_quotes() {
+        assert_eq!(
+            display_json_scalar(&serde_json::json!("standalone")),
+            "standalone"
+        );
+        assert_eq!(display_json_scalar(&serde_json::json!(7)), "7");
+        assert_eq!(display_json_scalar(&serde_json::json!(true)), "true");
+        assert_eq!(display_json_scalar(&serde_json::Value::Null), "null");
+        assert_eq!(
+            display_json_scalar(&serde_json::json!({"a": 1})),
+            r#"{"a":1}"#
+        );
+    }
+
+    #[test]
+    fn a_missing_readiness_field_is_a_decode_failure_not_a_default() {
+        assert!(serde_json::from_value::<StatusResponse>(serde_json::json!({})).is_err());
+        let parsed: StatusResponse =
+            serde_json::from_value(serde_json::json!({"status": "ready"})).expect("decode");
+        assert_eq!(parsed.status, "ready");
+    }
+
+    #[test]
+    fn a_name_request_serialises_to_the_field_the_api_expects() {
+        let body = serde_json::to_value(NameRequest { name: "photos" }).expect("serialise");
+        assert_eq!(body, serde_json::json!({"name": "photos"}));
+    }
+}

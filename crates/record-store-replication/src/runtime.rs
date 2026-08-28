@@ -603,3 +603,115 @@ pub async fn reconcile(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only a running task is healthy. A task that stopped for shutdown is not
+    /// a failure, but it is also not doing its job, so it must not be reported
+    /// as healthy either.
+    #[test]
+    fn only_a_running_task_counts_as_healthy() {
+        assert!(TaskStatus::Running { last_pass_at: None }.healthy());
+        assert!(
+            TaskStatus::Running {
+                last_pass_at: Some(Utc::now())
+            }
+            .healthy()
+        );
+        assert!(!TaskStatus::Stopped.healthy());
+        assert!(
+            !TaskStatus::Failed {
+                reason: "panicked".into(),
+                at: Utc::now(),
+            }
+            .healthy()
+        );
+    }
+
+    #[test]
+    fn a_task_that_has_not_completed_a_pass_is_still_running() {
+        let health = TaskHealth::default();
+        health.started("repair");
+        let snapshot = health.snapshot();
+        assert!(matches!(
+            snapshot.get("repair"),
+            Some(TaskStatus::Running { last_pass_at: None })
+        ));
+        assert!(health.failures().is_empty());
+    }
+
+    #[test]
+    fn a_completed_pass_is_recorded_against_the_task() {
+        let health = TaskHealth::default();
+        health.started("scrub");
+        health.pass("scrub");
+        assert!(matches!(
+            health.snapshot().get("scrub"),
+            Some(TaskStatus::Running {
+                last_pass_at: Some(_)
+            })
+        ));
+    }
+
+    /// An unexpected stop has to stay visible to an operator: the node is still
+    /// serving reads while part of its machinery is dead, and nothing else
+    /// surfaces that.
+    #[test]
+    fn an_unexpected_stop_is_reported_as_a_failure_with_its_reason() {
+        let health = TaskHealth::default();
+        health.started("rebalance");
+        health.failed("rebalance", "channel closed".into());
+
+        assert_eq!(health.failures(), vec!["rebalance".to_owned()]);
+        let snapshot = health.snapshot();
+        let Some(TaskStatus::Failed { reason, .. }) = snapshot.get("rebalance") else {
+            panic!("the failure was not recorded");
+        };
+        assert_eq!(reason, "channel closed");
+    }
+
+    /// A task that restarts after a failure must clear its failed status, or an
+    /// operator would keep seeing an alert for something already recovered.
+    #[test]
+    fn restarting_a_failed_task_clears_its_failure() {
+        let health = TaskHealth::default();
+        health.failed("repair", "panicked".into());
+        assert_eq!(health.failures(), vec!["repair".to_owned()]);
+
+        health.started("repair");
+        assert!(health.failures().is_empty());
+        assert!(
+            health
+                .snapshot()
+                .get("repair")
+                .is_some_and(TaskStatus::healthy)
+        );
+    }
+
+    /// A deliberate shutdown is not a failure and must not raise an alert.
+    #[test]
+    fn a_task_stopped_for_shutdown_is_not_reported_as_a_failure() {
+        let health = TaskHealth::default();
+        health.started("garbage-collection");
+        health.stopped("garbage-collection");
+        assert!(health.failures().is_empty());
+        assert!(matches!(
+            health.snapshot().get("garbage-collection"),
+            Some(TaskStatus::Stopped)
+        ));
+    }
+
+    #[test]
+    fn failures_are_listed_per_task_and_leave_healthy_tasks_alone() {
+        let health = TaskHealth::default();
+        health.started("repair");
+        health.failed("rebalance", "stalled".into());
+        health.failed("scrub", "io error".into());
+
+        let mut failures = health.failures();
+        failures.sort();
+        assert_eq!(failures, vec!["rebalance".to_owned(), "scrub".to_owned()]);
+    }
+}

@@ -224,3 +224,57 @@ impl Default for ObservabilityConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use crate::Config;
+    use std::path::PathBuf;
+
+    #[test]
+    fn defaults_use_record_store_ports_and_require_credentials() {
+        let config = Config::default();
+        assert_eq!(config.server.s3_bind.port(), 7_600);
+        assert_eq!(config.server.api_bind.port(), 7_601);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn temporary_directory_defaults_under_data_root() {
+        let mut config = Config::default();
+        config.storage.data_directory = PathBuf::from("state");
+        assert_eq!(
+            config.storage.effective_temporary_directory(),
+            PathBuf::from("state/tmp")
+        );
+    }
+
+    #[test]
+    fn default_listeners_use_the_documented_record_store_ports() {
+        let server = ServerConfig::default();
+        assert_eq!(server.s3_bind.port(), 7_600);
+        assert_eq!(server.api_bind.port(), 7_601);
+        assert_eq!(server.rpc_bind.port(), 7_603);
+        assert_eq!(ServerConfig::RESERVED_CONSOLE_PORT, 7_602);
+        for port in [
+            server.s3_bind.port(),
+            server.api_bind.port(),
+            server.rpc_bind.port(),
+        ] {
+            assert_ne!(
+                port, 9_000,
+                "Record Store must not default to another product's port"
+            );
+            assert_ne!(
+                port, 9_001,
+                "Record Store must not default to another product's port"
+            );
+        }
+        assert_eq!(server.mode, DeploymentMode::Standalone);
+        assert_eq!(
+            server.effective_rpc_advertise(),
+            server.rpc_bind.to_string()
+        );
+    }
+}

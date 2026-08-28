@@ -507,3 +507,475 @@ pub(crate) async fn copy_object(
         &key,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderValue, Method, StatusCode, header};
+    use tower::ServiceExt;
+
+    use crate::test_support::*;
+    use chrono::Utc;
+
+    #[tokio::test]
+    async fn signed_s3_lifecycle_streams_metadata_ranges_listing_and_idempotent_delete() {
+        let (_directory, application, _credentials) = test_router().await;
+        let now = Utc::now();
+
+        let response = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                "/",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("list buckets response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(body_text(response).await.contains("ListAllMyBucketsResult"));
+
+        let response = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/demo-bucket",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("create bucket response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let duplicate = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/demo-bucket",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("duplicate bucket response");
+        assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            xml_value(&body_text(duplicate).await, "Code"),
+            Some("BucketAlreadyExists")
+        );
+
+        let oversized_metadata = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/demo-bucket/too-much-metadata",
+                b"payload",
+                &[
+                    ("x-amz-meta-1", "value"),
+                    ("x-amz-meta-2", "value"),
+                    ("x-amz-meta-3", "value"),
+                    ("x-amz-meta-4", "value"),
+                    ("x-amz-meta-5", "value"),
+                    ("x-amz-meta-6", "value"),
+                    ("x-amz-meta-7", "value"),
+                    ("x-amz-meta-8", "value"),
+                    ("x-amz-meta-9", "value"),
+                ],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("oversized metadata response");
+        assert_eq!(oversized_metadata.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            xml_value(&body_text(oversized_metadata).await, "Code"),
+            Some("InvalidRequest")
+        );
+
+        let object_uri = "/demo-bucket/users/123/profile.txt";
+        let payload = b"hello world";
+        let response = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                object_uri,
+                payload,
+                &[
+                    ("content-type", "text/plain"),
+                    ("x-amz-meta-origin", "compatibility-test"),
+                ],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("put object response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::ETAG),
+            Some(&HeaderValue::from_static(
+                "\"5eb63bbbe01eeed093cb22bb8f5acdc3\""
+            ))
+        );
+
+        let copy = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/demo-bucket/copied.txt",
+                b"",
+                &[("x-amz-copy-source", "/demo-bucket/users/123/profile.txt")],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("copy response");
+        assert_eq!(copy.status(), StatusCode::OK);
+        assert_eq!(
+            xml_value(&body_text(copy).await, "ETag"),
+            Some("\"5eb63bbbe01eeed093cb22bb8f5acdc3\"")
+        );
+
+        let head = application
+            .clone()
+            .oneshot(signed_request(
+                Method::HEAD,
+                object_uri,
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("head object response");
+        assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(head.headers().get(header::CONTENT_LENGTH), Some(&11.into()));
+        assert_eq!(
+            head.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("text/plain"))
+        );
+        assert_eq!(
+            head.headers().get("x-amz-meta-origin"),
+            Some(&HeaderValue::from_static("compatibility-test"))
+        );
+
+        let range = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                object_uri,
+                b"",
+                &[("range", "bytes=6-")],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("range response");
+        assert_eq!(range.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            range.headers().get(header::CONTENT_RANGE),
+            Some(&HeaderValue::from_static("bytes 6-10/11"))
+        );
+        assert_eq!(body_text(range).await, "world");
+
+        let listing = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                "/demo-bucket?list-type=2&prefix=users%2F&delimiter=%2F&max-keys=1",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("list objects response");
+        assert_eq!(listing.status(), StatusCode::OK);
+        let listing = body_text(listing).await;
+        assert!(listing.contains("<Prefix>users/123/</Prefix>"));
+        assert!(listing.contains("<KeyCount>1</KeyCount>"));
+
+        let non_empty = application
+            .clone()
+            .oneshot(signed_request(
+                Method::DELETE,
+                "/demo-bucket",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("non-empty bucket response");
+        assert_eq!(non_empty.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            xml_value(&body_text(non_empty).await, "Code"),
+            Some("BucketNotEmpty")
+        );
+
+        let missing_multipart_delete = application
+            .clone()
+            .oneshot(signed_request(
+                Method::DELETE,
+                &format!("{object_uri}?uploadId=unsupported"),
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("missing multipart delete response");
+        assert_eq!(missing_multipart_delete.status(), StatusCode::NOT_FOUND);
+
+        for _ in 0..2 {
+            let deleted = application
+                .clone()
+                .oneshot(signed_request(
+                    Method::DELETE,
+                    object_uri,
+                    b"",
+                    &[],
+                    TEST_ACCESS_KEY,
+                    TEST_SECRET_KEY,
+                    now,
+                ))
+                .await
+                .expect("delete object response");
+            assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+        }
+
+        let missing = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                object_uri,
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("missing object response");
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            xml_value(&body_text(missing).await, "Code"),
+            Some("NoSuchKey")
+        );
+
+        let deleted_copy = application
+            .clone()
+            .oneshot(signed_request(
+                Method::DELETE,
+                "/demo-bucket/copied.txt",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("delete copied object response");
+        assert_eq!(deleted_copy.status(), StatusCode::NO_CONTENT);
+
+        let deleted_bucket = application
+            .oneshot(signed_request(
+                Method::DELETE,
+                "/demo-bucket",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("delete bucket response");
+        assert_eq!(deleted_bucket.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn multipart_and_versioning_work_through_signed_s3_requests() {
+        let (_directory, application, _credentials) = test_router().await;
+        let now = Utc::now();
+        let create = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/advanced-bucket",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("create bucket");
+        assert_eq!(create.status(), StatusCode::OK);
+
+        let configuration =
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+        let enabled = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/advanced-bucket?versioning",
+                configuration,
+                &[("content-type", "application/xml")],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("enable versioning");
+        assert_eq!(enabled.status(), StatusCode::OK);
+
+        let first = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/advanced-bucket/versioned.txt",
+                b"first",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("first version");
+        let first_version = first
+            .headers()
+            .get("x-amz-version-id")
+            .expect("version header")
+            .to_str()
+            .expect("version text")
+            .to_owned();
+        assert_eq!(first.status(), StatusCode::OK);
+        let second = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/advanced-bucket/versioned.txt",
+                b"second",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("second version");
+        assert_eq!(second.status(), StatusCode::OK);
+        let historical = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                &format!("/advanced-bucket/versioned.txt?versionId={first_version}"),
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("historical get");
+        assert_eq!(historical.status(), StatusCode::OK);
+        assert_eq!(body_text(historical).await, "first");
+        let versions = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                "/advanced-bucket?versions",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("list versions");
+        assert_eq!(versions.status(), StatusCode::OK);
+        assert_eq!(body_text(versions).await.matches("<Version>").count(), 2);
+
+        let initiated = application
+            .clone()
+            .oneshot(signed_request(
+                Method::POST,
+                "/advanced-bucket/multipart.bin?uploads",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("initiate multipart");
+        assert_eq!(initiated.status(), StatusCode::OK);
+        let upload_id = xml_value(&body_text(initiated).await, "UploadId")
+            .expect("upload id")
+            .to_owned();
+        let part = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                &format!("/advanced-bucket/multipart.bin?partNumber=1&uploadId={upload_id}"),
+                b"streamed-part",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("upload part");
+        assert_eq!(part.status(), StatusCode::OK);
+        let etag = part
+            .headers()
+            .get(header::ETAG)
+            .expect("part ETag")
+            .to_str()
+            .expect("ETag text")
+            .to_owned();
+        let completion = format!(
+            "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag}</ETag></Part></CompleteMultipartUpload>"
+        );
+        let completed = application
+            .clone()
+            .oneshot(signed_request(
+                Method::POST,
+                &format!("/advanced-bucket/multipart.bin?uploadId={upload_id}"),
+                completion.as_bytes(),
+                &[("content-type", "application/xml")],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("complete multipart");
+        assert_eq!(completed.status(), StatusCode::OK);
+        let downloaded = application
+            .oneshot(signed_request(
+                Method::GET,
+                "/advanced-bucket/multipart.bin",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("download multipart");
+        assert_eq!(body_text(downloaded).await, "streamed-part");
+    }
+}

@@ -386,3 +386,104 @@ pub(crate) fn hmac_sha256(key: &[u8], value: &[u8]) -> Result<Vec<u8>, S3ErrorKi
     mac.update(value);
     Ok(mac.finalize().into_bytes().to_vec())
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use proptest::prelude::*;
+    use record_store_core::Checksum;
+
+    use super::*;
+    use crate::EMPTY_PAYLOAD_SHA256;
+    use crate::error::S3ErrorKind;
+    use crate::handlers::listing::parse_list_query;
+    use crate::response::parse_range;
+    use sha2::Digest;
+
+    #[test]
+    fn canonical_request_matches_aws_documentation_example() {
+        let uri: Uri = "https://examplebucket.s3.amazonaws.com/test.txt"
+            .parse()
+            .expect("URI");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "host",
+            HeaderValue::from_static("examplebucket.s3.amazonaws.com"),
+        );
+        headers.insert("range", HeaderValue::from_static("bytes=0-9"));
+        headers.insert(
+            "x-amz-content-sha256",
+            HeaderValue::from_static(EMPTY_PAYLOAD_SHA256),
+        );
+        headers.insert("x-amz-date", HeaderValue::from_static("20130524T000000Z"));
+        let signed = vec![
+            "host".into(),
+            "range".into(),
+            "x-amz-content-sha256".into(),
+            "x-amz-date".into(),
+        ];
+        let canonical = canonical_request(
+            &Method::GET,
+            &uri,
+            &headers,
+            &signed,
+            EMPTY_PAYLOAD_SHA256.into(),
+        )
+        .expect("canonical request");
+        assert_eq!(
+            hex::encode(Sha256::digest(canonical.as_bytes())),
+            "7344ae5b7ee6c3e7e6b0fe0640412a37625d1fbfff95c48bbb2dc43964946972"
+        );
+    }
+
+    #[test]
+    fn malformed_authorization_and_ranges_are_rejected() {
+        assert!(ParsedAuthorization::parse("Bearer secret").is_err());
+        assert!(ParsedAuthorization::parse("AWS4-HMAC-SHA256 Credential=x").is_err());
+        assert!(parse_range("bytes=5-2", 10).is_err());
+        assert!(parse_range("bytes=0-1,4-5", 10).is_err());
+        assert_eq!(parse_range("bytes=-4", 10).expect("suffix").offset(), 6);
+    }
+
+    #[test]
+    fn canonical_query_sorts_and_encodes_values() {
+        assert_eq!(
+            canonical_query("z=last&a=hello%20world&a=first"),
+            "a=first&a=hello%20world&z=last"
+        );
+    }
+
+    #[test]
+    fn client_sha256_checksum_is_strictly_decoded_and_cross_checked() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-amz-checksum-sha256",
+            HeaderValue::from_str(&STANDARD.encode([7_u8; 32])).expect("header"),
+        );
+        assert_eq!(
+            request_checksum(&headers, &PayloadHash::Unsigned).expect("checksum"),
+            Some(Checksum::sha256([7_u8; 32]))
+        );
+        assert!(matches!(
+            request_checksum(&headers, &PayloadHash::Sha256(Checksum::sha256([8_u8; 32]))),
+            Err(S3ErrorKind::BadDigest)
+        ));
+    }
+
+    proptest! {
+        #[test]
+        fn risky_protocol_parsers_never_panic(
+            authorization in any::<String>(),
+            range in any::<String>(),
+            size in any::<u64>(),
+            query in any::<String>(),
+        ) {
+            let _ = ParsedAuthorization::parse(&authorization);
+            let _ = parse_range(&range, size);
+            let _ = parse_list_query(&query);
+            let canonical = canonical_query(&query);
+            prop_assert_eq!(canonical_query(&canonical), canonical);
+        }
+    }
+}

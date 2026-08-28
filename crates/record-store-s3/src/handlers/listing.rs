@@ -419,3 +419,85 @@ pub(crate) fn decode_query_component(value: &str) -> Result<String, S3ErrorKind>
     }
     String::from_utf8(percent_decode_str(value).collect()).map_err(|_| S3ErrorKind::InvalidRequest)
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{Method, StatusCode};
+    use tower::ServiceExt;
+
+    use crate::test_support::*;
+    use chrono::Utc;
+
+    #[tokio::test]
+    async fn list_objects_v2_continuation_is_bounded_and_lossless() {
+        let (_directory, application, _credentials) = test_router().await;
+        let now = Utc::now();
+        let created = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/page-bucket",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("create bucket");
+        assert_eq!(created.status(), StatusCode::OK);
+        for key in ["a", "b", "c"] {
+            let response = application
+                .clone()
+                .oneshot(signed_request(
+                    Method::PUT,
+                    &format!("/page-bucket/{key}"),
+                    key.as_bytes(),
+                    &[],
+                    TEST_ACCESS_KEY,
+                    TEST_SECRET_KEY,
+                    now,
+                ))
+                .await
+                .expect("put listing object");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let first = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                "/page-bucket?list-type=2&max-keys=2",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("first listing page");
+        assert_eq!(first.status(), StatusCode::OK);
+        let first = body_text(first).await;
+        assert!(first.contains("<Key>a</Key>"));
+        assert!(first.contains("<Key>b</Key>"));
+        assert!(first.contains("<IsTruncated>true</IsTruncated>"));
+        let token = xml_value(&first, "NextContinuationToken").expect("continuation token");
+
+        let second = application
+            .oneshot(signed_request(
+                Method::GET,
+                &format!("/page-bucket?list-type=2&max-keys=2&continuation-token={token}"),
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("second listing page");
+        assert_eq!(second.status(), StatusCode::OK);
+        let second = body_text(second).await;
+        assert!(second.contains("<Key>c</Key>"));
+        assert!(second.contains("<IsTruncated>false</IsTruncated>"));
+    }
+}

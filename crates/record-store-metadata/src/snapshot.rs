@@ -206,3 +206,62 @@ pub fn import_tx(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::test_support::*;
+    use crate::{MetadataRepository, RedbMetadataRepository};
+
+    #[tokio::test]
+    async fn snapshot_export_and_import_restore_the_catalog() {
+        let dir = tempdir().expect("temp");
+        let repo = RedbMetadataRepository::open(dir.path().join("catalog.redb"))
+            .await
+            .expect("repo");
+        let bucket_record = bucket("snapshot-bucket");
+        repo.create_bucket(&bucket_record).await.expect("bucket");
+        let stored = object(bucket_record.id, "nested/key", 42);
+        repo.put_object(&stored).await.expect("put");
+        let database = repo.database();
+        let entries = tokio::task::spawn_blocking(move || {
+            let read = database.begin_read().expect("begin");
+            export_tx(&read).expect("export")
+        })
+        .await
+        .expect("join");
+
+        let other_dir = tempdir().expect("temp");
+        let other = RedbMetadataRepository::open(other_dir.path().join("catalog.redb"))
+            .await
+            .expect("repo");
+        let other_database = other.database();
+        tokio::task::spawn_blocking(move || {
+            let write = other_database.begin_write().expect("begin");
+            import_tx(&write, &entries).expect("import");
+            write.commit().expect("commit");
+        })
+        .await
+        .expect("join");
+
+        let restored = other
+            .get_object(bucket_record.id, &stored.key)
+            .await
+            .expect("read")
+            .expect("object must exist after import");
+        assert_eq!(restored, stored);
+        assert_eq!(
+            other
+                .get_bucket_by_name(&bucket_record.name)
+                .await
+                .expect("read")
+                .map(|bucket| bucket.id),
+            Some(bucket_record.id)
+        );
+        let usage = other.storage_usage().await.expect("usage");
+        assert_eq!(usage.object_count, 1);
+        assert_eq!(usage.bytes_used, 42);
+    }
+}

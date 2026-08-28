@@ -287,3 +287,112 @@ impl Config {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::Config;
+    use crate::test_support::*;
+
+    #[test]
+    fn file_and_environment_overlay_defaults_in_order() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("record-store.toml");
+        fs::write(
+            &path,
+            r#"
+                [server]
+                s3_bind = "127.0.0.1:7700"
+
+                [storage]
+                data_directory = "/srv/record-store"
+            "#,
+        )
+        .expect("write configuration");
+        let mut environment = credentials().to_vec();
+        environment.push(("RECORD_STORE_API_BIND", "127.0.0.1:7701"));
+        environment.push(("RECORD_STORE_LOG", "record_store=debug"));
+        let config =
+            Config::load_with_environment(Some(&path), environment).expect("valid configuration");
+        assert_eq!(
+            config.server.s3_bind,
+            "127.0.0.1:7700".parse().expect("bind")
+        );
+        assert_eq!(
+            config.server.api_bind,
+            "127.0.0.1:7701".parse().expect("bind")
+        );
+        assert_eq!(
+            config.storage.data_directory,
+            PathBuf::from("/srv/record-store")
+        );
+        assert_eq!(config.observability.log_filter, "record_store=debug");
+    }
+
+    #[test]
+    fn unknown_file_fields_and_invalid_environment_are_rejected() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("record-store.toml");
+        fs::write(&path, "[server]\nsecret_backdoor = true\n").expect("write configuration");
+        assert!(matches!(
+            Config::load_with_environment(Some(&path), credentials()),
+            Err(ConfigError::ParseFile { .. })
+        ));
+        let mut environment = credentials().to_vec();
+        environment.push(("RECORD_STORE_S3_BIND", "not-an-address"));
+        let error =
+            Config::load_with_environment(None, environment).expect_err("invalid environment");
+        assert!(error.to_string().contains("RECORD_STORE_S3_BIND"));
+        assert!(!error.to_string().contains("test-secret"));
+    }
+
+    #[test]
+    fn cluster_environment_overrides_are_applied() {
+        let config = Config::load_with_environment(
+            None,
+            [
+                ("RECORD_STORE_ROOT_ACCESS_KEY", "root-access"),
+                (
+                    "RECORD_STORE_ROOT_SECRET_KEY",
+                    "root-secret-at-least-sixteen",
+                ),
+                ("RECORD_STORE_MODE", "cluster"),
+                ("RECORD_STORE_RPC_BIND", "0.0.0.0:17603"),
+                ("RECORD_STORE_RPC_ADVERTISE", "10.0.1.12:17603"),
+                (
+                    "RECORD_STORE_CLUSTER_SEEDS",
+                    "storage-1:7603, storage-2:7603",
+                ),
+                ("RECORD_STORE_CLUSTER_JOIN_TOKEN", "recordstorejoin.token"),
+                ("RECORD_STORE_CLUSTER_STORAGE_CLASS", "nvme"),
+                ("RECORD_STORE_CLUSTER_FAILURE_DOMAIN", "rack=r1,zone=dc1"),
+                ("RECORD_STORE_CLUSTER_REPLICATION_FACTOR", "2"),
+                ("RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT", "70"),
+                ("RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT", "80"),
+                (
+                    "RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT",
+                    "90",
+                ),
+            ],
+        )
+        .expect("configuration must load");
+        assert_eq!(config.server.mode, DeploymentMode::Cluster);
+        assert_eq!(config.server.rpc_bind.port(), 17_603);
+        assert_eq!(
+            config.server.effective_rpc_advertise(),
+            "10.0.1.12:17603",
+            "an advertise address must not be assumed equal to the bind address"
+        );
+        assert_eq!(config.cluster.seeds.len(), 2);
+        assert_eq!(config.cluster.storage_class, "nvme");
+        assert_eq!(config.cluster.replication_factor, 2);
+        assert_eq!(config.cluster.capacity_low_watermark_percent, 70);
+        assert_eq!(config.cluster.capacity_high_watermark_percent, 80);
+        assert_eq!(config.cluster.capacity_critical_watermark_percent, 90);
+        assert!(format!("{:?}", config.cluster.join_token).contains("redacted"));
+    }
+}

@@ -127,3 +127,28 @@ pub struct AuthorizationContext<'a> {
     /// Requested permission.
     pub permission: &'a Permission,
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use record_store_core::ServiceAccountId;
+    use uuid::Uuid;
+
+    use super::*;
+
+    #[test]
+    fn credential_debug_output_contains_no_secret_field() {
+        let credential = Credential {
+            id: Uuid::new_v4(),
+            service_account_id: ServiceAccountId::new(),
+            key_id: "record_store_test_public".into(),
+            disabled: false,
+            created_at: Utc::now(),
+            expires_at: None,
+        };
+        let debug = format!("{credential:?}");
+        assert!(debug.contains("record_store_test_public"));
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("hash"));
+    }
+}

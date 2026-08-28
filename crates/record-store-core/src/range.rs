@@ -121,3 +121,25 @@ impl Display for PartNumber {
         Display::fmt(&self.get(), formatter)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_ranges_are_checked_and_clamped() {
+        assert!(ByteRange::new(0, 0).is_err());
+        assert!(ByteRange::new(u64::MAX, 2).is_err());
+        assert!(ByteRange::new(10, 1).expect("range").resolve(10).is_err());
+        assert_eq!(
+            ByteRange::new(5, 20)
+                .expect("range")
+                .resolve(10)
+                .expect("resolved"),
+            ResolvedByteRange {
+                offset: 5,
+                length: 5
+            }
+        );
+    }
+}

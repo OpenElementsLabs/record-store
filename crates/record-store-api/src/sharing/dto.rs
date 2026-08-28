@@ -292,3 +292,25 @@ pub(crate) struct ShareContentQuery {
     #[serde(default)]
     pub(crate) download: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use record_store_core::PreviewKind;
+
+    use super::*;
+
+    #[test]
+    fn the_advertised_embeddable_types_are_exactly_the_ones_accepted() {
+        for content_type in EMBEDDABLE_CONTENT_TYPES {
+            let kind = PreviewKind::classify(Some(content_type));
+            assert!(
+                kind.allows_element_embed(),
+                "{content_type} is advertised but not element-embeddable"
+            );
+            assert!(
+                PreviewKind::canonical_content_type(content_type).is_some(),
+                "{content_type} has no canonical form"
+            );
+        }
+    }
+}

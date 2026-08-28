@@ -17,9 +17,6 @@ mod schema;
 mod secret;
 mod validation;
 
-#[cfg(test)]
-mod tests;
-
 pub use boundary::{Authenticator, Authorizer, SigningCredentialProvider};
 pub use error::{
     AuthenticationError, AuthorizationError, CredentialLookupError, CredentialStoreError,

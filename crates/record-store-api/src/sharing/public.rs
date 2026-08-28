@@ -416,3 +416,21 @@ pub(crate) async fn public_embed_preflight(
     insert_header(response_headers, header::ACCESS_CONTROL_MAX_AGE, "600");
     Ok(response)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_policies_deny_script_and_keep_stored_bytes_in_an_opaque_origin() {
+        for policy in [SHARE_CONTENT_POLICY, EMBED_CONTENT_POLICY] {
+            assert!(policy.contains("sandbox"), "{policy}");
+            assert!(policy.contains("default-src 'none'"), "{policy}");
+            assert!(!policy.contains("allow-scripts"), "{policy}");
+            assert!(!policy.contains("allow-same-origin"), "{policy}");
+            assert!(!policy.contains("unsafe-inline"), "{policy}");
+        }
+        // Only the share and preview surface is framed by Record Store itself.
+        assert!(SHARE_CONTENT_POLICY.contains("frame-ancestors 'self'"));
+    }
+}

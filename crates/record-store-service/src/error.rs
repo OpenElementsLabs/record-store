@@ -100,3 +100,119 @@ pub(crate) fn map_storage(error: StorageError) -> ServiceError {
         error => ServiceError::Storage(error),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use record_store_core::VersionId;
+    use record_store_metadata::MetadataError;
+    use record_store_storage::StorageError;
+
+    use super::*;
+
+    /// A caller can only react to a failure it can name. Anything that has a
+    /// dedicated service category must arrive as that category rather than as a
+    /// generic backend error, because the protocol adapters map on the category
+    /// alone and would otherwise turn a 404 into a 500.
+    #[test]
+    fn metadata_failures_a_caller_can_act_on_keep_their_own_category() {
+        for (backend, expected) in [
+            (
+                MetadataError::BucketAlreadyExists,
+                ServiceError::BucketAlreadyExists,
+            ),
+            (MetadataError::BucketNotFound, ServiceError::BucketNotFound),
+            (MetadataError::BucketNotEmpty, ServiceError::BucketNotEmpty),
+            (
+                MetadataError::MultipartUploadNotFound,
+                ServiceError::MultipartUploadNotFound,
+            ),
+            (MetadataError::QuotaExceeded, ServiceError::QuotaExceeded),
+        ] {
+            let rendered = format!("{backend:?}");
+            assert_eq!(
+                std::mem::discriminant(&map_metadata(backend)),
+                std::mem::discriminant(&expected),
+                "{rendered} was flattened instead of keeping its category"
+            );
+        }
+    }
+
+    #[test]
+    fn unrecognised_metadata_failures_are_preserved_for_diagnosis() {
+        let mapped = map_metadata(MetadataError::MultipartStateConflict);
+        assert!(
+            matches!(
+                mapped,
+                ServiceError::Metadata(MetadataError::MultipartStateConflict)
+            ),
+            "expected the original error to survive, got {mapped:?}"
+        );
+    }
+
+    /// The storage layer wraps catalog failures, so the actionable ones are one
+    /// level down. Unwrapping them is the difference between a client being told
+    /// "that upload does not exist" and being told "something went wrong".
+    #[test]
+    fn storage_failures_keep_their_category_even_when_nested_in_metadata() {
+        assert!(matches!(
+            map_storage(StorageError::Metadata(
+                MetadataError::MultipartUploadNotFound
+            )),
+            ServiceError::MultipartUploadNotFound
+        ));
+        assert!(matches!(
+            map_storage(StorageError::Metadata(MetadataError::QuotaExceeded)),
+            ServiceError::QuotaExceeded
+        ));
+    }
+
+    #[test]
+    fn a_delete_marker_carries_the_version_that_shadowed_the_object() {
+        let version_id = VersionId::new();
+        assert!(matches!(
+            map_storage(StorageError::DeleteMarker { version_id }),
+            ServiceError::DeleteMarker(carried) if carried == version_id
+        ));
+    }
+
+    /// Both of these are transient cluster conditions. Reporting them as
+    /// retryable is deliberate: a client that retries will often succeed, and a
+    /// generic internal error would tell it to give up.
+    #[test]
+    fn transient_cluster_conditions_are_reported_as_retryable() {
+        assert!(matches!(
+            map_storage(StorageError::NoHealthyReplica),
+            ServiceError::ClusterUnavailable(_)
+        ));
+        assert!(matches!(
+            map_storage(StorageError::ClusterUnavailable("draining".into())),
+            ServiceError::ClusterUnavailable(reason) if reason == "draining"
+        ));
+    }
+
+    /// A durability shortfall must not be silently downgraded to a write that
+    /// looks successful, and the operator-facing counts have to survive the
+    /// translation or the message loses everything actionable in it.
+    #[test]
+    fn a_durability_shortfall_keeps_its_operator_facing_detail() {
+        let mapped = map_storage(StorageError::DurabilityNotMet {
+            required: 3,
+            achieved: 1,
+            detail: "node-b timed out".into(),
+        });
+        let ServiceError::DurabilityNotMet(message) = mapped else {
+            panic!("durability shortfall lost its category");
+        };
+        assert!(message.contains('3'), "{message}");
+        assert!(message.contains('1'), "{message}");
+        assert!(message.contains("node-b timed out"), "{message}");
+    }
+
+    #[test]
+    fn unrecognised_storage_failures_are_preserved_for_diagnosis() {
+        assert!(matches!(
+            map_storage(StorageError::IntegrityMismatch),
+            ServiceError::Storage(StorageError::IntegrityMismatch)
+        ));
+    }
+}

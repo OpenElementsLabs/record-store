@@ -11,7 +11,7 @@ mod tx;
 mod types;
 
 #[cfg(test)]
-mod tests;
+mod test_support;
 
 pub use commands::{MetadataCommand, MetadataOutcome, NewDeleteMarker, apply_command_tx};
 pub use error::MetadataError;

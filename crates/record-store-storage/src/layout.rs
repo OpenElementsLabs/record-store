@@ -94,3 +94,26 @@ pub(crate) struct ObjectEncryption {
     pub(crate) key_encryption_key: Arc<Zeroizing<[u8; 32]>>,
     pub(crate) key_reference: [u8; 16],
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use record_store_core::ObjectId;
+    use uuid::Uuid;
+
+    use super::*;
+
+    #[test]
+    fn payload_paths_only_contain_generated_identifier_components() {
+        let root = PathBuf::from("/trusted/data");
+        let layout = StorageLayout::new(&root, &root.join("tmp"));
+        let id = ObjectId::from_uuid(
+            Uuid::parse_str("12345678-1234-4234-8234-123456789abc").expect("UUID"),
+        );
+        assert_eq!(
+            layout.payload_path(id),
+            root.join("objects/12/34/12345678123442348234123456789abc")
+        );
+    }
+}

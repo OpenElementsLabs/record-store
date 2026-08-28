@@ -157,3 +157,24 @@ impl From<ETag> for String {
         value.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checksum_round_trips_through_its_stable_text_form() {
+        let checksum = Checksum::sha256([0xab; 32]);
+        let encoded = checksum.to_string();
+        assert_eq!(
+            encoded.parse::<Checksum>().expect("valid checksum"),
+            checksum
+        );
+        assert!("sha256:abcd".parse::<Checksum>().is_err());
+        assert!(
+            format!("md5:{}", "00".repeat(16))
+                .parse::<Checksum>()
+                .is_err()
+        );
+    }
+}

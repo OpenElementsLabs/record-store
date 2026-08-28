@@ -19,9 +19,6 @@ mod quota;
 mod range;
 mod shard;
 
-#[cfg(test)]
-mod tests;
-
 pub use checksum::{Checksum, ChecksumAlgorithm, ETag};
 pub use durability::{DurabilityProfile, ErasureProfile, ReplicationProfile};
 pub use error::{CoreError, ErrorCategory};

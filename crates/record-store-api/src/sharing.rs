@@ -20,9 +20,6 @@ pub(crate) mod respond;
 pub(crate) mod shares;
 pub(crate) mod support;
 
-#[cfg(test)]
-mod tests;
-
 pub use management::SharingManagement;
 
 pub(crate) use dto::sharing_settings;

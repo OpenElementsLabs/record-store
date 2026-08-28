@@ -468,3 +468,118 @@ impl CredentialManager {
         .await?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use record_store_core::OrganizationId;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn service_account_secrets_are_encrypted_persistent_and_revocable() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("credentials.redb");
+        let organization = OrganizationId::new();
+        let manager = CredentialManager::open(
+            &path,
+            "root-access",
+            b"root-secret-at-least-sixteen",
+            Some(b"dedicated-master-key-at-least-thirty-two-bytes"),
+        )
+        .await
+        .expect("credential manager");
+        let issued = manager
+            .create_service_account("backup-agent", organization)
+            .await
+            .expect("create account");
+        let access_key = issued.info.credential.key_id.clone();
+        let account_id = issued.info.account.id;
+        let secret = issued.secret.expose().to_vec();
+        assert!(!format!("{issued:?}").contains(String::from_utf8_lossy(&secret).as_ref()));
+        drop(manager);
+
+        let database_bytes = std::fs::read(&path).expect("credential database bytes");
+        assert!(
+            !database_bytes
+                .windows(secret.len())
+                .any(|window| window == secret)
+        );
+
+        let manager = CredentialManager::open(
+            &path,
+            "root-access",
+            b"root-secret-at-least-sixteen",
+            Some(b"dedicated-master-key-at-least-thirty-two-bytes"),
+        )
+        .await
+        .expect("reopen credential manager");
+        let (_, resolved) = manager
+            .signing_secret(&access_key)
+            .await
+            .expect("resolve signing secret");
+        assert_eq!(resolved.expose(), secret);
+        manager
+            .revoke_service_account(account_id)
+            .await
+            .expect("revoke account");
+        assert!(matches!(
+            manager.signing_secret(&access_key).await,
+            Err(CredentialLookupError::Inactive)
+        ));
+    }
+
+    #[tokio::test]
+    async fn expired_rotated_credentials_fail_without_cleanup() {
+        let directory = tempdir().expect("temporary directory");
+        let manager = CredentialManager::open(
+            directory.path().join("credentials.redb"),
+            "root-access",
+            b"root-secret-at-least-sixteen",
+            Some(b"dedicated-master-key-at-least-thirty-two-bytes"),
+        )
+        .await
+        .expect("manager");
+        let issued = manager
+            .create_service_account("temporary-app", OrganizationId::new())
+            .await
+            .expect("account");
+        let temporary = manager
+            .rotate_credential(
+                issued.info.account.id,
+                Some(Utc::now() - chrono::Duration::seconds(1)),
+            )
+            .await
+            .expect("temporary credential");
+        assert!(matches!(
+            manager
+                .signing_secret(&temporary.info.credential.key_id)
+                .await,
+            Err(CredentialLookupError::Inactive)
+        ));
+    }
+
+    #[tokio::test]
+    async fn service_account_creation_requires_an_explicit_master_key() {
+        let directory = tempdir().expect("temporary directory");
+        let manager = CredentialManager::open(
+            directory.path().join("credentials.redb"),
+            "root-access",
+            b"root-secret-at-least-sixteen",
+            None,
+        )
+        .await
+        .expect("root-only manager");
+        assert!(matches!(
+            manager
+                .create_service_account_with_description(
+                    "unsafe-account",
+                    "must not be encrypted with an implicit key",
+                    OrganizationId::new(),
+                )
+                .await,
+            Err(CredentialStoreError::MasterKeyRequired)
+        ));
+    }
+}

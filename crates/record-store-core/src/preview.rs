@@ -228,3 +228,96 @@ pub(crate) fn riff_form(prefix: &[u8], form: &[u8; 4]) -> bool {
 pub(crate) fn mp4_brand(prefix: &[u8]) -> bool {
     prefix.len() >= 12 && &prefix[4..8] == b"ftyp"
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_classification_ignores_parameters_and_case() {
+        assert_eq!(PreviewKind::classify(Some("IMAGE/PNG")), PreviewKind::Image);
+        assert_eq!(
+            PreviewKind::classify(Some("text/plain; charset=UTF-8")),
+            PreviewKind::Text
+        );
+        assert_eq!(PreviewKind::classify(None), PreviewKind::Unsupported);
+    }
+
+    #[test]
+    fn active_content_types_are_classified_as_unsafe_rather_than_unsupported() {
+        for content_type in [
+            "text/html",
+            "image/svg+xml",
+            "application/xml",
+            "application/javascript",
+            "application/xhtml+xml",
+        ] {
+            assert_eq!(
+                PreviewKind::classify(Some(content_type)),
+                PreviewKind::UnsafeInline,
+                "{content_type} must be refused as active content"
+            );
+        }
+        assert!(!PreviewKind::UnsafeInline.allows_inline());
+        assert!(!PreviewKind::UnsafeInline.allows_element_embed());
+    }
+
+    #[test]
+    fn canonical_content_types_strip_caller_supplied_parameters() {
+        assert_eq!(
+            PreviewKind::canonical_content_type("image/png; hostile=\"\r\ninjected\""),
+            Some("image/png")
+        );
+        assert_eq!(
+            PreviewKind::canonical_content_type("text/markdown"),
+            Some("text/plain; charset=utf-8")
+        );
+        assert_eq!(PreviewKind::canonical_content_type("text/html"), None);
+    }
+
+    #[test]
+    fn declared_media_types_are_corroborated_by_leading_bytes() {
+        assert!(content_signature_matches(
+            "image/png",
+            b"\x89PNG\r\n\x1a\n rest"
+        ));
+        assert!(!content_signature_matches(
+            "image/png",
+            b"<html><script>alert(1)</script>"
+        ));
+        assert!(content_signature_matches(
+            "image/jpeg",
+            &[0xFF, 0xD8, 0xFF, 0xE0]
+        ));
+        assert!(content_signature_matches("application/pdf", b"%PDF-1.7\n"));
+        assert!(!content_signature_matches("application/pdf", b"MZ\x90\x00"));
+        assert!(content_signature_matches(
+            "video/mp4",
+            b"\x00\x00\x00\x18ftypmp42"
+        ));
+        assert!(content_signature_matches(
+            "audio/wav",
+            b"RIFF\x00\x00\x00\x00WAVEfmt "
+        ));
+        assert!(!content_signature_matches(
+            "audio/wav",
+            b"RIFF\x00\x00\x00\x00WEBPVP8 "
+        ));
+    }
+
+    #[test]
+    fn text_that_looks_like_markup_is_refused_even_when_labelled_text() {
+        assert!(!content_signature_matches(
+            "text/plain",
+            b"  <!DOCTYPE html>"
+        ));
+        assert!(!content_signature_matches(
+            "application/json",
+            b"\xEF\xBB\xBF<svg onload=alert(1)>"
+        ));
+        assert!(content_signature_matches(
+            "application/json",
+            b"{\"safe\":true}"
+        ));
+    }
+}

@@ -23,6 +23,9 @@ pub mod store;
 pub mod tasks;
 pub mod write;
 
+#[cfg(test)]
+mod test_support;
+
 pub use admission::{ClusterAdmissionService, JoinCoordinator};
 pub use context::ClusterContext;
 pub use coordinator::{Coordinator, CoordinatorSettings};

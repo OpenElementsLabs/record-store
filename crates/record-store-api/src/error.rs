@@ -205,3 +205,28 @@ pub enum ServerError {
     #[error("graceful shutdown exceeded {0:?}")]
     ShutdownTimeout(Duration),
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use http_body_util::BodyExt;
+
+    use super::*;
+    use crate::dto::RequestId;
+
+    #[tokio::test]
+    async fn errors_use_the_stable_json_envelope() {
+        let response = ApiError::not_found(RequestId("request-1".into())).into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+        assert_eq!(value["error"]["code"], "ROUTE_NOT_FOUND");
+        assert_eq!(value["error"]["request_id"], "request-1");
+    }
+}

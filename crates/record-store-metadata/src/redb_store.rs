@@ -852,3 +852,129 @@ impl MetadataRepository for RedbMetadataRepository {
         .await?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use chrono::Utc;
+    use record_store_core::{
+        Checksum, ETag, MultipartUploadState, ObjectKey, ObjectVersionRecord, PartNumber, UploadId,
+        VersioningState,
+    };
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::test_support::*;
+    use crate::{MetadataRepository, RedbMetadataRepository};
+
+    #[tokio::test]
+    async fn versions_markers_and_restart_are_durable() {
+        let dir = tempdir().expect("temp");
+        let path = dir.path().join("catalog.redb");
+        let repo = RedbMetadataRepository::open(&path).await.expect("repo");
+        let bucket = bucket("version-bucket");
+        repo.create_bucket(&bucket).await.expect("bucket");
+        repo.set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("enable");
+        let first = object(bucket.id, "report", 10);
+        let second = object(bucket.id, "report", 20);
+        repo.put_object(&first).await.expect("first");
+        repo.put_object(&second).await.expect("second");
+        repo.delete_object(bucket.id, &first.key, NewDeleteMarker::generate())
+            .await
+            .expect("delete");
+        drop(repo);
+        let repo = RedbMetadataRepository::open(&path).await.expect("reopen");
+        assert!(
+            repo.get_object(bucket.id, &first.key)
+                .await
+                .expect("current")
+                .is_none()
+        );
+        assert!(matches!(
+            repo.get_object_version(bucket.id, &first.key, first.version_id)
+                .await
+                .expect("version"),
+            Some(ObjectVersionRecord::Object { .. })
+        ));
+        assert_eq!(repo.storage_usage().await.expect("usage").version_count, 3);
+    }
+
+    #[tokio::test]
+    async fn bucket_cors_configuration_survives_restart_and_can_be_removed() {
+        let dir = tempdir().expect("temp");
+        let path = dir.path().join("catalog.redb");
+        let bucket = bucket("cors-bucket");
+        let configuration = cors_configuration();
+        {
+            let repo = RedbMetadataRepository::open(&path).await.expect("repo");
+            repo.create_bucket(&bucket).await.expect("bucket");
+            let updated = repo
+                .set_bucket_cors(bucket.id, Some(configuration.clone()))
+                .await
+                .expect("set CORS");
+            assert_eq!(updated.cors.as_ref(), Some(&configuration));
+        }
+
+        let repo = RedbMetadataRepository::open(&path).await.expect("reopen");
+        let restored = repo
+            .get_bucket_by_name(&bucket.name)
+            .await
+            .expect("read bucket")
+            .expect("bucket exists");
+        assert_eq!(restored.cors.as_ref(), Some(&configuration));
+        let updated = repo
+            .set_bucket_cors(bucket.id, None)
+            .await
+            .expect("remove CORS");
+        assert!(updated.cors.is_none());
+    }
+
+    #[tokio::test]
+    async fn multipart_state_survives_restart() {
+        let dir = tempdir().expect("temp");
+        let path = dir.path().join("catalog.redb");
+        let bucket = bucket("multipart-bucket");
+        let upload = MultipartUpload {
+            id: UploadId::new(),
+            bucket_id: bucket.id,
+            key: ObjectKey::new("large").expect("key"),
+            content_type: None,
+            custom_metadata: BTreeMap::new(),
+            initiated_at: Utc::now(),
+            state: MultipartUploadState::Active,
+        };
+        let part = UploadedPart {
+            upload_id: upload.id,
+            number: PartNumber::new(1).expect("part"),
+            object_id: ObjectId::new(),
+            size: 12,
+            checksum: Checksum::sha256([3; 32]),
+            payload_format: record_store_core::PayloadFormat::Plaintext,
+            etag: ETag::from_md5([4; 16]),
+            modified_at: Utc::now(),
+        };
+        {
+            let repo = RedbMetadataRepository::open(&path).await.expect("repo");
+            repo.create_bucket(&bucket).await.expect("bucket");
+            repo.create_multipart_upload(&upload).await.expect("upload");
+            repo.put_multipart_part(&part).await.expect("part");
+        }
+        let repo = RedbMetadataRepository::open(&path).await.expect("reopen");
+        assert_eq!(
+            repo.list_multipart_parts(upload.id, None, 10)
+                .await
+                .expect("parts"),
+            vec![part]
+        );
+        assert_eq!(
+            repo.storage_usage()
+                .await
+                .expect("usage")
+                .temporary_multipart_bytes,
+            12
+        );
+    }
+}

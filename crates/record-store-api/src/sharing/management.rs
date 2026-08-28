@@ -120,3 +120,36 @@ pub(crate) fn client_identity(
 // ---------------------------------------------------------------------------
 // Management surface
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderValue, header};
+
+    use super::*;
+
+    #[test]
+    fn client_identity_prefers_a_forwarded_address_and_sanitises_it() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("203.0.113.7, 10.0.0.1"),
+        );
+        assert_eq!(client_identity(&headers, None), "203.0.113.7");
+
+        let mut hostile = header::HeaderMap::new();
+        hostile.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("not an address at all"),
+        );
+        assert_eq!(client_identity(&hostile, None), "unknown");
+
+        let mut oversized = header::HeaderMap::new();
+        oversized.insert(
+            "x-forwarded-for",
+            HeaderValue::from_str(&"1".repeat(200)).expect("header"),
+        );
+        assert_eq!(client_identity(&oversized, None), "unknown");
+
+        assert_eq!(client_identity(&header::HeaderMap::new(), None), "unknown");
+    }
+}

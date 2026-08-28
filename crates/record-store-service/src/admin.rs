@@ -288,3 +288,97 @@ impl ObjectService {
             .map_err(|_| ServiceError::Unavailable)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::ServiceError;
+    use crate::services::ServiceLimits;
+    use crate::test_support::services_with;
+
+    fn limits(entries: usize, bytes: usize) -> ServiceLimits {
+        ServiceLimits {
+            maximum_concurrent_operations: 4,
+            maximum_custom_metadata_entries: entries,
+            maximum_custom_metadata_bytes: bytes,
+        }
+    }
+
+    fn metadata(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn custom_metadata_is_rejected_once_it_exceeds_the_entry_count() {
+        let (_directory, services) = services_with(limits(2, 4_096)).await;
+        let objects = services.objects;
+
+        assert!(
+            objects
+                .validate_custom_metadata(&metadata(&[("a", "1"), ("b", "2")]))
+                .is_ok(),
+            "a payload exactly at the entry limit must be accepted"
+        );
+        assert!(matches!(
+            objects.validate_custom_metadata(&metadata(&[("a", "1"), ("b", "2"), ("c", "3")])),
+            Err(ServiceError::MetadataTooLarge)
+        ));
+    }
+
+    /// The byte budget covers keys as well as values. Counting only values would
+    /// let a caller smuggle an unbounded amount of data in through key names.
+    #[tokio::test]
+    async fn the_custom_metadata_byte_budget_counts_keys_as_well_as_values() {
+        let (_directory, services) = services_with(limits(16, 10)).await;
+        let objects = services.objects;
+
+        assert!(
+            objects
+                .validate_custom_metadata(&metadata(&[("kkkkk", "vvvvv")]))
+                .is_ok(),
+            "5 + 5 bytes is exactly the budget"
+        );
+        assert!(
+            matches!(
+                objects.validate_custom_metadata(&metadata(&[("kkkkkk", "vvvvv")])),
+                Err(ServiceError::MetadataTooLarge)
+            ),
+            "one more byte of key must exceed the budget"
+        );
+        assert!(matches!(
+            objects.validate_custom_metadata(&metadata(&[("k", "vvvvvvvvvv")])),
+            Err(ServiceError::MetadataTooLarge)
+        ));
+    }
+
+    /// The running total is deliberately saturating. A caller that supplies
+    /// enormous strings must be refused, never wrap the counter around into a
+    /// small number and be let through.
+    #[tokio::test]
+    async fn enormous_custom_metadata_saturates_instead_of_wrapping() {
+        let (_directory, services) = services_with(limits(16, 64)).await;
+        let objects = services.objects;
+
+        let huge = "x".repeat(4096);
+        let entries = metadata(&[("a", huge.as_str()), ("b", huge.as_str())]);
+        assert!(matches!(
+            objects.validate_custom_metadata(&entries),
+            Err(ServiceError::MetadataTooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn absent_custom_metadata_is_always_acceptable() {
+        let (_directory, services) = services_with(limits(0, 0)).await;
+        assert!(
+            services
+                .objects
+                .validate_custom_metadata(&BTreeMap::new())
+                .is_ok()
+        );
+    }
+}

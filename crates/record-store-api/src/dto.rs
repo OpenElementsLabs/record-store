@@ -315,3 +315,16 @@ impl From<StorageStatus> for StorageStatusResponse {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incoming_request_ids_are_strictly_validated() {
+        assert!(RequestId::accept("trace-123.example").is_some());
+        assert!(RequestId::accept("").is_none());
+        assert!(RequestId::accept("contains a space").is_none());
+        assert!(RequestId::accept(&"a".repeat(129)).is_none());
+    }
+}

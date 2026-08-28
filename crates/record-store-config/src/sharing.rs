@@ -143,3 +143,80 @@ pub(crate) fn normalize_base_url(value: Option<&str>) -> Option<String> {
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('/').to_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::Config;
+    use crate::test_support::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn sharing_policy_is_configurable_from_file_and_environment() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("record-store.toml");
+        fs::write(
+            &path,
+            r#"
+                [sharing]
+                require_expiration = true
+                maximum_lifetime_days = 30
+                share_base_url = "https://record-store.example.com/"
+                embed_base_url = "https://storage.example.com/"
+            "#,
+        )
+        .expect("write configuration");
+        let mut environment = credentials().to_vec();
+        environment.push(("RECORD_STORE_SHARING_EMBEDS_ENABLED", "false"));
+        environment.push(("RECORD_STORE_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE", "3"));
+        let config =
+            Config::load_with_environment(Some(&path), environment).expect("valid configuration");
+
+        assert!(config.sharing.shares_enabled);
+        assert!(!config.sharing.embeds_enabled);
+        assert!(config.sharing.require_expiration);
+        assert_eq!(config.sharing.maximum_lifetime_days, 30);
+        assert_eq!(config.sharing.password_attempts_per_minute, 3);
+        assert_eq!(
+            config.sharing.normalized_share_base_url().as_deref(),
+            Some("https://record-store.example.com")
+        );
+        // Embeds are published on the storage endpoint, never on the console:
+        // a site loading an asset must not have to reach the management plane.
+        assert_eq!(
+            config.effective_embed_base_url(),
+            "https://storage.example.com"
+        );
+    }
+
+    #[test]
+    fn the_embed_address_falls_back_from_config_to_endpoint_to_listener() {
+        let mut config = valid_config();
+        assert_eq!(
+            config.effective_embed_base_url(),
+            "http://127.0.0.1:7600",
+            "an unspecified bind address must be rendered as something reachable"
+        );
+
+        config.cluster.s3_endpoint = Some("storage.internal:7600".to_owned());
+        assert_eq!(
+            config.effective_embed_base_url(),
+            "http://storage.internal:7600"
+        );
+
+        config.sharing.embed_base_url = Some("https://cdn.example.com/".to_owned());
+        assert_eq!(config.effective_embed_base_url(), "https://cdn.example.com");
+    }
+
+    #[test]
+    fn sharing_defaults_are_permissive_but_bounded() {
+        let config = valid_config();
+        assert!(config.sharing.shares_enabled);
+        assert!(config.sharing.embeds_enabled);
+        assert_eq!(config.sharing.maximum_lifetime_days, 365);
+        assert_eq!(config.sharing.preview_text_limit_bytes, 1024 * 1024);
+        assert!(config.sharing.normalized_share_base_url().is_none());
+        assert!(config.sharing.normalized_embed_base_url().is_none());
+    }
+}

@@ -88,3 +88,25 @@ pub const S3_CAPABILITIES: &[S3Capability] = &[
         status: CapabilityStatus::Unsupported,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compatibility_registry_is_unique_and_tracks_explicit_gaps() {
+        let names = S3_CAPABILITIES
+            .iter()
+            .map(|capability| capability.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(names.len(), S3_CAPABILITIES.len());
+        assert!(S3_CAPABILITIES.iter().any(|capability| {
+            capability.name == "MultipartUpload"
+                && capability.status == CapabilityStatus::Implemented
+        }));
+        assert!(S3_CAPABILITIES.iter().any(|capability| {
+            capability.name == "UploadPartCopy"
+                && capability.status == CapabilityStatus::Unsupported
+        }));
+    }
+}

@@ -86,3 +86,19 @@ uuid_identifier!(StripeId, "erasure stripe");
 uuid_identifier!(ShareLinkId, "share link");
 uuid_identifier!(EmbedLinkId, "embed link");
 uuid_identifier!(ShardId, "erasure shard");
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::*;
+
+    #[test]
+    fn typed_identifiers_are_not_interchangeable() {
+        let raw = Uuid::new_v4();
+        let bucket = BucketId::from_uuid(raw);
+        let object = ObjectId::from_uuid(raw);
+        assert_eq!(bucket.to_string(), object.to_string());
+        assert_eq!(bucket.as_uuid(), raw);
+    }
+}

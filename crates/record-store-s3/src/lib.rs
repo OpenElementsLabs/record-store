@@ -26,7 +26,7 @@ mod sigv4;
 mod xml;
 
 #[cfg(test)]
-mod tests;
+mod test_support;
 
 pub use capabilities::{CapabilityStatus, S3_CAPABILITIES, S3Capability};
 

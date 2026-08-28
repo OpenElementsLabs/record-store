@@ -372,3 +372,291 @@ pub(crate) fn request_permissions(request: &Request) -> Result<Vec<Permission>, 
     }
     Ok(permissions)
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderValue, Method, StatusCode, header};
+    use tower::ServiceExt;
+
+    use crate::test_support::*;
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use chrono::{Duration, Utc};
+    use record_store_auth::{Action, PolicyEffect, PolicyStatement};
+    use record_store_core::OrganizationId;
+
+    #[tokio::test]
+    async fn presigned_get_put_are_bounded_to_method_and_expiration() {
+        let (_directory, application, _credentials) = test_router().await;
+        let now = Utc::now();
+        let create = signed_request(
+            Method::PUT,
+            "/presigned-bucket",
+            b"",
+            &[],
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+        );
+        assert_eq!(
+            application
+                .clone()
+                .oneshot(create)
+                .await
+                .expect("create bucket")
+                .status(),
+            StatusCode::OK
+        );
+
+        let mut put = presigned_request(
+            Method::PUT,
+            "/presigned-bucket/object.txt",
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+            60,
+        );
+        *put.body_mut() = Body::from("presigned payload");
+        assert_eq!(
+            application
+                .clone()
+                .oneshot(put)
+                .await
+                .expect("presigned put")
+                .status(),
+            StatusCode::OK
+        );
+
+        let get = presigned_request(
+            Method::GET,
+            "/presigned-bucket/object.txt",
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+            60,
+        );
+        let get_uri = get.uri().clone();
+        let response = application
+            .clone()
+            .oneshot(get)
+            .await
+            .expect("presigned get");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_text(response).await, "presigned payload");
+
+        let mut delete = HttpRequest::builder()
+            .method(Method::DELETE)
+            .uri(get_uri)
+            .body(Body::empty())
+            .expect("method-confusion request");
+        delete
+            .headers_mut()
+            .insert(header::HOST, HeaderValue::from_static("localhost"));
+        assert_eq!(
+            application
+                .clone()
+                .oneshot(delete)
+                .await
+                .expect("method-bound URL")
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+
+        let expired = presigned_request(
+            Method::GET,
+            "/presigned-bucket/object.txt",
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now - Duration::seconds(120),
+            60,
+        );
+        assert_eq!(
+            application
+                .oneshot(expired)
+                .await
+                .expect("expired URL")
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn authentication_and_parser_failures_return_s3_xml_without_reaching_storage() {
+        let (_directory, application, credentials) = test_router().await;
+        let now = Utc::now();
+
+        let unknown = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                "/",
+                b"",
+                &[],
+                "unknown-access",
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("unknown credential response");
+        assert_eq!(unknown.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            xml_value(&body_text(unknown).await, "Code"),
+            Some("InvalidAccessKeyId")
+        );
+
+        let mut invalid_signature = signed_request(
+            Method::GET,
+            "/",
+            b"",
+            &[],
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            now,
+        );
+        let authorization = invalid_signature
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("authorization text");
+        let replacement = if authorization.ends_with('0') {
+            '1'
+        } else {
+            '0'
+        };
+        let invalid_authorization =
+            format!("{}{replacement}", &authorization[..authorization.len() - 1]);
+        invalid_signature.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&invalid_authorization).expect("invalid signature header"),
+        );
+        let invalid_signature = application
+            .clone()
+            .oneshot(invalid_signature)
+            .await
+            .expect("invalid signature response");
+        assert_eq!(invalid_signature.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            xml_value(&body_text(invalid_signature).await, "Code"),
+            Some("SignatureDoesNotMatch")
+        );
+
+        let expired = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                "/",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now - Duration::hours(1),
+            ))
+            .await
+            .expect("expired timestamp response");
+        assert_eq!(expired.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            xml_value(&body_text(expired).await, "Code"),
+            Some("RequestTimeTooSkewed")
+        );
+
+        let malformed_query = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                "/missing-bucket?list-type=2&max-keys=invalid",
+                b"",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("malformed query response");
+        assert_eq!(malformed_query.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            xml_value(&body_text(malformed_query).await, "Code"),
+            Some("InvalidRequest")
+        );
+
+        let traversal = application
+            .clone()
+            .oneshot(signed_request(
+                Method::PUT,
+                "/missing-bucket/%2E%2E%2Fescape",
+                b"payload",
+                &[],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                now,
+            ))
+            .await
+            .expect("traversal response");
+        assert!(!traversal.status().is_success());
+
+        let issued = credentials
+            .create_service_account("s3-test-client", OrganizationId::new())
+            .await
+            .expect("issue service account");
+        let policy = credentials
+            .create_policy(
+                "s3-test-access",
+                "test-only full access",
+                vec![PolicyStatement {
+                    effect: PolicyEffect::Allow,
+                    actions: vec![
+                        Action::ListBucket,
+                        Action::GetObject,
+                        Action::PutObject,
+                        Action::DeleteObject,
+                        Action::GetObjectVersion,
+                        Action::DeleteObjectVersion,
+                        Action::ManageBucket,
+                    ],
+                    resources: vec!["bucket:*".into()],
+                }],
+            )
+            .await
+            .expect("create policy");
+        credentials
+            .attach_policy(issued.info.account.id, policy.id)
+            .await
+            .expect("attach policy");
+        let secret = std::str::from_utf8(issued.secret.expose()).expect("secret text");
+        let service_account_request = application
+            .clone()
+            .oneshot(signed_request(
+                Method::GET,
+                "/",
+                b"",
+                &[],
+                &issued.info.credential.key_id,
+                secret,
+                now,
+            ))
+            .await
+            .expect("service account response");
+        assert_eq!(service_account_request.status(), StatusCode::OK);
+
+        credentials
+            .revoke_service_account(issued.info.account.id)
+            .await
+            .expect("revoke service account");
+        let revoked = application
+            .oneshot(signed_request(
+                Method::GET,
+                "/",
+                b"",
+                &[],
+                &issued.info.credential.key_id,
+                secret,
+                now,
+            ))
+            .await
+            .expect("revoked credential response");
+        assert_eq!(revoked.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            xml_value(&body_text(revoked).await, "Code"),
+            Some("AccessDenied")
+        );
+    }
+}

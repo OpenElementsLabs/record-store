@@ -702,3 +702,108 @@ pub fn rejection_error(kind: RejectionKind, message: impl Into<String>) -> Conse
         message: message.into(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings() -> ConsensusSettings {
+        ConsensusSettings::new(1, "127.0.0.1:7603", "/tmp/record-store-consensus")
+    }
+
+    /// The shipped defaults have to satisfy the same rules an operator's
+    /// overrides do, and they have to satisfy openraft's own validation.
+    #[test]
+    fn the_conservative_defaults_are_themselves_valid() {
+        let settings = settings();
+        settings.validate().expect("defaults must validate");
+        settings.raft_config().expect("raft must accept defaults");
+    }
+
+    #[test]
+    fn a_member_identifier_of_zero_is_refused() {
+        let mut settings = settings();
+        settings.member_id = 0;
+        assert!(matches!(
+            settings.validate(),
+            Err(ConsensusError::Configuration(_))
+        ));
+    }
+
+    /// An empty advertise address would leave peers unable to reach this node
+    /// while the node itself reported a healthy start.
+    #[test]
+    fn a_blank_advertise_address_is_refused_including_when_it_is_only_spaces() {
+        for address in ["", "   ", "\t"] {
+            let mut settings = settings();
+            settings.advertise_address = address.to_owned();
+            assert!(
+                matches!(settings.validate(), Err(ConsensusError::Configuration(_))),
+                "accepted blank address {address:?}"
+            );
+        }
+    }
+
+    /// Election timeouts that crowd the heartbeat cause members to call
+    /// elections against a leader that is actually alive, so the ordering rule
+    /// is a stability requirement rather than a style preference.
+    #[test]
+    fn election_timeouts_must_leave_room_for_heartbeats() {
+        let mut crowded = settings();
+        crowded.heartbeat_interval_millis = 500;
+        crowded.election_timeout_min_millis = 1_000;
+        assert!(
+            matches!(crowded.validate(), Err(ConsensusError::Configuration(_))),
+            "a minimum equal to twice the heartbeat must be refused"
+        );
+
+        let mut just_enough = crowded.clone();
+        just_enough.election_timeout_min_millis = 1_001;
+        just_enough.election_timeout_max_millis = 2_000;
+        just_enough
+            .validate()
+            .expect("one millisecond above twice the heartbeat is acceptable");
+    }
+
+    #[test]
+    fn election_timeout_bounds_must_be_ordered() {
+        let mut settings = settings();
+        settings.election_timeout_max_millis = settings.election_timeout_min_millis;
+        assert!(matches!(
+            settings.validate(),
+            Err(ConsensusError::Configuration(_))
+        ));
+    }
+
+    #[test]
+    fn a_zero_heartbeat_interval_is_refused() {
+        let mut settings = settings();
+        settings.heartbeat_interval_millis = 0;
+        assert!(matches!(
+            settings.validate(),
+            Err(ConsensusError::Configuration(_))
+        ));
+    }
+
+    /// Without a snapshot threshold the log grows without bound, so a zero is a
+    /// configuration error rather than a way to disable compaction.
+    #[test]
+    fn compaction_cannot_be_disabled_by_setting_the_threshold_to_zero() {
+        let mut settings = settings();
+        settings.snapshot_logs_threshold = 0;
+        let Err(ConsensusError::Configuration(message)) = settings.validate() else {
+            panic!("a zero snapshot threshold must be refused");
+        };
+        assert!(message.contains("compacted"), "{message}");
+    }
+
+    #[test]
+    fn a_rejection_keeps_its_category_when_raised_as_a_consensus_error() {
+        let error = rejection_error(RejectionKind::BucketNotFound, "no such bucket");
+        let ConsensusError::Rejected(rejection) = error else {
+            panic!("expected a rejection");
+        };
+        assert_eq!(rejection.kind, RejectionKind::BucketNotFound);
+        assert_eq!(rejection.message, "no such bucket");
+    }
+}
