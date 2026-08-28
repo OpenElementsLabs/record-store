@@ -8,6 +8,7 @@ import { Providers } from '@/components/providers';
 import './globals.css';
 
 export const metadata: Metadata = {
+  applicationName: 'Record Store',
   title: { default: 'Record Store Console', template: '%s · Record Store Console' },
   description: 'Administrative console for Record Store object storage.',
   robots: { index: false, follow: false },

@@ -51,7 +51,7 @@ export function LoginForm({ next }: { readonly next: string }) {
 
   return (
     <section className="w-full max-w-[440px] rounded-panel border border-border bg-surface p-6 sm:p-10">
-      <BrandLockup className="mb-10" />
+      <BrandLockup className="mb-10" size="large" />
 
       <div className="mb-8">
         <p className="mb-3 type-eyebrow-accent">Secure access</p>
