@@ -11,8 +11,36 @@ use serde::{Deserialize, Serialize};
 use tracing::error;
 use uuid::Uuid;
 
+use record_store_auth::CredentialStoreError;
+
 use crate::error::ApiError;
 use crate::*;
+
+/// Maps a credential-store failure onto the status a client can act on.
+///
+/// Collapsing everything into `500` would tell a caller the server is broken
+/// when it merely asked for an account that does not exist, and would bury the
+/// genuine faults in the same log line as ordinary misses.
+fn credential_error(error: CredentialStoreError, request_id: RequestId) -> ApiError {
+    match error {
+        CredentialStoreError::AccountNotFound
+        | CredentialStoreError::CredentialNotFound
+        | CredentialStoreError::PolicyNotFound => ApiError::not_found(request_id),
+        CredentialStoreError::PolicyAlreadyExists => ApiError::new(
+            StatusCode::CONFLICT,
+            "POLICY_ALREADY_EXISTS",
+            "A policy with that name already exists",
+            request_id,
+        ),
+        CredentialStoreError::InvalidInput(reason) => {
+            ApiError::new(StatusCode::BAD_REQUEST, "INVALID_INPUT", reason, request_id)
+        }
+        error => {
+            error!(%error, request_id = %request_id, "credential operation failed");
+            ApiError::internal(request_id)
+        }
+    }
+}
 
 pub(crate) async fn list_service_accounts(
     State(state): State<AppState>,
@@ -23,10 +51,7 @@ pub(crate) async fn list_service_accounts(
         .list_service_accounts()
         .await
         .map(Json)
-        .map_err(|error| {
-            error!(%error, request_id = %request_id, "credential operation failed");
-            ApiError::internal(request_id)
-        })
+        .map_err(|error| credential_error(error, request_id))
 }
 
 #[derive(Deserialize)]
@@ -60,11 +85,8 @@ pub(crate) async fn create_service_account(
                 "Invalid service account",
             )
         })?;
-    let secret_access_key =
-        String::from_utf8(issued.secret.expose().to_vec()).map_err(|error| {
-            error!(%error, request_id = %request_id, "generated credential was not UTF-8");
-            ApiError::internal(request_id)
-        })?;
+    let secret_access_key = String::from_utf8(issued.secret.expose().to_vec())
+        .map_err(|_| ApiError::internal(request_id))?;
     Ok((
         StatusCode::CREATED,
         Json(IssuedServiceAccountResponse {
@@ -92,10 +114,7 @@ pub(crate) async fn get_service_account(
         .get_service_account(id)
         .await
         .map(Json)
-        .map_err(|error| {
-            error!(%error, request_id = %request_id, "service account lookup failed");
-            ApiError::internal(request_id)
-        })
+        .map_err(|error| credential_error(error, request_id))
 }
 
 pub(crate) async fn delete_service_account(
@@ -109,10 +128,7 @@ pub(crate) async fn delete_service_account(
         .delete_service_account(id)
         .await
         .map(|()| StatusCode::NO_CONTENT)
-        .map_err(|error| {
-            error!(%error, request_id = %request_id, "service account deletion failed");
-            ApiError::internal(request_id)
-        })
+        .map_err(|error| credential_error(error, request_id))
 }
 
 #[derive(Deserialize)]
@@ -132,10 +148,7 @@ pub(crate) async fn set_service_account_status(
         .set_service_account_enabled(id, input.enabled)
         .await
         .map(Json)
-        .map_err(|error| {
-            error!(%error, request_id = %request_id, "service account status update failed");
-            ApiError::internal(request_id)
-        })
+        .map_err(|error| credential_error(error, request_id))
 }
 
 #[derive(Deserialize)]
@@ -154,10 +167,7 @@ pub(crate) async fn rotate_credential(
         .credentials
         .rotate_credential(id, input.expires_at)
         .await
-        .map_err(|error| {
-            error!(%error, request_id = %request_id, "credential rotation failed");
-            ApiError::internal(request_id.clone())
-        })?;
+        .map_err(|error| credential_error(error, request_id.clone()))?;
     let secret_access_key = String::from_utf8(issued.secret.expose().to_vec())
         .map_err(|_| ApiError::internal(request_id))?;
     Ok((
@@ -201,10 +211,7 @@ pub(crate) async fn issue_temporary_credential(
         .credentials
         .rotate_credential(id, Some(expires_at))
         .await
-        .map_err(|error| {
-            error!(%error, request_id = %request_id, "temporary credential issuance failed");
-            ApiError::internal(request_id.clone())
-        })?;
+        .map_err(|error| credential_error(error, request_id.clone()))?;
     let secret_access_key = String::from_utf8(issued.secret.expose().to_vec())
         .map_err(|_| ApiError::internal(request_id))?;
     Ok((
@@ -236,10 +243,7 @@ pub(crate) async fn set_credential_status(
         .set_credential_enabled(id, credential_id, input.enabled)
         .await
         .map(|()| StatusCode::NO_CONTENT)
-        .map_err(|error| {
-            error!(%error, request_id = %request_id, "credential status update failed");
-            ApiError::internal(request_id)
-        })
+        .map_err(|error| credential_error(error, request_id))
 }
 
 pub(crate) fn parse_service_account_id(
@@ -253,4 +257,256 @@ pub(crate) fn parse_service_account_id(
             "Invalid service account ID",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    use crate::test_support::{AUDITOR_TOKEN, admin, api, call, expect_status, json_body, signed};
+
+    /// The secret is generated server-side and shown exactly once. If creation
+    /// ever stopped returning it, the account would be unusable and nobody could
+    /// recover it.
+    #[tokio::test]
+    async fn a_created_account_returns_its_secret_exactly_once() {
+        let (_directory, api) = api().await;
+        let created = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/service-accounts",
+                Some(json!({"name": "backups"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+
+        let id = created["account"]["id"].as_str().expect("account id");
+        assert!(
+            created["secret_access_key"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty()),
+            "creation must disclose the secret"
+        );
+
+        let fetched = expect_status(
+            &api,
+            admin("GET", &format!("/api/v1/service-accounts/{id}"), None),
+            StatusCode::OK,
+        )
+        .await;
+        assert!(
+            !fetched.to_string().contains("secret_access_key"),
+            "a later read must never disclose the secret again: {fetched}"
+        );
+    }
+
+    #[tokio::test]
+    async fn accounts_are_listed_after_creation_and_gone_after_deletion() {
+        let (_directory, api) = api().await;
+        let created = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/service-accounts",
+                Some(json!({"name": "reporting"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        let id = created["account"]["id"].as_str().expect("id").to_owned();
+
+        let listed = expect_status(
+            &api,
+            admin("GET", "/api/v1/service-accounts", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert!(
+            listed
+                .as_array()
+                .expect("array")
+                .iter()
+                .any(|entry| entry["account"]["name"] == "reporting"),
+            "{listed}"
+        );
+
+        expect_status(
+            &api,
+            admin("DELETE", &format!("/api/v1/service-accounts/{id}"), None),
+            StatusCode::NO_CONTENT,
+        )
+        .await;
+        expect_status(
+            &api,
+            admin("GET", &format!("/api/v1/service-accounts/{id}"), None),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_account_can_be_disabled_and_enabled_again() {
+        let (_directory, api) = api().await;
+        let created = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/service-accounts",
+                Some(json!({"name": "batch"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        let id = created["account"]["id"].as_str().expect("id").to_owned();
+
+        for enabled in [false, true] {
+            expect_status(
+                &api,
+                admin(
+                    "PUT",
+                    &format!("/api/v1/service-accounts/{id}/status"),
+                    Some(json!({"enabled": enabled})),
+                ),
+                StatusCode::OK,
+            )
+            .await;
+            let fetched = expect_status(
+                &api,
+                admin("GET", &format!("/api/v1/service-accounts/{id}"), None),
+                StatusCode::OK,
+            )
+            .await;
+            assert_eq!(
+                fetched["account"]["disabled"], !enabled,
+                "status change was not durable: {fetched}"
+            );
+        }
+    }
+
+    /// Rotation issues a new secret. The old one must not be returned again and
+    /// the new one must differ, or rotation would be theatre.
+    #[tokio::test]
+    async fn rotating_a_credential_issues_a_different_secret() {
+        let (_directory, api) = api().await;
+        let created = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/service-accounts",
+                Some(json!({"name": "rotating"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        let id = created["account"]["id"].as_str().expect("id").to_owned();
+        let original = created["secret_access_key"]
+            .as_str()
+            .expect("secret")
+            .to_owned();
+
+        let rotated = expect_status(
+            &api,
+            admin(
+                "POST",
+                &format!("/api/v1/service-accounts/{id}/credentials"),
+                Some(json!({})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        let replacement = rotated["secret_access_key"].as_str().expect("secret");
+        assert_ne!(replacement, original, "rotation must change the secret");
+    }
+
+    /// A temporary credential must come back with an expiry; one without would
+    /// be permanent, which is the opposite of what was asked for.
+    #[tokio::test]
+    async fn a_temporary_credential_reports_when_it_expires() {
+        let (_directory, api) = api().await;
+        let created = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/service-accounts",
+                Some(json!({"name": "temporary"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        let id = created["account"]["id"].as_str().expect("id").to_owned();
+
+        let issued = expect_status(
+            &api,
+            admin(
+                "POST",
+                &format!("/api/v1/service-accounts/{id}/temporary-credentials"),
+                Some(json!({"expires_in_seconds": 900})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        assert!(
+            issued["credential"]["expires_at"].as_str().is_some(),
+            "a temporary credential must carry an expiry: {issued}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_account_identifier_is_rejected_rather_than_searched_for() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin("GET", "/api/v1/service-accounts/not-a-uuid", None),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+        expect_status(
+            &api,
+            admin(
+                "GET",
+                "/api/v1/service-accounts/0195f0c8-0000-7000-8000-0000000000ff",
+                None,
+            ),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    /// Account administration changes who can reach the data plane, so it is
+    /// reserved to the system administrator. An auditor may read but not write.
+    #[tokio::test]
+    async fn an_auditor_cannot_create_or_delete_accounts() {
+        let (_directory, api) = api().await;
+        let response = call(
+            &api,
+            signed(
+                "POST",
+                "/api/v1/service-accounts",
+                AUDITOR_TOKEN,
+                Some(json!({"name": "sneaky"})),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn account_administration_requires_a_credential() {
+        let (_directory, api) = api().await;
+        let response = call(
+            &api,
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/v1/service-accounts")
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = json_body(response).await;
+        assert!(body["error"]["code"].as_str().is_some(), "{body}");
+    }
 }

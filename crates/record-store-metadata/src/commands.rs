@@ -1020,6 +1020,7 @@ mod tests {
     use super::*;
     use crate::RedbMetadataRepository;
     use crate::test_support::*;
+    use record_store_core::{BucketId, BucketName, ObjectKey};
 
     #[tokio::test]
     async fn applying_the_same_commands_produces_identical_state() {
@@ -1076,5 +1077,364 @@ mod tests {
             snapshots[0], snapshots[1],
             "replaying identical commands must produce identical durable state"
         );
+    }
+
+    /// Applies a command sequence to a fresh database and returns the outcomes.
+    fn apply_all(
+        database: &redb::Database,
+        commands: Vec<MetadataCommand>,
+    ) -> Vec<MetadataOutcome> {
+        let write = database.begin_write().expect("write transaction");
+        let outcomes = commands
+            .into_iter()
+            .map(|command| apply_command_tx(&write, command).expect("apply"))
+            .collect();
+        write.commit().expect("commit");
+        outcomes
+    }
+
+    async fn database() -> (tempfile::TempDir, redb::Database) {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("metadata.redb");
+        RedbMetadataRepository::open(&path)
+            .await
+            .expect("initialise schema");
+        let database = redb::Database::open(&path).expect("open");
+        (directory, database)
+    }
+
+    /// Every command carries a stable short name used in tracing and metrics.
+    /// A rename would silently break an operator's dashboards.
+    #[test]
+    fn every_command_has_a_stable_name() {
+        let bucket_record = bucket("named");
+        let cases = [
+            (
+                MetadataCommand::CreateBucket {
+                    bucket: Box::new(bucket_record.clone()),
+                },
+                "create_bucket",
+            ),
+            (
+                MetadataCommand::DeleteBucket {
+                    name: bucket_record.name.clone(),
+                },
+                "delete_bucket",
+            ),
+            (
+                MetadataCommand::PutObject {
+                    metadata: Box::new(object(bucket_record.id, "a", 1)),
+                },
+                "put_object",
+            ),
+            (
+                MetadataCommand::RecoverMultipartCompletions,
+                "recover_multipart_completions",
+            ),
+        ];
+        for (command, expected) in cases {
+            assert_eq!(command.name(), expected);
+        }
+    }
+
+    /// Commands cross the replication log, so each one has to survive the same
+    /// encoding a follower decodes it with.
+    #[test]
+    fn commands_round_trip_through_their_encoded_form() {
+        let bucket_record = bucket("encoded");
+        let commands = vec![
+            MetadataCommand::CreateBucket {
+                bucket: Box::new(bucket_record.clone()),
+            },
+            MetadataCommand::SetBucketVersioning {
+                bucket_id: bucket_record.id,
+                state: VersioningState::Enabled,
+            },
+            MetadataCommand::SetBucketCors {
+                bucket_id: bucket_record.id,
+                configuration: Some(cors_configuration()),
+            },
+            MetadataCommand::PutObject {
+                metadata: Box::new(object(bucket_record.id, "a", 1)),
+            },
+            MetadataCommand::DeleteObject {
+                bucket_id: bucket_record.id,
+                key: ObjectKey::new("a").expect("key"),
+                marker: NewDeleteMarker::generate(),
+            },
+            MetadataCommand::RecoverMultipartCompletions,
+        ];
+        for command in commands {
+            let name = command.name();
+            let encoded = serde_json::to_vec(&command).expect("serialise");
+            let decoded: MetadataCommand = serde_json::from_slice(&encoded).expect("deserialise");
+            assert_eq!(decoded.name(), name);
+        }
+    }
+
+    /// Bucket settings applied as commands must be visible in the stored record,
+    /// because this is the only path a replicated deployment writes them by.
+    #[tokio::test]
+    async fn bucket_settings_applied_as_commands_are_stored() {
+        let (_directory, db) = database().await;
+        let bucket_record = bucket("settings");
+        apply_all(
+            &db,
+            vec![
+                MetadataCommand::CreateBucket {
+                    bucket: Box::new(bucket_record.clone()),
+                },
+                MetadataCommand::SetBucketVersioning {
+                    bucket_id: bucket_record.id,
+                    state: VersioningState::Enabled,
+                },
+                MetadataCommand::SetBucketQuota {
+                    bucket_id: bucket_record.id,
+                    quota: record_store_core::BucketQuota {
+                        bytes: record_store_core::ByteQuota::Limit(2_048),
+                        objects: record_store_core::ObjectCountQuota::Limit(5),
+                    },
+                },
+                MetadataCommand::SetBucketCors {
+                    bucket_id: bucket_record.id,
+                    configuration: Some(cors_configuration()),
+                },
+            ],
+        );
+
+        let write = db.begin_write().expect("write");
+        let MetadataOutcome::Bucket(stored) = apply_command_tx(
+            &write,
+            MetadataCommand::SetBucketVersioning {
+                bucket_id: bucket_record.id,
+                state: VersioningState::Suspended,
+            },
+        )
+        .expect("apply") else {
+            panic!("a versioning change returns the bucket");
+        };
+        assert_eq!(stored.versioning, VersioningState::Suspended);
+        assert_eq!(
+            stored.quota.bytes,
+            record_store_core::ByteQuota::Limit(2_048)
+        );
+        assert!(stored.cors.is_some());
+    }
+
+    /// A command naming a bucket that does not exist has to be rejected rather
+    /// than creating one implicitly, or a replayed log could resurrect state an
+    /// operator deleted.
+    #[tokio::test]
+    async fn commands_against_an_absent_bucket_are_rejected() {
+        let (_directory, db) = database().await;
+        let write = db.begin_write().expect("write");
+        let absent = BucketId::new();
+
+        assert!(matches!(
+            apply_command_tx(
+                &write,
+                MetadataCommand::SetBucketVersioning {
+                    bucket_id: absent,
+                    state: VersioningState::Enabled,
+                },
+            ),
+            Err(MetadataError::BucketNotFound)
+        ));
+        assert!(matches!(
+            apply_command_tx(
+                &write,
+                MetadataCommand::DeleteBucket {
+                    name: BucketName::new("never-created").expect("name"),
+                },
+            ),
+            Err(MetadataError::BucketNotFound)
+        ));
+    }
+
+    /// Multipart completion is two-phase so a crash between the phases can be
+    /// recovered. Both phases and the recovery sweep are exercised here.
+    #[tokio::test]
+    async fn a_multipart_upload_completes_through_its_two_phases() {
+        let (_directory, db) = database().await;
+        let bucket_record = bucket("multipart");
+        let upload_record = upload(bucket_record.id, "big.bin");
+        let stored_part = part(upload_record.id, 1, 1_024);
+        let committed = object(bucket_record.id, "big.bin", 1_024);
+
+        let outcomes = apply_all(
+            &db,
+            vec![
+                MetadataCommand::CreateBucket {
+                    bucket: Box::new(bucket_record.clone()),
+                },
+                MetadataCommand::CreateMultipartUpload {
+                    upload: Box::new(upload_record.clone()),
+                },
+                MetadataCommand::PutMultipartPart {
+                    part: Box::new(stored_part.clone()),
+                },
+                MetadataCommand::BeginMultipartCompletion {
+                    upload_id: upload_record.id,
+                    object_id: committed.id,
+                },
+                MetadataCommand::PutObject {
+                    metadata: Box::new(committed.clone()),
+                },
+                MetadataCommand::FinishMultipartUpload {
+                    upload_id: upload_record.id,
+                },
+            ],
+        );
+        assert!(matches!(outcomes[1], MetadataOutcome::None));
+        assert!(
+            matches!(outcomes[2], MetadataOutcome::ReplacedPart(None)),
+            "a first upload of a part number replaces nothing"
+        );
+        assert!(matches!(outcomes[3], MetadataOutcome::MultipartUpload(_)));
+
+        let write = db.begin_write().expect("write");
+        let recovered = apply_command_tx(&write, MetadataCommand::RecoverMultipartCompletions)
+            .expect("recover");
+        let MetadataOutcome::MultipartCleanup(cleanup) = recovered else {
+            panic!("recovery reports what it swept up");
+        };
+        assert!(
+            cleanup.parts.is_empty(),
+            "a completed upload leaves nothing to recover: {cleanup:?}"
+        );
+    }
+
+    /// Storing the same part number twice replaces it and reports what it
+    /// replaced, so the caller can release the payload it no longer owns.
+    #[tokio::test]
+    async fn re_uploading_a_part_reports_the_payload_it_replaced() {
+        let (_directory, db) = database().await;
+        let bucket_record = bucket("replacement");
+        let upload_record = upload(bucket_record.id, "big.bin");
+        let first = part(upload_record.id, 1, 1_024);
+        let mut second = part(upload_record.id, 1, 2_048);
+        second.object_id = record_store_core::ObjectId::new();
+
+        apply_all(
+            &db,
+            vec![
+                MetadataCommand::CreateBucket {
+                    bucket: Box::new(bucket_record.clone()),
+                },
+                MetadataCommand::CreateMultipartUpload {
+                    upload: Box::new(upload_record.clone()),
+                },
+                MetadataCommand::PutMultipartPart {
+                    part: Box::new(first.clone()),
+                },
+            ],
+        );
+
+        let write = db.begin_write().expect("write");
+        let outcome = apply_command_tx(
+            &write,
+            MetadataCommand::PutMultipartPart {
+                part: Box::new(second),
+            },
+        )
+        .expect("apply");
+        let MetadataOutcome::ReplacedPart(Some(replaced)) = outcome else {
+            panic!("re-uploading a part must report the one it replaced");
+        };
+        assert_eq!(replaced.object_id, first.object_id);
+    }
+
+    #[tokio::test]
+    async fn aborting_an_upload_reports_the_payloads_to_release() {
+        let (_directory, db) = database().await;
+        let bucket_record = bucket("aborted");
+        let upload_record = upload(bucket_record.id, "big.bin");
+        let stored_part = part(upload_record.id, 1, 1_024);
+
+        apply_all(
+            &db,
+            vec![
+                MetadataCommand::CreateBucket {
+                    bucket: Box::new(bucket_record.clone()),
+                },
+                MetadataCommand::CreateMultipartUpload {
+                    upload: Box::new(upload_record.clone()),
+                },
+                MetadataCommand::PutMultipartPart {
+                    part: Box::new(stored_part.clone()),
+                },
+            ],
+        );
+
+        let write = db.begin_write().expect("write");
+        let outcome = apply_command_tx(
+            &write,
+            MetadataCommand::AbortMultipartUpload {
+                upload_id: upload_record.id,
+            },
+        )
+        .expect("apply");
+        let MetadataOutcome::MultipartCleanup(cleanup) = outcome else {
+            panic!("aborting must report what to clean up");
+        };
+        assert!(
+            cleanup
+                .parts
+                .iter()
+                .any(|part| part.object_id == stored_part.object_id),
+            "{cleanup:?}"
+        );
+    }
+
+    /// Lifecycle rules and cleanup completion are ordinary replicated commands,
+    /// so they have to behave identically when applied through the log.
+    #[tokio::test]
+    async fn lifecycle_and_cleanup_commands_apply() {
+        let (_directory, db) = database().await;
+        let bucket_record = bucket("lifecycle");
+        let rule = record_store_core::LifecycleRule {
+            id: record_store_core::LifecycleRuleId::new(),
+            bucket_id: bucket_record.id,
+            prefix: "logs/".to_owned(),
+            enabled: true,
+            expiration: Some(record_store_core::ExpirationDays::new(7).expect("days")),
+            noncurrent_version_expiration: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let stored = object(bucket_record.id, "logs/a", 8);
+
+        apply_all(
+            &db,
+            vec![
+                MetadataCommand::CreateBucket {
+                    bucket: Box::new(bucket_record.clone()),
+                },
+                MetadataCommand::PutLifecycleRule {
+                    rule: Box::new(rule.clone()),
+                },
+                MetadataCommand::PutObject {
+                    metadata: Box::new(stored.clone()),
+                },
+                MetadataCommand::DeleteObject {
+                    bucket_id: bucket_record.id,
+                    key: stored.key.clone(),
+                    marker: NewDeleteMarker::generate(),
+                },
+                MetadataCommand::CompleteCleanup {
+                    object_id: stored.id,
+                },
+                MetadataCommand::DeleteLifecycleRule { rule_id: rule.id },
+            ],
+        );
+
+        let write = db.begin_write().expect("write");
+        assert!(matches!(
+            apply_command_tx(
+                &write,
+                MetadataCommand::DeleteLifecycleRule { rule_id: rule.id }
+            ),
+            Err(MetadataError::LifecycleRuleNotFound)
+        ));
     }
 }

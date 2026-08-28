@@ -314,6 +314,9 @@ mod error;
 mod handlers;
 mod metrics;
 
+#[cfg(test)]
+mod test_support;
+
 pub use auth::{ManagementAuth, ManagementRole, MetricsAuth};
 pub use dto::RequestId;
 pub use error::ServerError;

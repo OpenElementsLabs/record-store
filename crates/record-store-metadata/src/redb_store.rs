@@ -865,8 +865,13 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::commands::NewDeleteMarker;
     use crate::test_support::*;
+    use crate::types::{ListMultipartUploadsRequest, ListObjectsRequest};
     use crate::{MetadataRepository, RedbMetadataRepository};
+    use record_store_core::{
+        BucketQuota, ByteQuota, ExpirationDays, LifecycleRule, LifecycleRuleId, ObjectCountQuota,
+    };
 
     #[tokio::test]
     async fn versions_markers_and_restart_are_durable() {
@@ -976,5 +981,360 @@ mod tests {
                 .temporary_multipart_bytes,
             12
         );
+    }
+
+    /// Buckets are addressable by identifier and by name, and both views must
+    /// agree; a name index that drifts from the record is how a deleted bucket
+    /// becomes un-recreatable.
+    #[tokio::test]
+    async fn buckets_are_reachable_by_identifier_and_by_name() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
+
+        let by_id = catalog.get_bucket(bucket.id).await.expect("lookup");
+        let by_name = catalog
+            .get_bucket_by_name(&bucket.name)
+            .await
+            .expect("lookup");
+        assert_eq!(by_id, Some(bucket.clone()));
+        assert_eq!(by_name, Some(bucket.clone()));
+
+        assert_eq!(catalog.list_buckets().await.expect("list"), vec![bucket]);
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_bucket_name_is_refused() {
+        let (_directory, catalog, _bucket) = catalog_with_bucket("photos").await;
+        let clash = super::super::test_support::bucket("photos");
+        assert!(matches!(
+            catalog.create_bucket(&clash).await,
+            Err(MetadataError::BucketAlreadyExists)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_absent_bucket_reads_as_absent_rather_than_failing() {
+        let (_directory, catalog) = catalog().await;
+        assert!(
+            catalog
+                .get_bucket(BucketId::new())
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+        assert!(
+            catalog
+                .get_bucket_by_name(&BucketName::new("missing").expect("name"))
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+        assert!(catalog.list_buckets().await.expect("list").is_empty());
+    }
+
+    /// Deleting a bucket that still holds objects would orphan their payloads,
+    /// so the catalog refuses until it is empty.
+    #[tokio::test]
+    async fn a_bucket_holding_objects_cannot_be_deleted() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
+        catalog
+            .put_object(&object(bucket.id, "a.txt", 10))
+            .await
+            .expect("put");
+
+        assert!(matches!(
+            catalog.delete_bucket(&bucket.name).await,
+            Err(MetadataError::BucketNotEmpty)
+        ));
+
+        catalog
+            .delete_object(
+                bucket.id,
+                &ObjectKey::new("a.txt").expect("key"),
+                NewDeleteMarker::generate(),
+            )
+            .await
+            .expect("delete object");
+        catalog
+            .delete_bucket(&bucket.name)
+            .await
+            .expect("delete bucket");
+        assert!(
+            catalog
+                .get_bucket(bucket.id)
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn bucket_quota_and_versioning_changes_are_durable() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
+
+        catalog
+            .set_bucket_quota(
+                bucket.id,
+                BucketQuota {
+                    bytes: ByteQuota::Limit(4_096),
+                    objects: ObjectCountQuota::Limit(10),
+                },
+            )
+            .await
+            .expect("quota");
+        catalog
+            .set_bucket_versioning(bucket.id, VersioningState::Enabled)
+            .await
+            .expect("versioning");
+
+        let stored = catalog
+            .get_bucket(bucket.id)
+            .await
+            .expect("lookup")
+            .expect("bucket");
+        assert_eq!(stored.quota.bytes, ByteQuota::Limit(4_096));
+        assert_eq!(stored.quota.objects, ObjectCountQuota::Limit(10));
+        assert_eq!(stored.versioning, VersioningState::Enabled);
+    }
+
+    /// Listing is the paging contract the S3 layer depends on: a prefix must not
+    /// leak neighbouring keys, and the page boundary must be lossless.
+    #[tokio::test]
+    async fn object_listing_respects_prefix_limit_and_start_after() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
+        for key in ["a/1", "a/2", "a/3", "b/1"] {
+            catalog
+                .put_object(&object(bucket.id, key, 1))
+                .await
+                .expect("put");
+        }
+
+        let page = catalog
+            .list_objects(ListObjectsRequest {
+                bucket_id: bucket.id,
+                prefix: "a/".to_owned(),
+                start_after: None,
+                limit: 2,
+            })
+            .await
+            .expect("list");
+        assert_eq!(
+            page.objects
+                .iter()
+                .map(|object| object.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a/1", "a/2"]
+        );
+
+        let rest = catalog
+            .list_objects(ListObjectsRequest {
+                bucket_id: bucket.id,
+                prefix: "a/".to_owned(),
+                start_after: Some("a/2".to_owned()),
+                limit: 10,
+            })
+            .await
+            .expect("list");
+        assert_eq!(
+            rest.objects
+                .iter()
+                .map(|object| object.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a/3"],
+            "the prefix must not spill into the neighbouring key space"
+        );
+    }
+
+    /// Usage counters back quota enforcement, so they have to follow writes and
+    /// deletions rather than only ever growing.
+    #[tokio::test]
+    async fn usage_counters_track_writes_and_deletions() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
+        let initial = catalog.bucket_usage().await.expect("usage");
+        let summary = initial
+            .get(&bucket.id)
+            .expect("an empty bucket still needs a row so a table can render it");
+        assert_eq!(summary.object_count, 0);
+        assert_eq!(summary.logical_bytes, 0);
+
+        catalog
+            .put_object(&object(bucket.id, "a.txt", 512))
+            .await
+            .expect("put");
+        catalog
+            .put_object(&object(bucket.id, "b.txt", 512))
+            .await
+            .expect("put");
+
+        let usage = catalog.bucket_usage().await.expect("usage");
+        let summary = usage.get(&bucket.id).expect("bucket usage");
+        assert_eq!(summary.object_count, 2);
+        assert_eq!(summary.logical_bytes, 1_024);
+
+        catalog
+            .delete_object(
+                bucket.id,
+                &ObjectKey::new("a.txt").expect("key"),
+                NewDeleteMarker::generate(),
+            )
+            .await
+            .expect("delete");
+        let after = catalog.bucket_usage().await.expect("usage");
+        let summary = after.get(&bucket.id).expect("bucket usage");
+        assert_eq!(summary.object_count, 1);
+        assert_eq!(summary.logical_bytes, 512);
+
+        let total = catalog.storage_usage().await.expect("usage");
+        assert_eq!(total.object_count, 1);
+        assert_eq!(total.bucket_count, 1);
+    }
+
+    /// A lifecycle rule is durable configuration; losing one silently would stop
+    /// expiring data an operator believes is being cleaned up.
+    #[tokio::test]
+    async fn lifecycle_rules_round_trip_and_can_be_removed() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
+        let rule = LifecycleRule {
+            id: LifecycleRuleId::new(),
+            bucket_id: bucket.id,
+            prefix: "logs/".to_owned(),
+            enabled: true,
+            expiration: Some(ExpirationDays::new(30).expect("days")),
+            noncurrent_version_expiration: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        catalog.put_lifecycle_rule(&rule).await.expect("put rule");
+
+        let listed = catalog
+            .list_lifecycle_rules(Some(bucket.id))
+            .await
+            .expect("list rules");
+        assert_eq!(listed, vec![rule.clone()]);
+
+        catalog
+            .delete_lifecycle_rule(rule.id)
+            .await
+            .expect("delete rule");
+        assert!(
+            catalog
+                .list_lifecycle_rules(Some(bucket.id))
+                .await
+                .expect("list rules")
+                .is_empty()
+        );
+        assert!(matches!(
+            catalog.delete_lifecycle_rule(rule.id).await,
+            Err(MetadataError::LifecycleRuleNotFound)
+        ));
+    }
+
+    /// Multipart state has to survive listing and part enumeration, because an
+    /// upload that cannot be found again can never be completed or aborted.
+    #[tokio::test]
+    async fn multipart_uploads_and_their_parts_are_enumerable() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
+        let upload = upload(bucket.id, "big.bin");
+        catalog
+            .create_multipart_upload(&upload)
+            .await
+            .expect("create upload");
+        for number in 1..=3 {
+            catalog
+                .put_multipart_part(&part(upload.id, number, 1_024))
+                .await
+                .expect("put part");
+        }
+
+        let uploads = catalog
+            .list_multipart_uploads(ListMultipartUploadsRequest {
+                bucket_id: bucket.id,
+                prefix: String::new(),
+                upload_id_marker: None,
+                limit: 10,
+            })
+            .await
+            .expect("list uploads");
+        assert_eq!(uploads.uploads.len(), 1);
+
+        let parts = catalog
+            .list_multipart_parts(upload.id, None, 10)
+            .await
+            .expect("list parts");
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part.number.get())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "parts must enumerate in ascending order"
+        );
+
+        catalog
+            .abort_multipart_upload(upload.id)
+            .await
+            .expect("abort");
+        assert!(
+            catalog
+                .get_multipart_upload(upload.id)
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_multipart_upload_is_reported_as_missing() {
+        let (_directory, catalog) = catalog().await;
+        assert!(
+            catalog
+                .get_multipart_upload(UploadId::new())
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+        assert!(matches!(
+            catalog.abort_multipart_upload(UploadId::new()).await,
+            Err(MetadataError::MultipartUploadNotFound)
+        ));
+    }
+
+    /// Payload cleanup is what stops deleted objects leaking disk. A payload
+    /// still referenced by any version must never be queued for removal.
+    #[tokio::test]
+    async fn deleted_payloads_are_queued_for_cleanup_once_unreferenced() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
+        let stored = object(bucket.id, "a.txt", 64);
+        catalog.put_object(&stored).await.expect("put");
+        assert!(
+            catalog
+                .payload_referenced(stored.id)
+                .await
+                .expect("referenced")
+        );
+
+        catalog
+            .delete_object(bucket.id, &stored.key, NewDeleteMarker::generate())
+            .await
+            .expect("delete");
+        let queued = catalog.pending_cleanup(10).await.expect("pending");
+        assert!(queued.contains(&stored.id), "{queued:?}");
+
+        catalog
+            .complete_cleanup(stored.id)
+            .await
+            .expect("complete cleanup");
+        assert!(
+            catalog
+                .pending_cleanup(10)
+                .await
+                .expect("pending")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_catalog_reports_itself_ready() {
+        let (_directory, catalog) = catalog().await;
+        catalog.check_ready().await.expect("ready");
     }
 }

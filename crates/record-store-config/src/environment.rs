@@ -396,3 +396,300 @@ mod tests {
         assert!(format!("{:?}", config.cluster.join_token).contains("redacted"));
     }
 }
+
+#[cfg(test)]
+mod exhaustive_tests {
+    use std::collections::BTreeSet;
+
+    use crate::test_support::credentials;
+    use crate::{Config, DeploymentMode};
+
+    /// Every variable the overlay reads, with a distinctive valid value.
+    ///
+    /// Setting all of them at once is what makes this a contract test rather
+    /// than a sampling: an overlay arm that silently stops reading its variable
+    /// shows up here as a field that kept its default.
+    fn every_variable(directory: &std::path::Path) -> Vec<(&'static str, String)> {
+        let mut settings: Vec<(&'static str, String)> = vec![
+            ("RECORD_STORE_MODE", "cluster".into()),
+            ("RECORD_STORE_S3_BIND", "127.0.0.1:17600".into()),
+            ("RECORD_STORE_RPC_BIND", "127.0.0.1:17603".into()),
+            ("RECORD_STORE_RPC_ADVERTISE", "node-a:17603".into()),
+            ("RECORD_STORE_API_BIND", "127.0.0.1:17601".into()),
+            ("RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS", "45".into()),
+            ("RECORD_STORE_STORAGE_DATA_DIRECTORY", "/srv/records".into()),
+            (
+                "RECORD_STORE_STORAGE_TEMPORARY_DIRECTORY",
+                "/srv/records-tmp".into(),
+            ),
+            ("RECORD_STORE_STORAGE_ENCRYPTION_ENABLED", "true".into()),
+            (
+                "RECORD_STORE_CREDENTIAL_MASTER_KEY",
+                "credential-master-key-at-least-32-bytes".into(),
+            ),
+            ("RECORD_STORE_ROOT_S3_ENABLED", "false".into()),
+            (
+                "RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN",
+                "system-token-at-least-thirty-two-bytes".into(),
+            ),
+            (
+                "RECORD_STORE_MANAGEMENT_STORAGE_TOKEN",
+                "storage-token-at-least-thirty-two-byte".into(),
+            ),
+            (
+                "RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN",
+                "auditor-token-at-least-thirty-two-byte".into(),
+            ),
+            (
+                "RECORD_STORE_METRICS_SCRAPE_TOKEN",
+                "metrics-token-at-least-thirty-two-byte".into(),
+            ),
+            ("RECORD_STORE_MAX_CONCURRENT_OPERATIONS", "64".into()),
+            ("RECORD_STORE_MAX_HEADER_BYTES", "32768".into()),
+            ("RECORD_STORE_WEBHOOK_ALLOW_HTTP", "true".into()),
+            ("RECORD_STORE_WEBHOOK_ALLOW_PRIVATE_NETWORKS", "true".into()),
+            ("RECORD_STORE_WEBHOOK_TIMEOUT_SECONDS", "9".into()),
+            ("RECORD_STORE_WEBHOOK_MAXIMUM_ATTEMPTS", "7".into()),
+            ("RECORD_STORE_WEBHOOK_POLL_INTERVAL_SECONDS", "11".into()),
+            ("RECORD_STORE_LIFECYCLE_INTERVAL_SECONDS", "600".into()),
+            ("RECORD_STORE_LIFECYCLE_BATCH_SIZE", "250".into()),
+            ("RECORD_STORE_SHARING_SHARES_ENABLED", "true".into()),
+            ("RECORD_STORE_SHARING_EMBEDS_ENABLED", "true".into()),
+            ("RECORD_STORE_SHARING_MAXIMUM_LIFETIME_DAYS", "14".into()),
+            ("RECORD_STORE_SHARING_REQUIRE_EXPIRATION", "true".into()),
+            ("RECORD_STORE_SHARING_REQUIRE_PASSWORD", "true".into()),
+            ("RECORD_STORE_SHARING_MAXIMUM_ACCESS_COUNT", "500".into()),
+            ("RECORD_STORE_SHARING_TOKEN_PROBES_PER_MINUTE", "30".into()),
+            ("RECORD_STORE_SHARING_UNLOCK_LIFETIME_HOURS", "6".into()),
+            (
+                "RECORD_STORE_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE",
+                "12".into(),
+            ),
+            (
+                "RECORD_STORE_SHARING_PREVIEW_TEXT_LIMIT_BYTES",
+                "65536".into(),
+            ),
+            (
+                "RECORD_STORE_SHARING_SHARE_BASE_URL",
+                "https://share.example".into(),
+            ),
+            (
+                "RECORD_STORE_SHARING_EMBED_BASE_URL",
+                "https://embed.example".into(),
+            ),
+            ("RECORD_STORE_CLUSTER_SEEDS", "node-b:17603".into()),
+            ("RECORD_STORE_CLUSTER_JOIN_TOKEN", "join-token".into()),
+            ("RECORD_STORE_CLUSTER_STORAGE_CLASS", "standard".into()),
+            ("RECORD_STORE_CLUSTER_FAILURE_DOMAIN", "rack=a".into()),
+            (
+                "RECORD_STORE_CLUSTER_S3_ENDPOINT",
+                "https://s3.example".into(),
+            ),
+            ("RECORD_STORE_CLUSTER_REPLICATION_FACTOR", "3".into()),
+            (
+                "RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT",
+                "40".into(),
+            ),
+            (
+                "RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT",
+                "80".into(),
+            ),
+            (
+                "RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT",
+                "95".into(),
+            ),
+            ("RECORD_STORE_CLUSTER_MOVEMENT_CONCURRENCY", "4".into()),
+            (
+                "RECORD_STORE_CLUSTER_MOVEMENT_BYTES_PER_SECOND",
+                "1048576".into(),
+            ),
+            (
+                "RECORD_STORE_CLUSTER_RECONCILE_INTERVAL_SECONDS",
+                "20".into(),
+            ),
+            (
+                "RECORD_STORE_CLUSTER_TLS_CERTIFICATE",
+                path(directory, "node.crt"),
+            ),
+            (
+                "RECORD_STORE_CLUSTER_TLS_PRIVATE_KEY",
+                path(directory, "node.key"),
+            ),
+            (
+                "RECORD_STORE_CLUSTER_TLS_PEER_CA",
+                path(directory, "peer-ca.crt"),
+            ),
+            (
+                "RECORD_STORE_CLUSTER_TLS_CLIENT_CA",
+                path(directory, "client-ca.crt"),
+            ),
+            ("RECORD_STORE_CLUSTER_TLS_SERVER_NAME", "node-a".into()),
+            ("RECORD_STORE_LOG", "debug".into()),
+            ("RECORD_STORE_LOG_JSON", "true".into()),
+        ];
+        settings.extend(
+            credentials()
+                .into_iter()
+                .map(|(name, value)| (name, value.to_owned())),
+        );
+        settings
+    }
+
+    /// Creates a placeholder file and returns its path, for settings that name
+    /// one. Validation checks that the file is present, not that it parses.
+    fn path(directory: &std::path::Path, name: &str) -> String {
+        let file = directory.join(name);
+        std::fs::write(&file, b"placeholder").expect("write");
+        file.to_str().expect("path").to_owned()
+    }
+
+    /// Loads a configuration built entirely from the environment.
+    fn loaded() -> (tempfile::TempDir, Config) {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let config = Config::load_with_environment(None, every_variable(directory.path()))
+            .expect("every documented variable must be accepted together");
+        (directory, config)
+    }
+
+    /// The whole overlay applied at once, checked field by field. A variable
+    /// that stops being read leaves its field at the default and fails here.
+    #[test]
+    fn every_environment_variable_reaches_its_setting() {
+        let (_directory, config) = loaded();
+
+        assert_eq!(config.server.mode, DeploymentMode::Cluster);
+        assert_eq!(config.server.s3_bind.to_string(), "127.0.0.1:17600");
+        assert_eq!(config.server.rpc_bind.to_string(), "127.0.0.1:17603");
+        assert_eq!(config.server.rpc_advertise.as_deref(), Some("node-a:17603"));
+        assert_eq!(config.server.api_bind.to_string(), "127.0.0.1:17601");
+        assert_eq!(config.server.shutdown_grace_period_seconds, 45);
+
+        assert_eq!(
+            config.storage.data_directory,
+            std::path::PathBuf::from("/srv/records")
+        );
+        assert_eq!(
+            config.storage.temporary_directory,
+            Some(std::path::PathBuf::from("/srv/records-tmp"))
+        );
+        assert!(config.storage.encryption_enabled);
+
+        assert!(!config.auth.root_s3_enabled);
+        assert!(config.auth.credential_master_key.is_some());
+        assert!(config.auth.management_system_token.is_some());
+        assert!(config.auth.management_storage_token.is_some());
+        assert!(config.auth.management_auditor_token.is_some());
+        assert!(config.auth.metrics_scrape_token.is_some());
+
+        assert_eq!(config.limits.maximum_concurrent_operations, 64);
+        assert_eq!(config.limits.maximum_header_bytes, 32_768);
+
+        assert!(config.webhooks.allow_http);
+        assert!(config.webhooks.allow_private_networks);
+        assert_eq!(config.webhooks.request_timeout_seconds, 9);
+        assert_eq!(config.webhooks.maximum_attempts, 7);
+        assert_eq!(config.webhooks.poll_interval_seconds, 11);
+
+        assert_eq!(config.lifecycle.interval_seconds, 600);
+        assert_eq!(config.lifecycle.batch_size, 250);
+
+        assert!(config.sharing.shares_enabled);
+        assert!(config.sharing.embeds_enabled);
+        assert_eq!(config.sharing.maximum_lifetime_days, 14);
+        assert!(config.sharing.require_expiration);
+        assert!(config.sharing.require_share_password);
+        assert_eq!(config.sharing.maximum_access_count, 500);
+        assert_eq!(config.sharing.token_probes_per_minute, 30);
+        assert_eq!(config.sharing.unlock_lifetime_hours, 6);
+        assert_eq!(config.sharing.password_attempts_per_minute, 12);
+        assert_eq!(config.sharing.preview_text_limit_bytes, 65_536);
+        assert_eq!(
+            config.sharing.share_base_url.as_deref(),
+            Some("https://share.example")
+        );
+        assert_eq!(
+            config.sharing.embed_base_url.as_deref(),
+            Some("https://embed.example")
+        );
+
+        assert_eq!(config.cluster.seeds, vec!["node-b:17603".to_owned()]);
+        assert!(config.cluster.join_token.is_some());
+        assert_eq!(config.cluster.storage_class, "standard");
+        assert_eq!(config.cluster.replication_factor, 3);
+        assert_eq!(config.cluster.capacity_low_watermark_percent, 40);
+        assert_eq!(config.cluster.capacity_high_watermark_percent, 80);
+        assert_eq!(config.cluster.capacity_critical_watermark_percent, 95);
+        assert_eq!(config.cluster.movement_concurrency, 4);
+        assert_eq!(config.cluster.movement_bytes_per_second, 1_048_576);
+        assert_eq!(config.cluster.reconcile_interval_seconds, 20);
+
+        assert_eq!(config.observability.log_filter, "debug");
+        assert!(config.observability.json);
+    }
+
+    /// The overlay is the deployment contract, so the set of variables it reads
+    /// is pinned. A new one added without a test is caught here.
+    #[test]
+    fn the_documented_variable_set_matches_what_the_overlay_reads() {
+        let source = include_str!("environment.rs");
+        let read: BTreeSet<&str> = source
+            .match_indices("environment_value(environment, \"")
+            .filter_map(|(index, marker)| {
+                let rest = &source[index + marker.len()..];
+                rest.find('"').map(|end| &rest[..end])
+            })
+            .collect();
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let covered: BTreeSet<&str> = every_variable(directory.path())
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+
+        let missing: Vec<_> = read.difference(&covered).collect();
+        assert!(
+            missing.is_empty(),
+            "these variables are read but not exercised: {missing:?}"
+        );
+    }
+
+    /// A configuration built entirely from the environment still has to satisfy
+    /// validation; an overlay that produces an unusable deployment is worse than
+    /// one that refuses at parse time.
+    #[test]
+    fn a_fully_environment_driven_configuration_validates() {
+        let (_directory, config) = loaded();
+        config.validate().expect("validate");
+    }
+
+    /// Every numeric setting is parsed rather than defaulted, so a value that is
+    /// not a number has to be refused by name.
+    #[test]
+    fn a_non_numeric_value_is_refused_and_names_the_variable() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut settings = every_variable(directory.path());
+        settings.retain(|(name, _)| *name != "RECORD_STORE_MAX_HEADER_BYTES");
+        settings.push(("RECORD_STORE_MAX_HEADER_BYTES", "plenty".into()));
+
+        let error = Config::load_with_environment(None, settings)
+            .expect_err("a non-numeric byte count must be refused");
+        assert!(
+            error.to_string().contains("RECORD_STORE_MAX_HEADER_BYTES"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_listener_address_is_refused_by_name() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut settings = every_variable(directory.path());
+        settings.retain(|(name, _)| *name != "RECORD_STORE_API_BIND");
+        settings.push(("RECORD_STORE_API_BIND", "not-an-address".into()));
+
+        let error =
+            Config::load_with_environment(None, settings).expect_err("bad address must be refused");
+        assert!(
+            error.to_string().contains("RECORD_STORE_API_BIND"),
+            "{error}"
+        );
+    }
+}

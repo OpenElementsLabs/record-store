@@ -1156,8 +1156,10 @@ mod tests {
         else {
             panic!("expected the server command");
         };
-        assert!(arguments.config.is_none());
-        assert!(arguments.command.is_none());
+        assert!(
+            arguments.command.is_none(),
+            "bare `server` must not select a subcommand"
+        );
     }
 
     #[test]

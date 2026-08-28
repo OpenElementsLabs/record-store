@@ -52,3 +52,54 @@ pub(crate) fn cors_configuration() -> CorsConfiguration {
         }],
     }
 }
+
+/// Opens a fresh catalog in a throwaway directory.
+pub(crate) async fn catalog() -> (tempfile::TempDir, crate::RedbMetadataRepository) {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let repository = crate::RedbMetadataRepository::open(directory.path().join("metadata.redb"))
+        .await
+        .expect("catalog");
+    (directory, repository)
+}
+
+/// Opens a catalog and registers one bucket, returning both.
+pub(crate) async fn catalog_with_bucket(
+    name: &str,
+) -> (tempfile::TempDir, crate::RedbMetadataRepository, Bucket) {
+    use crate::MetadataRepository;
+    let (directory, repository) = catalog().await;
+    let bucket = bucket(name);
+    repository.create_bucket(&bucket).await.expect("bucket");
+    (directory, repository, bucket)
+}
+
+/// Builds a multipart upload for the given bucket and key.
+pub(crate) fn upload(bucket_id: BucketId, key: &str) -> record_store_core::MultipartUpload {
+    record_store_core::MultipartUpload {
+        id: record_store_core::UploadId::new(),
+        bucket_id,
+        key: ObjectKey::new(key).expect("key"),
+        content_type: None,
+        custom_metadata: BTreeMap::new(),
+        initiated_at: Utc::now(),
+        state: record_store_core::MultipartUploadState::Active,
+    }
+}
+
+/// Builds a stored part for a multipart upload.
+pub(crate) fn part(
+    upload_id: record_store_core::UploadId,
+    number: u16,
+    size: u64,
+) -> record_store_core::UploadedPart {
+    record_store_core::UploadedPart {
+        upload_id,
+        number: record_store_core::PartNumber::new(number).expect("part number"),
+        object_id: ObjectId::new(),
+        size,
+        checksum: Checksum::sha256([number as u8; 32]),
+        payload_format: record_store_core::PayloadFormat::Plaintext,
+        etag: ETag::from_md5([number as u8; 16]),
+        modified_at: Utc::now(),
+    }
+}

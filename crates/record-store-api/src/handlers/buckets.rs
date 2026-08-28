@@ -173,3 +173,182 @@ pub(crate) async fn set_bucket_quota(
         .map(Json)
         .map_err(|error| service_to_api_error(error, request_id))
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    use crate::test_support::{AUDITOR_TOKEN, admin, api, call, expect_status, signed};
+
+    #[tokio::test]
+    async fn a_bucket_appears_in_the_listing_once_created_and_goes_when_deleted() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/buckets", Some(json!({"name": "photos"}))),
+            StatusCode::CREATED,
+        )
+        .await;
+
+        let listed =
+            expect_status(&api, admin("GET", "/api/v1/buckets", None), StatusCode::OK).await;
+        assert!(
+            listed
+                .as_array()
+                .expect("array")
+                .iter()
+                .any(|entry| entry["name"] == "photos"),
+            "{listed}"
+        );
+
+        expect_status(
+            &api,
+            admin("DELETE", "/api/v1/buckets/photos", None),
+            StatusCode::NO_CONTENT,
+        )
+        .await;
+        let empty =
+            expect_status(&api, admin("GET", "/api/v1/buckets", None), StatusCode::OK).await;
+        assert!(empty.as_array().expect("array").is_empty(), "{empty}");
+    }
+
+    /// The name is validated by the domain type, so an unusable name has to be
+    /// refused at the edge rather than reaching the catalog.
+    #[tokio::test]
+    async fn an_invalid_bucket_name_is_refused_before_it_reaches_the_catalog() {
+        let (_directory, api) = api().await;
+        for name in ["", "UPPERCASE", "a", "has spaces", "192.168.1.1"] {
+            let response = call(
+                &api,
+                admin("POST", "/api/v1/buckets", Some(json!({"name": name}))),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "accepted invalid bucket name {name:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn creating_the_same_bucket_twice_reports_the_conflict() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/buckets", Some(json!({"name": "photos"}))),
+            StatusCode::CREATED,
+        )
+        .await;
+        let response = call(
+            &api,
+            admin("POST", "/api/v1/buckets", Some(json!({"name": "photos"}))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_bucket_that_was_never_created_is_a_not_found() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin("DELETE", "/api/v1/buckets/absent", None),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    /// Versioning is a three-state switch and every transition must be durable,
+    /// because suspending it changes how every later write behaves.
+    #[tokio::test]
+    async fn versioning_transitions_are_readable_after_they_are_applied() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/buckets", Some(json!({"name": "photos"}))),
+            StatusCode::CREATED,
+        )
+        .await;
+
+        for state in ["enabled", "suspended"] {
+            expect_status(
+                &api,
+                admin(
+                    "PUT",
+                    "/api/v1/buckets/photos/versioning",
+                    Some(json!({"versioning": state})),
+                ),
+                StatusCode::OK,
+            )
+            .await;
+            let read = expect_status(
+                &api,
+                admin("GET", "/api/v1/buckets/photos/versioning", None),
+                StatusCode::OK,
+            )
+            .await;
+            assert_eq!(read["versioning"], state, "{read}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_quota_can_be_set_and_lifted_again() {
+        let (_directory, api) = api().await;
+        expect_status(
+            &api,
+            admin("POST", "/api/v1/buckets", Some(json!({"name": "photos"}))),
+            StatusCode::CREATED,
+        )
+        .await;
+
+        expect_status(
+            &api,
+            admin(
+                "PUT",
+                "/api/v1/buckets/photos/quota",
+                Some(json!({
+                    "quota": {
+                        "bytes": {"mode": "limit", "bytes": 4096},
+                        "objects": {"mode": "limit", "objects": 10},
+                    }
+                })),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+
+        let listed =
+            expect_status(&api, admin("GET", "/api/v1/buckets", None), StatusCode::OK).await;
+        let bucket = listed
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|entry| entry["name"] == "photos")
+            .expect("bucket");
+        assert_eq!(bucket["quota"]["bytes"]["bytes"], 4096, "{bucket}");
+        assert_eq!(bucket["quota"]["objects"]["objects"], 10, "{bucket}");
+    }
+
+    /// Bucket lifecycle is a storage-administration action, so an auditor may
+    /// read the listing but must not be able to create or destroy a bucket.
+    #[tokio::test]
+    async fn an_auditor_may_read_buckets_but_not_change_them() {
+        let (_directory, api) = api().await;
+        let read = call(&api, signed("GET", "/api/v1/buckets", AUDITOR_TOKEN, None)).await;
+        assert_eq!(read.status(), StatusCode::OK);
+
+        let write = call(
+            &api,
+            signed(
+                "POST",
+                "/api/v1/buckets",
+                AUDITOR_TOKEN,
+                Some(json!({"name": "photos"})),
+            ),
+        )
+        .await;
+        assert_eq!(write.status(), StatusCode::FORBIDDEN);
+    }
+}
