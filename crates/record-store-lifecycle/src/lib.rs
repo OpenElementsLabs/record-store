@@ -343,7 +343,7 @@ mod tests {
         Bucket, BucketId, BucketName, BucketQuota, Checksum, ETag, ExpirationDays, ObjectId,
         ObjectKey, ObjectMetadata, OrganizationId, VersionId, VersioningState,
     };
-    use record_store_metadata::RedbMetadataRepository;
+    use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
     use record_store_service::ServiceLimits;
     use record_store_storage::{LocalFilesystemStore, ObjectStore};
     use tempfile::tempdir;
@@ -456,6 +456,159 @@ mod tests {
                 .events
                 .len(),
             1
+        );
+    }
+
+    /// The batch size bounds how much one pass may delete. Zero would make the
+    /// service inert and an unbounded value would let one pass stall the node,
+    /// so both ends are refused at construction rather than at run time.
+    #[tokio::test]
+    async fn an_unusable_batch_size_is_refused_at_construction() {
+        let directory = tempdir().expect("temporary directory");
+        let metadata: Arc<dyn MetadataRepository> = Arc::new(
+            RedbMetadataRepository::open(directory.path().join("catalog.redb"))
+                .await
+                .expect("metadata"),
+        );
+        let storage: Arc<dyn ObjectStore> = Arc::new(
+            LocalFilesystemStore::open(
+                directory.path().join("data"),
+                directory.path().join("tmp"),
+                Arc::clone(&metadata),
+            )
+            .await
+            .expect("storage"),
+        );
+        let audit: Arc<dyn record_store_audit::AuditRepository> = Arc::new(
+            RedbAuditRepository::open(directory.path().join("audit.redb"))
+                .await
+                .expect("audit"),
+        );
+        let services = Services::new(
+            storage,
+            Arc::clone(&metadata),
+            OrganizationId::new(),
+            ServiceLimits {
+                maximum_concurrent_operations: 4,
+                maximum_custom_metadata_entries: 8,
+                maximum_custom_metadata_bytes: 1024,
+            },
+        );
+
+        for batch_size in [0, 1_001] {
+            let result = LifecycleWorker::open(
+                directory
+                    .path()
+                    .join(format!("lifecycle-{batch_size}.redb")),
+                Arc::clone(&metadata),
+                services.clone(),
+                Arc::clone(&audit),
+                Duration::from_secs(60),
+                batch_size,
+            )
+            .await;
+            assert!(
+                matches!(result, Err(LifecycleError::InvalidBatchSize)),
+                "accepted batch size {batch_size}"
+            );
+        }
+
+        LifecycleWorker::open(
+            directory.path().join("lifecycle-ok.redb"),
+            metadata,
+            services,
+            audit,
+            Duration::from_secs(60),
+            100,
+        )
+        .await
+        .expect("a bounded batch size is accepted");
+    }
+
+    /// A pass over a deployment with no rules must do nothing rather than
+    /// treating "no rule" as "expire everything".
+    #[tokio::test]
+    async fn a_pass_with_no_rules_deletes_nothing() {
+        let directory = tempdir().expect("temporary directory");
+        let metadata: Arc<dyn MetadataRepository> = Arc::new(
+            RedbMetadataRepository::open(directory.path().join("catalog.redb"))
+                .await
+                .expect("metadata"),
+        );
+        let bucket = Bucket {
+            id: BucketId::new(),
+            organization_id: OrganizationId::new(),
+            name: BucketName::new("kept").expect("bucket"),
+            created_at: Utc::now(),
+            versioning: VersioningState::Disabled,
+            quota: BucketQuota::default(),
+            durability_policy: None,
+            cors: None,
+        };
+        metadata.create_bucket(&bucket).await.expect("bucket");
+        let key = ObjectKey::new("old.txt").expect("key");
+        metadata
+            .put_object(&ObjectMetadata {
+                id: ObjectId::new(),
+                bucket_id: bucket.id,
+                key: key.clone(),
+                version_id: VersionId::new(),
+                size: 0,
+                checksum: Checksum::sha256([0_u8; 32]),
+                payload_format: record_store_core::PayloadFormat::Plaintext,
+                durability: record_store_core::DurabilityProfile::Single,
+                etag: ETag::from_md5([0_u8; 16]),
+                content_type: None,
+                custom_metadata: BTreeMap::new(),
+                created_at: Utc::now() - chrono::Duration::days(365),
+                modified_at: Utc::now() - chrono::Duration::days(365),
+            })
+            .await
+            .expect("object");
+
+        let storage: Arc<dyn ObjectStore> = Arc::new(
+            LocalFilesystemStore::open(
+                directory.path().join("data"),
+                directory.path().join("tmp"),
+                Arc::clone(&metadata),
+            )
+            .await
+            .expect("storage"),
+        );
+        let audit: Arc<dyn record_store_audit::AuditRepository> = Arc::new(
+            RedbAuditRepository::open(directory.path().join("audit.redb"))
+                .await
+                .expect("audit"),
+        );
+        let services = Services::new(
+            storage,
+            Arc::clone(&metadata),
+            bucket.organization_id,
+            ServiceLimits {
+                maximum_concurrent_operations: 4,
+                maximum_custom_metadata_entries: 8,
+                maximum_custom_metadata_bytes: 1024,
+            },
+        );
+        let lifecycle = LifecycleWorker::open(
+            directory.path().join("lifecycle.redb"),
+            Arc::clone(&metadata),
+            services,
+            audit,
+            Duration::from_secs(60),
+            100,
+        )
+        .await
+        .expect("lifecycle");
+
+        lifecycle.run_once().await.expect("pass");
+        assert!(
+            metadata
+                .get_object(bucket.id, &key)
+                .await
+                .expect("read")
+                .is_some(),
+            "an object nobody wrote a rule for must survive"
         );
     }
 }

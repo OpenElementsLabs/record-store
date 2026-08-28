@@ -374,3 +374,155 @@ pub async fn verify_local(
         .await?;
     Ok(state_for(verification.present, verification.matches))
 }
+
+#[cfg(test)]
+mod tests {
+    use record_store_cluster::{ReplicaState, ReplicaTaskKind};
+    use record_store_core::{NodeId, ObjectId};
+
+    use super::*;
+    use crate::test_support::{placement, replica, task};
+
+    /// Only a verified replica may be read as a movement source. Repairing from
+    /// a stale or corrupt copy would spread the damage instead of fixing it.
+    #[test]
+    fn only_healthy_replicas_are_offered_as_repair_sources() {
+        let healthy = NodeId::new();
+        let excluded = NodeId::new();
+        let unusable = [
+            ReplicaState::Pending,
+            ReplicaState::Repairing,
+            ReplicaState::Stale,
+            ReplicaState::Missing,
+            ReplicaState::Deleting,
+            ReplicaState::Corrupt,
+        ];
+
+        let mut replicas = vec![replica(healthy, ReplicaState::Healthy)];
+        replicas.extend(
+            unusable
+                .into_iter()
+                .map(|state| replica(NodeId::new(), state)),
+        );
+        replicas.push(replica(excluded, ReplicaState::Healthy));
+
+        let sources = repair_sources(&placement(ObjectId::new(), replicas), excluded);
+        assert_eq!(
+            sources,
+            vec![healthy],
+            "only the healthy replica that is not excluded may be a source"
+        );
+    }
+
+    /// The node being repaired must never be its own source, even when its
+    /// record still claims to be healthy.
+    #[test]
+    fn the_excluded_node_is_never_its_own_repair_source() {
+        let node = NodeId::new();
+        let sources = repair_sources(
+            &placement(ObjectId::new(), vec![replica(node, ReplicaState::Healthy)]),
+            node,
+        );
+        assert!(sources.is_empty());
+    }
+
+    /// Deletions run on the node that still holds the bytes; every other kind of
+    /// movement runs on the node receiving them. Getting this backwards would
+    /// ask an idle node to delete nothing while the real holder kept its copy.
+    #[test]
+    fn a_deletion_executes_on_the_holder_and_a_transfer_on_the_recipient() {
+        let source = NodeId::new();
+        let target = NodeId::new();
+
+        assert_eq!(
+            executor_of(&task(ReplicaTaskKind::Delete, source, target)),
+            Some(source)
+        );
+
+        for kind in [
+            ReplicaTaskKind::Repair,
+            ReplicaTaskKind::RepairCorrupt,
+            ReplicaTaskKind::Rebalance,
+            ReplicaTaskKind::RebalanceDomain,
+            ReplicaTaskKind::Drain,
+        ] {
+            assert_eq!(
+                executor_of(&task(kind, source, target)),
+                Some(target),
+                "{kind:?} must execute on the recipient"
+            );
+        }
+    }
+
+    /// A replica that is absent, corrupt, or out of date needs rebuilding; one
+    /// that is merely mid-transfer does not, or the repair loop would restart
+    /// work already in flight.
+    #[test]
+    fn repair_is_needed_only_for_replicas_that_cannot_serve_the_payload() {
+        let node = NodeId::new();
+        for (state, expected) in [
+            (ReplicaState::Missing, true),
+            (ReplicaState::Corrupt, true),
+            (ReplicaState::Stale, true),
+            (ReplicaState::Healthy, false),
+            (ReplicaState::Pending, false),
+            (ReplicaState::Repairing, false),
+            (ReplicaState::Deleting, false),
+        ] {
+            let placement = placement(ObjectId::new(), vec![replica(node, state)]);
+            assert_eq!(
+                needs_repair(&placement, node),
+                expected,
+                "{state:?} was classified incorrectly"
+            );
+        }
+    }
+
+    /// A node with no record at all is not "in need of repair" — it is simply
+    /// not a holder, and treating it as damaged would queue endless work.
+    #[test]
+    fn a_node_without_a_replica_record_neither_holds_nor_needs_repair() {
+        let holder = NodeId::new();
+        let stranger = NodeId::new();
+        let placement = placement(
+            ObjectId::new(),
+            vec![replica(holder, ReplicaState::Healthy)],
+        );
+        assert!(holds_replica(&placement, holder));
+        assert!(!holds_replica(&placement, stranger));
+        assert!(!needs_repair(&placement, stranger));
+    }
+
+    /// A record still counts as held while it is being deleted or rebuilt, so
+    /// placement never double-assigns the same payload to one node.
+    #[test]
+    fn a_replica_record_counts_as_held_in_every_state() {
+        let node = NodeId::new();
+        for state in [
+            ReplicaState::Pending,
+            ReplicaState::Healthy,
+            ReplicaState::Repairing,
+            ReplicaState::Stale,
+            ReplicaState::Missing,
+            ReplicaState::Deleting,
+            ReplicaState::Corrupt,
+        ] {
+            let placement = placement(ObjectId::new(), vec![replica(node, state)]);
+            assert!(holds_replica(&placement, node), "{state:?}");
+        }
+    }
+
+    /// Verification has three outcomes and each maps to exactly one state.
+    /// Absent bytes must not be reported as corruption: the repair paths differ.
+    #[test]
+    fn verification_results_map_to_distinct_replica_states() {
+        assert_eq!(state_for(true, true), ReplicaState::Healthy);
+        assert_eq!(state_for(true, false), ReplicaState::Corrupt);
+        assert_eq!(state_for(false, false), ReplicaState::Missing);
+        assert_eq!(
+            state_for(false, true),
+            ReplicaState::Missing,
+            "absent bytes are missing regardless of any stale checksum match"
+        );
+    }
+}

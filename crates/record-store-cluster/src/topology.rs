@@ -735,7 +735,10 @@ impl ClusterTopology {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::*;
+    use crate::catalog::test_support::registration;
 
     #[test]
     fn storage_classes_reject_unsafe_labels() {
@@ -805,5 +808,208 @@ mod tests {
         assert!(!NodeState::Offline.contributes_durability());
         assert!(!NodeState::Decommissioned.contributes_durability());
         assert!(NodeState::Suspect.contributes_durability());
+    }
+
+    /// The lifecycle is a state machine an operator drives, and a decommissioned
+    /// node must never come back. Allowing that would resurrect a node whose
+    /// replicas the cluster already redistributed.
+    #[test]
+    fn a_terminal_state_can_never_be_left() {
+        assert!(NodeState::Decommissioned.is_terminal());
+        for next in [
+            NodeState::Joining,
+            NodeState::Healthy,
+            NodeState::Suspect,
+            NodeState::Draining,
+            NodeState::Maintenance,
+            NodeState::Offline,
+            NodeState::Unreachable,
+        ] {
+            assert!(
+                !NodeState::Decommissioned.can_transition_to(next),
+                "a decommissioned node must not become {next:?}"
+            );
+        }
+        assert!(
+            NodeState::Decommissioned.can_transition_to(NodeState::Decommissioned),
+            "restating the same state is always allowed"
+        );
+    }
+
+    /// Only some states let the cluster place new replicas, serve reads, or
+    /// count towards durability. Confusing them either overloads a draining node
+    /// or hides a genuine durability shortfall.
+    #[test]
+    fn each_state_answers_the_three_scheduling_questions_distinctly() {
+        for (state, placement, reads, durability) in [
+            (NodeState::Joining, false, false, false),
+            (NodeState::Healthy, true, true, true),
+            (NodeState::Suspect, false, true, true),
+            (NodeState::Unreachable, false, false, true),
+            (NodeState::Draining, false, true, true),
+            (NodeState::Maintenance, false, false, true),
+            (NodeState::Offline, false, false, false),
+            (NodeState::Decommissioned, false, false, false),
+        ] {
+            assert_eq!(
+                state.accepts_new_replicas(),
+                placement,
+                "{state:?} placement"
+            );
+            assert_eq!(state.serves_reads(), reads, "{state:?} reads");
+            assert_eq!(
+                state.contributes_durability(),
+                durability,
+                "{state:?} durability"
+            );
+        }
+    }
+
+    /// A transition to the state a node already holds is a no-op that still
+    /// records a fresh reason, so a repeated administrative action is safe.
+    #[test]
+    fn restating_the_current_state_is_a_no_op_that_still_records_a_reason() {
+        let now = Utc::now();
+        let mut record = NodeRecord::joining(registration(), 1, true, now);
+        record
+            .transition(NodeState::Healthy, Some("joined".into()), now)
+            .expect("transition");
+
+        let changed = record
+            .transition(NodeState::Healthy, Some("still fine".into()), now)
+            .expect("no-op transition");
+        assert!(!changed);
+        assert_eq!(record.state_reason.as_deref(), Some("still fine"));
+    }
+
+    #[test]
+    fn an_impossible_transition_is_refused_and_leaves_the_state_alone() {
+        let now = Utc::now();
+        let mut record = NodeRecord::joining(registration(), 1, true, now);
+        record
+            .transition(NodeState::Decommissioned, None, now)
+            .expect("decommission");
+
+        let result = record.transition(NodeState::Healthy, None, now);
+        assert!(matches!(
+            result,
+            Err(TopologyError::InvalidStateTransition { .. })
+        ));
+        assert_eq!(record.state, NodeState::Decommissioned);
+    }
+
+    /// Utilization drives placement ordering, so the arithmetic has to hold at
+    /// the edges: an empty node is 0% and a full one is 100%, never more.
+    #[test]
+    fn utilization_is_reported_on_both_scales_without_overflowing() {
+        let empty = NodeCapacity {
+            total_bytes: 1_000,
+            available_bytes: 1_000,
+            replica_bytes: 0,
+            temporary_bytes: 0,
+        };
+        assert_eq!(empty.utilization_percent(), 0);
+        assert_eq!(empty.utilization_permille(), 0);
+
+        let full = NodeCapacity {
+            total_bytes: 1_000,
+            available_bytes: 0,
+            replica_bytes: 1_000,
+            temporary_bytes: 0,
+        };
+        assert_eq!(full.utilization_percent(), 100);
+        assert_eq!(full.utilization_permille(), 1_000);
+
+        let half = NodeCapacity {
+            total_bytes: 1_000,
+            available_bytes: 500,
+            replica_bytes: 500,
+            temporary_bytes: 0,
+        };
+        assert_eq!(half.utilization_percent(), 50);
+        assert_eq!(half.utilization_permille(), 500);
+    }
+
+    /// A node reporting no capacity at all must not divide by zero, and must not
+    /// look like the emptiest node in the cluster.
+    #[test]
+    fn a_node_reporting_no_capacity_does_not_look_empty() {
+        let unknown = NodeCapacity {
+            total_bytes: 0,
+            available_bytes: 0,
+            replica_bytes: 0,
+            temporary_bytes: 0,
+        };
+        assert_eq!(unknown.utilization_percent(), 100);
+    }
+
+    /// Placement eligibility combines the lifecycle state with how full the node
+    /// is; either one alone is not enough to keep writing to it.
+    #[test]
+    fn placement_eligibility_needs_both_a_usable_state_and_room() {
+        let config = ClusterConfig::default();
+        let now = Utc::now();
+        let mut record = NodeRecord::joining(registration(), 1, true, now);
+        record
+            .transition(NodeState::Healthy, None, now)
+            .expect("healthy");
+        record.capacity = NodeCapacity {
+            total_bytes: 1_000,
+            available_bytes: 900,
+            replica_bytes: 100,
+            temporary_bytes: 0,
+        };
+        assert!(record.eligible_for_placement(&config));
+
+        record.capacity.available_bytes = 0;
+        record.capacity.replica_bytes = 1_000;
+        assert!(
+            !record.eligible_for_placement(&config),
+            "a full node takes no new replicas"
+        );
+
+        record.capacity.available_bytes = 900;
+        record.capacity.replica_bytes = 100;
+        record
+            .transition(NodeState::Draining, None, now)
+            .expect("drain");
+        assert!(
+            !record.eligible_for_placement(&config),
+            "a draining node takes no new replicas even with room"
+        );
+    }
+
+    /// The topology view is what every scheduler reads, so its filters have to
+    /// separate members, healthy nodes, and placement candidates correctly.
+    #[test]
+    fn the_topology_view_separates_members_from_placement_candidates() {
+        let now = Utc::now();
+        let config = ClusterConfig::default();
+        let mut healthy = NodeRecord::joining(registration(), 1, true, now);
+        healthy
+            .transition(NodeState::Healthy, None, now)
+            .expect("healthy");
+        let mut draining = NodeRecord::joining(registration(), 2, true, now);
+        draining
+            .transition(NodeState::Healthy, None, now)
+            .expect("healthy");
+        draining
+            .transition(NodeState::Draining, None, now)
+            .expect("draining");
+        let joining = NodeRecord::joining(registration(), 3, true, now);
+
+        let topology = ClusterTopology::new(
+            record_store_core::ClusterId::new(),
+            config,
+            vec![healthy.clone(), draining.clone(), joining.clone()],
+        );
+
+        assert_eq!(topology.members().count(), 3);
+        assert_eq!(topology.healthy().count(), 1);
+        assert_eq!(topology.placeable().count(), 1);
+        assert!(topology.node(healthy.node_id).is_some());
+        assert!(topology.node(record_store_core::NodeId::new()).is_none());
+        assert!(topology.serves_reads(draining.node_id));
+        assert!(!topology.serves_reads(joining.node_id));
     }
 }

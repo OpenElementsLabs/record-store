@@ -835,6 +835,20 @@ mod tests {
     use super::*;
     use record_store_storage::upload_stream;
 
+    /// Encodes a small stripe and returns its manifest.
+    async fn sample_manifest() -> StripeManifest {
+        ErasureEngine::with_codec(Arc::new(ReedSolomonSimdCodec), 1, 4096)
+            .encode_one(
+                profile(4, 2),
+                0,
+                0,
+                (0_u8..=200).cycle().take(2048).collect(),
+            )
+            .await
+            .expect("encode")
+            .manifest
+    }
+
     fn profile(k: u8, m: u8) -> ErasureProfile {
         ErasureProfile::new(k, m).expect("valid profile")
     }
@@ -1041,5 +1055,87 @@ mod tests {
                 .expect("decode");
             prop_assert_eq!(decoded.bytes, payload);
         }
+    }
+
+    /// The per-stripe offsets and lengths must reconstruct exactly the requested
+    /// bytes; an off-by-one here silently returns the wrong data.
+    #[test]
+    fn a_range_plan_accounts_for_every_requested_byte() {
+        let stripe = 64_u64;
+        let object_size = 500;
+        for (offset, length) in [(0, 1), (0, 500), (63, 2), (100, 200), (499, 1)] {
+            let (resolved, stripes) = plan_range(
+                ByteRange::new(offset, length).expect("range"),
+                object_size,
+                stripe,
+            )
+            .expect("plan");
+            let planned: u64 = stripes.iter().map(|stripe| stripe.length).sum();
+            assert_eq!(
+                planned, resolved.length,
+                "offset {offset} length {length} planned {planned}"
+            );
+            assert!(
+                stripes
+                    .iter()
+                    .all(|stripe| stripe.offset + stripe.length <= 64),
+                "no stripe slice may exceed the stripe size"
+            );
+        }
+    }
+
+    /// A range past the end of the object is unsatisfiable, and a zero stripe
+    /// size is a configuration error rather than a division by zero.
+    #[test]
+    fn an_impossible_range_plan_is_refused() {
+        assert!(
+            plan_range(ByteRange::new(0, 10).expect("range"), 100, 0).is_err(),
+            "a zero stripe size must be refused"
+        );
+        assert!(
+            plan_range(ByteRange::new(200, 10).expect("range"), 100, 64).is_err(),
+            "a range past the end must be refused"
+        );
+    }
+
+    /// The manifest is read before any caller-supplied bytes are trusted, so a
+    /// structurally invalid one has to be rejected rather than decoded.
+    #[tokio::test]
+    async fn a_manifest_from_an_unknown_format_is_refused() {
+        let mut manifest = sample_manifest().await;
+        manifest.format_version = ERASURE_FORMAT_VERSION + 1;
+        let error = manifest.validate().expect_err("unknown format");
+        assert!(matches!(error, ErasureError::InvalidInput(_)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_manifest_with_an_unusable_shard_size_is_refused() {
+        for shard_size in [0, 1, SHARD_ALIGNMENT as u64 + 1] {
+            let mut manifest = sample_manifest().await;
+            manifest.shard_size = shard_size;
+            assert!(
+                manifest.validate().is_err(),
+                "accepted shard size {shard_size}"
+            );
+        }
+    }
+
+    /// Shards are addressed by index, and an index outside the stripe must
+    /// report absence rather than panicking on a caller-supplied value.
+    #[tokio::test]
+    async fn a_shard_index_outside_the_stripe_reports_absence() {
+        let manifest = sample_manifest().await;
+        let count = u16::try_from(manifest.shards.len()).expect("shard count");
+        assert!(
+            manifest
+                .shard(ShardIndex::new(count.saturating_sub(1)).expect("index"))
+                .is_some()
+        );
+        assert!(
+            manifest
+                .shard(ShardIndex::new(count).expect("index"))
+                .is_none(),
+            "one past the end is not a shard"
+        );
     }
 }

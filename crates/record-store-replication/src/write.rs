@@ -346,3 +346,69 @@ pub async fn rollback(context: &ClusterContext, object_id: ObjectId, nodes: &[No
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use record_store_core::{Checksum, ETag, NodeId};
+
+    use super::*;
+
+    fn outcome(durable: Vec<NodeId>, failed: Vec<(NodeId, String)>) -> ReplicationOutcome {
+        ReplicationOutcome {
+            size: 1_024,
+            checksum: Checksum::sha256([2_u8; 32]),
+            etag: ETag::from_md5([3_u8; 16]),
+            durable,
+            failed,
+        }
+    }
+
+    #[test]
+    fn acknowledgements_count_only_the_replicas_that_became_durable() {
+        assert_eq!(outcome(Vec::new(), Vec::new()).acknowledgements(), 0);
+        assert_eq!(
+            outcome(
+                vec![NodeId::new(), NodeId::new()],
+                vec![(NodeId::new(), "timeout".into())]
+            )
+            .acknowledgements(),
+            2
+        );
+    }
+
+    /// The count is compared against a durability policy that is itself a `u8`.
+    /// Wrapping here would turn a hugely over-replicated write into an apparent
+    /// shortfall, so the conversion saturates instead.
+    #[test]
+    fn an_implausible_replica_count_saturates_rather_than_wrapping() {
+        let durable = (0..300).map(|_| NodeId::new()).collect();
+        assert_eq!(outcome(durable, Vec::new()).acknowledgements(), u8::MAX);
+    }
+
+    /// The detail string is what an operator sees when a write misses its
+    /// durability target, so every failure has to appear with its reason.
+    #[test]
+    fn the_detail_names_every_failed_target_and_its_reason() {
+        let first = NodeId::new();
+        let second = NodeId::new();
+        let detail = outcome(
+            vec![NodeId::new()],
+            vec![
+                (first, "connection refused".into()),
+                (second, "checksum mismatch".into()),
+            ],
+        )
+        .detail();
+
+        for (node, reason) in [(first, "connection refused"), (second, "checksum mismatch")] {
+            assert!(detail.contains(&node.to_string()), "{detail}");
+            assert!(detail.contains(reason), "{detail}");
+        }
+    }
+
+    #[test]
+    fn a_fully_successful_write_says_so_plainly() {
+        let detail = outcome(vec![NodeId::new()], Vec::new()).detail();
+        assert_eq!(detail, "all selected replicas succeeded");
+    }
+}

@@ -389,3 +389,178 @@ async fn record_unreadable(context: &ClusterContext, placement: &PayloadPlacemen
     );
     let _ = context.cluster.refresh_durability_counters().await;
 }
+
+#[cfg(test)]
+mod tests {
+    use record_store_cluster::{NodeState, ReplicaState};
+    use record_store_core::{NodeId, ObjectId};
+
+    use super::*;
+    use crate::test_support::{node, placement, replica, topology};
+
+    /// Serving a read from anything but a verified replica would hand a client
+    /// bytes the cluster knows are wrong or incomplete.
+    #[test]
+    fn only_healthy_replicas_are_ever_read() {
+        let healthy = NodeId::new();
+        let others = [
+            ReplicaState::Pending,
+            ReplicaState::Repairing,
+            ReplicaState::Stale,
+            ReplicaState::Missing,
+            ReplicaState::Deleting,
+            ReplicaState::Corrupt,
+        ]
+        .map(|state| (NodeId::new(), state));
+
+        let mut replicas = vec![replica(healthy, ReplicaState::Healthy)];
+        replicas.extend(others.iter().map(|(id, state)| replica(*id, *state)));
+
+        let mut nodes = vec![node(healthy, 1, NodeState::Healthy)];
+        nodes.extend(
+            others
+                .iter()
+                .enumerate()
+                .map(|(index, (id, _))| node(*id, index as u64 + 2, NodeState::Healthy)),
+        );
+
+        let candidates = read_candidates(
+            &placement(ObjectId::new(), replicas),
+            &topology(nodes),
+            NodeId::new(),
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].node_id, healthy);
+    }
+
+    /// Reading locally avoids a network hop entirely, so a healthy local replica
+    /// must always be tried first.
+    #[test]
+    fn a_healthy_local_replica_is_always_preferred() {
+        let local = NodeId::new();
+        let remotes: Vec<NodeId> = (0..4).map(|_| NodeId::new()).collect();
+
+        let mut replicas = vec![replica(local, ReplicaState::Healthy)];
+        replicas.extend(remotes.iter().map(|id| replica(*id, ReplicaState::Healthy)));
+        let mut nodes = vec![node(local, 1, NodeState::Healthy)];
+        nodes.extend(
+            remotes
+                .iter()
+                .enumerate()
+                .map(|(index, id)| node(*id, index as u64 + 2, NodeState::Healthy)),
+        );
+
+        let candidates = read_candidates(
+            &placement(ObjectId::new(), replicas),
+            &topology(nodes),
+            local,
+        );
+        assert!(candidates[0].local);
+        assert_eq!(candidates[0].node_id, local);
+        assert!(
+            candidates[1..].iter().all(|candidate| !candidate.local),
+            "only one candidate can be local"
+        );
+    }
+
+    /// A node that has been drained still serves reads while its replicas are
+    /// moved away; an unreachable one must be skipped so a read does not stall
+    /// on a peer the cluster already knows is gone.
+    #[test]
+    fn candidacy_follows_whether_the_node_still_serves_reads() {
+        for (state, expected) in [
+            (NodeState::Healthy, true),
+            (NodeState::Suspect, true),
+            (NodeState::Draining, true),
+            (NodeState::Unreachable, false),
+            (NodeState::Joining, false),
+            (NodeState::Decommissioned, false),
+        ] {
+            let holder = NodeId::new();
+            let candidates = read_candidates(
+                &placement(
+                    ObjectId::new(),
+                    vec![replica(holder, ReplicaState::Healthy)],
+                ),
+                &topology(vec![node(holder, 1, state)]),
+                NodeId::new(),
+            );
+            assert_eq!(
+                !candidates.is_empty(),
+                expected,
+                "{state:?} was treated incorrectly"
+            );
+        }
+    }
+
+    /// A replica record for a node the topology has never heard of must not be
+    /// read from: there is no address to reach and no health to trust.
+    #[test]
+    fn a_replica_on_an_unknown_node_is_not_a_candidate() {
+        let candidates = read_candidates(
+            &placement(
+                ObjectId::new(),
+                vec![replica(NodeId::new(), ReplicaState::Healthy)],
+            ),
+            &topology(Vec::new()),
+            NodeId::new(),
+        );
+        assert!(candidates.is_empty());
+    }
+
+    /// Ordering has to be a pure function of the object and the node set, so
+    /// every reader agrees and a retry does not reshuffle the fallback order.
+    #[test]
+    fn the_order_is_deterministic_for_the_same_object() {
+        let holders: Vec<NodeId> = (0..5).map(|_| NodeId::new()).collect();
+        let replicas = holders
+            .iter()
+            .map(|id| replica(*id, ReplicaState::Healthy))
+            .collect();
+        let nodes = holders
+            .iter()
+            .enumerate()
+            .map(|(index, id)| node(*id, index as u64 + 1, NodeState::Healthy))
+            .collect();
+        let placement = placement(ObjectId::new(), replicas);
+        let topology = topology(nodes);
+        let reader = NodeId::new();
+
+        let first = read_candidates(&placement, &topology, reader);
+        let second = read_candidates(&placement, &topology, reader);
+        assert_eq!(
+            first.iter().map(|c| c.node_id).collect::<Vec<_>>(),
+            second.iter().map(|c| c.node_id).collect::<Vec<_>>()
+        );
+        assert_eq!(first.len(), holders.len());
+    }
+
+    /// Two different objects sharing the same replica set must not put the same
+    /// peer first, or one node absorbs every remote read in the cluster.
+    #[test]
+    fn different_objects_do_not_all_prefer_the_same_peer() {
+        let holders: Vec<NodeId> = (0..4).map(|_| NodeId::new()).collect();
+        let nodes: Vec<_> = holders
+            .iter()
+            .enumerate()
+            .map(|(index, id)| node(*id, index as u64 + 1, NodeState::Healthy))
+            .collect();
+        let topology = topology(nodes);
+        let reader = NodeId::new();
+
+        let leaders: std::collections::BTreeSet<NodeId> = (0..64)
+            .map(|_| {
+                let replicas = holders
+                    .iter()
+                    .map(|id| replica(*id, ReplicaState::Healthy))
+                    .collect();
+                read_candidates(&placement(ObjectId::new(), replicas), &topology, reader)[0].node_id
+            })
+            .collect();
+
+        assert!(
+            leaders.len() > 1,
+            "every object chose the same first peer, which concentrates read load"
+        );
+    }
+}

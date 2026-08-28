@@ -360,4 +360,89 @@ mod tests {
         std::fs::write(store.path(), b"{not json").expect("write malformed identity");
         assert!(matches!(store.load(), Err(IdentityError::Malformed(_))));
     }
+
+    /// A node's identity survives restarts. Regenerating it would make the node
+    /// look like a stranger to the cluster and strand its replicas.
+    #[test]
+    fn an_identity_is_created_once_and_reloaded_thereafter() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = NodeIdentityStore::new(directory.path());
+        let now = Utc::now();
+
+        let first = store.load_or_create(now).expect("create");
+        let second = store.load_or_create(now).expect("reload");
+        assert_eq!(first.node_id, second.node_id);
+        assert!(!first.is_bound());
+        assert!(store.path().exists());
+    }
+
+    /// Binding records which cluster the node belongs to. Re-binding to the same
+    /// cluster is idempotent so a restarted join does not fail.
+    #[test]
+    fn binding_to_the_same_cluster_twice_is_idempotent() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = NodeIdentityStore::new(directory.path());
+        let now = Utc::now();
+        let cluster_id = ClusterId::new();
+
+        let bound = store.bind(cluster_id, 1, now).expect("bind");
+        assert!(bound.is_bound());
+        assert_eq!(bound.cluster_id, Some(cluster_id));
+
+        let again = store.bind(cluster_id, 1, now).expect("rebind");
+        assert_eq!(again.node_id, bound.node_id);
+        assert_eq!(again.raft_id, Some(1));
+    }
+
+    /// A node already bound to one cluster must refuse another. Accepting it
+    /// would let a node carry replicas from two clusters at once.
+    #[test]
+    fn a_node_already_bound_refuses_a_different_cluster() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = NodeIdentityStore::new(directory.path());
+        let now = Utc::now();
+        store.bind(ClusterId::new(), 1, now).expect("bind");
+
+        let error = store
+            .bind(ClusterId::new(), 1, now)
+            .expect_err("a second cluster must be refused");
+        assert!(
+            matches!(error, IdentityError::ClusterMismatch { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// The consensus member identifier is equally durable: changing it would
+    /// make the group believe two members share one log.
+    #[test]
+    fn a_bound_node_refuses_a_different_member_identifier() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = NodeIdentityStore::new(directory.path());
+        let now = Utc::now();
+        let cluster_id = ClusterId::new();
+        store.bind(cluster_id, 1, now).expect("bind");
+
+        let error = store
+            .bind(cluster_id, 2, now)
+            .expect_err("a different member id must be refused");
+        assert!(
+            matches!(error, IdentityError::MemberMismatch { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// The identity is written atomically, so a torn file from a crash mid-write
+    /// is reported rather than silently treated as a fresh node.
+    #[test]
+    fn a_corrupt_identity_file_is_reported_rather_than_replaced() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = NodeIdentityStore::new(directory.path());
+        store.load_or_create(Utc::now()).expect("create");
+        std::fs::write(store.path(), b"{ not json").expect("corrupt the file");
+
+        assert!(
+            store.load().is_err(),
+            "a corrupt identity must not be silently discarded"
+        );
+    }
 }

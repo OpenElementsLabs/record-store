@@ -33,8 +33,13 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 http-body-util.workspace = true
+openraft.workspace = true
+record-store-rpc = { path = "../record-store-rpc" }
 serde_json.workspace = true
+tempfile.workspace = true
+tower.workspace = true
 
 [lints]
 workspace = true
