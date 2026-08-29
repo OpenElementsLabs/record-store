@@ -10,7 +10,11 @@ import { StatusBadge, StatusPending } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useClusterEnabled, useDeployment } from '@/features/system/deployment';
+import {
+  deploymentModeLabel,
+  useClusterEnabled,
+  useDeployment,
+} from '@/features/system/deployment';
 import { AttentionPanel } from '@/features/overview/attention-panel';
 import { RecentActivity } from '@/features/overview/recent-activity';
 import { queryKeys, useStorageStatus, useStorageUsage } from '@/hooks/use-system';
@@ -120,7 +124,7 @@ export function OverviewScreen() {
             <CardTitle>Deployment</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
-            <Detail label="Mode" value={info.mode === 'cluster' ? 'Cluster' : 'Standalone'} />
+            <Detail label="Mode" value={deploymentModeLabel(info.mode)} />
             <Detail label="Version" value={info.version} />
             {info.cluster_id ? <Detail label="Cluster ID" value={info.cluster_id} mono /> : null}
             <div className="pt-1">

@@ -8,7 +8,11 @@ import { PageHeader } from '@/components/page-header';
 import { StatusBadge, StatusPending, type StatusLevel } from '@/components/status-badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useClusterEnabled, useDeployment } from '@/features/system/deployment';
+import {
+  deploymentModeLabel,
+  useClusterEnabled,
+  useDeployment,
+} from '@/features/system/deployment';
 import { queryKeys, useStorageStatus, useStorageUsage } from '@/hooks/use-system';
 import { fetchClusterHealth } from '@/lib/api/cluster';
 import { fetchClusterStatus } from '@/lib/api/cluster';
@@ -46,13 +50,7 @@ export function HealthScreen() {
             )}
           </Detail>
           <Detail label="Mode">
-            <span className="type-body">
-              {info.mode === 'cluster'
-                ? 'Cluster'
-                : info.mode === 'control'
-                  ? 'Control'
-                  : 'Standalone'}
-            </span>
+            <span className="type-body">{deploymentModeLabel(info.mode)}</span>
           </Detail>
           <Detail label="Version">
             <span className="font-mono type-body">{info.version}</span>

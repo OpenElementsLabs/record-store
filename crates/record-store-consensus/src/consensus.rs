@@ -211,7 +211,11 @@ pub struct ConsensusMemberStatus {
     /// Whether the member votes.
     pub voter: bool,
     /// Whether the leader currently has replication contact with the member.
-    pub reachable: bool,
+    ///
+    /// `None` means this member cannot observe it. Only the leader tracks
+    /// replication contact, so a follower knows about itself and the leader and
+    /// reports the rest as unknown rather than as unreachable.
+    pub reachable: Option<bool>,
 }
 
 /// Health and leadership of the metadata consensus group.
@@ -591,12 +595,18 @@ impl MetadataConsensus {
         for (member_id, node) in membership.nodes() {
             let voter = voters.contains(member_id);
             let reachable = if *member_id == metrics.id {
-                true
+                Some(true)
             } else if metrics.state == ServerState::Leader {
-                replication.get(member_id).is_some_and(Option::is_some)
+                Some(replication.get(member_id).is_some_and(Option::is_some))
+            } else if metrics.current_leader == Some(*member_id) {
+                // A follower is in contact with the leader by definition: it is
+                // receiving the append-entries that keep it a follower.
+                Some(true)
             } else {
-                // Only the leader observes replication health directly.
-                metrics.current_leader == Some(*member_id)
+                // Only the leader observes replication health. Reporting an
+                // unobserved peer as unreachable made every healthy cluster read
+                // as degraded from any follower.
+                None
             };
             members.push(ConsensusMemberStatus {
                 member_id: *member_id,
@@ -606,13 +616,16 @@ impl MetadataConsensus {
             });
         }
         let voter_count = u32::try_from(voters.len()).unwrap_or(u32::MAX);
-        let healthy_voters = u32::try_from(
-            members
-                .iter()
-                .filter(|member| member.voter && member.reachable)
-                .count(),
-        )
-        .unwrap_or(u32::MAX);
+        // Only a leader has observed every peer, so only a leader reports a count.
+        let healthy_voters = (metrics.state == ServerState::Leader).then(|| {
+            u32::try_from(
+                members
+                    .iter()
+                    .filter(|member| member.voter && member.reachable == Some(true))
+                    .count(),
+            )
+            .unwrap_or(u32::MAX)
+        });
         let leader_label = metrics.current_leader.map(|leader| {
             membership
                 .get_node(&leader)

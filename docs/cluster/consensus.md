@@ -42,7 +42,7 @@ The metadata section reports:
 | Field | Meaning |
 | --- | --- |
 | `members` | Voting members configured |
-| `healthy_members` | Voting members currently reachable |
+| `healthy_members` | Voting members currently reachable, or `null` when this member cannot observe that |
 | `quorum` | Members required to commit |
 | `leader` | Current leader, when one is known |
 | `writable` | Whether metadata writes can be committed |
@@ -60,6 +60,24 @@ Classification:
 | No members registered | `unavailable` |
 
 Read `notes`. It says exactly which condition applied and why, in words.
+
+### Asking a follower
+
+Only the leader tracks replication contact with its peers. Ask any other member and it
+answers about what it can actually see:
+
+- `reachable` is `true` for itself and for the leader it is following, and `null` for
+  every other member — not `false`.
+- `healthy_members` is `null` rather than a count.
+- Health rests on leadership instead: Raft cannot hold a leader without a majority, so a
+  member that can see one reports the cluster writable and `healthy`. With no leader it
+  reports `unavailable`.
+
+This matters because a control-plane node is a follower, and it is where a console is
+normally pointed. Treating an unobserved peer as unreachable would report every healthy
+cluster as degraded from exactly the node an operator looks at.
+
+Query the node named in `leader` when you want the per-peer detail.
 
 ## Losing quorum
 
