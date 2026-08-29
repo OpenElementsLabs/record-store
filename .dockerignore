@@ -1,6 +1,15 @@
 target
 .git
 data
-.env
+# Anywhere in the tree, not just the root: operational secrets are runtime
+# configuration and have no business in a build context.
+**/.env
+**/.env.*
 *.log
 .DS_Store
+# Dependencies are installed inside the console image. A local tree would be
+# copied over the one the build just installed, and for the server image it is
+# tens of thousands of files of build context for nothing.
+node_modules
+# Local MkDocs output.
+/site

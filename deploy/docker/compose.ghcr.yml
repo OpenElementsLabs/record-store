@@ -1,0 +1,68 @@
+# Record Store and the web console from the published GitHub Container Registry
+# images, with no build step.
+#
+# This is the deployment shape for a real server, including Coolify: nothing here
+# needs the repository. The sibling Compose files build from source instead, which
+# is what you want while developing.
+#
+# The version is pinned rather than floating: `latest` moves under a running
+# deployment. Override it per environment, and see
+# docs/deployment/container-images.md for pinning an exact digest, which is
+# stronger still.
+#
+#   RECORD_STORE_VERSION=0.1.1 docker compose --env-file .env -f compose.ghcr.yml up -d
+services:
+  record-store:
+    image: ghcr.io/openelementslabs/record-store:${RECORD_STORE_VERSION:-0.1.1}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    ports:
+      # S3 may face the internet behind TLS. Management must not: it is bound to
+      # loopback here so only this host, and the console over the Compose
+      # network, can reach it.
+      - "7600:7600"
+      - "127.0.0.1:7601:7601"
+    environment:
+      # Every one of these is required and has no default. Keep them in an env
+      # file with restricted permissions, never in this file.
+      RECORD_STORE_ROOT_ACCESS_KEY: "${RECORD_STORE_ROOT_ACCESS_KEY:?set a root access key}"
+      RECORD_STORE_ROOT_SECRET_KEY: "${RECORD_STORE_ROOT_SECRET_KEY:?set a root secret key}"
+      RECORD_STORE_CREDENTIAL_MASTER_KEY: "${RECORD_STORE_CREDENTIAL_MASTER_KEY:?set a credential master key}"
+      RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN: "${RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN:?set a management system token}"
+      RECORD_STORE_STORAGE_ENCRYPTION_ENABLED: "${RECORD_STORE_STORAGE_ENCRYPTION_ENABLED:-true}"
+      RECORD_STORE_LOG_JSON: "${RECORD_STORE_LOG_JSON:-true}"
+    volumes:
+      - record-store-data:/var/lib/record-store
+    healthcheck:
+      test: ["CMD", "record-store", "status", "--endpoint", "http://127.0.0.1:7601"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+  console:
+    image: ghcr.io/openelementslabs/record-store-console:${RECORD_STORE_VERSION:-0.1.1}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    depends_on:
+      record-store:
+        condition: service_healthy
+    ports:
+      - "7602:7602"
+    environment:
+      # The console reaches the management API over the Compose network, never
+      # from the browser.
+      RECORD_STORE_API_URL: "http://record-store:7601"
+      # Leave unset behind TLS so the session cookie is marked Secure.
+      RECORD_STORE_CONSOLE_SECURE_COOKIES: "${RECORD_STORE_CONSOLE_SECURE_COOKIES:-true}"
+
+volumes:
+  record-store-data:

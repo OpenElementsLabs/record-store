@@ -1,9 +1,20 @@
 # Docker
 
-The repository ships a multi-stage Dockerfile at
-`deploy/docker/Dockerfile` that produces a small runtime image.
+Record Store publishes a production image to the GitHub Container Registry, built
+from the multi-stage Dockerfile at `deploy/docker/Dockerfile`.
 
-## Building
+## Getting the image
+
+```bash
+docker pull ghcr.io/openelementslabs/record-store:0.1.1
+```
+
+See [Container Images](container-images.md) for the available tags, the
+`linux/amd64` and `linux/arm64` manifests, and how to pin a digest.
+
+## Building it yourself
+
+Only needed for development, or for a change you have not released:
 
 ```bash
 docker build -t record-store:local -f deploy/docker/Dockerfile .
@@ -50,7 +61,7 @@ docker run -d \
   -e RECORD_STORE_ROOT_SECRET_KEY=<your-secret-key> \
   -e RECORD_STORE_CREDENTIAL_MASTER_KEY=<your-master-key> \
   -e RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN=<your-system-token> \
-  record-store:local
+  ghcr.io/openelementslabs/record-store:0.1.1
 ```
 
 Note the asymmetry in the port publishing: `7600` is bound on all interfaces, `7601`
@@ -124,7 +135,14 @@ docker stop --time 40 record-store
 
 ## Console image
 
-The web console is a separate image, `deploy/docker/Dockerfile.console`:
+The web console is a separate image, built from
+`deploy/docker/Dockerfile.console`:
+
+```bash
+docker pull ghcr.io/openelementslabs/record-store-console:0.1.1
+```
+
+Or build it:
 
 ```bash
 docker build -t record-store-console:local -f deploy/docker/Dockerfile.console .

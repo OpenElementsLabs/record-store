@@ -7,6 +7,7 @@ Record Store is a Rust workspace plus a Next.js console.
 -   **[Development Setup](development-setup.md)** — toolchain and running locally
 -   **[Repository Structure](repository-structure.md)** — where things live
 -   **[Testing](testing.md)** — what CI runs, and how to run it yourself
+-   **[Releasing](releasing.md)** — cutting a version, and what a tag triggers
 
 </div>
 

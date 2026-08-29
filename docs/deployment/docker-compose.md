@@ -1,16 +1,26 @@
 # Docker Compose
 
-Three Compose files ship in `deploy/docker/`:
+Four Compose files ship in `deploy/docker/`:
 
-| File | What it runs |
-| --- | --- |
-| `compose.yml` | Standalone Record Store |
-| `compose.console.yml` | Standalone plus the web console |
-| `compose.cluster.yml` | Three storage nodes, a control node, and the console |
+| File | What it runs | Image |
+| --- | --- | --- |
+| `compose.ghcr.yml` | Standalone plus the web console | Published |
+| `compose.yml` | Standalone Record Store | Built from source |
+| `compose.console.yml` | Standalone plus the web console | Built from source |
+| `compose.cluster.yml` | Three storage nodes, a control node, and the console | Built from source |
 
-They are development configurations. Every credential in them is a
-`change-me` placeholder that exists so `docker compose up` works with no setup.
-**Override every one before running anything real.**
+The three source-building files are development configurations. Every credential
+in them is a `change-me` placeholder that exists so `docker compose up` works with
+no setup. **Override every one before running anything real.**
+
+`compose.ghcr.yml` is the one to deploy. It pulls the
+[published images](container-images.md), builds nothing, and refuses to start
+until every secret is set:
+
+```bash
+RECORD_STORE_VERSION=0.1.1 \
+  docker compose --env-file .env -f deploy/docker/compose.ghcr.yml up -d
+```
 
 ## Standalone
 

@@ -1,7 +1,11 @@
 name: CI
 
+# Tag pushes are handled by release.yml, which runs these same gates itself
+# before it publishes anything. Without the branch filter every release would
+# run the whole suite twice.
 on:
   push:
+    branches: ["**"]
   pull_request:
 
 permissions:
@@ -124,6 +128,37 @@ jobs:
 
       - name: Run boto3, AWS SDK for JavaScript, and AWS SDK for Go compatibility
         run: tests/compatibility/run.sh
+
+  # Catches a broken production Dockerfile before a tag is pushed, when fixing it
+  # is still cheap. One architecture is enough for that; the release builds both.
+  container-build:
+    name: container-build (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: server
+            dockerfile: deploy/docker/Dockerfile
+          - image: console
+            dockerfile: deploy/docker/Dockerfile.console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build the production image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          # Validation only. Nothing is published outside the release workflow.
+          push: false
+          load: false
+          # The same scope the release workflow uses for this image's amd64
+          # build, so a release can reuse what CI already compiled.
+          cache-from: type=gha,scope=${{ matrix.image }}-amd64
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-amd64
 
   rust-security-audit:
     runs-on: ubuntu-latest

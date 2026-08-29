@@ -1,0 +1,321 @@
+# Builds one production container image for linux/amd64 and linux/arm64, pushes
+# it to GHCR under the release's semantic tags, and records what produced it.
+#
+# The two architectures are built on native runners rather than under QEMU: a
+# release build of the Rust workspace is slow enough that emulation turns a
+# ten-minute job into an hour-long one. Each runner pushes an unnamed manifest
+# by digest and a merge job assembles the multi-platform index, which is the
+# artifact everything downstream attests, scans, and pulls.
+#
+# Reused by release.yml for both the server and the console so the publishing
+# rules exist in one place.
+name: Container image
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Fully qualified image name, without a tag.
+        required: true
+        type: string
+      dockerfile:
+        description: Production Dockerfile, relative to the repository root.
+        required: true
+        type: string
+      slug:
+        description: Short identifier used for cache scopes and artifact names.
+        required: true
+        type: string
+      title:
+        description: org.opencontainers.image.title
+        required: true
+        type: string
+      description:
+        description: org.opencontainers.image.description
+        required: true
+        type: string
+      version:
+        description: Release version, without a leading v.
+        required: true
+        type: string
+      minor:
+        description: The major.minor floating tag.
+        required: true
+        type: string
+      major:
+        description: The major floating tag.
+        required: true
+        type: string
+      prerelease:
+        description: Whether this version is a pre-release.
+        required: true
+        type: string
+    outputs:
+      digest:
+        description: Digest of the published multi-platform image index.
+        value: ${{ jobs.merge.outputs.digest }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # A half-published release is worse than a failed one: if one architecture
+      # cannot be built, stop before the other gets a tag.
+      fail-fast: true
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # metadata-action derives the title, description, and licence labels from
+      # GitHub repository metadata. Stating them here keeps the GHCR listing
+      # correct regardless of what that metadata happens to say.
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ inputs.image }}
+          labels: |
+            org.opencontainers.image.title=${{ inputs.title }}
+            org.opencontainers.image.description=${{ inputs.description }}
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Each runner pushes a nameless manifest; the merge job below is what
+          # gives the release its tags. Attestations are attached to the merged
+          # index instead, so no orphaned attestation survives a failed build.
+          outputs: type=image,name=${{ inputs.image }},push-by-digest=true,name-canonical=true,push=true
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=${{ inputs.slug }}-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.slug }}-${{ matrix.architecture }}
+
+      - name: Record digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ inputs.slug }}-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish manifest
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.index.outputs.digest }}
+    steps:
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-${{ inputs.slug }}-*
+          merge-multiple: true
+
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        env:
+          # imagetools writes annotations onto the index it creates, which is
+          # the manifest a registry browser reads.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: ${{ inputs.image }}
+          # Floating tags are what unattended deployments follow, so a
+          # pre-release must never take them over: it publishes only its exact
+          # version and its commit.
+          tags: |
+            type=raw,value=${{ inputs.version }}
+            type=raw,value=${{ inputs.minor }},enable=${{ inputs.prerelease == 'false' }}
+            type=raw,value=${{ inputs.major }},enable=${{ inputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ inputs.prerelease == 'false' }}
+            type=sha,format=short,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=${{ inputs.title }}
+            org.opencontainers.image.description=${{ inputs.description }}
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Create multi-platform manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ inputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          ANNOTATIONS: ${{ steps.meta.outputs.annotations }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          sources=()
+          for digest in *; do
+            sources+=("${IMAGE}@sha256:${digest}")
+          done
+          if [[ ${#sources[@]} -eq 0 ]]; then
+            echo "no per-architecture digests were produced" >&2
+            exit 1
+          fi
+          arguments=()
+          while IFS= read -r tag; do
+            if [[ -n "$tag" ]]; then
+              arguments+=(--tag "$tag")
+            fi
+          done <<< "$TAGS"
+          while IFS= read -r annotation; do
+            if [[ -n "$annotation" ]]; then
+              arguments+=(--annotation "$annotation")
+            fi
+          done <<< "$ANNOTATIONS"
+          docker buildx imagetools create "${arguments[@]}" "${sources[@]}"
+
+      - name: Resolve index digest
+        id: index
+        env:
+          IMAGE: ${{ inputs.image }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r '.digest')"
+          if [[ "$digest" != sha256:* ]]; then
+            echo "could not resolve the published index digest" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Published \`${IMAGE}@${digest}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # Attesting the digest rather than a tag is the point of the exercise: a
+      # tag can be repointed, a digest cannot.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ inputs.image }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+
+  sbom:
+    name: SBOM ${{ matrix.architecture }}
+    needs: merge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        architecture: [amd64, arm64]
+    steps:
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # An SBOM describes one architecture's package set, so it is generated
+      # against a platform manifest rather than the index holding both.
+      - name: Resolve platform manifest digest
+        id: platform
+        env:
+          IMAGE: ${{ inputs.image }}
+          INDEX: ${{ needs.merge.outputs.digest }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          digest="$(
+            docker buildx imagetools inspect "${IMAGE}@${INDEX}" --format '{{json .Manifest}}' \
+              | jq -r --arg architecture "$ARCHITECTURE" '
+                  .manifests[]
+                  | select(.platform.os == "linux" and .platform.architecture == $architecture)
+                  | .digest
+                ' \
+              | head -n 1
+          )"
+          if [[ "$digest" != sha256:* ]]; then
+            echo "the published index has no linux/${ARCHITECTURE} manifest" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Name the SBOM after the release asset it becomes
+        id: asset
+        env:
+          IMAGE: ${{ inputs.image }}
+          VERSION: ${{ inputs.version }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/sbom"
+          name="$(basename "$IMAGE")-${VERSION}-linux-${ARCHITECTURE}.spdx.json"
+          echo "path=${RUNNER_TEMP}/sbom/${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ inputs.image }}@${{ steps.platform.outputs.digest }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: spdx-json
+          output-file: ${{ steps.asset.outputs.path }}
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: ${{ inputs.image }}
+          subject-digest: ${{ steps.platform.outputs.digest }}
+          sbom-path: ${{ steps.asset.outputs.path }}
+          push-to-registry: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ inputs.slug }}-${{ matrix.architecture }}
+          path: ${{ steps.asset.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
