@@ -2,6 +2,19 @@
 
 Record Store is a self-hosted object storage service written in Rust. It supports a simple standalone mode and a single-region replicated cluster mode. Public S3 traffic uses port 7600, the native management API uses 7601, the web console uses 7602, and authenticated internal gRPC uses 7603. Every listener is configurable; Record Store does not use ports 9000 or 9001.
 
+## Documentation
+
+Full documentation — installation, configuration, deployment, clustering, security, and
+reference — is published at
+**<https://openelementslabs.github.io/record-store/>** and lives in [`docs/`](docs/).
+
+To build it locally:
+
+```bash
+pip install -r requirements-docs.txt
+mkdocs serve
+```
+
 ## Supported S3 surface
 
 - AWS Signature Version 4 header authentication and presigned GET/PUT URLs

@@ -1,0 +1,180 @@
+site_name: Record Store
+site_description: Self-hosted, S3-compatible object storage written in Rust.
+site_url: https://openelementslabs.github.io/record-store/
+repo_name: OpenElementsLabs/record-store
+repo_url: https://github.com/OpenElementsLabs/record-store
+edit_uri: edit/main/docs/
+copyright: Open Elements Labs
+
+theme:
+  name: material
+  language: en
+  icon:
+    logo: material/database-outline
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Follow system theme
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      check_paths: true
+      base_path: [.]
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+plugins:
+  - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/OpenElementsLabs/record-store
+      name: Record Store on GitHub
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - getting-started/index.md
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quick-start.md
+      - First Bucket and Object: getting-started/first-object.md
+  - Concepts:
+      - concepts/index.md
+      - Buckets and Objects: concepts/buckets-and-objects.md
+      - Versioning: concepts/versioning.md
+      - Deployment Modes: concepts/deployment-modes.md
+      - Durability: concepts/durability.md
+      - Architecture: concepts/architecture.md
+  - Using Record Store:
+      - guides/index.md
+      - Web Console: guides/web-console.md
+      - Command Line: guides/cli.md
+      - AWS CLI: guides/aws-cli.md
+      - Application Integration: guides/application-integration.md
+      - Presigned URLs: guides/presigned-urls.md
+      - Multipart Uploads: guides/multipart-uploads.md
+      - Object Preview: guides/object-preview.md
+      - Share Links: guides/share-links.md
+      - Embed Links: guides/embed-links.md
+      - Tutorial - File Upload App: guides/tutorial-upload-app.md
+  - SDKs:
+      - sdk/index.md
+      - JavaScript and TypeScript: sdk/javascript.md
+      - Next.js: sdk/nextjs.md
+      - Python: sdk/python.md
+      - Go: sdk/go.md
+      - Rust: sdk/rust.md
+  - Administration:
+      - administration/index.md
+      - Configuration: administration/configuration.md
+      - Service Accounts: administration/service-accounts.md
+      - Policies: administration/policies.md
+      - Temporary Credentials: administration/temporary-credentials.md
+      - Quotas: administration/quotas.md
+      - Lifecycle Rules: administration/lifecycle-rules.md
+      - Audit Log: administration/audit-log.md
+      - Events and Webhooks: administration/events-and-webhooks.md
+      - Metrics: administration/metrics.md
+  - Deployment:
+      - deployment/index.md
+      - Docker: deployment/docker.md
+      - Docker Compose: deployment/docker-compose.md
+      - Coolify: deployment/coolify.md
+      - Reverse Proxy and TLS: deployment/reverse-proxy.md
+      - Persistent Storage: deployment/persistent-storage.md
+      - Production Checklist: deployment/production-checklist.md
+      - Upgrading: deployment/upgrading.md
+  - Cluster:
+      - cluster/index.md
+      - Creating a Cluster: cluster/creating-a-cluster.md
+      - Adding Nodes: cluster/adding-nodes.md
+      - Node Lifecycle: cluster/node-lifecycle.md
+      - Replication: cluster/replication.md
+      - Repair and Rebalance: cluster/repair-and-rebalance.md
+      - Consensus: cluster/consensus.md
+  - Security:
+      - security/index.md
+      - Authentication: security/authentication.md
+      - Authorization: security/authorization.md
+      - Encryption: security/encryption.md
+      - Internal TLS: security/internal-tls.md
+      - Sharing Security: security/sharing-security.md
+      - Security Checklist: security/checklist.md
+  - Operations:
+      - operations/index.md
+      - Health and Readiness: operations/health-and-readiness.md
+      - Monitoring: operations/monitoring.md
+      - Backup and Restore: operations/backup-and-restore.md
+      - Integrity Verification: operations/integrity-verification.md
+      - Capacity Planning: operations/capacity-planning.md
+      - Disaster Recovery: operations/disaster-recovery.md
+  - Reference:
+      - reference/index.md
+      - CLI Reference: reference/cli.md
+      - Configuration Reference: reference/configuration.md
+      - Environment Variables: reference/environment-variables.md
+      - Ports: reference/ports.md
+      - S3 Compatibility: reference/s3-compatibility.md
+      - Management API: reference/management-api.md
+      - Error Reference: reference/errors.md
+      - Glossary: reference/glossary.md
+  - Troubleshooting:
+      - troubleshooting/index.md
+      - Authentication Errors: troubleshooting/authentication.md
+      - Upload Problems: troubleshooting/uploads.md
+      - Networking and Proxies: troubleshooting/networking.md
+      - Docker and Coolify: troubleshooting/docker-and-coolify.md
+      - Cluster Problems: troubleshooting/cluster.md
+      - FAQ: troubleshooting/faq.md
+  - Contributing:
+      - contributing/index.md
+      - Development Setup: contributing/development-setup.md
+      - Repository Structure: contributing/repository-structure.md
+      - Testing: contributing/testing.md

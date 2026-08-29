@@ -1,0 +1,160 @@
+# Repair and Rebalance
+
+Two background activities that move replicas, for two different reasons.
+
+| | Repair | Rebalance |
+| --- | --- | --- |
+| Restores | Lost redundancy | Even capacity use |
+| Runs | Automatically | Only when started (by default) |
+| Urgency | High — durability is reduced | Low — nothing is at risk |
+| Triggered by | A node going offline, a corrupt replica | An operator, or after adding a node |
+
+Repair is not optional. Rebalance is a choice.
+
+## Repair
+
+When a payload has fewer healthy replicas than its replication factor, the cluster
+copies it to a new node.
+
+```mermaid
+flowchart LR
+    A[Node goes offline] --> B[Its replicas stop counting for durability]
+    B --> C[Payloads become under-replicated]
+    C --> D[Repair tasks queued]
+    D --> E[Replicas copied to healthy nodes]
+    E --> F[Redundancy restored]
+```
+
+Causes:
+
+- A node reaching `offline`
+- A replica reported `missing` by its node
+- A replica failing integrity verification and becoming `corrupt`
+- A node being drained or decommissioned
+
+### Watching it
+
+```bash
+record-store repair status --endpoint https://management.example.com
+```
+
+| Field | Meaning |
+| --- | --- |
+| `active_tasks` | Movement tasks still to run |
+| `parked_tasks` | Tasks that exhausted their retries and need attention |
+
+`parked_tasks` above zero is the one to act on: repair has given up on those payloads
+after 8 attempts. Check the logs for why — usually the source replica is also gone, or
+no eligible target has capacity.
+
+Fuller picture:
+
+```bash
+record-store cluster status --endpoint https://management.example.com
+```
+
+`under_replicated_payloads` should trend to zero. If it plateaus, repair is blocked
+rather than slow — look at `parked_tasks` and at whether any node can still accept
+placement.
+
+### Limits
+
+Repair movement is bounded so restoring redundancy does not take the cluster down with
+it:
+
+| | Default |
+| --- | --- |
+| Concurrent tasks | 8 |
+| Streams per node | 4 |
+| Bytes per second | 64 MiB |
+| Scan interval | 30 seconds |
+| Attempts before parking | 8 |
+| Task lease | 600 seconds |
+
+The lease means a task claimed by a node that then dies is picked up by another after
+it expires, rather than being stuck forever.
+
+### Why repair does not start immediately
+
+A node in `suspect` or `unreachable` still counts toward durability. Repair begins only
+once it reaches `offline`.
+
+This is deliberate: a network blip that briefly hides a node holding terabytes would
+otherwise trigger a full recovery storm, which is far more damaging than the blip. The
+delay costs a window of reduced redundancy and buys protection from self-inflicted
+outages.
+
+## Rebalance
+
+Evens out utilization across nodes. It does not change durability — every payload keeps
+the same number of replicas.
+
+**Automatic rebalancing is off by default.** Moving data is expensive and should be a
+decision.
+
+### Running one
+
+```bash
+record-store rebalance start --endpoint https://management.example.com
+record-store rebalance status --endpoint https://management.example.com
+```
+
+### How targets are chosen
+
+The cluster computes mean utilization across members, then:
+
+- **Donors** — nodes above `mean + tolerance`, or any node needing capacity relief
+- **Recipients** — nodes below `mean - tolerance` whose capacity level is normal
+
+Default tolerance is 10 percent. With no donors or no recipients, there is nothing to
+do and the rebalance completes immediately — which is the expected outcome on a
+balanced cluster.
+
+### Limits
+
+Rebalance is throttled harder than repair, because it is never urgent:
+
+| | Default |
+| --- | --- |
+| Concurrent tasks | 4 |
+| Streams per node | 2 |
+| Bytes per second | 32 MiB |
+| Scan interval | 300 seconds |
+| Tolerance | 10 percent |
+
+### When to run one
+
+- After [adding a node](adding-nodes.md) — new nodes start empty
+- After a large deletion left utilization uneven
+- When one node is approaching a watermark while others are idle
+
+Not worth running when utilization is already within tolerance, or during a repair — let
+repair finish first. Durability comes before tidiness.
+
+## Both at once
+
+They share the movement infrastructure and their limits apply independently. Running a
+rebalance while repair is working means competing for the same disks and network.
+
+Check before starting one:
+
+```bash
+record-store repair status --endpoint https://management.example.com
+```
+
+If `active_tasks` is non-zero, wait.
+
+## Node-local reconciliation
+
+Separately from both, each node periodically reconciles what it actually holds on disk
+against what the cluster believes it holds:
+
+```bash
+RECORD_STORE_CLUSTER_RECONCILE_INTERVAL_SECONDS=300
+```
+
+This is what turns a silently missing or corrupt local replica into a `missing` or
+`corrupt` record — which is in turn what queues a repair. Without it, a lost replica
+would stay invisible until something tried to read it.
+
+See [Integrity Verification](../operations/integrity-verification.md).
