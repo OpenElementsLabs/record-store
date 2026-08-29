@@ -486,16 +486,21 @@ async fn status(endpoint: &str) -> Result<()> {
     if ready.status != "ready" {
         bail!("server returned unexpected readiness status");
     }
-    let info: serde_json::Value = client()?
-        .get(format!("{endpoint}/api/v1/system/info"))
-        .send()
-        .await
-        .with_context(|| format!("connect to {endpoint}"))?
-        .json()
-        .await
-        .context("decode system info response")?;
-    println!("Mode               {}", display_json_scalar(&info["mode"]));
+    // System information is part of the authenticated management plane, so the
+    // credential has to be attached. It stays optional: a container healthcheck
+    // runs this command with no token, and readiness above is what it asks for.
+    let info = match send_admin(client()?.get(format!("{endpoint}/api/v1/system/info"))).await {
+        Ok(response) => response
+            .json::<serde_json::Value>()
+            .await
+            .context("decode system info response")?,
+        Err(_) => serde_json::Value::Null,
+    };
+    println!("Ready              yes");
     println!("Management API     {endpoint}");
+    if let Some(mode) = info.get("mode") {
+        println!("Mode               {}", display_json_scalar(mode));
+    }
     if let Some(cluster_id) = info.get("cluster_id") {
         println!("Cluster ID         {}", display_json_scalar(cluster_id));
     }
