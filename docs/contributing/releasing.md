@@ -80,10 +80,13 @@ git tag -s vX.Y.Z -m "Record Store vX.Y.Z"
 ```
 
 `-s` signs the tag with GPG; `git tag -s` with `gpg.format=ssh` signs with an SSH
-key. Signing is not enforced by the release workflow — build identity comes from
-the GitHub Actions provenance attestations, which do not depend on a key held by
-a person. Sign anyway if you have a key configured: it records who cut the
-release.
+key.
+
+**Sign the tag.** Images are published unsigned (see below), so the tag signature
+is the only cryptographic statement about who produced a release. It is not
+enforced by the workflow, because a release that fails at the last step for want
+of a key on the right machine helps nobody — but an unsigned release tag leaves
+consumers with nothing to check.
 
 ### 5. Push
 
@@ -100,8 +103,9 @@ Watch the run, then check the result the way a consumer would:
 gh run watch
 
 docker pull ghcr.io/openelementslabs/record-store:X.Y.Z
-gh attestation verify oci://ghcr.io/openelementslabs/record-store:X.Y.Z \
-  -R OpenElementsLabs/record-store
+docker run --rm --entrypoint record-store \
+  ghcr.io/openelementslabs/record-store:X.Y.Z --version
+git tag -v vX.Y.Z
 ```
 
 See [Verifying a Release](../deployment/verifying-releases.md).
@@ -115,6 +119,31 @@ tag that has already been published. Anyone who pinned a digest is unaffected by
 repointed tag, but everyone else silently gets different software under a name
 they already trusted.
 
+## Images are published unsigned
+
+The workflow does not attest image provenance. `actions/attest-build-provenance`
+requires GitHub's artifact attestation service, which is unavailable to a private
+repository outside an Enterprise plan — it fails the job outright with
+`Feature not available for the … organization`.
+
+The alternatives were weighed and rejected for now:
+
+| Option | Why not |
+| --- | --- |
+| BuildKit `provenance: mode=max` | Unsigned metadata. Anyone who can push to the registry can write the same blob, so it proves nothing while looking like it does. |
+| `cosign` keyless via OIDC | Works on a private repository and would give real signatures, but publishes the repository name, workflow path, and commit SHA to Sigstore's public Rekor transparency log. |
+
+Two changes would each enable signed provenance with no change to the pipeline's
+shape: **making the repository public**, or **moving the organisation to a plan
+that includes attestations**. If either happens, restore the
+`actions/attest-build-provenance` step on the merged index digest and
+`actions/attest-sbom` on each platform digest, add back `id-token: write` and
+`attestations: write`, and update
+[Verifying a Release](../deployment/verifying-releases.md).
+
+Until then, do not describe a Record Store image as signed, verified, or
+attested, and do not add a badge saying so.
+
 ## One-time GitHub configuration
 
 Some of this cannot be expressed in the repository and has to be set once in the
@@ -125,7 +154,7 @@ GitHub UI by someone with admin rights.
 | **Immutable releases** | Repository → Settings → General → Releases | Prevents a published release's assets and tag from being changed after the fact. The workflow treats versions as immutable, but only this setting enforces it. |
 | **Package visibility** | Each package → Package settings → Change visibility | Packages inherit private visibility from a private repository. Anonymous `docker pull` requires setting each package to public, explicitly. |
 | **Package repository link** | Each package → Package settings | Usually automatic: the images carry `org.opencontainers.image.source`, which GitHub uses to attach the package to this repository. Link it by hand if it does not appear. |
-| **Actions permissions** | Repository → Settings → Actions → Workflow permissions | The release workflow needs `GITHUB_TOKEN` to be allowed to write packages and attestations. Organisation policy can override the workflow's own `permissions` block. |
+| **Actions permissions** | Repository → Settings → Actions → Workflow permissions | The release workflow needs `GITHUB_TOKEN` to be allowed to write packages. Organisation policy can override the workflow's own `permissions` block. |
 
 Until the immutable-releases setting is enabled, a release is immutable by
 convention only. Do not describe it as enforced.

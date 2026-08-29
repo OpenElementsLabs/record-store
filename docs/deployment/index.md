@@ -12,7 +12,7 @@ Running Record Store somewhere real.
 -   **[Persistent Storage](persistent-storage.md)** — the data directory and its requirements
 -   **[Production Checklist](production-checklist.md)** — before you take traffic
 -   **[Upgrading](upgrading.md)** — moving to a new version safely
--   **[Verifying a Release](verifying-releases.md)** — provenance, SBOMs, and checksums
+-   **[Verifying a Release](verifying-releases.md)** — checksums, digests, SBOMs, and what is not signed
 
 </div>
 

@@ -115,14 +115,14 @@ echo "$GITHUB_TOKEN" | docker login ghcr.io -u <your-github-username> --password
 
 Alongside the images, each release carries:
 
-- **A build provenance attestation** per image, binding it to this repository, the
-  workflow that built it, and the commit — see
-  [Verifying a Release](verifying-releases.md).
-- **SPDX SBOMs**, per image and per architecture, attached to the release and
-  published as attestations on the image manifests.
+- **SPDX SBOMs**, per image and per architecture, attached to the release.
 - **Linux binary archives** with `record-store` and `record-store-server`,
   extracted from the published images so an archive and a container never hold
   different builds, and a `SHA256SUMS` file covering every asset.
+
+Images are published **unsigned**: there is no provenance attestation to verify.
+See [Verifying a Release](verifying-releases.md) for what can be checked, and
+what that limitation means.
 
 macOS binaries are not published. Build from source with `cargo build --release`
 — see [Installation](../getting-started/installation.md).

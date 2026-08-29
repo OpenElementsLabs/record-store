@@ -2,9 +2,9 @@
 #
 # The Git tag is the source of truth. Pushing v0.1.1 validates that the tag and
 # the versions recorded in the repository agree, runs the same gates CI runs,
-# publishes both production images to GHCR with provenance and SBOMs, extracts
-# the Linux binaries from those images, smoke-tests what was actually published,
-# and only then creates the GitHub Release.
+# publishes both production images to GHCR with SBOMs, extracts the Linux
+# binaries from those images, smoke-tests what was actually published, and only
+# then creates the GitHub Release.
 #
 # Nothing that fails leaves a release behind: the GitHub Release is the last step
 # and depends on every job before it.
@@ -35,6 +35,7 @@ jobs:
       major: ${{ steps.version.outputs.major }}
       minor: ${{ steps.version.outputs.minor }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      created: ${{ steps.created.outputs.created }}
       server-image: ${{ steps.images.outputs.server }}
       console-image: ${{ steps.images.outputs.console }}
     steps:
@@ -50,6 +51,12 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: .github/scripts/release-version.sh "$TAG"
+
+      # Images record the commit's timestamp rather than the clock, so that
+      # re-running a release produces the same digest instead of a new one.
+      - name: Read the release commit timestamp
+        id: created
+        run: echo "created=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
 
       # GHCR rejects uppercase repository names, and the owner here is not
       # lowercase.
@@ -130,8 +137,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
     uses: ./.github/workflows/container-image.yml
     with:
       image: ${{ needs.validate.outputs.server-image }}
@@ -143,6 +148,7 @@ jobs:
       minor: ${{ needs.validate.outputs.minor }}
       major: ${{ needs.validate.outputs.major }}
       prerelease: ${{ needs.validate.outputs.prerelease }}
+      created: ${{ needs.validate.outputs.created }}
 
   console-image:
     name: Console image
@@ -150,8 +156,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
     uses: ./.github/workflows/container-image.yml
     with:
       image: ${{ needs.validate.outputs.console-image }}
@@ -163,6 +167,7 @@ jobs:
       minor: ${{ needs.validate.outputs.minor }}
       major: ${{ needs.validate.outputs.major }}
       prerelease: ${{ needs.validate.outputs.prerelease }}
+      created: ${{ needs.validate.outputs.created }}
 
   binaries:
     name: Binary archives
@@ -171,8 +176,6 @@ jobs:
     permissions:
       contents: read
       packages: read
-      id-token: write
-      attestations: write
     steps:
       - uses: docker/login-action@v4
         with:
@@ -204,11 +207,6 @@ jobs:
               --directory "$staging" record-store record-store-server
           done
           ls -l dist
-
-      - name: Attest binary provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: dist/*.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
