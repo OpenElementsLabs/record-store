@@ -18,7 +18,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { DeploymentProvider, type Deployment } from '@/features/system/deployment';
+import {
+  DeploymentProvider,
+  deploymentModeLabel,
+  type Deployment,
+} from '@/features/system/deployment';
 import { buildNavigation, isActive } from '@/features/system/navigation';
 import { cn } from '@/lib/utils';
 
@@ -65,7 +69,7 @@ export function AppShell({
   const sections = React.useMemo(
     () =>
       buildNavigation({
-        clusterEnabled: deployment.info.mode === 'cluster' && deployment.info.capabilities.cluster,
+        clusterEnabled: deployment.info.capabilities.cluster,
         capabilities: deployment.info.capabilities,
         permissions: deployment.session.permissions,
       }),
@@ -222,8 +226,7 @@ function Sidebar({
 
       {collapsed ? null : (
         <p className="mt-1 px-2 type-meta">
-          {deployment.info.mode === 'cluster' ? 'Cluster' : 'Standalone'} ·{' '}
-          {deployment.info.version}
+          {deploymentModeLabel(deployment.info.mode)} · {deployment.info.version}
         </p>
       )}
 

@@ -58,8 +58,26 @@ export function usePermissions(): RolePermissions {
   return useDeployment().session.permissions;
 }
 
-/** Whether cluster screens should exist at all in this deployment. */
+/**
+ * Whether cluster screens should exist at all in this deployment.
+ *
+ * This asks the capability, not the mode. A `control` process is a cluster
+ * member that serves the management API and holds no replicas, so it is exactly
+ * what a console is normally pointed at; gating on `mode === 'cluster'` hid every
+ * cluster screen from the one node type most likely to be serving them.
+ */
 export function useClusterEnabled(): boolean {
-  const { info } = useDeployment();
-  return info.mode === 'cluster' && info.capabilities.cluster;
+  return useDeployment().info.capabilities.cluster;
+}
+
+/** Human label for the deployment mode. */
+export function deploymentModeLabel(mode: SystemInfo['mode']): string {
+  switch (mode) {
+    case 'cluster':
+      return 'Cluster';
+    case 'control':
+      return 'Control';
+    default:
+      return 'Standalone';
+  }
 }

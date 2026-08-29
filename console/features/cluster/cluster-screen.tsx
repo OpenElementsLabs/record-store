@@ -73,7 +73,11 @@ export function ClusterScreen() {
             {data ? (
               <StatusBadge
                 level={data.metadata.status.health}
-                label={`${data.metadata.status.healthy_members} of ${data.metadata.status.members} members`}
+                label={
+                  data.metadata.status.healthy_members === null
+                    ? `${data.metadata.status.members} members`
+                    : `${data.metadata.status.healthy_members} of ${data.metadata.status.members} members`
+                }
               />
             ) : (
               <StatusPending />

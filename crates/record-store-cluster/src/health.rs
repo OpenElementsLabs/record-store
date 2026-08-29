@@ -115,8 +115,11 @@ impl ClusterHealth {
 pub struct QuorumStatus {
     /// Voting members configured.
     pub members: u32,
-    /// Voting members currently reachable.
-    pub healthy_members: u32,
+    /// Voting members currently reachable, when this member can observe that.
+    ///
+    /// Only the leader tracks replication contact with its peers. A follower
+    /// reports `None` rather than a count it cannot know.
+    pub healthy_members: Option<u32>,
     /// Members required for a quorum.
     pub quorum: u32,
     /// Current leader, when one is known.
@@ -135,27 +138,50 @@ pub struct QuorumStatus {
 
 impl QuorumStatus {
     /// Classifies a consensus group from observed member counts.
+    ///
+    /// `healthy_members` is `None` when the caller cannot observe peer
+    /// reachability, which is every member except the leader. In that case the
+    /// classification rests on leadership instead: Raft cannot hold a leader
+    /// without a majority, so a member that can see one knows a quorum exists.
+    /// Counting unobserved peers as unreachable would report a healthy cluster
+    /// as degraded from any follower.
     #[must_use]
-    pub fn evaluate(members: u32, healthy_members: u32, leader: Option<String>) -> Self {
+    pub fn evaluate(members: u32, healthy_members: Option<u32>, leader: Option<String>) -> Self {
         let quorum = members / 2 + 1;
-        let writable = leader.is_some() && healthy_members >= quorum && members > 0;
+        let writable = match healthy_members {
+            Some(healthy) => leader.is_some() && healthy >= quorum && members > 0,
+            None => leader.is_some() && members > 0,
+        };
         let fault_tolerant = members >= 3;
         let mut notes = Vec::new();
         let health = if members == 0 {
             notes.push("no metadata members are registered".into());
             ClusterHealth::Unavailable
         } else if !writable {
-            notes.push(format!(
-                "metadata quorum lost: {healthy_members} of {members} members reachable, \
-                 {quorum} required; metadata operations are read-only or unavailable"
-            ));
+            notes.push(match healthy_members {
+                Some(healthy) => format!(
+                    "metadata quorum lost: {healthy} of {members} members reachable, \
+                     {quorum} required; metadata operations are read-only or unavailable"
+                ),
+                None => "metadata quorum lost: no leader is known to this member; \
+                         metadata operations are read-only or unavailable"
+                    .to_owned(),
+            });
             ClusterHealth::Unavailable
-        } else if healthy_members < members {
+        } else if healthy_members.is_some_and(|healthy| healthy < members) {
+            let healthy = healthy_members.unwrap_or_default();
             notes.push(format!(
-                "metadata quorum degraded: {healthy_members} of {members} members reachable"
+                "metadata quorum degraded: {healthy} of {members} members reachable"
             ));
             ClusterHealth::Degraded
         } else {
+            if healthy_members.is_none() {
+                notes.push(
+                    "peer reachability is only observable on the leader; this member reports \
+                     the quorum implied by the leader it can see"
+                        .to_owned(),
+                );
+            }
             ClusterHealth::Healthy
         };
         if !fault_tolerant && members > 0 {
@@ -366,26 +392,62 @@ mod tests {
 
     #[test]
     fn quorum_status_reports_loss_honestly() {
-        let healthy = QuorumStatus::evaluate(3, 3, Some("node-02".into()));
+        let healthy = QuorumStatus::evaluate(3, Some(3), Some("node-02".into()));
         assert_eq!(healthy.health, ClusterHealth::Healthy);
         assert!(healthy.writable);
         assert!(healthy.fault_tolerant);
 
-        let degraded = QuorumStatus::evaluate(3, 2, Some("node-02".into()));
+        let degraded = QuorumStatus::evaluate(3, Some(2), Some("node-02".into()));
         assert_eq!(degraded.health, ClusterHealth::Degraded);
         assert!(degraded.writable);
 
-        let lost = QuorumStatus::evaluate(3, 1, None);
+        let lost = QuorumStatus::evaluate(3, Some(1), None);
         assert_eq!(lost.health, ClusterHealth::Unavailable);
         assert!(!lost.writable);
         assert!(!lost.notes.is_empty());
 
-        let single = QuorumStatus::evaluate(1, 1, Some("node-01".into()));
+        let single = QuorumStatus::evaluate(1, Some(1), Some("node-01".into()));
         assert!(single.writable);
         assert!(!single.fault_tolerant);
         assert!(
             single.notes.iter().any(|note| note.contains("at least 3")),
             "a single-member group must not be presented as fault tolerant"
+        );
+    }
+
+    /// A follower cannot observe peer reachability, and saying so is not the
+    /// same as observing a failure.
+    ///
+    /// Raft cannot keep a leader without a majority, so a member that can see one
+    /// knows a quorum exists. Counting unobserved peers as unreachable reported
+    /// every healthy cluster as degraded from any follower, which is exactly the
+    /// node an operator reaches through a control-plane console.
+    #[test]
+    fn a_member_that_cannot_observe_peers_reports_the_quorum_its_leader_implies() {
+        let follower = QuorumStatus::evaluate(3, None, Some("node-01".into()));
+        assert_eq!(follower.health, ClusterHealth::Healthy);
+        assert!(follower.writable);
+        assert_eq!(follower.healthy_members, None);
+        assert!(
+            follower
+                .notes
+                .iter()
+                .any(|note| note.contains("only observable on the leader")),
+            "the reader must be told why no count is given: {:?}",
+            follower.notes
+        );
+    }
+
+    /// Without a leader there is no quorum to infer, and the member says so.
+    #[test]
+    fn a_member_with_no_leader_reports_the_quorum_lost_even_without_a_count() {
+        let isolated = QuorumStatus::evaluate(3, None, None);
+        assert_eq!(isolated.health, ClusterHealth::Unavailable);
+        assert!(!isolated.writable);
+        assert!(
+            isolated.notes.iter().any(|note| note.contains("no leader")),
+            "{:?}",
+            isolated.notes
         );
     }
 

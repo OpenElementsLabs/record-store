@@ -111,8 +111,20 @@ Check it:
 ```bash
 docker compose -f compose.cluster.yml exec \
   -e RECORD_STORE_MANAGEMENT_TOKEN=<your-system-token> \
-  control record-store cluster status --endpoint http://127.0.0.1:7601
+  storage-1 record-store cluster status --endpoint http://127.0.0.1:7601
 ```
+
+!!! note "Reachability is only observable on the leader"
+    A member's `reachable` flag means *the leader currently has replication contact
+    with it*, and only the leader tracks that. Ask a follower — `control` is one — and
+    unobserved peers come back as `null`, with `healthy_members` also `null`, rather
+    than as failures.
+
+    That is not a gap in the answer. Raft cannot hold a leader without a majority, so a
+    member that can see a leader knows a quorum exists, and reports the cluster
+    writable on that basis.
+
+    Query whichever node `status.leader` names when you want the per-peer detail.
 
 !!! warning "This is not a production cluster"
     Every node is on one machine sharing one disk and one kernel. It demonstrates the

@@ -108,8 +108,20 @@ export function ConsensusScreen() {
                           </TableCell>
                           <TableCell>
                             <StatusBadge
-                              level={member.reachable ? 'healthy' : 'critical'}
-                              label={member.reachable ? 'Reachable' : 'Unreachable'}
+                              level={
+                                member.reachable === null
+                                  ? 'unknown'
+                                  : member.reachable
+                                    ? 'healthy'
+                                    : 'critical'
+                              }
+                              label={
+                                member.reachable === null
+                                  ? 'Not observable here'
+                                  : member.reachable
+                                    ? 'Reachable'
+                                    : 'Unreachable'
+                              }
                             />
                           </TableCell>
                         </TableRow>
@@ -167,8 +179,9 @@ function Summary({ quorum }: { readonly quorum: MetadataQuorum }) {
         <div className="space-y-1">
           <p className="text-xs font-medium text-ink-muted">Members agreeing</p>
           <p className="text-sm tabular-nums text-ink">
-            {formatCount(status.healthy_members)} of {formatCount(status.members)}, needs{' '}
-            {formatCount(status.quorum)}
+            {status.healthy_members === null
+              ? `${formatCount(status.members)} configured, needs ${formatCount(status.quorum)}`
+              : `${formatCount(status.healthy_members)} of ${formatCount(status.members)}, needs ${formatCount(status.quorum)}`}
           </p>
         </div>
         <div className="space-y-1">

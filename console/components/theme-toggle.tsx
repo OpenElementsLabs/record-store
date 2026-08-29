@@ -27,8 +27,14 @@ function subscribe(onChange: () => void): () => void {
 }
 
 function readStored(): Theme {
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-  return stored === 'light' || stored === 'dark' ? stored : 'system';
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    return stored === 'light' || stored === 'dark' ? stored : 'system';
+  } catch {
+    // Browsers may deny storage in private or policy-restricted contexts. The
+    // system preference remains a safe default and keeps the console usable.
+    return 'system';
+  }
 }
 
 /** The server has no preference to read, so it renders the system default. */
@@ -54,8 +60,13 @@ export function ThemeToggle() {
   const theme = React.useSyncExternalStore(subscribe, readStored, serverSnapshot);
 
   function choose(next: Theme) {
-    if (next === 'system') window.localStorage.removeItem(STORAGE_KEY);
-    else window.localStorage.setItem(STORAGE_KEY, next);
+    try {
+      if (next === 'system') window.localStorage.removeItem(STORAGE_KEY);
+      else window.localStorage.setItem(STORAGE_KEY, next);
+    } catch {
+      // The selection still applies to this document when persistence is
+      // unavailable; it will simply return to the system theme next visit.
+    }
     apply(next);
     window.dispatchEvent(new Event(CHANGE_EVENT));
   }

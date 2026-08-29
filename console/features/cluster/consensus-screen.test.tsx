@@ -5,7 +5,10 @@ import { ConsensusScreen } from './consensus-screen';
 import { jsonResponse, renderWithProviders } from '@/test/render';
 import type { ClusterStatus, MetadataQuorum } from '@/types/cluster';
 
-function quorum(overrides: Partial<MetadataQuorum['status']> = {}): ClusterStatus {
+function quorum(
+  overrides: Partial<MetadataQuorum['status']> = {},
+  metadataOverrides: Partial<Omit<MetadataQuorum, 'status'>> = {},
+): ClusterStatus {
   return {
     cluster_id: 'c1',
     health: 'healthy',
@@ -32,6 +35,7 @@ function quorum(overrides: Partial<MetadataQuorum['status']> = {}): ClusterStatu
         { member_id: 2, address: '10.0.0.2:7603', voter: true, reachable: true },
         { member_id: 3, address: '10.0.0.3:7603', voter: false, reachable: false },
       ],
+      ...metadataOverrides,
     },
     data: { health: 'healthy', reasons: [] },
     replication: {},
@@ -127,5 +131,45 @@ describe('ConsensusScreen', () => {
     renderWithProviders(<ConsensusScreen />);
 
     expect(await screen.findByText('none elected')).toBeTruthy();
+  });
+});
+
+/**
+ * A follower cannot observe peer reachability — only the leader tracks
+ * replication contact. The screen must show that as unknown, because rendering
+ * it as "Unreachable" made a healthy cluster look broken from the control node,
+ * which is exactly where an operator opens the console.
+ */
+describe('a follower reporting what it cannot observe', () => {
+  it('shows unobserved peers as not observable rather than unreachable', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        quorum(
+          { healthy_members: null },
+          {
+            role: 'follower',
+            member_id: 3,
+            members: [
+              { member_id: 1, address: '10.0.0.1:7603', voter: true, reachable: true },
+              { member_id: 2, address: '10.0.0.2:7603', voter: true, reachable: null },
+              { member_id: 3, address: '10.0.0.3:7603', voter: true, reachable: true },
+            ],
+          },
+        ),
+      ),
+    );
+    renderWithProviders(<ConsensusScreen />);
+
+    expect(await screen.findByText('Not observable here')).toBeTruthy();
+    expect(screen.queryByText('Unreachable')).toBeNull();
+  });
+
+  it('states the configured member count instead of inventing an agreeing count', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(quorum({ healthy_members: null }, { role: 'follower', member_id: 3 })),
+    );
+    renderWithProviders(<ConsensusScreen />);
+
+    expect(await screen.findByText('3 configured, needs 2')).toBeTruthy();
   });
 });

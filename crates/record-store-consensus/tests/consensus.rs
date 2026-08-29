@@ -27,8 +27,8 @@ use openraft::{
     },
 };
 use record_store_cluster::{
-    ClusterCommand, ClusterConfig, ClusterIdentity, ClusterOutcome, FailureDomain, NodeCapacity,
-    NodeRegistration, NodeVersions, StorageClass,
+    ClusterCommand, ClusterConfig, ClusterHealth, ClusterIdentity, ClusterOutcome, FailureDomain,
+    NodeCapacity, NodeRegistration, NodeVersions, StorageClass,
 };
 use record_store_consensus::{
     ClusterWrite, ClusterWriteResponse, ConsensusError, ConsensusSettings, LeaderForwarder,
@@ -414,6 +414,46 @@ async fn a_single_member_group_commits_and_survives_restart() {
         .expect("read bucket")
         .expect("bucket must survive a restart");
     assert_eq!(stored.id, record.id);
+}
+
+#[tokio::test]
+async fn a_follower_does_not_report_unobserved_voters_as_unreachable() {
+    let mut harness = Harness::new();
+    let leader = bootstrap(&mut harness, &[1, 2, 3]).await;
+    let follower = harness
+        .members
+        .lock()
+        .expect("member registry")
+        .values()
+        .find(|candidate| !Arc::ptr_eq(candidate, &leader))
+        .map(Arc::clone)
+        .expect("a follower must exist");
+
+    let quorum = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let quorum = follower.quorum().await;
+            if quorum.status.members == 3 && quorum.status.leader.is_some() {
+                break quorum;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the follower must learn the complete quorum");
+
+    assert_eq!(quorum.role, "follower");
+    assert_eq!(quorum.status.healthy_members, None);
+    assert_eq!(quorum.status.health, ClusterHealth::Healthy);
+    assert!(quorum.status.writable);
+    assert_eq!(
+        quorum
+            .members
+            .iter()
+            .filter(|member| member.reachable.is_none())
+            .count(),
+        1,
+        "the follower should leave the other non-leader voter's reachability unknown"
+    );
 }
 
 /// The consistency boundary that cluster startup depends on.

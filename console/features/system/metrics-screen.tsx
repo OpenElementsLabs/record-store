@@ -1,6 +1,7 @@
 'use client';
 
 import { RefreshCw } from 'lucide-react';
+import Link from 'next/link';
 
 import { ErrorState } from '@/components/error-state';
 import { MetricCard, UsageBar } from '@/components/metric-card';
@@ -59,6 +60,7 @@ export function MetricsScreen() {
           <Section
             title="Traffic"
             description="Requests handled by this server, and how many of them failed."
+            layout="charts"
           >
             <RateCard
               label="Requests"
@@ -80,7 +82,11 @@ export function MetricsScreen() {
             />
           </Section>
 
-          <Section title="Transfer" description="Object bytes moved through this server.">
+          <Section
+            title="Transfer"
+            description="Object bytes moved through this server."
+            layout="charts"
+          >
             <RateCard
               label="Uploaded"
               rate={observation.uploadBytes}
@@ -189,10 +195,12 @@ function Section({
   title,
   description,
   children,
+  layout = 'metrics',
 }: {
   readonly title: string;
   readonly description: string;
   readonly children: React.ReactNode;
+  readonly layout?: 'charts' | 'metrics';
 }) {
   return (
     <Card>
@@ -201,7 +209,15 @@ function Section({
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{children}</div>
+        <div
+          className={
+            layout === 'charts'
+              ? 'grid gap-4 lg:grid-cols-2'
+              : 'grid gap-4 sm:grid-cols-2 xl:grid-cols-4'
+          }
+        >
+          {children}
+        </div>
       </CardContent>
     </Card>
   );
@@ -247,16 +263,14 @@ function RateCard({
           : `${bytes ? formatBytes(total) : formatCount(total)} total since start`)
       }
       footer={
-        rate === null ? undefined : (
-          <RateChart
-            series={rate.series}
-            label={label}
-            tone={tone}
-            format={(value) =>
-              bytes ? `${formatBytes(value)}${unit}` : `${value.toFixed(2)} ${unit}`
-            }
-          />
-        )
+        <RateChart
+          series={rate?.series ?? []}
+          label={label}
+          tone={tone}
+          format={(value) =>
+            bytes ? `${formatBytes(value)}${unit}` : `${value.toFixed(2)} ${unit}`
+          }
+        />
       }
     />
   );
@@ -283,6 +297,14 @@ function ClusterSection({
               level={cluster.healthy ? 'healthy' : 'degraded'}
               label={cluster.healthy ? 'Healthy' : 'Degraded'}
             />
+            {!cluster.healthy ? (
+              <p className="type-meta">
+                <Link className="font-medium text-accent hover:underline" href="/cluster">
+                  Review the health details
+                </Link>{' '}
+                to see which durability layer needs attention.
+              </p>
+            ) : null}
           </div>
           <div className="space-y-1">
             <p className="text-xs font-medium text-ink-muted">Metadata quorum</p>

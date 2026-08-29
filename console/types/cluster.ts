@@ -19,7 +19,8 @@ export type NodeState =
 
 export type QuorumStatus = {
   readonly members: number;
-  readonly healthy_members: number;
+  /** Absent when this member cannot observe peer reachability — only the leader can. */
+  readonly healthy_members: number | null;
   readonly quorum: number;
   readonly leader: string | null;
   readonly writable: boolean;
@@ -34,7 +35,8 @@ export type ConsensusMember = {
   readonly member_id: number;
   readonly address: string;
   readonly voter: boolean;
-  readonly reachable: boolean;
+  /** `null` when this member cannot observe it; only the leader tracks replication contact. */
+  readonly reachable: boolean | null;
 };
 
 export type MetadataQuorum = {

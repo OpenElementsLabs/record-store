@@ -29,26 +29,39 @@ function useChartConfig(): ChartConfig {
 /**
  * The responsive frame every chart sits in.
  *
- * Charts are decoration for a number that is always shown as text beside them,
- * so this is deliberately thin: no title, no legend by default, and a fixed
- * aspect so a card's height does not jump when data arrives.
+ * This stays deliberately thin: the caller provides the accessible name and a
+ * minimum height, while the container supplies shadcn-style colour variables,
+ * responsive sizing, and shared Recharts presentation rules.
  */
 export function ChartContainer({
   config,
   className,
   children,
+  ...props
 }: {
   readonly config: ChartConfig;
   readonly className?: string;
   readonly children: React.ReactElement;
-}) {
+} & Omit<React.ComponentProps<'div'>, 'children'>) {
+  const generatedId = React.useId();
+  const chartId = `chart-${generatedId.replace(/:/g, '')}`;
+  const colors = Object.fromEntries(
+    Object.entries(config).map(([key, series]) => [`--color-${key}`, series.color]),
+  ) as React.CSSProperties;
+
   return (
     <ChartContext.Provider value={config}>
       <div
-        className={cn('w-full', className)}
-        // The chart is a visual summary of values that are also rendered as
-        // text, so it is not announced separately.
-        role="presentation"
+        data-chart={chartId}
+        className={cn(
+          // This follows shadcn's composition model: the container owns the
+          // responsive frame and series colour variables while Recharts owns
+          // the visualization itself.
+          'flex w-full justify-center text-xs [&_.recharts-cartesian-axis-tick_text]:fill-ink-muted [&_.recharts-cartesian-grid_line]:stroke-border [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border-strong [&_.recharts-surface]:outline-none',
+          className,
+        )}
+        {...props}
+        style={{ ...colors, ...props.style }}
       >
         <Recharts.ResponsiveContainer width="100%" height="100%">
           {children}

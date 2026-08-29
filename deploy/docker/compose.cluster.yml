@@ -43,6 +43,11 @@ services:
   bootstrap:
     <<: *record-store-node
     restart: "no"
+    # The image runs as uid 10001 and contains no /join, so Docker creates the
+    # token volume's mountpoint owned by root and the token files cannot be
+    # written. This one-shot helper writes three short-lived tokens and exits;
+    # the nodes that read them stay unprivileged and mount the volume read-only.
+    user: root
     depends_on:
       storage-1:
         condition: service_healthy
