@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 
 import { AppShell } from '@/components/app-shell';
+import { BrandMark } from '@/components/brand-mark';
 import { managementApiUrl } from '@/lib/server/config';
 import { readSessionToken } from '@/lib/server/session';
 import type { Session, SystemInfo } from '@/types/api';
@@ -43,6 +44,7 @@ export default async function ConsoleLayout({ children }: { children: React.Reac
     return (
       <main className="flex min-h-screen items-center justify-center px-4">
         <div className="max-w-md space-y-2 text-center" role="alert">
+          <BrandMark className="mx-auto mb-6 w-12" />
           <h1 className="text-lg font-semibold text-ink">Record Store is unreachable</h1>
           <p className="text-sm text-ink-muted">
             The console could not reach the Record Store management API. It will work again as soon

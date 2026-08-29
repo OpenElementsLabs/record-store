@@ -56,6 +56,12 @@
   --color-ink-muted: oklch(0.5 0.012 255);
   --color-ink-subtle: oklch(0.62 0.01 255);
 
+  /* The supplied Record Store identity, named once for branded entry points. */
+  --color-brand-navy: #195477;
+  --color-brand-navy-deep: #103f5e;
+  --color-brand-teal: #0bb3b8;
+  --color-brand-gold: #ffbb3d;
+
   --color-accent: oklch(0.52 0.14 250);
   --color-accent-hover: oklch(0.46 0.15 250);
   --color-accent-ink: oklch(0.99 0 0);

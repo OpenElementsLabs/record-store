@@ -1,10 +1,9 @@
 'use client';
 
-import { ArrowRight, Eye, EyeOff, LockKeyhole } from 'lucide-react';
+import { ArrowRight, Eye, EyeOff, LockKeyhole, ShieldCheck } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import * as React from 'react';
 
-import { BrandLockup } from '@/components/brand-mark';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
@@ -50,19 +49,20 @@ export function LoginForm({ next }: { readonly next: string }) {
   }
 
   return (
-    <section className="w-full max-w-[440px] rounded-panel border border-border bg-surface p-6 sm:p-10">
-      <BrandLockup className="mb-10" />
-
-      <div className="mb-8">
-        <p className="mb-3 type-eyebrow-accent">Secure access</p>
+    <section className="w-full max-w-[420px]">
+      <div className="mb-9">
+        <p className="mb-4 flex items-center gap-3 font-mono text-xs font-medium uppercase tracking-[0.18em] text-brand-teal">
+          <span aria-hidden className="size-2 rotate-45 bg-brand-gold" />
+          Secure access
+        </p>
         <h1 className="type-display">Welcome back</h1>
-        <p className="mt-3 text-sm leading-6 text-foreground-muted">
-          Sign in to administer this Record Store deployment.
+        <p className="mt-3 max-w-sm text-sm leading-6 text-foreground-muted">
+          Enter the management token for this Record Store deployment.
         </p>
       </div>
 
-      <form onSubmit={submit} className="space-y-6">
-        <div className="space-y-2">
+      <form onSubmit={submit} className="space-y-7">
+        <div className="space-y-2.5">
           <label htmlFor="management-token" className="text-sm font-medium text-foreground">
             Management token
           </label>
@@ -81,7 +81,7 @@ export function LoginForm({ next }: { readonly next: string }) {
               aria-invalid={error ? true : undefined}
               aria-describedby={error ? 'management-token-error' : 'management-token-hint'}
               onChange={(event) => setToken(event.target.value)}
-              className="h-12 pl-10 pr-11"
+              className="h-[3.25rem] border-border-strong bg-surface pl-10 pr-11 shadow-sm focus-visible:border-brand-teal focus-visible:ring-brand-teal"
               placeholder="Enter your token"
             />
             <Button
@@ -110,16 +110,22 @@ export function LoginForm({ next }: { readonly next: string }) {
           variant="primary"
           size="lg"
           disabled={pending || token.length === 0}
-          className="group w-full justify-between"
+          className="group h-[3.25rem] w-full justify-between bg-brand-navy text-white shadow-md shadow-brand-navy/15 hover:bg-brand-navy-deep dark:bg-brand-teal dark:text-brand-navy-deep dark:hover:bg-brand-teal/90"
         >
           <span>{pending ? 'Signing in…' : 'Continue to console'}</span>
           <ArrowRight aria-hidden className="transition-transform group-hover:translate-x-1" />
         </Button>
       </form>
 
-      <p className="mt-10 border-t border-border pt-5 text-xs leading-5 text-foreground-muted">
-        Your token is sent over an encrypted connection and never stored in the browser.
-      </p>
+      <div className="mt-9 flex gap-3 rounded-xl border border-brand-teal/20 bg-brand-teal/5 p-4">
+        <ShieldCheck aria-hidden className="mt-0.5 size-4 shrink-0 text-brand-teal" />
+        <div>
+          <p className="text-xs font-semibold text-foreground">Protected sign-in</p>
+          <p className="mt-1 text-xs leading-5 text-foreground-muted">
+            Your token is sent over an encrypted connection and never stored in this browser.
+          </p>
+        </div>
+      </div>
     </section>
   );
 }

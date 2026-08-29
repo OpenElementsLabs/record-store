@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import * as React from 'react';
 
-import { BrandMark } from '@/components/brand-mark';
+import { BrandLockup } from '@/components/brand-mark';
 import { CommandPalette, CommandTrigger } from '@/components/command-palette';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Badge } from '@/components/ui/badge';
@@ -201,8 +201,11 @@ function Sidebar({
           className="flex min-w-0 items-center gap-2.5 rounded-control"
           aria-label="Record Store console home"
         >
-          <BrandMark className="size-8" />
-          {collapsed ? null : <span className="type-wordmark truncate">Record Store</span>}
+          {collapsed ? (
+            <BrandLockup size="compact" className="[&>span]:sr-only" />
+          ) : (
+            <BrandLockup size="compact" />
+          )}
         </Link>
         {onToggleCollapsed && !collapsed ? (
           <Button
