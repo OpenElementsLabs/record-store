@@ -261,6 +261,8 @@ jobs:
 
       # An SBOM describes one architecture's package set, so it is generated
       # against a platform manifest rather than the index holding both.
+      - uses: actions/checkout@v4
+
       - name: Resolve platform manifest digest
         id: platform
         env:
@@ -269,19 +271,7 @@ jobs:
           ARCHITECTURE: ${{ matrix.architecture }}
         run: |
           set -euo pipefail
-          digest="$(
-            docker buildx imagetools inspect "${IMAGE}@${INDEX}" --format '{{json .Manifest}}' \
-              | jq -r --arg architecture "$ARCHITECTURE" '
-                  .manifests[]
-                  | select(.platform.os == "linux" and .platform.architecture == $architecture)
-                  | .digest
-                ' \
-              | head -n 1
-          )"
-          if [[ "$digest" != sha256:* ]]; then
-            echo "the published index has no linux/${ARCHITECTURE} manifest" >&2
-            exit 1
-          fi
+          digest="$(.github/scripts/platform-digest.sh "$IMAGE" "$INDEX" "$ARCHITECTURE")"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Name the SBOM after the release asset it becomes

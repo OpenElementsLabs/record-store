@@ -177,6 +177,8 @@ jobs:
       contents: read
       packages: read
     steps:
+      - uses: actions/checkout@v4
+
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -186,18 +188,21 @@ jobs:
       # Taken out of the published image rather than compiled again, so the
       # archive and the container can never contain different builds. `docker
       # create` only materialises the filesystem, so the foreign architecture
-      # needs no emulation.
+      # needs no emulation. Each platform is addressed by its own manifest
+      # digest, because the local image store holds one image per digest
+      # reference and would refuse the second pull otherwise.
       - name: Extract binaries from the published image
         env:
           IMAGE: ${{ needs.validate.outputs.server-image }}
-          DIGEST: ${{ needs.server-image.outputs.digest }}
+          INDEX: ${{ needs.server-image.outputs.digest }}
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
           for architecture in amd64 arm64; do
+            digest="$(.github/scripts/platform-digest.sh "$IMAGE" "$INDEX" "$architecture")"
             staging="$(mktemp -d)"
-            container="$(docker create --platform "linux/${architecture}" "${IMAGE}@${DIGEST}")"
+            container="$(docker create "${IMAGE}@${digest}")"
             docker cp "${container}:/usr/local/bin/record-store" "${staging}/record-store"
             docker cp "${container}:/usr/local/bin/record-store-server" "${staging}/record-store-server"
             docker rm --force "$container" > /dev/null
