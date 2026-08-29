@@ -10,10 +10,10 @@ use std::sync::Arc;
 use chrono::Utc;
 use record_store_cluster::{
     ClusterCommand, ClusterOperation, ClusterOperationKind, ClusterOperationState,
-    DecommissionSafety, IssuedJoinToken, JoinToken, NodeState,
+    DecommissionSafety, DeviceRecord, DeviceState, IssuedJoinToken, JoinToken, NodeState,
 };
 use record_store_consensus::{ClusterWrite, MetadataConsensus};
-use record_store_core::{ClusterOperationId, NodeId};
+use record_store_core::{ClusterOperationId, DeviceId, NodeId};
 use thiserror::Error;
 use tracing::info;
 
@@ -34,6 +34,24 @@ pub enum OperationError {
         from: NodeState,
         /// Requested state.
         to: NodeState,
+    },
+    /// The device is unknown on the named node.
+    #[error("device {device} is not registered on node {node}")]
+    DeviceNotFound {
+        /// Node the device was looked for on.
+        node: NodeId,
+        /// Device that is not registered.
+        device: DeviceId,
+    },
+    /// The requested device lifecycle transition is not allowed.
+    #[error("device {device} cannot move from {from} to {to}")]
+    InvalidDeviceTransition {
+        /// Device being changed.
+        device: DeviceId,
+        /// Current state.
+        from: DeviceState,
+        /// Requested state.
+        to: DeviceState,
     },
     /// The operation would violate durability.
     #[error("{0}")]
@@ -120,6 +138,103 @@ impl ClusterOperations {
             }
         }
         Ok(())
+    }
+
+    /// Returns every registered device in the cluster, in stable order.
+    pub async fn devices(&self) -> Result<Vec<(NodeId, DeviceRecord)>, OperationError> {
+        let mut devices = Vec::new();
+        for node in self.context.cluster.nodes().await.map_err(cluster)? {
+            for device in &node.devices {
+                devices.push((node.node_id, device.clone()));
+            }
+        }
+        devices.sort_by_key(|(node_id, device)| (*node_id, device.id));
+        Ok(devices)
+    }
+
+    /// Returns one registered device.
+    pub async fn device(
+        &self,
+        node_id: NodeId,
+        device_id: DeviceId,
+    ) -> Result<DeviceRecord, OperationError> {
+        self.node(node_id)
+            .await?
+            .devices
+            .into_iter()
+            .find(|device| device.id == device_id)
+            .ok_or(OperationError::DeviceNotFound {
+                node: node_id,
+                device: device_id,
+            })
+    }
+
+    /// Brings a registered device into service.
+    pub async fn activate_device(
+        &self,
+        node_id: NodeId,
+        device_id: DeviceId,
+    ) -> Result<DeviceRecord, OperationError> {
+        self.transition_device(node_id, device_id, DeviceState::Active)
+            .await
+    }
+
+    /// Starts draining a device.
+    ///
+    /// Draining stops new placement on the device and lets the coordinator move
+    /// its replicas elsewhere. It does not itself declare the device safe to
+    /// remove; only completed evacuation does that.
+    pub async fn drain_device(
+        &self,
+        node_id: NodeId,
+        device_id: DeviceId,
+    ) -> Result<DeviceRecord, OperationError> {
+        self.transition_device(node_id, device_id, DeviceState::Draining)
+            .await
+    }
+
+    /// Pauses a device without evacuating it.
+    pub async fn maintain_device(
+        &self,
+        node_id: NodeId,
+        device_id: DeviceId,
+    ) -> Result<DeviceRecord, OperationError> {
+        self.transition_device(node_id, device_id, DeviceState::Maintenance)
+            .await
+    }
+
+    /// Returns a drained or maintained device to service.
+    pub async fn resume_device(
+        &self,
+        node_id: NodeId,
+        device_id: DeviceId,
+    ) -> Result<DeviceRecord, OperationError> {
+        self.transition_device(node_id, device_id, DeviceState::Active)
+            .await
+    }
+
+    /// Marks an evacuated device safe to remove.
+    ///
+    /// The catalog refuses this while the device still owns replica records, so
+    /// "safe to remove" always means evacuation actually finished rather than
+    /// that an operator asked for it.
+    pub async fn release_device(
+        &self,
+        node_id: NodeId,
+        device_id: DeviceId,
+    ) -> Result<DeviceRecord, OperationError> {
+        self.transition_device(node_id, device_id, DeviceState::SafeToRemove)
+            .await
+    }
+
+    /// Permanently retires a device.
+    pub async fn retire_device(
+        &self,
+        node_id: NodeId,
+        device_id: DeviceId,
+    ) -> Result<DeviceRecord, OperationError> {
+        self.transition_device(node_id, device_id, DeviceState::Retired)
+            .await
     }
 
     /// Checks whether a node can be removed without losing durability.
@@ -307,6 +422,39 @@ impl ClusterOperations {
             at: Utc::now(),
         })
         .await
+    }
+
+    /// Validates a device lifecycle change before committing it.
+    ///
+    /// The transition table lives on `DeviceState`, so an unsafe move is
+    /// rejected here rather than reaching consensus and being rejected there
+    /// with a less useful error.
+    async fn transition_device(
+        &self,
+        node_id: NodeId,
+        device_id: DeviceId,
+        state: DeviceState,
+    ) -> Result<DeviceRecord, OperationError> {
+        let device = self.device(node_id, device_id).await?;
+        if device.state == state {
+            return Ok(device);
+        }
+        if !device.state.can_transition_to(state) {
+            return Err(OperationError::InvalidDeviceTransition {
+                device: device_id,
+                from: device.state,
+                to: state,
+            });
+        }
+        self.apply(ClusterCommand::SetDeviceState {
+            node_id,
+            device_id,
+            state,
+            at: Utc::now(),
+        })
+        .await?;
+        info!(%node_id, %device_id, %state, "device lifecycle changed");
+        self.device(node_id, device_id).await
     }
 
     async fn node(

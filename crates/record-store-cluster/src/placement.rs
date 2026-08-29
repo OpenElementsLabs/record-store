@@ -623,6 +623,259 @@ mod tests {
             .with_size_hint(Some(10))
     }
 
+    /// Builds a device with an explicit capacity and class.
+    fn device_with(
+        node: NodeId,
+        class: &StorageClass,
+        capacity: u64,
+        state: crate::device::DeviceState,
+    ) -> DeviceRecord {
+        let mut device = DeviceRecord::legacy_directory(
+            node,
+            Some(std::path::PathBuf::from("/srv/record-store")),
+            class.clone(),
+            DeviceCapacity {
+                raw_bytes: capacity,
+                usable_bytes: capacity,
+                allocated_bytes: 0,
+                reserved_bytes: 0,
+                available_bytes: capacity,
+            },
+        );
+        // Legacy identity is derived from the node, so multi-device nodes need
+        // distinct identities.
+        device.id = DeviceId::new();
+        device.state = state;
+        device
+    }
+
+    /// A node holding several drives is still one failure domain.
+    ///
+    /// This is the invariant that makes "3 replicas across nodes" mean anything:
+    /// three drives in one chassis die together with the chassis, so spreading
+    /// replicas across them is not durability, it only looks like it.
+    #[test]
+    fn several_drives_on_one_node_never_hold_more_than_one_replica() {
+        use crate::device::DeviceState;
+
+        let mut nodes = Vec::new();
+        for index in 0..3 {
+            let mut node = record(
+                NodeState::Healthy,
+                &format!("rack-{index}"),
+                1 << 40,
+                1 << 40,
+            );
+            let class = node.storage_class.clone();
+            // Four independent drives per node, as §104 describes.
+            node.devices = (0..4)
+                .map(|_| device_with(node.node_id, &class, 1 << 40, DeviceState::Active))
+                .collect();
+            nodes.push(node);
+        }
+        let mut topology = topology(nodes);
+        topology.config.failure_domain_scope = FailureDomainScope::Node;
+
+        let policy = CapacityAwarePlacement::new(None);
+        for index in 0..500_u128 {
+            let request = ObjectPlacementRequest::new(
+                ObjectId::from_uuid(uuid::Uuid::from_u128(index)),
+                3,
+                2,
+                StorageClass::default(),
+            )
+            .with_size_hint(Some(10));
+            let plan = policy.place(&request, &topology).expect("plan");
+
+            let nodes_used: BTreeSet<NodeId> =
+                plan.targets.iter().map(|target| target.node_id).collect();
+            assert_eq!(
+                nodes_used.len(),
+                plan.targets.len(),
+                "two replicas landed on one node: {:?}",
+                plan.targets
+            );
+            let devices_used: BTreeSet<DeviceId> =
+                plan.targets.iter().map(|target| target.device_id).collect();
+            assert_eq!(
+                devices_used.len(),
+                plan.targets.len(),
+                "one device was selected twice"
+            );
+        }
+    }
+
+    /// Every drive is its own placement target, so a multi-drive node really
+    /// does contribute more than one place to put data.
+    #[test]
+    fn each_drive_is_an_independent_placement_target() {
+        use crate::device::DeviceState;
+
+        let mut node = record(NodeState::Healthy, "solo", 1 << 40, 1 << 40);
+        let class = node.storage_class.clone();
+        node.devices = (0..4)
+            .map(|_| device_with(node.node_id, &class, 1 << 40, DeviceState::Active))
+            .collect();
+        let expected: BTreeSet<DeviceId> = node.devices.iter().map(|device| device.id).collect();
+        let mut topology = topology(vec![node]);
+        // Device scope is how an operator asks for spread within one machine.
+        topology.config.failure_domain_scope = FailureDomainScope::Device;
+
+        let policy = CapacityAwarePlacement::new(None);
+        let mut seen = BTreeSet::new();
+        for index in 0..200_u128 {
+            let request = ObjectPlacementRequest::new(
+                ObjectId::from_uuid(uuid::Uuid::from_u128(index)),
+                3,
+                2,
+                StorageClass::default(),
+            )
+            .with_size_hint(Some(10));
+            let plan = policy.place(&request, &topology).expect("plan");
+            assert_eq!(
+                plan.targets.len(),
+                3,
+                "three drives should satisfy three replicas"
+            );
+            seen.extend(plan.targets.iter().map(|target| target.device_id));
+        }
+        assert_eq!(
+            seen, expected,
+            "every drive should be reachable by placement"
+        );
+    }
+
+    /// Capacity has to steer placement, or a 24 TB drive fills at the same rate
+    /// as a 4 TB one and the cluster runs out of space early.
+    #[test]
+    fn placement_follows_device_capacity() {
+        use crate::device::DeviceState;
+
+        // The heterogeneous topology from §103, one drive per node.
+        let capacities = [4, 8, 20, 24].map(|terabytes| terabytes * (1_u64 << 40));
+        let nodes: Vec<NodeRecord> = capacities
+            .iter()
+            .enumerate()
+            .map(|(index, capacity)| {
+                let mut node = record(
+                    NodeState::Healthy,
+                    &format!("rack-{index}"),
+                    *capacity,
+                    *capacity,
+                );
+                let class = node.storage_class.clone();
+                node.devices = vec![device_with(
+                    node.node_id,
+                    &class,
+                    *capacity,
+                    DeviceState::Active,
+                )];
+                node
+            })
+            .collect();
+        let by_capacity: Vec<(DeviceId, u64)> = nodes
+            .iter()
+            .map(|node| (node.devices[0].id, node.devices[0].capacity.usable_bytes))
+            .collect();
+        let topology = topology(nodes);
+
+        let policy = CapacityAwarePlacement::new(None);
+        let mut counts: BTreeMap<DeviceId, usize> = BTreeMap::new();
+        let samples = 4_000_u128;
+        for index in 0..samples {
+            let request = ObjectPlacementRequest::new(
+                ObjectId::from_uuid(uuid::Uuid::from_u128(index)),
+                1,
+                1,
+                StorageClass::default(),
+            )
+            .with_size_hint(Some(10));
+            let plan = policy.place(&request, &topology).expect("plan");
+            *counts.entry(plan.targets[0].device_id).or_insert(0) += 1;
+        }
+
+        let total_capacity: u64 = by_capacity.iter().map(|(_, capacity)| *capacity).sum();
+        for (device_id, capacity) in by_capacity {
+            let share = *counts.get(&device_id).unwrap_or(&0) as f64 / samples as f64;
+            let expected = capacity as f64 / total_capacity as f64;
+            // Statistical, not exact: weighted rendezvous is probabilistic, so
+            // the assertion is a band rather than a point.
+            assert!(
+                (share - expected).abs() < 0.05,
+                "device with {capacity} bytes took {share:.3} of placements, expected about {expected:.3}"
+            );
+        }
+    }
+
+    /// A drive being emptied, paused, or already lost must not be handed new
+    /// data. Draining in particular would otherwise never finish.
+    #[test]
+    fn drives_not_in_service_receive_no_new_placement() {
+        use crate::device::{DeviceHealth, DeviceState};
+
+        for state in [
+            DeviceState::Draining,
+            DeviceState::Maintenance,
+            DeviceState::Failed,
+            DeviceState::SafeToRemove,
+            DeviceState::Retired,
+            DeviceState::Available,
+        ] {
+            let mut healthy = record(NodeState::Healthy, "a", 1 << 40, 1 << 40);
+            let class = healthy.storage_class.clone();
+            healthy.devices = vec![device_with(
+                healthy.node_id,
+                &class,
+                1 << 40,
+                DeviceState::Active,
+            )];
+            let live_device = healthy.devices[0].id;
+
+            let mut excluded = record(NodeState::Healthy, "b", 1 << 40, 1 << 40);
+            excluded.devices = vec![device_with(excluded.node_id, &class, 1 << 40, state)];
+            let excluded_device = excluded.devices[0].id;
+
+            let topology = topology(vec![healthy, excluded]);
+            let policy = CapacityAwarePlacement::new(None);
+            let plan = policy.place(&request(1, 1), &topology).expect("plan");
+            assert_eq!(
+                plan.targets[0].device_id, live_device,
+                "a device in {state} must not receive new placement"
+            );
+            assert!(
+                !plan
+                    .targets
+                    .iter()
+                    .any(|target| target.device_id == excluded_device)
+            );
+        }
+
+        // Health is a separate axis from lifecycle, and a failed drive is not a
+        // placement candidate however it was administratively marked.
+        let mut healthy = record(NodeState::Healthy, "a", 1 << 40, 1 << 40);
+        let class = healthy.storage_class.clone();
+        healthy.devices = vec![device_with(
+            healthy.node_id,
+            &class,
+            1 << 40,
+            DeviceState::Active,
+        )];
+        let live_device = healthy.devices[0].id;
+        let mut sick = record(NodeState::Healthy, "b", 1 << 40, 1 << 40);
+        sick.devices = vec![device_with(
+            sick.node_id,
+            &class,
+            1 << 40,
+            DeviceState::Active,
+        )];
+        sick.devices[0].health = DeviceHealth::Failed;
+        let topology = topology(vec![healthy, sick]);
+        let plan = CapacityAwarePlacement::new(None)
+            .place(&request(1, 1), &topology)
+            .expect("plan");
+        assert_eq!(plan.targets[0].device_id, live_device);
+    }
+
     /// Adding a device must move only the objects that belong on it.
     ///
     /// Rendezvous hashing exists to bound movement: with `n` devices growing to
@@ -805,8 +1058,14 @@ mod tests {
         assert_eq!(plan.required_acknowledgements, 2);
     }
 
+    /// A local replica is written first so the first copy costs no network hop.
+    ///
+    /// The plan asks for as many replicas as there are nodes, so the local node
+    /// is certainly among them: locality decides write *order*, never which
+    /// devices are chosen, and asserting otherwise made this test depend on
+    /// randomly generated node identifiers.
     #[test]
-    fn local_node_is_preferred_and_ordered_first() {
+    fn a_selected_local_node_is_ordered_first() {
         let nodes = vec![
             record(NodeState::Healthy, "a", 1_000, 1_000),
             record(NodeState::Healthy, "b", 1_000, 1_000),
@@ -815,10 +1074,57 @@ mod tests {
         let local = nodes[2].node_id;
         let topology = topology(nodes);
         let plan = CapacityAwarePlacement::new(Some(local))
-            .place(&request(2, 2), &topology)
+            .place(&request(3, 2), &topology)
             .expect("plan");
         assert_eq!(plan.targets[0].node_id, local);
         assert!(plan.targets[0].local);
+        assert_eq!(plan.targets.len(), 3);
+    }
+
+    /// Every node must choose the same devices for the same object.
+    ///
+    /// Placement is recomputed independently on whichever node receives a
+    /// request, so if the ingress node changed the outcome, two nodes would
+    /// disagree about where an object belongs and repair would fight itself.
+    #[test]
+    fn the_ingress_node_changes_write_order_but_never_the_target_set() {
+        let nodes = vec![
+            record(NodeState::Healthy, "a", 1_000, 1_000),
+            record(NodeState::Healthy, "b", 1_000, 1_000),
+            record(NodeState::Healthy, "c", 1_000, 1_000),
+        ];
+        let identities: Vec<NodeId> = nodes.iter().map(|node| node.node_id).collect();
+        let topology = topology(nodes);
+        let request = request(2, 2);
+
+        let baseline: BTreeSet<(NodeId, DeviceId)> = CapacityAwarePlacement::new(None)
+            .place(&request, &topology)
+            .expect("plan")
+            .targets
+            .iter()
+            .map(|target| (target.node_id, target.device_id))
+            .collect();
+
+        for local in identities {
+            let plan = CapacityAwarePlacement::new(Some(local))
+                .place(&request, &topology)
+                .expect("plan");
+            let chosen: BTreeSet<(NodeId, DeviceId)> = plan
+                .targets
+                .iter()
+                .map(|target| (target.node_id, target.device_id))
+                .collect();
+            assert_eq!(
+                chosen, baseline,
+                "the node computing the plan changed which devices were selected"
+            );
+            if plan.targets.iter().any(|target| target.node_id == local) {
+                assert_eq!(
+                    plan.targets[0].node_id, local,
+                    "a selected local target must be written first"
+                );
+            }
+        }
     }
 
     #[test]

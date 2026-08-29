@@ -75,6 +75,11 @@ enum Command {
         #[command(subcommand)]
         command: NodeCommand,
     },
+    /// Inspect or change storage device lifecycle state.
+    Drive {
+        #[command(subcommand)]
+        command: DriveCommand,
+    },
     /// Inspect the durable repair queue.
     Repair {
         #[command(subcommand)]
@@ -111,6 +116,47 @@ struct EndpointArgs {
     /// Record Store native management endpoint.
     #[arg(long, default_value = "http://127.0.0.1:7601")]
     endpoint: String,
+}
+
+/// Arguments naming one device on one node.
+#[derive(Args)]
+struct DeviceArgs {
+    /// Stable node identifier.
+    node: String,
+    /// Stable device identifier. This is not the device's current path, which
+    /// can change across reboots.
+    device: String,
+    #[command(flatten)]
+    endpoint: EndpointArgs,
+}
+
+#[derive(Subcommand)]
+enum DriveCommand {
+    /// List every registered device in the cluster.
+    List(EndpointArgs),
+    /// Inspect one registered device.
+    Show(DeviceArgs),
+    /// Bring a registered device into service.
+    Activate(DeviceArgs),
+    /// Stop new placement and move this device's replicas elsewhere.
+    Drain(DeviceArgs),
+    /// Pause a device without evacuating it.
+    Maintenance(DeviceArgs),
+    /// Return a drained or maintained device to service.
+    Resume(DeviceArgs),
+    /// Mark an evacuated device safe to remove.
+    ///
+    /// Refused while the device still owns replicas, so success means
+    /// evacuation genuinely finished.
+    Release(DeviceArgs),
+    /// Permanently retire a device.
+    Retire {
+        #[command(flatten)]
+        device: DeviceArgs,
+        /// Skip the confirmation prompt, for automation.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -445,6 +491,7 @@ async fn main() -> Result<()> {
         Command::Storage { command } => storage(command, json).await?,
         Command::Cluster { command } => cluster(command, json).await?,
         Command::Node { command } => node(command, json).await?,
+        Command::Drive { command } => drive(command, json).await?,
         Command::Repair { command } => repair(command, json).await?,
         Command::Rebalance { command } => rebalance(command, json).await?,
     }
@@ -1015,6 +1062,74 @@ async fn node(command: NodeCommand, json: bool) -> Result<()> {
     print_value(&value, json)
 }
 
+async fn drive(command: DriveCommand, json: bool) -> Result<()> {
+    let request = match command {
+        DriveCommand::List(endpoint) => client()?.get(api_url(&endpoint, "/api/v1/devices")),
+        DriveCommand::Show(device) => client()?.get(device_url(&device, "")),
+        DriveCommand::Activate(device) => client()?.post(device_url(&device, "/activate")),
+        DriveCommand::Drain(device) => client()?.post(device_url(&device, "/drain")),
+        DriveCommand::Maintenance(device) => client()?.post(device_url(&device, "/maintenance")),
+        DriveCommand::Resume(device) => client()?.post(device_url(&device, "/resume")),
+        DriveCommand::Release(device) => client()?.post(device_url(&device, "/release")),
+        DriveCommand::Retire { device, yes } => {
+            // Retiring is the one device command that cannot be walked back, so
+            // it asks before acting unless a script opted out.
+            confirm(
+                yes,
+                &format!(
+                    "Permanently retire device {} on node {}?",
+                    device.device, device.node
+                ),
+            )?;
+            client()?.post(device_url(&device, "/retire"))
+        }
+    };
+    let value = send_admin(request)
+        .await?
+        .json::<serde_json::Value>()
+        .await
+        .context("decode device response")?;
+    print_value(&value, json)
+}
+
+fn device_url(device: &DeviceArgs, action: &str) -> String {
+    api_url(
+        &device.endpoint,
+        &format!(
+            "/api/v1/nodes/{}/devices/{}{action}",
+            device.node, device.device
+        ),
+    )
+}
+
+/// Requires an interactive confirmation before a destructive action.
+///
+/// A non-interactive session must pass `--yes` explicitly: prompting into a pipe
+/// would either hang or silently read nothing, and neither should be mistaken
+/// for consent.
+fn confirm(assumed: bool, question: &str) -> Result<()> {
+    use std::io::{IsTerminal, Write};
+
+    if assumed {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        bail!("{question} Refusing without --yes because this is not an interactive terminal");
+    }
+    print!("{question} [y/N] ");
+    std::io::stdout()
+        .flush()
+        .context("prompt for confirmation")?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .context("read confirmation")?;
+    if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+        bail!("cancelled");
+    }
+    Ok(())
+}
+
 async fn repair(command: RepairCommand, json: bool) -> Result<()> {
     let RepairCommand::Status(endpoint) = command;
     let value = send_admin(client()?.get(api_url(&endpoint, "/api/v1/repair/status")))
@@ -1132,6 +1247,7 @@ mod tests {
                 Command::Storage { .. } => "storage",
                 Command::Cluster { .. } => "cluster",
                 Command::Node { .. } => "node",
+                Command::Drive { .. } => "drive",
                 Command::Repair { .. } => "repair",
                 Command::Rebalance { .. } => "rebalance",
             };

@@ -261,6 +261,168 @@ pub(crate) async fn collect_cluster_status(
         })
 }
 
+/// Lists every registered device in the cluster.
+///
+/// Devices are the unit placement actually selects, so operators get one call
+/// that answers "what storage does this cluster have" rather than having to
+/// reconstruct it from per-node responses.
+pub(crate) async fn list_cluster_devices(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<Vec<record_store_replication::DeviceStatus>>, ApiError> {
+    let mut devices: Vec<_> = collect_cluster_status(&state, request_id)
+        .await?
+        .nodes
+        .into_iter()
+        .flat_map(|node| node.devices)
+        .collect();
+    devices.sort_by_key(|device| (device.node_id, device.device_id));
+    Ok(Json(devices))
+}
+
+/// Lists the devices on one node.
+pub(crate) async fn list_node_devices(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<Vec<record_store_replication::DeviceStatus>>, ApiError> {
+    let node_id = parse_node_id(&id, request_id.clone())?;
+    let node = collect_cluster_status(&state, request_id.clone())
+        .await?
+        .nodes
+        .into_iter()
+        .find(|node| node.node_id == node_id)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "NODE_NOT_FOUND",
+                format!("Node {node_id} is not a member of this cluster"),
+                request_id,
+            )
+        })?;
+    Ok(Json(node.devices))
+}
+
+/// Inspects one device.
+pub(crate) async fn inspect_cluster_device(
+    State(state): State<AppState>,
+    Path((node, device)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<record_store_cluster::DeviceRecord>, ApiError> {
+    let (node_id, device_id) = parse_device_path(&node, &device, request_id.clone())?;
+    cluster_management(&state, request_id.clone())?
+        .operations
+        .device(node_id, device_id)
+        .await
+        .map(Json)
+        .map_err(|error| cluster_operation_error(error, request_id))
+}
+
+/// Brings a registered device into service.
+pub(crate) async fn activate_cluster_device(
+    State(state): State<AppState>,
+    Path((node, device)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<record_store_cluster::DeviceRecord>, ApiError> {
+    device_transition(state, node, device, request_id, DeviceAction::Activate).await
+}
+
+/// Stops new placement on a device and lets its replicas move elsewhere.
+pub(crate) async fn drain_cluster_device(
+    State(state): State<AppState>,
+    Path((node, device)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<record_store_cluster::DeviceRecord>, ApiError> {
+    device_transition(state, node, device, request_id, DeviceAction::Drain).await
+}
+
+/// Pauses a device without evacuating it.
+pub(crate) async fn maintain_cluster_device(
+    State(state): State<AppState>,
+    Path((node, device)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<record_store_cluster::DeviceRecord>, ApiError> {
+    device_transition(state, node, device, request_id, DeviceAction::Maintain).await
+}
+
+/// Returns a drained or maintained device to service.
+pub(crate) async fn resume_cluster_device(
+    State(state): State<AppState>,
+    Path((node, device)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<record_store_cluster::DeviceRecord>, ApiError> {
+    device_transition(state, node, device, request_id, DeviceAction::Resume).await
+}
+
+/// Marks an evacuated device safe to remove.
+///
+/// Refused while the device still owns replica records, so a `safe_to_remove`
+/// response means evacuation actually completed.
+pub(crate) async fn release_cluster_device(
+    State(state): State<AppState>,
+    Path((node, device)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<record_store_cluster::DeviceRecord>, ApiError> {
+    device_transition(state, node, device, request_id, DeviceAction::Release).await
+}
+
+/// Permanently retires a device.
+pub(crate) async fn retire_cluster_device(
+    State(state): State<AppState>,
+    Path((node, device)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<record_store_cluster::DeviceRecord>, ApiError> {
+    device_transition(state, node, device, request_id, DeviceAction::Retire).await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DeviceAction {
+    Activate,
+    Drain,
+    Maintain,
+    Resume,
+    Release,
+    Retire,
+}
+
+async fn device_transition(
+    state: AppState,
+    node: String,
+    device: String,
+    request_id: RequestId,
+    action: DeviceAction,
+) -> Result<Json<record_store_cluster::DeviceRecord>, ApiError> {
+    let (node_id, device_id) = parse_device_path(&node, &device, request_id.clone())?;
+    let operations = &cluster_management(&state, request_id.clone())?.operations;
+    let result = match action {
+        DeviceAction::Activate => operations.activate_device(node_id, device_id).await,
+        DeviceAction::Drain => operations.drain_device(node_id, device_id).await,
+        DeviceAction::Maintain => operations.maintain_device(node_id, device_id).await,
+        DeviceAction::Resume => operations.resume_device(node_id, device_id).await,
+        DeviceAction::Release => operations.release_device(node_id, device_id).await,
+        DeviceAction::Retire => operations.retire_device(node_id, device_id).await,
+    };
+    result
+        .map(Json)
+        .map_err(|error| cluster_operation_error(error, request_id))
+}
+
+fn parse_device_path(
+    node: &str,
+    device: &str,
+    request_id: RequestId,
+) -> Result<(NodeId, record_store_core::DeviceId), ApiError> {
+    let node_id = parse_node_id(node, request_id.clone())?;
+    let device_id = device.parse().map_err(|_| {
+        ApiError::bad_request(
+            request_id,
+            "INVALID_DEVICE_ID",
+            "Device ID must be a valid Record Store device identifier",
+        )
+    })?;
+    Ok((node_id, device_id))
+}
+
 pub(crate) fn parse_node_id(value: &str, request_id: RequestId) -> Result<NodeId, ApiError> {
     value.parse().map_err(|_| {
         ApiError::bad_request(
@@ -276,15 +438,19 @@ pub(crate) fn cluster_operation_error(
     request_id: RequestId,
 ) -> ApiError {
     let status = match error_value {
-        OperationError::NodeNotFound(_) => StatusCode::NOT_FOUND,
-        OperationError::InvalidTransition { .. } | OperationError::DurabilityAtRisk(_) => {
-            StatusCode::CONFLICT
+        OperationError::NodeNotFound(_) | OperationError::DeviceNotFound { .. } => {
+            StatusCode::NOT_FOUND
         }
+        OperationError::InvalidTransition { .. }
+        | OperationError::InvalidDeviceTransition { .. }
+        | OperationError::DurabilityAtRisk(_) => StatusCode::CONFLICT,
         OperationError::Cluster(_) => StatusCode::SERVICE_UNAVAILABLE,
     };
     let code = match error_value {
         OperationError::NodeNotFound(_) => "NODE_NOT_FOUND",
+        OperationError::DeviceNotFound { .. } => "DEVICE_NOT_FOUND",
         OperationError::InvalidTransition { .. } => "INVALID_NODE_TRANSITION",
+        OperationError::InvalidDeviceTransition { .. } => "INVALID_DEVICE_TRANSITION",
         OperationError::DurabilityAtRisk(_) => "DURABILITY_AT_RISK",
         OperationError::Cluster(_) => "CLUSTER_UNAVAILABLE",
     };
