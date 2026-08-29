@@ -9,9 +9,12 @@ copyright: Open Elements Labs
 theme:
   name: material
   language: en
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
   icon:
-    logo: material/database-outline
     repo: fontawesome/brands/github
+  # A neutral header lets the multi-colour brand mark read cleanly; the brand
+  # teal carries through as the interactive accent instead.
   palette:
     - media: "(prefers-color-scheme)"
       toggle:
@@ -19,15 +22,15 @@ theme:
         name: Follow system theme
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
+      primary: white
+      accent: teal
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: indigo
+      primary: black
+      accent: teal
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
