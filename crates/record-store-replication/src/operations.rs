@@ -11,6 +11,7 @@ use chrono::Utc;
 use record_store_cluster::{
     ClusterCommand, ClusterOperation, ClusterOperationKind, ClusterOperationState,
     DecommissionSafety, DeviceRecord, DeviceState, IssuedJoinToken, JoinToken, NodeState,
+    StorageClass, StoragePolicy,
 };
 use record_store_consensus::{ClusterWrite, MetadataConsensus};
 use record_store_core::{ClusterOperationId, DeviceId, NodeId};
@@ -52,6 +53,20 @@ pub enum OperationError {
         from: DeviceState,
         /// Requested state.
         to: DeviceState,
+    },
+    /// The storage policy is unknown.
+    #[error("storage class '{0}' is not defined")]
+    StoragePolicyNotFound(StorageClass),
+    /// The policy cannot be removed while devices still carry its class.
+    #[error(
+        "storage class '{class}' is still assigned to {devices} device(s); \
+         reassign them before removing the policy"
+    )]
+    StoragePolicyInUse {
+        /// Class that was asked to be removed.
+        class: StorageClass,
+        /// Devices still carrying it.
+        devices: usize,
     },
     /// The operation would violate durability.
     #[error("{0}")]
@@ -137,6 +152,76 @@ impl ClusterOperations {
                 .await?;
             }
         }
+        Ok(())
+    }
+
+    /// Returns every defined storage policy.
+    pub async fn storage_policies(&self) -> Result<Vec<StoragePolicy>, OperationError> {
+        self.context
+            .cluster
+            .storage_policies()
+            .await
+            .map_err(cluster)
+    }
+
+    /// Returns one storage policy.
+    pub async fn storage_policy(
+        &self,
+        class: &StorageClass,
+    ) -> Result<StoragePolicy, OperationError> {
+        self.storage_policies()
+            .await?
+            .into_iter()
+            .find(|policy| &policy.class == class)
+            .ok_or_else(|| OperationError::StoragePolicyNotFound(class.clone()))
+    }
+
+    /// Defines or replaces a storage policy.
+    ///
+    /// Validation happens here and again in the catalog. Doing it twice is
+    /// deliberate: the caller gets a useful error, and consensus stays the
+    /// authority regardless of which node accepted the request.
+    pub async fn put_storage_policy(
+        &self,
+        policy: StoragePolicy,
+    ) -> Result<StoragePolicy, OperationError> {
+        policy
+            .validate()
+            .map_err(|error| OperationError::Cluster(error.to_string()))?;
+        self.apply(ClusterCommand::PutStoragePolicy {
+            policy: Box::new(policy.clone()),
+            at: Utc::now(),
+        })
+        .await?;
+        info!(class = %policy.class, "storage policy committed");
+        Ok(policy)
+    }
+
+    /// Removes a storage policy.
+    ///
+    /// Refused while any device still carries the class. Those devices would
+    /// otherwise resolve to no policy at all and quietly stop being placement
+    /// candidates, which looks like capacity vanishing.
+    pub async fn delete_storage_policy(&self, class: &StorageClass) -> Result<(), OperationError> {
+        self.storage_policy(class).await?;
+        let assigned = self
+            .devices()
+            .await?
+            .into_iter()
+            .filter(|(_, device)| &device.storage_class == class)
+            .count();
+        if assigned > 0 {
+            return Err(OperationError::StoragePolicyInUse {
+                class: class.clone(),
+                devices: assigned,
+            });
+        }
+        self.apply(ClusterCommand::DeleteStoragePolicy {
+            class: class.clone(),
+            at: Utc::now(),
+        })
+        .await?;
+        info!(%class, "storage policy removed");
         Ok(())
     }
 

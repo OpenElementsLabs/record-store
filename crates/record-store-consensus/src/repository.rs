@@ -416,6 +416,11 @@ pub trait ClusterStore: Send + Sync {
     /// Returns every node record.
     async fn nodes(&self) -> Result<Vec<NodeRecord>, ClusterCatalogError>;
 
+    /// Returns every defined storage policy, including the synthesized default.
+    async fn storage_policies(
+        &self,
+    ) -> Result<Vec<record_store_cluster::StoragePolicy>, ClusterCatalogError>;
+
     /// Returns a topology view for placement decisions.
     async fn topology(&self) -> Result<ClusterTopology, ClusterCatalogError>;
 
@@ -582,6 +587,12 @@ impl ClusterStore for ReplicatedClusterStore {
         self.local.nodes().await
     }
 
+    async fn storage_policies(
+        &self,
+    ) -> Result<Vec<record_store_cluster::StoragePolicy>, ClusterCatalogError> {
+        self.local.storage_policies().await
+    }
+
     async fn topology(&self) -> Result<ClusterTopology, ClusterCatalogError> {
         self.local.topology().await
     }
@@ -745,6 +756,12 @@ impl ClusterStore for LocalClusterStore {
 
     async fn nodes(&self) -> Result<Vec<NodeRecord>, ClusterCatalogError> {
         self.catalog.nodes().await
+    }
+
+    async fn storage_policies(
+        &self,
+    ) -> Result<Vec<record_store_cluster::StoragePolicy>, ClusterCatalogError> {
+        self.catalog.storage_policies().await
     }
 
     async fn topology(&self) -> Result<ClusterTopology, ClusterCatalogError> {

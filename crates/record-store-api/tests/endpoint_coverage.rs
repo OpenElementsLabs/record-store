@@ -63,6 +63,8 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     // render devices yet, and classifying these as Console before that exists
     // would make this table describe an intention rather than the product.
     ("/api/v1/devices", Audience::Cli),
+    ("/api/v1/storage-classes", Audience::Cli),
+    ("/api/v1/storage-classes/{}", Audience::Cli),
     ("/api/v1/nodes/{}/devices", Audience::Cli),
     ("/api/v1/nodes/{}/devices/{}", Audience::Cli),
     ("/api/v1/nodes/{}/devices/{}/activate", Audience::Cli),

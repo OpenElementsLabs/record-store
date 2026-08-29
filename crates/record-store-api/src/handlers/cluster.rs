@@ -261,6 +261,88 @@ pub(crate) async fn collect_cluster_status(
         })
 }
 
+/// Lists every defined storage class.
+pub(crate) async fn list_storage_classes(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<Vec<record_store_cluster::StoragePolicy>>, ApiError> {
+    cluster_management(&state, request_id.clone())?
+        .operations
+        .storage_policies()
+        .await
+        .map(Json)
+        .map_err(|error| cluster_operation_error(error, request_id))
+}
+
+/// Inspects one storage class.
+pub(crate) async fn inspect_storage_class(
+    State(state): State<AppState>,
+    Path(class): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<record_store_cluster::StoragePolicy>, ApiError> {
+    let class = parse_storage_class(&class, request_id.clone())?;
+    cluster_management(&state, request_id.clone())?
+        .operations
+        .storage_policy(&class)
+        .await
+        .map(Json)
+        .map_err(|error| cluster_operation_error(error, request_id))
+}
+
+/// Defines or replaces a storage class.
+pub(crate) async fn put_storage_class(
+    State(state): State<AppState>,
+    Path(class): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+    Json(body): Json<record_store_cluster::StoragePolicy>,
+) -> Result<Json<record_store_cluster::StoragePolicy>, ApiError> {
+    let class = parse_storage_class(&class, request_id.clone())?;
+    if body.class != class {
+        return Err(ApiError::bad_request(
+            request_id,
+            "STORAGE_CLASS_MISMATCH",
+            "The storage class in the path and the body must match",
+        ));
+    }
+    cluster_management(&state, request_id.clone())?
+        .operations
+        .put_storage_policy(body)
+        .await
+        .map(Json)
+        .map_err(|error| cluster_operation_error(error, request_id))
+}
+
+/// Removes a storage class.
+///
+/// Refused while devices still carry it, since those devices would resolve to no
+/// policy and silently stop being placement candidates.
+pub(crate) async fn delete_storage_class(
+    State(state): State<AppState>,
+    Path(class): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<StatusCode, ApiError> {
+    let class = parse_storage_class(&class, request_id.clone())?;
+    cluster_management(&state, request_id.clone())?
+        .operations
+        .delete_storage_policy(&class)
+        .await
+        .map_err(|error| cluster_operation_error(error, request_id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn parse_storage_class(
+    value: &str,
+    request_id: RequestId,
+) -> Result<record_store_cluster::StorageClass, ApiError> {
+    record_store_cluster::StorageClass::new(value).map_err(|_| {
+        ApiError::bad_request(
+            request_id,
+            "INVALID_STORAGE_CLASS",
+            "Storage class must be 1 to 32 lowercase letters, digits, or hyphens",
+        )
+    })
+}
+
 /// Lists every registered device in the cluster.
 ///
 /// Devices are the unit placement actually selects, so operators get one call
@@ -438,17 +520,20 @@ pub(crate) fn cluster_operation_error(
     request_id: RequestId,
 ) -> ApiError {
     let status = match error_value {
-        OperationError::NodeNotFound(_) | OperationError::DeviceNotFound { .. } => {
-            StatusCode::NOT_FOUND
-        }
+        OperationError::NodeNotFound(_)
+        | OperationError::DeviceNotFound { .. }
+        | OperationError::StoragePolicyNotFound(_) => StatusCode::NOT_FOUND,
         OperationError::InvalidTransition { .. }
         | OperationError::InvalidDeviceTransition { .. }
+        | OperationError::StoragePolicyInUse { .. }
         | OperationError::DurabilityAtRisk(_) => StatusCode::CONFLICT,
         OperationError::Cluster(_) => StatusCode::SERVICE_UNAVAILABLE,
     };
     let code = match error_value {
         OperationError::NodeNotFound(_) => "NODE_NOT_FOUND",
         OperationError::DeviceNotFound { .. } => "DEVICE_NOT_FOUND",
+        OperationError::StoragePolicyNotFound(_) => "STORAGE_CLASS_NOT_FOUND",
+        OperationError::StoragePolicyInUse { .. } => "STORAGE_CLASS_IN_USE",
         OperationError::InvalidTransition { .. } => "INVALID_NODE_TRANSITION",
         OperationError::InvalidDeviceTransition { .. } => "INVALID_DEVICE_TRANSITION",
         OperationError::DurabilityAtRisk(_) => "DURABILITY_AT_RISK",
@@ -503,6 +588,121 @@ mod tests {
         )
         .await;
         assert!(health.is_object(), "{health}");
+    }
+
+    /// Storage classes round-trip through the API, and the default is always
+    /// there so a cluster that never configured one still answers coherently.
+    #[tokio::test]
+    async fn a_storage_class_can_be_defined_inspected_and_removed() {
+        let (_directory, api) = clustered_api().await;
+
+        let listed = expect_status(
+            &api,
+            admin("GET", "/api/v1/storage-classes", None),
+            StatusCode::OK,
+        )
+        .await;
+        let classes = listed.as_array().expect("a list of classes");
+        assert_eq!(
+            classes.len(),
+            1,
+            "an unconfigured cluster still has its default class: {listed}"
+        );
+        assert_eq!(classes[0]["class"], "standard");
+
+        let body = json!({
+            "class": "hot",
+            "description": "solid state only",
+            "device_filter": {"allowed_kinds": ["nvme", "sata_ssd"]},
+            "durability": {"strategy": "replication", "replicas": 2},
+            "failure_domain": "rack",
+            "strict_failure_domains": true,
+            "minimum_free_space_percent": 15
+        });
+        let created = expect_status(
+            &api,
+            admin("PUT", "/api/v1/storage-classes/hot", Some(body.clone())),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(created["class"], "hot");
+        assert_eq!(created["durability"]["replicas"], 2);
+
+        let fetched = expect_status(
+            &api,
+            admin("GET", "/api/v1/storage-classes/hot", None),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(fetched["minimum_free_space_percent"], 15);
+        assert_eq!(fetched["failure_domain"], "rack");
+
+        let removed = call(&api, admin("DELETE", "/api/v1/storage-classes/hot", None)).await;
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+        let missing = expect_status(
+            &api,
+            admin("GET", "/api/v1/storage-classes/hot", None),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+        assert_eq!(missing["error"]["code"], "STORAGE_CLASS_NOT_FOUND");
+    }
+
+    /// A class that promises durability Record Store cannot deliver must be
+    /// refused at the edge rather than accepted and quietly reinterpreted.
+    #[tokio::test]
+    async fn a_storage_class_that_cannot_be_honoured_is_refused() {
+        let (_directory, api) = clustered_api().await;
+
+        for (label, body) in [
+            (
+                "zero replicas",
+                json!({
+                    "class": "broken",
+                    "durability": {"strategy": "replication", "replicas": 0},
+                    "failure_domain": "node"
+                }),
+            ),
+            (
+                "erasure coding, which has no write path yet",
+                json!({
+                    "class": "broken",
+                    "durability": {
+                        "strategy": "erasure_coding",
+                        "profile": {"data_shards": 4, "parity_shards": 2}
+                    },
+                    "failure_domain": "node"
+                }),
+            ),
+        ] {
+            let response = call(
+                &api,
+                admin("PUT", "/api/v1/storage-classes/broken", Some(body)),
+            )
+            .await;
+            assert!(
+                !response.status().is_success(),
+                "{label} was accepted but must not be"
+            );
+        }
+
+        // The path and the body have to agree; guessing which one was meant
+        // would let a typo redefine a different class.
+        let mismatched = expect_status(
+            &api,
+            admin(
+                "PUT",
+                "/api/v1/storage-classes/hot",
+                Some(json!({
+                    "class": "cold",
+                    "durability": {"strategy": "replication", "replicas": 2},
+                    "failure_domain": "node"
+                })),
+            ),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+        assert_eq!(mismatched["error"]["code"], "STORAGE_CLASS_MISMATCH");
     }
 
     /// Initialization is idempotent: an operator or an orchestrator may call it

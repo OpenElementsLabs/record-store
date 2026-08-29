@@ -75,6 +75,11 @@ enum Command {
         #[command(subcommand)]
         command: NodeCommand,
     },
+    /// Inspect and define storage classes.
+    StorageClass {
+        #[command(subcommand)]
+        command: StorageClassCommand,
+    },
     /// Inspect or change storage device lifecycle state.
     Drive {
         #[command(subcommand)]
@@ -128,6 +133,54 @@ struct DeviceArgs {
     device: String,
     #[command(flatten)]
     endpoint: EndpointArgs,
+}
+
+#[derive(Subcommand)]
+enum StorageClassCommand {
+    /// List defined storage classes.
+    List(EndpointArgs),
+    /// Inspect one storage class.
+    Show {
+        /// Class name.
+        class: String,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Define or replace a storage class.
+    Set {
+        /// Class name.
+        class: String,
+        /// Copies to keep. Omitted leaves the cluster replication factor.
+        #[arg(long)]
+        replicas: Option<u8>,
+        /// Topology level replicas must be separated across.
+        #[arg(long, value_parser = ["device", "node", "host", "rack", "datacenter", "zone", "region"])]
+        failure_domain: Option<String>,
+        /// Refuse placement that cannot satisfy the failure domain.
+        #[arg(long)]
+        strict: bool,
+        /// Device kinds this class may use. Repeatable; omitted accepts any.
+        #[arg(long = "device-kind")]
+        device_kinds: Vec<String>,
+        /// Percentage of each device's usable capacity to keep free.
+        #[arg(long)]
+        minimum_free_percent: Option<u8>,
+        /// Human-facing description.
+        #[arg(long)]
+        description: Option<String>,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Remove a storage class.
+    Delete {
+        /// Class name.
+        class: String,
+        /// Skip the confirmation prompt, for automation.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
 }
 
 #[derive(Subcommand)]
@@ -492,6 +545,7 @@ async fn main() -> Result<()> {
         Command::Cluster { command } => cluster(command, json).await?,
         Command::Node { command } => node(command, json).await?,
         Command::Drive { command } => drive(command, json).await?,
+        Command::StorageClass { command } => storage_class(command, json).await?,
         Command::Repair { command } => repair(command, json).await?,
         Command::Rebalance { command } => rebalance(command, json).await?,
     }
@@ -1062,6 +1116,84 @@ async fn node(command: NodeCommand, json: bool) -> Result<()> {
     print_value(&value, json)
 }
 
+async fn storage_class(command: StorageClassCommand, json: bool) -> Result<()> {
+    let (request, no_content_action) = match command {
+        StorageClassCommand::List(endpoint) => (
+            client()?.get(api_url(&endpoint, "/api/v1/storage-classes")),
+            None,
+        ),
+        StorageClassCommand::Show { class, endpoint } => (
+            client()?.get(api_url(
+                &endpoint,
+                &format!("/api/v1/storage-classes/{class}"),
+            )),
+            None,
+        ),
+        StorageClassCommand::Set {
+            class,
+            replicas,
+            failure_domain,
+            strict,
+            device_kinds,
+            minimum_free_percent,
+            description,
+            endpoint,
+        } => {
+            // The class is sent in the body as well as the path because the body
+            // is the durable record; the server refuses a mismatch rather than
+            // guessing which one the operator meant.
+            let mut policy = serde_json::json!({
+                "class": class,
+                "durability": {
+                    "strategy": "replication",
+                    "replicas": replicas.unwrap_or(3),
+                },
+                "failure_domain": failure_domain.unwrap_or_else(|| "node".to_owned()),
+                "strict_failure_domains": strict,
+                "minimum_free_space_percent": minimum_free_percent.unwrap_or(0),
+            });
+            if !device_kinds.is_empty() {
+                policy["device_filter"] = serde_json::json!({ "allowed_kinds": device_kinds });
+            }
+            if let Some(description) = description {
+                policy["description"] = serde_json::Value::String(description);
+            }
+            (
+                client()?
+                    .put(api_url(
+                        &endpoint,
+                        &format!("/api/v1/storage-classes/{class}"),
+                    ))
+                    .json(&policy),
+                None,
+            )
+        }
+        StorageClassCommand::Delete {
+            class,
+            yes,
+            endpoint,
+        } => {
+            confirm(yes, &format!("Remove storage class {class}?"))?;
+            (
+                client()?.delete(api_url(
+                    &endpoint,
+                    &format!("/api/v1/storage-classes/{class}"),
+                )),
+                Some(("removed", class)),
+            )
+        }
+    };
+    let response = send_admin(request).await?;
+    if let Some((action, class)) = no_content_action {
+        return print_action(action, &class, json);
+    }
+    let value = response
+        .json::<serde_json::Value>()
+        .await
+        .context("decode storage class response")?;
+    print_value(&value, json)
+}
+
 async fn drive(command: DriveCommand, json: bool) -> Result<()> {
     let request = match command {
         DriveCommand::List(endpoint) => client()?.get(api_url(&endpoint, "/api/v1/devices")),
@@ -1248,6 +1380,7 @@ mod tests {
                 Command::Cluster { .. } => "cluster",
                 Command::Node { .. } => "node",
                 Command::Drive { .. } => "drive",
+                Command::StorageClass { .. } => "storage-class",
                 Command::Repair { .. } => "repair",
                 Command::Rebalance { .. } => "rebalance",
             };

@@ -123,6 +123,7 @@ nav:
       - Policies: administration/policies.md
       - Temporary Credentials: administration/temporary-credentials.md
       - Quotas: administration/quotas.md
+      - Storage Classes: administration/storage-classes.md
       - Lifecycle Rules: administration/lifecycle-rules.md
       - Audit Log: administration/audit-log.md
       - Events and Webhooks: administration/events-and-webhooks.md

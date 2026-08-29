@@ -233,6 +233,22 @@ record-store node decommission <id> --force --endpoint <endpoint>
 `decommission` runs a durability safety check. `--force` bypasses the objection but
 still moves the data. See [Node Lifecycle](../cluster/node-lifecycle.md).
 
+## `storage-class`
+
+```bash
+record-store storage-class list --endpoint <endpoint>
+record-store storage-class show <class> --endpoint <endpoint>
+record-store storage-class set <class> [--replicas N] [--failure-domain <scope>]
+    [--strict] [--device-kind <kind>]... [--minimum-free-percent N]
+    [--description <text>] --endpoint <endpoint>
+record-store storage-class delete <class> --yes --endpoint <endpoint>
+```
+
+`--device-kind` is repeatable. Omitting it accepts any device kind.
+
+`delete` is refused while devices still carry the class. See
+[Storage Classes](../administration/storage-classes.md).
+
 ## `drive`
 
 ```bash
