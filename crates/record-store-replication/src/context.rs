@@ -6,10 +6,10 @@ use record_store_cluster::{
     ClusterConfig, ClusterTopology, PayloadPlacement, PlacementPolicy, StorageClass,
 };
 use record_store_consensus::{ClusterStore, ClusterWrite, ConsensusError, MetadataConsensus};
-use record_store_core::{NodeId, ObjectId};
+use record_store_core::{DeviceId, NodeId, ObjectId};
 use record_store_metadata::MetadataRepository;
 use record_store_rpc::{ReplicaTarget, ReplicaTransport};
-use record_store_storage::{ReplicaStore, StorageError};
+use record_store_storage::{DeviceStore, StorageError};
 
 /// Everything the distributed data plane needs to serve one node's requests.
 pub struct ClusterContext {
@@ -20,7 +20,7 @@ pub struct ClusterContext {
     /// Replicated object catalog.
     pub metadata: Arc<dyn MetadataRepository>,
     /// This node's local replica storage.
-    pub local: Arc<dyn ReplicaStore>,
+    pub local: Arc<DeviceStore>,
     /// Transport to peer nodes.
     pub transport: Arc<dyn ReplicaTransport>,
     /// Replica placement decisions.
@@ -72,7 +72,11 @@ impl ClusterContext {
     }
 
     /// Resolves the transport target for a node.
-    pub async fn target(&self, node_id: NodeId) -> Result<ReplicaTarget, StorageError> {
+    pub async fn target(
+        &self,
+        node_id: NodeId,
+        device_id: DeviceId,
+    ) -> Result<ReplicaTarget, StorageError> {
         let node = self
             .cluster
             .node(node_id)
@@ -83,6 +87,7 @@ impl ClusterContext {
             })?;
         Ok(ReplicaTarget {
             node_id,
+            device_id,
             address: node.rpc_address,
         })
     }

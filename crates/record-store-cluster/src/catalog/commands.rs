@@ -21,10 +21,10 @@ use crate::catalog::keys::{
     node_replica_key, prefix_successor, replica_state_code, task_object_key, task_queue_key,
 };
 use crate::catalog::schema::{
-    ACTIVE_TASKS, CONFIG, IDENTITY, JOIN_TOKENS, LOGICAL_BYTES, NEXT_MEMBER_ID, NODE_BY_MEMBER,
-    NODE_CREDENTIALS, NODE_REPLICAS, NODES, OPERATIONS, PARKED_TASKS, PHYSICAL_BYTES,
-    PLACEMENT_COUNT, PLACEMENTS, SINGLETON, TASK_BY_OBJECT, TASK_QUEUE, TASKS, TOMBSTONE_COUNT,
-    TOMBSTONES, UNAVAILABLE_PAYLOADS, UNDER_REPLICATED,
+    ACTIVE_TASKS, CLUSTER_MAP_EPOCH, CONFIG, IDENTITY, JOIN_TOKENS, LOGICAL_BYTES, NEXT_MEMBER_ID,
+    NODE_BY_MEMBER, NODE_CREDENTIALS, NODE_REPLICAS, NODES, OPERATIONS, PARKED_TASKS,
+    PHYSICAL_BYTES, PLACEMENT_COUNT, PLACEMENTS, SINGLETON, TASK_BY_OBJECT, TASK_QUEUE, TASKS,
+    TOMBSTONE_COUNT, TOMBSTONES, UNAVAILABLE_PAYLOADS, UNDER_REPLICATED,
 };
 use crate::catalog::*;
 
@@ -45,6 +45,7 @@ pub fn apply_command_tx(
         ClusterCommand::UpdateConfig { config, at: _ } => {
             config.validate()?;
             put(write, CONFIG, SINGLETON, &*config)?;
+            advance_cluster_map_epoch(write)?;
             Ok(ClusterOutcome::Config(config))
         }
         ClusterCommand::RegisterNode { registration, at } => {
@@ -84,6 +85,7 @@ pub fn apply_command_tx(
             node.started_at = started_at;
             node.last_heartbeat_at = Some(at);
             put(write, NODES, node_id.as_uuid().as_bytes(), &node)?;
+            advance_cluster_map_epoch(write)?;
             Ok(ClusterOutcome::Node(Box::new(node)))
         }
         ClusterCommand::SetNodeState {
@@ -99,9 +101,67 @@ pub fn apply_command_tx(
             }
             put(write, NODES, node_id.as_uuid().as_bytes(), &node)?;
             if changed {
+                advance_cluster_map_epoch(write)?;
                 recount_durability(write)?;
             }
             Ok(ClusterOutcome::Node(Box::new(node)))
+        }
+        ClusterCommand::RegisterDevice {
+            node_id,
+            mut device,
+            at: _,
+        } => {
+            let mut node = require_node(write, node_id)?;
+            if device.node_id != node_id {
+                return Err(crate::device::DeviceError::WrongNode {
+                    device: device.id,
+                    expected: node_id,
+                    actual: device.node_id,
+                }
+                .into());
+            }
+            device.capacity.validate()?;
+            if let Some(existing) = node.device(device.id) {
+                // Refreshing discovery information must not reset durable
+                // administrative intent such as Draining or Maintenance.
+                device.state = existing.state;
+            }
+            match node.device_mut(device.id) {
+                Some(existing) => *existing = (*device).clone(),
+                None => node.devices.push((*device).clone()),
+            }
+            node.devices.sort_by_key(|record| record.id);
+            node.capacity = crate::topology::NodeCapacity::from_devices(&node.devices);
+            put(write, NODES, node_id.as_uuid().as_bytes(), &node)?;
+            advance_cluster_map_epoch(write)?;
+            Ok(ClusterOutcome::Device(device))
+        }
+        ClusterCommand::SetDeviceState {
+            node_id,
+            device_id,
+            state,
+            at: _,
+        } => {
+            let mut node = require_node(write, node_id)?;
+            if state == crate::device::DeviceState::SafeToRemove
+                && device_replica_count(write, node_id, device_id)? > 0
+            {
+                return Err(ClusterCatalogError::Database {
+                    operation: "mark device safe to remove",
+                    reason: "device still owns replica records; evacuation is incomplete".into(),
+                });
+            }
+            let device = node
+                .device_mut(device_id)
+                .ok_or(ClusterCatalogError::DeviceNotFound { node_id, device_id })?;
+            let changed = device.transition(state)?;
+            let outcome = device.clone();
+            put(write, NODES, node_id.as_uuid().as_bytes(), &node)?;
+            if changed {
+                advance_cluster_map_epoch(write)?;
+                recount_durability(write)?;
+            }
+            Ok(ClusterOutcome::Device(Box::new(outcome)))
         }
         ClusterCommand::SetNodeMetadataVoter {
             node_id,
@@ -161,6 +221,40 @@ pub fn apply_command_tx(
             write_placement(write, &placement, before)?;
             Ok(ClusterOutcome::Placement(Box::new(placement)))
         }
+        ClusterCommand::SetReplicaStateOnDevice {
+            object_id,
+            node_id,
+            device_id,
+            state,
+            checksum,
+            verified,
+            at,
+        } => {
+            let mut placement = require_placement(write, object_id)?;
+            let before = physical_bytes(&placement);
+            {
+                let replica = placement
+                    .replicas
+                    .iter_mut()
+                    .find(|replica| replica.node_id == node_id && replica.device_id == device_id)
+                    .ok_or(ClusterCatalogError::ReplicaNotFound { object_id, node_id })?;
+                let promoted =
+                    replica.state != ReplicaState::Healthy && state == ReplicaState::Healthy;
+                replica.state = state;
+                if checksum.is_some() {
+                    replica.checksum = checksum;
+                }
+                if verified {
+                    replica.verified_at = Some(at);
+                }
+                if promoted {
+                    replica.generation = replica.generation.saturating_add(1);
+                }
+            }
+            placement.updated_at = at;
+            write_placement(write, &placement, before)?;
+            Ok(ClusterOutcome::Placement(Box::new(placement)))
+        }
         ClusterCommand::RemoveReplica {
             object_id,
             node_id,
@@ -171,6 +265,21 @@ pub fn apply_command_tx(
             let removed = placement.remove_replica(node_id, at);
             if removed {
                 remove_node_replica(write, node_id, object_id)?;
+            }
+            write_placement(write, &placement, before)?;
+            Ok(ClusterOutcome::Placement(Box::new(placement)))
+        }
+        ClusterCommand::RemoveReplicaFromDevice {
+            object_id,
+            node_id,
+            device_id,
+            at,
+        } => {
+            let mut placement = require_placement(write, object_id)?;
+            let before = physical_bytes(&placement);
+            let removed = placement.remove_replica_on(node_id, device_id, at);
+            if removed {
+                remove_device_replica(write, node_id, device_id, object_id)?;
             }
             write_placement(write, &placement, before)?;
             Ok(ClusterOutcome::Placement(Box::new(placement)))
@@ -412,6 +521,7 @@ pub(crate) fn initialize_cluster(
     put(write, IDENTITY, SINGLETON, &identity)?;
     put(write, CONFIG, SINGLETON, &config)?;
     set_counter(write, NEXT_MEMBER_ID, 1)?;
+    set_counter(write, CLUSTER_MAP_EPOCH, 1)?;
     Ok(ClusterOutcome::Identity(Box::new(identity)))
 }
 
@@ -432,6 +542,9 @@ pub(crate) fn register_node(
         existing.storage_class = registration.storage_class;
         existing.failure_domain = registration.failure_domain;
         existing.capacity = registration.capacity;
+        if !registration.devices.is_empty() {
+            existing.devices = registration.devices;
+        }
         existing.started_at = registration.started_at;
         existing.last_heartbeat_at = Some(at);
         if existing.state == NodeState::Offline
@@ -444,6 +557,7 @@ pub(crate) fn register_node(
         }
         let raft_id = existing.raft_id;
         put(write, NODES, node_id.as_uuid().as_bytes(), &existing)?;
+        advance_cluster_map_epoch(write)?;
         return Ok(ClusterOutcome::Registration {
             record: Box::new(existing),
             raft_id,
@@ -456,6 +570,7 @@ pub(crate) fn register_node(
     let metadata_voter = voters < u32::from(config.metadata_voter_target);
     let record = NodeRecord::joining(registration, raft_id, metadata_voter, at);
     put(write, NODES, node_id.as_uuid().as_bytes(), &record)?;
+    advance_cluster_map_epoch(write)?;
     put_raw(
         write,
         NODE_BY_MEMBER,
@@ -493,7 +608,16 @@ pub(crate) fn forget_node(
     remove(write, NODES, node_id.as_uuid().as_bytes())?;
     remove(write, NODE_BY_MEMBER, &node.raft_id.to_be_bytes())?;
     remove(write, NODE_CREDENTIALS, node_id.as_uuid().as_bytes())?;
+    advance_cluster_map_epoch(write)?;
     Ok(ClusterOutcome::Changed(true))
+}
+
+pub(crate) fn advance_cluster_map_epoch(write: &WriteTransaction) -> CatalogResult<u64> {
+    let next = crate::catalog::codec::read_counter(write, CLUSTER_MAP_EPOCH)?
+        .max(1)
+        .saturating_add(1);
+    set_counter(write, CLUSTER_MAP_EPOCH, next)?;
+    Ok(next)
 }
 
 pub(crate) fn put_placement(
@@ -555,7 +679,7 @@ pub(crate) fn delete_placement(
         put_raw(
             write,
             NODE_REPLICAS,
-            &node_replica_key(replica.node_id, object_id),
+            &node_replica_key(replica.node_id, object_id, replica.device_id),
             &[replica_state_code(ReplicaState::Deleting)],
         )?;
     }
@@ -607,7 +731,7 @@ pub(crate) fn write_placement(
         put_raw(
             write,
             NODE_REPLICAS,
-            &node_replica_key(replica.node_id, placement.object_id),
+            &node_replica_key(replica.node_id, placement.object_id, replica.device_id),
             &[replica_state_code(replica.state)],
         )?;
     }
@@ -712,7 +836,66 @@ pub(crate) fn remove_node_replica(
     node_id: NodeId,
     object_id: ObjectId,
 ) -> CatalogResult<()> {
-    remove(write, NODE_REPLICAS, &node_replica_key(node_id, object_id)).map(|_| ())
+    let mut prefix = Vec::with_capacity(32);
+    prefix.extend_from_slice(node_id.as_uuid().as_bytes());
+    prefix.extend_from_slice(object_id.as_uuid().as_bytes());
+    let end = prefix_successor(&prefix);
+    let keys = {
+        let table = write
+            .open_table(NODE_REPLICAS)
+            .map_err(|error| backend("open node replicas", error))?;
+        let mut keys = Vec::new();
+        for entry in table
+            .range(prefix.as_slice()..end.as_slice())
+            .map_err(|error| backend("range node replicas", error))?
+        {
+            let (key, _) = entry.map_err(|error| backend("read node replica", error))?;
+            keys.push(key.value().to_vec());
+        }
+        keys
+    };
+    for key in keys {
+        remove(write, NODE_REPLICAS, &key)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn device_replica_count(
+    write: &WriteTransaction,
+    node_id: NodeId,
+    device_id: record_store_core::DeviceId,
+) -> CatalogResult<u64> {
+    let table = write
+        .open_table(NODE_REPLICAS)
+        .map_err(|error| backend("open node replicas", error))?;
+    let prefix = node_id.as_uuid().as_bytes().to_vec();
+    let end = prefix_successor(&prefix);
+    let mut count = 0_u64;
+    for entry in table
+        .range(prefix.as_slice()..end.as_slice())
+        .map_err(|error| backend("range node replicas", error))?
+    {
+        let (key, _) = entry.map_err(|error| backend("read node replica", error))?;
+        let raw = key.value();
+        if raw.len() == 48 && raw[32..48] == *device_id.as_uuid().as_bytes() {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
+}
+
+pub(crate) fn remove_device_replica(
+    write: &WriteTransaction,
+    node_id: NodeId,
+    device_id: record_store_core::DeviceId,
+    object_id: ObjectId,
+) -> CatalogResult<()> {
+    remove(
+        write,
+        NODE_REPLICAS,
+        &node_replica_key(node_id, object_id, device_id),
+    )
+    .map(|_| ())
 }
 
 pub(crate) fn node_replica_count(write: &WriteTransaction, node_id: NodeId) -> CatalogResult<u64> {
@@ -1057,7 +1240,9 @@ mod tests {
             kind: ReplicaTaskKind::Repair,
             priority: ReplicaTaskPriority::High,
             source_node: None,
+            source_device: None,
             target_node: Some(node_id),
+            target_device: None,
             operation_id: None,
             size: 1_024,
             state: ReplicaTaskState::Queued,
@@ -1136,7 +1321,9 @@ mod tests {
             kind: ReplicaTaskKind::Repair,
             priority: ReplicaTaskPriority::Low,
             source_node: None,
+            source_device: None,
             target_node: Some(node_id),
+            target_device: None,
             operation_id: None,
             size: 1,
             state: ReplicaTaskState::Queued,
@@ -1383,6 +1570,7 @@ mod tests {
     fn replica_of(node_id: NodeId, state: ReplicaState, now: chrono::DateTime<Utc>) -> Replica {
         Replica {
             node_id,
+            device_id: crate::DeviceRecord::legacy_id(node_id),
             state,
             location: "opaque".to_owned(),
             size: 1_024,
@@ -1404,6 +1592,7 @@ mod tests {
             checksum: Checksum::sha256([4_u8; 32]),
             desired_replicas: 3,
             storage_class: StorageClass::new("standard").expect("class"),
+            placement_epoch: crate::ClusterMapEpoch::default(),
             replicas,
             created_at: now,
             updated_at: now,

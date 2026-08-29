@@ -10,9 +10,9 @@ use std::{
 
 use chrono::Utc;
 use record_store_cluster::{
-    CapacityAwarePlacement, ClusterCommand, ClusterIdentity, FailureDomain, NodeCapacity,
-    NodeCredential, NodeIdentity, NodeIdentityStore, NodeRegistration, NodeState, NodeVersions,
-    StorageClass,
+    CapacityAwarePlacement, ClusterCommand, ClusterIdentity, DeviceCapacity, DeviceRecord,
+    FailureDomain, NodeCapacity, NodeCredential, NodeIdentity, NodeIdentityStore, NodeRegistration,
+    NodeState, NodeVersions, StorageClass,
 };
 use record_store_config::{Config, DeploymentMode};
 use record_store_consensus::{
@@ -31,7 +31,9 @@ use record_store_rpc::{
     PeerHeaders, PeerPool, PeerVerifier, ReplicaRpcService, RpcClientSettings, RpcLeaderForwarder,
     RpcReplicaTransport, RpcServerError, RpcServerSettings, SystemRpcService, TlsSettings,
 };
-use record_store_storage::{LocalFilesystemStore, ObjectStore, ReplicaStore, StorageError};
+use record_store_storage::{
+    DeviceStore, LocalFilesystemStore, ObjectStore, ReplicaStore, StorageError,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::task::JoinHandle;
@@ -104,7 +106,7 @@ pub async fn initialize(config: &Config) -> Result<ClusterDependencies, ClusterS
     let credential_store = LocalCredentialStore::new(data_directory);
     let mut credential = credential_store.load()?;
     let advertise_address = config.server.effective_rpc_advertise();
-    let profile = node_profile(config, measure_capacity(data_directory));
+    let profile = node_profile(identity.node_id, config, measure_capacity(data_directory));
     let mut bootstrap_peer = None;
     if !identity.is_bound() {
         if config.cluster.seeds.is_empty() {
@@ -214,12 +216,16 @@ pub async fn initialize(config: &Config) -> Result<ClusterDependencies, ClusterS
         Arc::new(consensus.state().metadata().clone());
     let local = Arc::new(open_local_store(config, local_metadata).await?);
     let local_replica: Arc<dyn ReplicaStore> = local.clone();
+    let local_devices = Arc::new(DeviceStore::single(
+        DeviceRecord::legacy_id(identity.node_id),
+        Arc::clone(&local_replica),
+    ));
     let transport = Arc::new(RpcReplicaTransport::new(Arc::clone(&pool)));
     let context = Arc::new(ClusterContext {
         node_id: identity.node_id,
         cluster: Arc::clone(&cluster),
         metadata: Arc::clone(&metadata),
-        local: Arc::clone(&local_replica),
+        local: Arc::clone(&local_devices),
         transport,
         placement: Arc::new(CapacityAwarePlacement::new(
             config
@@ -257,7 +263,7 @@ pub async fn initialize(config: &Config) -> Result<ClusterDependencies, ClusterS
     .with_system(SystemRpcService::new(admission, Arc::clone(&verifier)));
     let rpc_server = if config.server.mode.stores_replicas() {
         rpc_server.with_replica(ReplicaRpcService::new(
-            Arc::clone(&local_replica),
+            Arc::clone(&local_devices),
             verifier,
             payload_format(config),
         ))
@@ -529,6 +535,7 @@ fn registration(
             replica_bytes: profile.replica_bytes,
             temporary_bytes: profile.temporary_bytes,
         },
+        devices: serde_json::from_str(&profile.devices_json).unwrap_or_default(),
         started_at: Utc::now(),
     })
 }
@@ -628,10 +635,26 @@ fn node_descriptor(
     }
 }
 
-fn node_profile(config: &Config, capacity: NodeCapacity) -> NodeProfile {
+fn node_profile(
+    node_id: record_store_core::NodeId,
+    config: &Config,
+    capacity: NodeCapacity,
+) -> NodeProfile {
     let failure_domain = FailureDomain::parse(&config.cluster.failure_domain)
         .map(|domain| domain.labels().clone())
         .unwrap_or_default();
+    let devices = vec![DeviceRecord::legacy_directory(
+        node_id,
+        Some(config.storage.data_directory.clone()),
+        StorageClass::new(&config.cluster.storage_class).unwrap_or_default(),
+        DeviceCapacity {
+            raw_bytes: capacity.total_bytes,
+            usable_bytes: capacity.total_bytes,
+            allocated_bytes: capacity.replica_bytes,
+            reserved_bytes: 0,
+            available_bytes: capacity.available_bytes,
+        },
+    )];
     NodeProfile {
         storage_class: config.cluster.storage_class.clone(),
         failure_domain: failure_domain.into_iter().collect(),
@@ -641,6 +664,7 @@ fn node_profile(config: &Config, capacity: NodeCapacity) -> NodeProfile {
         temporary_bytes: capacity.temporary_bytes,
         started_at: Utc::now().to_rfc3339(),
         s3_endpoint: config.cluster.s3_endpoint.clone().unwrap_or_default(),
+        devices_json: serde_json::to_string(&devices).unwrap_or_else(|_| "[]".to_owned()),
     }
 }
 

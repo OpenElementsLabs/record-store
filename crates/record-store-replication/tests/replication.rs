@@ -20,9 +20,9 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures_util::StreamExt;
 use record_store_cluster::{
-    CapacityAwarePlacement, ClusterCommand, ClusterConfig, ClusterIdentity, FailureDomain,
-    NodeCapacity, NodeRegistration, NodeState, NodeVersions, ReplicaState, ReplicaTaskState,
-    StorageClass, WriteAcknowledgement,
+    CapacityAwarePlacement, ClusterCommand, ClusterConfig, ClusterIdentity, DeviceRecord,
+    FailureDomain, NodeCapacity, NodeRegistration, NodeState, NodeVersions, ReplicaState,
+    ReplicaTaskState, StorageClass, WriteAcknowledgement,
 };
 use record_store_consensus::{
     ClusterStore, ClusterWrite, ConsensusSettings, MetadataConsensus, ReplicatedClusterStore,
@@ -43,7 +43,8 @@ use record_store_rpc::{
     TlsSettings, TransferExpectation, TransferStream,
 };
 use record_store_storage::{
-    LocalFilesystemStore, ObjectStore, PutObjectRequest, ReplicaStore, StorageError, upload_stream,
+    DeviceStore, LocalFilesystemStore, ObjectStore, PutObjectRequest, ReplicaStore, StorageError,
+    upload_stream,
 };
 use sha2::{Digest, Sha256};
 
@@ -451,7 +452,10 @@ impl Harness {
             cluster: Arc::new(ReplicatedClusterStore::new(Arc::clone(&consensus)))
                 as Arc<dyn ClusterStore>,
             metadata,
-            local: local.clone() as Arc<dyn ReplicaStore>,
+            local: Arc::new(DeviceStore::single(
+                DeviceRecord::legacy_id(local_node),
+                local.clone() as Arc<dyn ReplicaStore>,
+            )),
             transport: transport.clone(),
             placement: Arc::new(CapacityAwarePlacement::new(Some(local_node))),
             consensus: Some(Arc::clone(&consensus)),
@@ -540,6 +544,7 @@ async fn register(consensus: &MetadataConsensus, node_id: NodeId, index: usize) 
                     replica_bytes: 0,
                     temporary_bytes: 0,
                 },
+                devices: Vec::new(),
                 started_at: Utc::now(),
             }),
             at: Utc::now(),
@@ -820,7 +825,10 @@ async fn an_under_replicated_write_queues_and_completes_an_executable_repair() {
         metadata: Arc::new(ReplicatedMetadataRepository::new(Arc::clone(
             &harness.consensus,
         ))),
-        local: target_store.clone() as Arc<dyn ReplicaStore>,
+        local: Arc::new(DeviceStore::single(
+            DeviceRecord::legacy_id(target),
+            target_store.clone() as Arc<dyn ReplicaStore>,
+        )),
         transport: harness.transport.clone(),
         placement: Arc::new(CapacityAwarePlacement::new(Some(target))),
         consensus: Some(Arc::clone(&harness.consensus)),
@@ -1804,7 +1812,9 @@ async fn an_expired_movement_lease_returns_its_task_to_the_queue() {
         kind: ReplicaTaskKind::Repair,
         priority: record_store_cluster::ReplicaTaskPriority::High,
         source_node: None,
+        source_device: None,
         target_node: Some(node_id),
+        target_device: Some(DeviceRecord::legacy_id(node_id)),
         operation_id: None,
         size: 1_024,
         state: record_store_cluster::ReplicaTaskState::Queued,
@@ -2154,6 +2164,7 @@ fn profile() -> NodeProfile {
         temporary_bytes: 0,
         started_at: Utc::now().to_rfc3339(),
         s3_endpoint: String::new(),
+        devices_json: "[]".to_owned(),
     }
 }
 

@@ -2,7 +2,7 @@
 
 use std::io;
 
-use record_store_core::{Checksum, CoreError, VersionId};
+use record_store_core::{Checksum, CoreError, DeviceId, VersionId};
 use record_store_metadata::MetadataError;
 use thiserror::Error;
 
@@ -18,6 +18,9 @@ pub enum StorageError {
     /// The caller supplied an invalid range or domain value.
     #[error("invalid storage request: {0}")]
     InvalidRequest(#[from] CoreError),
+    /// A cluster operation named a device this process does not serve.
+    #[error("device {0} is not configured on this node")]
+    UnknownDevice(DeviceId),
     /// A supplied checksum did not match the streamed payload.
     #[error("checksum mismatch: expected {expected}, calculated {actual}")]
     ChecksumMismatch {

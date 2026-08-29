@@ -408,7 +408,7 @@ pub async fn report_heartbeat(
 ) -> Result<(), String> {
     let status = match storage {
         Some(storage) => storage.status().await.ok(),
-        None => context.local.local_capacity().await.ok(),
+        None => context.local.capacity().await.ok(),
     };
     let replica_bytes = context
         .cluster
@@ -465,7 +465,7 @@ pub async fn reconcile(
     let now = Utc::now();
     let payloads = context
         .local
-        .list_local_payloads(None, batch)
+        .list_payloads(None, batch)
         .await
         .map_err(|error| error.to_string())?;
     let mut released = 0_u64;
@@ -481,7 +481,7 @@ pub async fn reconcile(
             // The cluster deleted this payload while the node was away.
             context
                 .local
-                .delete_replica(object_id)
+                .delete_everywhere(object_id)
                 .await
                 .map_err(|error| error.to_string())?;
             let _ = context
@@ -503,18 +503,18 @@ pub async fn reconcile(
         else {
             // Unknown to the cluster. It is only collected once it is older than
             // the grace period, so an in-flight commit is never destroyed.
-            let stat = context
+            let located = context
                 .local
-                .stat_replica(object_id)
+                .locate(object_id)
                 .await
                 .map_err(|error| error.to_string())?;
-            let stale = stat
-                .and_then(|stat| stat.modified_at)
+            let stale = located
+                .and_then(|(_, stat)| stat.modified_at)
                 .is_some_and(|modified| now.signed_duration_since(modified) > orphan_grace_period);
             if stale {
                 context
                     .local
-                    .delete_replica(object_id)
+                    .delete_everywhere(object_id)
                     .await
                     .map_err(|error| error.to_string())?;
                 collected += 1;
@@ -529,6 +529,7 @@ pub async fn reconcile(
         }
         let observed = crate::tasks::verify_local(
             context,
+            replica.device_id,
             object_id,
             placement.size,
             payload_format,
@@ -560,9 +561,12 @@ pub async fn reconcile(
         .map_err(|error| error.to_string())?;
     let mut missing = 0_u64;
     for object_id in expected {
+        // The replica counts as present on whichever device holds it, not only
+        // on the default one, or a healthy replica would be reported missing and
+        // needlessly repaired.
         if context
             .local
-            .stat_replica(object_id)
+            .locate(object_id)
             .await
             .map_err(|error| error.to_string())?
             .is_some()

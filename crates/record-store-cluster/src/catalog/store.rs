@@ -18,12 +18,12 @@ use crate::{
 
 use crate::catalog::codec::{get, get_raw, read_counter, read_nodes};
 use crate::catalog::commands::{node_replica_count, recount_durability};
-use crate::catalog::keys::{node_replica_key, prefix_successor};
+use crate::catalog::keys::prefix_successor;
 use crate::catalog::schema::{
-    ACTIVE_TASKS, CONFIG, IDENTITY, JOIN_TOKENS, LOGICAL_BYTES, NODE_BY_MEMBER, NODE_CREDENTIALS,
-    NODE_REPLICAS, NODES, OPERATIONS, PARKED_TASKS, PHYSICAL_BYTES, PLACEMENT_COUNT, PLACEMENTS,
-    SINGLETON, TASK_QUEUE, TASKS, TOMBSTONE_COUNT, TOMBSTONES, UNAVAILABLE_PAYLOADS,
-    UNDER_REPLICATED,
+    ACTIVE_TASKS, CLUSTER_MAP_EPOCH, CONFIG, IDENTITY, JOIN_TOKENS, LOGICAL_BYTES, NODE_BY_MEMBER,
+    NODE_CREDENTIALS, NODE_REPLICAS, NODES, OPERATIONS, PARKED_TASKS, PHYSICAL_BYTES,
+    PLACEMENT_COUNT, PLACEMENTS, SINGLETON, TASK_QUEUE, TASKS, TOMBSTONE_COUNT, TOMBSTONES,
+    UNAVAILABLE_PAYLOADS, UNDER_REPLICATED,
 };
 use crate::catalog::*;
 
@@ -162,11 +162,20 @@ impl ClusterCatalog {
 
     /// Returns a topology view suitable for placement decisions.
     pub async fn topology(&self) -> CatalogResult<ClusterTopology> {
-        let (identity, config, nodes) =
-            tokio::try_join!(self.identity(), self.config(), self.nodes())?;
+        let (identity, config, nodes, epoch) = tokio::try_join!(
+            self.identity(),
+            self.config(),
+            self.nodes(),
+            self.read(|write| read_counter(write, CLUSTER_MAP_EPOCH))
+        )?;
         let identity = identity.ok_or(ClusterCatalogError::NotInitialized)?;
         let config = config.ok_or(ClusterCatalogError::NotInitialized)?;
-        Ok(ClusterTopology::new(identity.cluster_id, config, nodes))
+        Ok(ClusterTopology::at_epoch(
+            identity.cluster_id,
+            config,
+            nodes,
+            crate::topology::ClusterMapEpoch::new(epoch),
+        ))
     }
 
     /// Returns placement metadata for one payload.
@@ -227,11 +236,14 @@ impl ClusterCatalog {
                 .open_table(NODE_REPLICAS)
                 .map_err(|error| backend("open node replicas", error))?;
             let prefix = node_id.as_uuid().as_bytes().to_vec();
-            let mut start =
-                after.map_or_else(|| prefix.clone(), |id| node_replica_key(node_id, id));
-            if after.is_some() {
-                start.push(0);
-            }
+            let start = after.map_or_else(
+                || prefix.clone(),
+                |id| {
+                    let mut object_prefix = prefix.clone();
+                    object_prefix.extend_from_slice(id.as_uuid().as_bytes());
+                    prefix_successor(&object_prefix)
+                },
+            );
             let end = prefix_successor(&prefix);
             let mut out = Vec::new();
             for entry in table
@@ -241,7 +253,7 @@ impl ClusterCatalog {
             {
                 let (key, _) = entry.map_err(|error| backend("read node replica", error))?;
                 let raw = key.value();
-                if raw.len() != 32 {
+                if raw.len() != 48 {
                     continue;
                 }
                 let bytes: [u8; 16] =

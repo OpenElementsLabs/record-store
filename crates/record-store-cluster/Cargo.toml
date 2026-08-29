@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 chrono.workspace = true
 hex.workspace = true
 record-store-core = { path = "../record-store-core" }

@@ -14,6 +14,7 @@ use thiserror::Error;
 
 use crate::{
     config::{CapacityLevel, ClusterConfig},
+    device::{DeviceCapacity, DeviceRecord},
     identity::RaftNodeId,
     version::{NodeVersions, ProtocolVersion},
 };
@@ -122,6 +123,8 @@ impl From<StorageClass> for String {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureDomainScope {
+    /// Spread across independently managed devices.
+    Device,
     /// Only guarantee distinct nodes.
     Node,
     /// Spread across physical hosts.
@@ -129,6 +132,8 @@ pub enum FailureDomainScope {
     /// Spread across racks.
     #[default]
     Rack,
+    /// Spread across datacenters.
+    Datacenter,
     /// Spread across availability zones.
     Zone,
     /// Spread across regions.
@@ -140,9 +145,11 @@ impl FailureDomainScope {
     #[must_use]
     pub const fn label(self) -> Option<&'static str> {
         match self {
+            Self::Device => None,
             Self::Node => None,
             Self::Host => Some("host"),
             Self::Rack => Some("rack"),
+            Self::Datacenter => Some("datacenter"),
             Self::Zone => Some("zone"),
             Self::Region => Some("region"),
         }
@@ -152,9 +159,11 @@ impl FailureDomainScope {
 impl Display for FailureDomainScope {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Device => "device",
             Self::Node => "node",
             Self::Host => "host",
             Self::Rack => "rack",
+            Self::Datacenter => "datacenter",
             Self::Zone => "zone",
             Self::Region => "region",
         })
@@ -166,9 +175,11 @@ impl FromStr for FailureDomainScope {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "device" => Ok(Self::Device),
             "node" => Ok(Self::Node),
             "host" => Ok(Self::Host),
             "rack" => Ok(Self::Rack),
+            "datacenter" => Ok(Self::Datacenter),
             "zone" => Ok(Self::Zone),
             "region" => Ok(Self::Region),
             other => Err(TopologyError::InvalidFailureDomain(format!(
@@ -240,15 +251,61 @@ impl FailureDomain {
 
     /// Returns the grouping key for a scope.
     ///
-    /// Nodes without the requested label are treated as their own domain, keyed
-    /// by node identifier, so a partially labelled cluster never collapses every
-    /// node into one shared domain.
+    /// Nodes missing the requested label all share one `unknown:<scope>` domain.
+    /// That is deliberate: an unlabelled node is not evidence of separation, so
+    /// treating each one as its own rack would let placement report rack
+    /// separation it never verified. Sharing a domain instead makes strict
+    /// policies refuse, and non-strict ones record `failure_domains_reused`.
+    /// Operators who only want distinct nodes should ask for
+    /// [`FailureDomainScope::Node`], which keys by node identifier.
     #[must_use]
     pub fn domain_key(&self, scope: FailureDomainScope, node_id: NodeId) -> String {
-        match scope.label().and_then(|label| self.get(label)) {
-            Some(value) => format!("{scope}:{value}"),
-            None => format!("node:{node_id}"),
+        match scope {
+            FailureDomainScope::Device => "unknown:device".to_owned(),
+            FailureDomainScope::Node => format!("node:{node_id}"),
+            other => match other.label().and_then(|label| self.get(label)) {
+                Some(value) => format!("{other}:{value}"),
+                // Missing topology is unknown, not proof that two nodes occupy
+                // separate racks, datacenters, regions, or physical hosts.
+                None => format!("unknown:{other}"),
+            },
         }
+    }
+}
+
+/// Monotonic generation of the durable topology and placement policy.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct ClusterMapEpoch(u64);
+
+impl ClusterMapEpoch {
+    /// Initial committed generation.
+    pub const INITIAL: Self = Self(1);
+
+    /// Creates an epoch from durable state.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the stored generation.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    /// Advances the generation without wrapping.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+}
+
+impl Display for ClusterMapEpoch {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, formatter)
     }
 }
 
@@ -456,6 +513,21 @@ pub struct NodeCapacity {
 }
 
 impl NodeCapacity {
+    /// Aggregates independently managed devices for compatibility status views.
+    #[must_use]
+    pub fn from_devices(devices: &[DeviceRecord]) -> Self {
+        devices.iter().fold(Self::default(), |mut total, device| {
+            total.total_bytes = total.total_bytes.saturating_add(device.capacity.raw_bytes);
+            total.available_bytes = total
+                .available_bytes
+                .saturating_add(device.capacity.available_bytes);
+            total.replica_bytes = total
+                .replica_bytes
+                .saturating_add(device.capacity.allocated_bytes);
+            total
+        })
+    }
+
     /// Returns used bytes derived from the reported totals.
     #[must_use]
     pub const fn used_bytes(&self) -> u64 {
@@ -523,6 +595,9 @@ pub struct NodeRegistration {
     pub failure_domain: FailureDomain,
     /// Capacity measured locally by the node.
     pub capacity: NodeCapacity,
+    /// Explicitly registered storage devices served by the node.
+    #[serde(default)]
+    pub devices: Vec<DeviceRecord>,
     /// Process start time, used to detect restarts.
     pub started_at: DateTime<Utc>,
 }
@@ -554,6 +629,9 @@ pub struct NodeRecord {
     pub metadata_voter: bool,
     /// Last capacity report.
     pub capacity: NodeCapacity,
+    /// Independently managed storage devices.
+    #[serde(default)]
+    pub devices: Vec<DeviceRecord>,
     /// Last activity report.
     pub activity: NodeActivity,
     /// First time the node joined.
@@ -590,6 +668,7 @@ impl NodeRecord {
             state: NodeState::Joining,
             metadata_voter,
             capacity: registration.capacity,
+            devices: registration.devices,
             activity: NodeActivity::default(),
             joined_at: now,
             started_at: registration.started_at,
@@ -603,6 +682,43 @@ impl NodeRecord {
     #[must_use]
     pub fn domain_key(&self, scope: FailureDomainScope) -> String {
         self.failure_domain.domain_key(scope, self.node_id)
+    }
+
+    /// Returns one registered device.
+    #[must_use]
+    pub fn device(&self, device_id: record_store_core::DeviceId) -> Option<&DeviceRecord> {
+        self.devices.iter().find(|device| device.id == device_id)
+    }
+
+    /// Returns mutable access to one registered device.
+    #[must_use]
+    pub fn device_mut(
+        &mut self,
+        device_id: record_store_core::DeviceId,
+    ) -> Option<&mut DeviceRecord> {
+        self.devices
+            .iter_mut()
+            .find(|device| device.id == device_id)
+    }
+
+    /// Installs the deterministic compatibility device for a pre-device record.
+    pub fn ensure_legacy_device(&mut self) {
+        if !self.devices.is_empty() {
+            return;
+        }
+        let capacity = DeviceCapacity {
+            raw_bytes: self.capacity.total_bytes,
+            usable_bytes: self.capacity.total_bytes,
+            allocated_bytes: self.capacity.replica_bytes,
+            reserved_bytes: 0,
+            available_bytes: self.capacity.available_bytes,
+        };
+        self.devices.push(DeviceRecord::legacy_directory(
+            self.node_id,
+            None,
+            self.storage_class.clone(),
+            capacity,
+        ));
     }
 
     /// Returns the capacity pressure level under the supplied thresholds.
@@ -650,6 +766,9 @@ pub struct ClusterTopology {
     pub cluster_id: ClusterId,
     /// Cluster-wide configuration in effect.
     pub config: ClusterConfig,
+    /// Durable topology and placement-policy generation.
+    #[serde(default)]
+    pub epoch: ClusterMapEpoch,
     /// Known members, ordered by node identifier.
     pub nodes: Vec<NodeRecord>,
 }
@@ -658,18 +777,46 @@ impl ClusterTopology {
     /// Creates a topology view with deterministic node ordering.
     #[must_use]
     pub fn new(cluster_id: ClusterId, config: ClusterConfig, mut nodes: Vec<NodeRecord>) -> Self {
+        for node in &mut nodes {
+            node.ensure_legacy_device();
+        }
         nodes.sort_by_key(|node| node.node_id);
         Self {
             cluster_id,
             config,
+            epoch: ClusterMapEpoch::default(),
             nodes,
         }
+    }
+
+    /// Creates a topology at a committed placement epoch.
+    #[must_use]
+    pub fn at_epoch(
+        cluster_id: ClusterId,
+        config: ClusterConfig,
+        nodes: Vec<NodeRecord>,
+        epoch: ClusterMapEpoch,
+    ) -> Self {
+        let mut topology = Self::new(cluster_id, config, nodes);
+        topology.epoch = epoch;
+        topology
     }
 
     /// Returns one node record.
     #[must_use]
     pub fn node(&self, node_id: NodeId) -> Option<&NodeRecord> {
         self.nodes.iter().find(|node| node.node_id == node_id)
+    }
+
+    /// Returns one device and its owning node.
+    #[must_use]
+    pub fn device(
+        &self,
+        device_id: record_store_core::DeviceId,
+    ) -> Option<(&NodeRecord, &DeviceRecord)> {
+        self.nodes
+            .iter()
+            .find_map(|node| node.device(device_id).map(|device| (node, device)))
     }
 
     /// Returns the node owning a consensus member identifier.
@@ -716,6 +863,13 @@ impl ClusterTopology {
             })
     }
 
+    /// Returns every registered device in stable `(node, device)` order.
+    pub fn devices(&self) -> impl Iterator<Item = (&NodeRecord, &DeviceRecord)> {
+        self.nodes
+            .iter()
+            .flat_map(|node| node.devices.iter().map(move |device| (node, device)))
+    }
+
     /// Returns whether the node's replicas may currently be read.
     #[must_use]
     pub fn serves_reads(&self, node_id: NodeId) -> bool {
@@ -730,6 +884,21 @@ impl ClusterTopology {
     pub fn contributes_durability(&self, node_id: NodeId) -> bool {
         self.node(node_id)
             .is_some_and(|node| node.state.contributes_durability())
+    }
+
+    /// Returns whether an exact node/device target counts toward durability.
+    #[must_use]
+    pub fn device_contributes_durability(
+        &self,
+        node_id: NodeId,
+        device_id: record_store_core::DeviceId,
+    ) -> bool {
+        self.node(node_id).is_some_and(|node| {
+            node.state.contributes_durability()
+                && node.device(device_id).is_some_and(|device| {
+                    device.state.contributes_durability() && device.health.contributes_durability()
+                })
+        })
     }
 }
 
@@ -761,8 +930,20 @@ mod tests {
             domain.domain_key(FailureDomainScope::Zone, node),
             "zone:dc1"
         );
+        // An unlabelled node shares the unknown domain rather than being counted
+        // as a zone of its own, so placement cannot claim unverified separation.
+        let other = NodeId::new();
         assert_eq!(
             FailureDomain::default().domain_key(FailureDomainScope::Zone, node),
+            "unknown:zone"
+        );
+        assert_eq!(
+            FailureDomain::default().domain_key(FailureDomainScope::Zone, other),
+            FailureDomain::default().domain_key(FailureDomainScope::Zone, node)
+        );
+        // Node scope is the way to ask for per-node separation.
+        assert_eq!(
+            FailureDomain::default().domain_key(FailureDomainScope::Node, node),
             format!("node:{node}")
         );
     }

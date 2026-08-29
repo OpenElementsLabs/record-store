@@ -23,9 +23,9 @@ pub use checksum::{Checksum, ChecksumAlgorithm, ETag};
 pub use durability::{DurabilityProfile, ErasureProfile, ReplicationProfile};
 pub use error::{CoreError, ErrorCategory};
 pub use ids::{
-    AuditEventId, BucketId, ClusterId, ClusterOperationId, CredentialId, EmbedLinkId, EventId,
-    JoinTokenId, LifecycleRuleId, NodeCredentialId, NodeId, ObjectId, OrganizationId, PolicyId,
-    ReplicaTaskId, ServiceAccountId, ShardId, ShareLinkId, StripeId, UploadId, VersionId,
+    AuditEventId, BucketId, ClusterId, ClusterOperationId, CredentialId, DeviceId, EmbedLinkId,
+    EventId, JoinTokenId, LifecycleRuleId, NodeCredentialId, NodeId, ObjectId, OrganizationId,
+    PolicyId, ReplicaTaskId, ServiceAccountId, ShardId, ShareLinkId, StripeId, UploadId, VersionId,
     WebhookId,
 };
 pub use lifecycle::{LifecycleRule, ObjectRetention, RetentionMode, StorageUsage};

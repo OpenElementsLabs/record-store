@@ -2,8 +2,9 @@
 
 use chrono::{DateTime, Utc};
 use record_store_cluster::{
-    ClusterConfig, ClusterTopology, FailureDomain, NodeCapacity, NodeRecord, NodeRegistration,
-    NodeState, NodeVersions, PayloadPlacement, Replica, ReplicaState, StorageClass,
+    ClusterConfig, ClusterTopology, DeviceRecord, FailureDomain, NodeCapacity, NodeRecord,
+    NodeRegistration, NodeState, NodeVersions, PayloadPlacement, Replica, ReplicaState,
+    StorageClass,
 };
 use record_store_core::{Checksum, ClusterId, NodeId, ObjectId};
 
@@ -11,6 +12,7 @@ use record_store_core::{Checksum, ClusterId, NodeId, ObjectId};
 pub(crate) fn replica(node_id: NodeId, state: ReplicaState) -> Replica {
     Replica {
         node_id,
+        device_id: record_store_cluster::DeviceRecord::legacy_id(node_id),
         state,
         location: "opaque".to_owned(),
         size: 1_024,
@@ -29,6 +31,7 @@ pub(crate) fn placement(object_id: ObjectId, replicas: Vec<Replica>) -> PayloadP
         checksum: Checksum::sha256([1_u8; 32]),
         desired_replicas: 3,
         storage_class: StorageClass::new("standard").expect("storage class"),
+        placement_epoch: record_store_cluster::ClusterMapEpoch::default(),
         replicas,
         created_at: timestamp(),
         updated_at: timestamp(),
@@ -45,6 +48,7 @@ pub(crate) fn node(node_id: NodeId, raft_id: u64, state: NodeState) -> NodeRecor
         storage_class: StorageClass::new("standard").expect("storage class"),
         failure_domain: FailureDomain::default(),
         capacity: NodeCapacity::default(),
+        devices: Vec::new(),
         started_at: timestamp(),
     };
     let mut record = NodeRecord::joining(registration, raft_id, true, timestamp());
@@ -74,7 +78,9 @@ pub(crate) fn task(
         kind,
         priority: record_store_cluster::ReplicaTaskPriority::Low,
         source_node: Some(source),
+        source_device: Some(DeviceRecord::legacy_id(source)),
         target_node: Some(target),
+        target_device: Some(DeviceRecord::legacy_id(target)),
         operation_id: None,
         size: 1_024,
         state: record_store_cluster::ReplicaTaskState::Queued,

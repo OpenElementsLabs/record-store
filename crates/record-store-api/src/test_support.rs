@@ -16,7 +16,7 @@ use record_store_core::OrganizationId;
 use record_store_events::{EventRepository, RedbEventRepository};
 use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
 use record_store_service::{ServiceLimits, Services};
-use record_store_storage::{LocalFilesystemStore, ObjectStore};
+use record_store_storage::{DeviceStore, LocalFilesystemStore, ObjectStore};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -463,6 +463,7 @@ pub(crate) async fn clustered_api() -> (TempDir, Router) {
                     .expect("storage class"),
                 failure_domain: record_store_cluster::FailureDomain::default(),
                 capacity: record_store_cluster::NodeCapacity::default(),
+                devices: Vec::new(),
                 started_at: chrono::Utc::now(),
             }),
             at: chrono::Utc::now(),
@@ -474,15 +475,18 @@ pub(crate) async fn clustered_api() -> (TempDir, Router) {
         node_id,
         cluster: Arc::clone(&cluster),
         metadata: Arc::clone(&metadata),
-        local: Arc::new(
-            LocalFilesystemStore::open(
-                directory.path().join("replicas"),
-                directory.path().join("replica-tmp"),
-                Arc::clone(&metadata),
-            )
-            .await
-            .expect("replica store"),
-        ),
+        local: Arc::new(DeviceStore::single(
+            record_store_cluster::DeviceRecord::legacy_id(node_id),
+            Arc::new(
+                LocalFilesystemStore::open(
+                    directory.path().join("replicas"),
+                    directory.path().join("replica-tmp"),
+                    Arc::clone(&metadata),
+                )
+                .await
+                .expect("replica store"),
+            ),
+        )),
         transport: Arc::new(NoTransport),
         placement: Arc::new(record_store_cluster::CapacityAwarePlacement::new(None)),
         consensus: Some(Arc::clone(&consensus)),

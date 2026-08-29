@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use record_store_cluster::DeviceRecord;
 use record_store_core::{Checksum, ClusterId, NodeId, ObjectId, PayloadFormat};
 use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
 use record_store_rpc::{
@@ -15,7 +16,7 @@ use record_store_rpc::{
     ReplicaRpcService, ReplicaTarget, ReplicaTransport, RpcClientSettings, RpcReplicaTransport,
     RpcServerSettings, TlsSettings, TransferExpectation,
 };
-use record_store_storage::{LocalFilesystemStore, ReplicaStore};
+use record_store_storage::{DeviceStore, LocalFilesystemStore, ReplicaStore};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -82,7 +83,10 @@ async fn peer() -> Peer {
         shutdown_grace_period: std::time::Duration::from_secs(5),
     })
     .with_replica(ReplicaRpcService::new(
-        Arc::clone(&local) as Arc<dyn ReplicaStore>,
+        Arc::new(DeviceStore::single(
+            DeviceRecord::legacy_id(node_id),
+            Arc::clone(&local) as Arc<dyn ReplicaStore>,
+        )),
         Arc::clone(&verifier),
         PayloadFormat::Plaintext,
     ));
@@ -116,6 +120,7 @@ async fn peer() -> Peer {
         _directory: directory,
         target: ReplicaTarget {
             node_id,
+            device_id: DeviceRecord::legacy_id(node_id),
             address: address.clone(),
         },
         address,
@@ -304,8 +309,10 @@ async fn a_peer_reports_absence_rather_than_failing() {
 #[tokio::test]
 async fn an_unreachable_peer_is_reported_as_such() {
     let peer = peer().await;
+    let absent_node = NodeId::new();
     let absent = ReplicaTarget {
-        node_id: NodeId::new(),
+        node_id: absent_node,
+        device_id: DeviceRecord::legacy_id(absent_node),
         address: "127.0.0.1:1".to_owned(),
     };
 

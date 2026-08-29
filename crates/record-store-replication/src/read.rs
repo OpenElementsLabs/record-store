@@ -11,7 +11,9 @@ use record_store_cluster::{
     ClusterCommand, PayloadPlacement, ReplicaState, ReplicaTaskKind, ReplicaTaskPriority,
 };
 use record_store_consensus::ClusterWrite;
-use record_store_core::{ByteRange, Checksum, NodeId, ObjectId, PayloadFormat, ResolvedByteRange};
+use record_store_core::{
+    ByteRange, Checksum, DeviceId, NodeId, ObjectId, PayloadFormat, ResolvedByteRange,
+};
 use record_store_storage::{DownloadStream, ReadReplicaRequest, StorageError};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
@@ -23,6 +25,8 @@ use crate::context::ClusterContext;
 pub struct ReadCandidate {
     /// Node holding the replica.
     pub node_id: NodeId,
+    /// Device holding the replica.
+    pub device_id: DeviceId,
     /// Whether the replica is on this node.
     pub local: bool,
 }
@@ -49,11 +53,13 @@ pub fn read_candidates(
             let mut hasher = Sha256::new();
             hasher.update(placement.object_id.as_uuid().as_bytes());
             hasher.update(replica.node_id.as_uuid().as_bytes());
+            hasher.update(replica.device_id.as_uuid().as_bytes());
             (
                 local,
                 hasher.finalize().into(),
                 ReadCandidate {
                     node_id: replica.node_id,
+                    device_id: replica.device_id,
                     local,
                 },
             )
@@ -65,6 +71,7 @@ pub fn read_candidates(
             .cmp(&left.0)
             .then(left.1.cmp(&right.1))
             .then(left.2.node_id.cmp(&right.2.node_id))
+            .then(left.2.device_id.cmp(&right.2.device_id))
     });
     candidates
         .into_iter()
@@ -110,9 +117,27 @@ pub async fn open_replica(
     let mut failures = Vec::new();
     for candidate in candidates {
         let attempt = if candidate.local {
-            open_local(context, object_id, size, checksum, payload_format, range).await
+            open_local(
+                context,
+                candidate.device_id,
+                object_id,
+                size,
+                checksum,
+                payload_format,
+                range,
+            )
+            .await
         } else {
-            open_remote(context, candidate.node_id, object_id, size, checksum, range).await
+            open_remote(
+                context,
+                candidate.node_id,
+                candidate.device_id,
+                object_id,
+                size,
+                checksum,
+                range,
+            )
+            .await
         };
         match attempt {
             Ok(read) => return Ok(read),
@@ -150,20 +175,31 @@ pub async fn open_replica(
 pub async fn open_specific_replica(
     context: &ClusterContext,
     node_id: NodeId,
+    device_id: DeviceId,
     object_id: ObjectId,
     size: u64,
     checksum: &Checksum,
     payload_format: PayloadFormat,
 ) -> Result<ReplicaRead, StorageError> {
     if node_id == context.node_id {
-        open_local(context, object_id, size, checksum, payload_format, None).await
+        open_local(
+            context,
+            device_id,
+            object_id,
+            size,
+            checksum,
+            payload_format,
+            None,
+        )
+        .await
     } else {
-        open_remote(context, node_id, object_id, size, checksum, None).await
+        open_remote(context, node_id, device_id, object_id, size, checksum, None).await
     }
 }
 
 async fn open_local(
     context: &ClusterContext,
+    device_id: DeviceId,
     object_id: ObjectId,
     size: u64,
     checksum: &Checksum,
@@ -172,6 +208,7 @@ async fn open_local(
 ) -> Result<ReplicaRead, StorageError> {
     let read = context
         .local
+        .for_device(device_id)?
         .read_replica(ReadReplicaRequest {
             object_id,
             size,
@@ -190,6 +227,7 @@ async fn open_local(
 async fn open_remote(
     context: &ClusterContext,
     node_id: NodeId,
+    device_id: DeviceId,
     object_id: ObjectId,
     size: u64,
     checksum: &Checksum,
@@ -202,7 +240,12 @@ async fn open_remote(
         // local replica, which the candidate ordering already does.
         let full = context
             .transport
-            .read_replica(&context.target(node_id).await?, object_id, size, checksum)
+            .read_replica(
+                &context.target(node_id, device_id).await?,
+                object_id,
+                size,
+                checksum,
+            )
             .await
             .map_err(|error| StorageError::ClusterUnavailable(error.to_string()))?;
         let resolved = range
@@ -218,7 +261,12 @@ async fn open_remote(
     }
     let stream = context
         .transport
-        .read_replica(&context.target(node_id).await?, object_id, size, checksum)
+        .read_replica(
+            &context.target(node_id, device_id).await?,
+            object_id,
+            size,
+            checksum,
+        )
         .await
         .map_err(|error| StorageError::ClusterUnavailable(error.to_string()))?;
     Ok(ReplicaRead {

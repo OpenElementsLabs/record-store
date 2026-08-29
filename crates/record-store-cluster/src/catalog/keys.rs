@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use record_store_core::{NodeId, ObjectId};
+use record_store_core::{DeviceId, NodeId, ObjectId};
 
 use crate::{
     replica::ReplicaState,
@@ -21,10 +21,15 @@ pub(crate) fn task_object_key(object_id: ObjectId, kind: ReplicaTaskKind) -> Vec
     key
 }
 
-pub(crate) fn node_replica_key(node_id: NodeId, object_id: ObjectId) -> Vec<u8> {
-    let mut key = Vec::with_capacity(32);
+pub(crate) fn node_replica_key(
+    node_id: NodeId,
+    object_id: ObjectId,
+    device_id: DeviceId,
+) -> Vec<u8> {
+    let mut key = Vec::with_capacity(48);
     key.extend_from_slice(node_id.as_uuid().as_bytes());
     key.extend_from_slice(object_id.as_uuid().as_bytes());
+    key.extend_from_slice(device_id.as_uuid().as_bytes());
     key
 }
 

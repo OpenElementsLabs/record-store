@@ -10,11 +10,11 @@ use std::{sync::Arc, time::Duration};
 use chrono::Utc;
 use futures_util::TryStreamExt;
 use record_store_cluster::{
-    ClusterCommand, PayloadPlacement, Replica, ReplicaState, ReplicaTask, ReplicaTaskKind,
-    ReplicaTaskState,
+    ClusterCommand, DeviceRecord, PayloadPlacement, Replica, ReplicaState, ReplicaTask,
+    ReplicaTaskKind, ReplicaTaskState,
 };
 use record_store_consensus::ClusterWrite;
-use record_store_core::{Checksum, NodeId, ObjectId, PayloadFormat};
+use record_store_core::{Checksum, DeviceId, NodeId, ObjectId, PayloadFormat};
 use record_store_storage::{StorageError, WriteReplicaRequest, upload_stream};
 use tracing::{debug, info, warn};
 
@@ -138,7 +138,7 @@ impl TaskExecutor {
         let object_id = task.object_id;
         self.context
             .local
-            .delete_replica(object_id)
+            .delete_everywhere(object_id)
             .await
             .map_err(|error| error.to_string())?;
         // Acknowledging the tombstone is what lets the cluster eventually stop
@@ -170,14 +170,18 @@ impl TaskExecutor {
             return Err("no healthy replica remains to copy from".to_owned());
         }
         let mut last_error = String::from("no source could be read");
-        for source in sources {
-            match self.copy_from(&placement, source, task, limits).await {
-                Ok(()) => {
-                    self.commit_replica(&placement).await?;
+        for (source, source_device) in sources {
+            match self
+                .copy_from(&placement, source, source_device, task, limits)
+                .await
+            {
+                Ok(destination) => {
+                    self.commit_replica(&placement, destination).await?;
                     if task.kind.removes_source()
                         && let Some(release) = task.source_node
                     {
-                        self.release_source(&placement, release).await?;
+                        self.release_source(&placement, release, task.source_device)
+                            .await?;
                     }
                     return Ok(());
                 }
@@ -195,16 +199,19 @@ impl TaskExecutor {
         Err(last_error)
     }
 
+    /// Copies one replica and returns the device that received it.
     async fn copy_from(
         &self,
         placement: &PayloadPlacement,
         source: NodeId,
+        source_device: DeviceId,
         task: &ReplicaTask,
         limits: MovementLimits,
-    ) -> Result<(), String> {
+    ) -> Result<DeviceId, String> {
         let read = open_specific_replica(
             &self.context,
             source,
+            source_device,
             placement.object_id,
             placement.size,
             &placement.checksum,
@@ -213,10 +220,19 @@ impl TaskExecutor {
         .await
         .map_err(|error| error.to_string())?;
         let body = throttled(read.body, limits.bytes_per_second);
+        // Placement chose an exact device, so the copy lands there rather than
+        // on whichever device happens to be this node's default.
+        let destination = task
+            .target_device
+            .unwrap_or_else(|| self.context.local.default_device_id());
+        let store = self
+            .context
+            .local
+            .for_device(destination)
+            .map_err(|error| error.to_string())?;
         // The destination validates against committed placement metadata rather
         // than against anything the source says about itself.
-        self.context
-            .local
+        store
             .write_replica(WriteReplicaRequest::known(
                 operation_id(task),
                 placement.object_id,
@@ -225,13 +241,20 @@ impl TaskExecutor {
                 upload_stream(body),
             ))
             .await
-            .map(|_| ())
+            .map(|_| destination)
             .map_err(|error| error.to_string())
     }
 
-    async fn commit_replica(&self, placement: &PayloadPlacement) -> Result<(), String> {
-        let replica = Replica::healthy(
+    async fn commit_replica(
+        &self,
+        placement: &PayloadPlacement,
+        device_id: DeviceId,
+    ) -> Result<(), String> {
+        // The committed record names the device that actually holds the bytes,
+        // which is what later repair, drain, and rebalance decisions read.
+        let replica = Replica::healthy_on(
             self.context.node_id,
+            device_id,
             placement.size,
             placement.checksum.clone(),
             Utc::now(),
@@ -250,19 +273,44 @@ impl TaskExecutor {
         &self,
         placement: &PayloadPlacement,
         source: NodeId,
+        source_device: Option<DeviceId>,
     ) -> Result<(), String> {
+        // Prefer the device the task named, then the committed replica record.
+        // Guessing is not an option: releasing the wrong device would delete a
+        // replica that still counts toward durability.
+        let device = source_device.or_else(|| {
+            placement
+                .replicas
+                .iter()
+                .find(|replica| replica.node_id == source)
+                .map(|replica| replica.device_id)
+        });
         // The source is only released after the destination replica is written,
         // verified, and committed, so a failure here never loses durability.
         if source == self.context.node_id {
-            self.context
-                .local
-                .delete_replica(placement.object_id)
-                .await
-                .map_err(|error| error.to_string())?;
+            match device {
+                Some(device) => {
+                    self.context
+                        .local
+                        .for_device(device)
+                        .map_err(|error| error.to_string())?
+                        .delete_replica(placement.object_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                None => {
+                    self.context
+                        .local
+                        .delete_everywhere(placement.object_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+            }
         } else {
+            let device = device.unwrap_or_else(|| DeviceRecord::legacy_id(source));
             let target = self
                 .context
-                .target(source)
+                .target(source, device)
                 .await
                 .map_err(|error| error.to_string())?;
             self.context
@@ -297,12 +345,12 @@ pub fn executor_of(task: &ReplicaTask) -> Option<NodeId> {
 
 /// Returns healthy replicas that may be read as a movement source.
 #[must_use]
-pub fn repair_sources(placement: &PayloadPlacement, exclude: NodeId) -> Vec<NodeId> {
+pub fn repair_sources(placement: &PayloadPlacement, exclude: NodeId) -> Vec<(NodeId, DeviceId)> {
     placement
         .replicas
         .iter()
         .filter(|replica| replica.state.usable_as_source() && replica.node_id != exclude)
-        .map(|replica| replica.node_id)
+        .map(|replica| (replica.node_id, replica.device_id))
         .collect()
 }
 
@@ -363,6 +411,7 @@ pub const fn state_for(present: bool, matches: bool) -> ReplicaState {
 /// Recomputes a payload checksum locally, used by scrubbing.
 pub async fn verify_local(
     context: &ClusterContext,
+    device_id: DeviceId,
     object_id: ObjectId,
     size: u64,
     payload_format: PayloadFormat,
@@ -370,6 +419,7 @@ pub async fn verify_local(
 ) -> Result<ReplicaState, StorageError> {
     let verification = context
         .local
+        .for_device(device_id)?
         .verify_replica(object_id, size, payload_format, expected.clone())
         .await?;
     Ok(state_for(verification.present, verification.matches))
@@ -408,9 +458,14 @@ mod tests {
 
         let sources = repair_sources(&placement(ObjectId::new(), replicas), excluded);
         assert_eq!(
-            sources,
+            sources.iter().map(|(node, _)| *node).collect::<Vec<_>>(),
             vec![healthy],
             "only the healthy replica that is not excluded may be a source"
+        );
+        assert_eq!(
+            sources.len(),
+            1,
+            "a source must carry exactly one device to read from"
         );
     }
 

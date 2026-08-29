@@ -30,7 +30,7 @@ pub const MINIMUM_COMPATIBLE_PROTOCOL_MINOR_VERSION: u32 = 1;
 pub const STORAGE_FORMAT_VERSION: u32 = 1;
 
 /// Durable layout version of the replicated cluster catalog.
-pub const CLUSTER_FORMAT_VERSION: u32 = 1;
+pub const CLUSTER_FORMAT_VERSION: u32 = 2;
 
 /// A negotiated internal protocol version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

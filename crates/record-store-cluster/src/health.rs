@@ -337,6 +337,7 @@ mod tests {
                 replica_bytes: 100,
                 temporary_bytes: 0,
             },
+            devices: Vec::new(),
             activity: NodeActivity::default(),
             joined_at: now,
             started_at: now,

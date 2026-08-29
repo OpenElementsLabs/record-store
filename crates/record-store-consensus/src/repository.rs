@@ -1026,6 +1026,7 @@ mod tests {
                     storage_class: StorageClass::new("standard").expect("class"),
                     failure_domain: FailureDomain::default(),
                     capacity: NodeCapacity::default(),
+                    devices: Vec::new(),
                     started_at: Utc::now(),
                 }),
                 at: Utc::now(),

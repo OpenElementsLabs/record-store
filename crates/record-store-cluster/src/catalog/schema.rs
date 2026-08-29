@@ -62,6 +62,7 @@ pub(crate) const ACTIVE_TASKS: &[u8] = b"active_tasks";
 pub(crate) const PARKED_TASKS: &[u8] = b"parked_tasks";
 pub(crate) const UNDER_REPLICATED: &[u8] = b"under_replicated";
 pub(crate) const UNAVAILABLE_PAYLOADS: &[u8] = b"unavailable_payloads";
+pub(crate) const CLUSTER_MAP_EPOCH: &[u8] = b"cluster_map_epoch";
 
 /// Creates every cluster table so that read transactions never fail on a fresh
 /// database, and records the durable layout version.
@@ -91,6 +92,19 @@ pub fn initialize_tables(database: &Database) -> CatalogResult<()> {
                         expected: CLUSTER_FORMAT_VERSION,
                     });
                 }
+                if found < CLUSTER_FORMAT_VERSION {
+                    drop(schema);
+                    migrate_to_v2(&write, found)?;
+                    let mut schema = write
+                        .open_table(SCHEMA)
+                        .map_err(|error| backend("open cluster schema", error))?;
+                    schema
+                        .insert(
+                            SCHEMA_VERSION_KEY,
+                            CLUSTER_FORMAT_VERSION.to_be_bytes().as_slice(),
+                        )
+                        .map_err(|error| backend("write cluster schema", error))?;
+                }
             }
             None => {
                 schema
@@ -105,4 +119,78 @@ pub fn initialize_tables(database: &Database) -> CatalogResult<()> {
     write
         .commit()
         .map_err(|error| backend("commit cluster schema", error))
+}
+
+fn migrate_to_v2(write: &redb::WriteTransaction, found: u32) -> CatalogResult<()> {
+    if found != 1 {
+        return Err(ClusterCatalogError::IncompatibleFormat {
+            found,
+            expected: CLUSTER_FORMAT_VERSION,
+        });
+    }
+
+    // V2 adds explicit devices and placement epochs. Decode through the
+    // backward-compatible wire models, then persist the fully explicit V2
+    // representation so the migration is one-time and auditable.
+    let nodes = {
+        let table = write
+            .open_table(NODES)
+            .map_err(|error| backend("open nodes for v2 migration", error))?;
+        let mut records = Vec::new();
+        for entry in table
+            .iter()
+            .map_err(|error| backend("scan nodes for v2 migration", error))?
+        {
+            let (key, value) = entry.map_err(|error| backend("read v1 node", error))?;
+            let mut node: crate::topology::NodeRecord = serde_json::from_slice(value.value())?;
+            node.ensure_legacy_device();
+            records.push((key.value().to_vec(), node));
+        }
+        records
+    };
+    for (key, node) in nodes {
+        crate::catalog::codec::put(write, NODES, &key, &node)?;
+    }
+
+    let placements = {
+        let table = write
+            .open_table(PLACEMENTS)
+            .map_err(|error| backend("open placements for v2 migration", error))?;
+        let mut records = Vec::new();
+        for entry in table
+            .iter()
+            .map_err(|error| backend("scan placements for v2 migration", error))?
+        {
+            let (key, value) = entry.map_err(|error| backend("read v1 placement", error))?;
+            let placement: crate::replica::PayloadPlacement =
+                serde_json::from_slice(value.value())?;
+            records.push((key.value().to_vec(), placement));
+        }
+        records
+    };
+    {
+        let mut index = write
+            .open_table(NODE_REPLICAS)
+            .map_err(|error| backend("open replica index for v2 migration", error))?;
+        index
+            .retain(|_, _| false)
+            .map_err(|error| backend("clear v1 replica index", error))?;
+    }
+    for (key, placement) in placements {
+        crate::catalog::codec::put(write, PLACEMENTS, &key, &placement)?;
+        for replica in &placement.replicas {
+            crate::catalog::codec::put_raw(
+                write,
+                NODE_REPLICAS,
+                &crate::catalog::keys::node_replica_key(
+                    replica.node_id,
+                    placement.object_id,
+                    replica.device_id,
+                ),
+                &[crate::catalog::keys::replica_state_code(replica.state)],
+            )?;
+        }
+    }
+    crate::catalog::codec::set_counter(write, CLUSTER_MAP_EPOCH, 1)?;
+    Ok(())
 }

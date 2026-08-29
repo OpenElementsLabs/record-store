@@ -125,7 +125,7 @@ impl DistributedObjectStore {
 
         let required = plan.required_acknowledgements;
         if outcome.acknowledgements() < required {
-            rollback(&self.context, object_id, &outcome.durable).await;
+            rollback(&self.context, object_id, &outcome.durable_devices).await;
             return Err(StorageError::DurabilityNotMet {
                 required,
                 achieved: outcome.acknowledgements(),
@@ -135,9 +135,17 @@ impl DistributedObjectStore {
 
         let now = Utc::now();
         let replicas = outcome
-            .durable
+            .durable_devices
             .iter()
-            .map(|node_id| Replica::healthy(*node_id, outcome.size, outcome.checksum.clone(), now))
+            .map(|(node_id, device_id)| {
+                Replica::healthy_on(
+                    *node_id,
+                    *device_id,
+                    outcome.size,
+                    outcome.checksum.clone(),
+                    now,
+                )
+            })
             .collect();
         let placement = PayloadPlacement::new(
             object_id,
@@ -147,7 +155,8 @@ impl DistributedObjectStore {
             self.context.default_storage_class(),
             replicas,
             now,
-        );
+        )
+        .with_epoch(plan.epoch);
         Ok((outcome, placement))
     }
 
@@ -336,7 +345,7 @@ impl ObjectStore for DistributedObjectStore {
         if let Some(expected) = request.expected_checksum
             && expected != outcome.checksum
         {
-            rollback(&self.context, object_id, &outcome.durable).await;
+            rollback(&self.context, object_id, &outcome.durable_devices).await;
             return Err(StorageError::ChecksumMismatch {
                 expected,
                 actual: outcome.checksum,
@@ -372,7 +381,7 @@ impl ObjectStore for DistributedObjectStore {
             Err(error) => {
                 // Nothing is visible, so the replicas that were written must be
                 // released rather than left as silent garbage.
-                rollback(&self.context, object_id, &outcome.durable).await;
+                rollback(&self.context, object_id, &outcome.durable_devices).await;
                 return Err(error);
             }
         };
@@ -405,7 +414,7 @@ impl ObjectStore for DistributedObjectStore {
         if let Some(expected) = request.expected_checksum
             && expected != outcome.checksum
         {
-            rollback(&self.context, object_id, &outcome.durable).await;
+            rollback(&self.context, object_id, &outcome.durable_devices).await;
             return Err(StorageError::ChecksumMismatch {
                 expected,
                 actual: outcome.checksum,
@@ -437,7 +446,7 @@ impl ObjectStore for DistributedObjectStore {
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                rollback(&self.context, object_id, &outcome.durable).await;
+                rollback(&self.context, object_id, &outcome.durable_devices).await;
                 return Err(match error {
                     record_store_consensus::ConsensusError::Rejected(rejection) => {
                         StorageError::Metadata(rejection.into_metadata_error())
@@ -449,7 +458,7 @@ impl ObjectStore for DistributedObjectStore {
         let responses = match response.into_batch() {
             Ok(responses) => responses,
             Err(rejection) => {
-                rollback(&self.context, object_id, &outcome.durable).await;
+                rollback(&self.context, object_id, &outcome.durable_devices).await;
                 return Err(StorageError::Metadata(rejection.into_metadata_error()));
             }
         };
@@ -598,7 +607,7 @@ impl ObjectStore for DistributedObjectStore {
         let commit = match self.commit_object(&metadata, &placement).await {
             Ok(commit) => commit,
             Err(error) => {
-                rollback(&self.context, object_id, &outcome.durable).await;
+                rollback(&self.context, object_id, &outcome.durable_devices).await;
                 return Err(error);
             }
         };
@@ -691,6 +700,7 @@ impl ObjectStore for DistributedObjectStore {
             let outcome = if replica.node_id == self.context.node_id {
                 self.context
                     .local
+                    .for_device(replica.device_id)?
                     .verify_replica(
                         metadata.id,
                         metadata.size,
@@ -700,7 +710,10 @@ impl ObjectStore for DistributedObjectStore {
                     .await
                     .map(|verification| (verification.present, verification.matches))
             } else {
-                let target = self.context.target(replica.node_id).await?;
+                let target = self
+                    .context
+                    .target(replica.node_id, replica.device_id)
+                    .await?;
                 self.context
                     .transport
                     .verify_replica(&target, metadata.id, metadata.size, &metadata.checksum)
@@ -739,7 +752,7 @@ impl ObjectStore for DistributedObjectStore {
         // Capacity is measured on this node's own filesystem rather than read
         // back from cluster metadata, which is only ever a record of what a node
         // previously reported.
-        self.context.local.local_capacity().await
+        self.context.local.capacity().await
     }
 
     async fn check_ready(&self) -> Result<(), StorageError> {
@@ -797,7 +810,7 @@ impl ClusterContext {
         maximum_entries: usize,
     ) -> Result<StorageInspection, StorageError> {
         let limit = maximum_entries.clamp(1, 100_000);
-        let payloads = self.local.list_local_payloads(None, limit).await?;
+        let payloads = self.local.list_payloads(None, limit).await?;
         let mut inspection = StorageInspection {
             data_payloads_scanned: u64::try_from(payloads.len()).unwrap_or(u64::MAX),
             ..StorageInspection::default()
