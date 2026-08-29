@@ -54,6 +54,10 @@ markdown_extensions:
   - toc:
       permalink: true
   - pymdownx.details
+  # Resolves :material-*: and :octicons-*: shortcodes to inline SVG icons.
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
