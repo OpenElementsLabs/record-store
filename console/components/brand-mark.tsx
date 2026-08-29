@@ -6,6 +6,7 @@ type BrandProps = {
 
 type BrandLockupProps = BrandProps & {
   readonly size?: 'compact' | 'default' | 'large';
+  readonly tone?: 'brand' | 'inverse';
 };
 
 /**
@@ -40,14 +41,19 @@ export function BrandMark({ className }: BrandProps) {
 }
 
 /** The horizontal symbol-and-wordmark lockup used on product entry points. */
-export function BrandLockup({ className, size = 'default' }: BrandLockupProps) {
+export function BrandLockup({ className, size = 'default', tone = 'brand' }: BrandLockupProps) {
   const compact = size === 'compact';
   const large = size === 'large';
 
   return (
     <span className={cn('flex items-center gap-3.5', className)}>
       <BrandMark className={cn(compact ? 'w-8' : large ? 'w-16' : 'w-12')} />
-      <span className="flex flex-col font-sans uppercase leading-none text-[#195477] dark:text-foreground">
+      <span
+        className={cn(
+          'flex flex-col font-sans uppercase leading-none',
+          tone === 'inverse' ? 'text-white' : 'text-brand-navy dark:text-foreground',
+        )}
+      >
         <span
           className={cn(
             'font-medium tracking-[-0.055em]',
