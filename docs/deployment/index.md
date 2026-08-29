@@ -4,6 +4,7 @@ Running Record Store somewhere real.
 
 <div class="grid cards" markdown>
 
+-   **[Container Images](container-images.md)** — the published images, tags, and digest pinning
 -   **[Docker](docker.md)** — the image, its defaults, and running a container
 -   **[Docker Compose](docker-compose.md)** — standalone, with the console, and a local cluster
 -   **[Coolify](coolify.md)** — end-to-end on a Coolify server
@@ -11,6 +12,7 @@ Running Record Store somewhere real.
 -   **[Persistent Storage](persistent-storage.md)** — the data directory and its requirements
 -   **[Production Checklist](production-checklist.md)** — before you take traffic
 -   **[Upgrading](upgrading.md)** — moving to a new version safely
+-   **[Verifying a Release](verifying-releases.md)** — provenance, SBOMs, and checksums
 
 </div>
 

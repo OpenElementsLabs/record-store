@@ -3,7 +3,9 @@
 ## Before you start
 
 1. **Read the release notes** for every version between the one you run and the one
-   you want.
+   you want. They are generated from
+   [CHANGELOG.md](https://github.com/OpenElementsLabs/record-store/blob/main/CHANGELOG.md)
+   and list anything that requires action on your part.
 2. **Take a backup and verify it.** An upgrade is the moment a backup earns its keep.
 
 ```bash
@@ -21,17 +23,17 @@ record-store server backup-metadata --output /backups/pre-upgrade
 # 2. Stop, allowing the full drain window
 docker stop --time 40 record-store
 
-# 3. Pull or rebuild the new image
-docker build -t record-store:new -f deploy/docker/Dockerfile .
+# 3. Pull the new image
+docker pull ghcr.io/openelementslabs/record-store:0.1.1
 
 # 4. Validate configuration against the new version before starting it
 docker run --rm \
   --env-file /etc/record-store/env \
-  record-store:new \
+  ghcr.io/openelementslabs/record-store:0.1.1 \
   record-store server check-config
 
 # 5. Start
-docker run -d --name record-store ... record-store:new
+docker run -d --name record-store ... ghcr.io/openelementslabs/record-store:0.1.1
 
 # 6. Verify
 record-store status --endpoint http://127.0.0.1:7601
@@ -55,6 +57,21 @@ version is newer than the binary's.
 This is why the backup comes first. Rolling back the binary does not roll back the
 metadata.
 
+## Choosing what to upgrade to
+
+Upgrade to an exact version, never to `latest`: you need to know what you are
+moving to, and to be able to move back to what you had. See
+[Container Images](container-images.md).
+
+```bash
+# Confirm what you are about to run before you run it
+docker run --rm --entrypoint record-store \
+  ghcr.io/openelementslabs/record-store:0.1.1 --version
+```
+
+Verify where the image came from with
+[the release's provenance attestation](verifying-releases.md).
+
 ## Rolling back
 
 If the new version fails to start or misbehaves:
@@ -64,7 +81,7 @@ If the new version fails to start or misbehaves:
 docker stop --time 40 record-store
 
 # 2. Start the previous image against the same data directory
-docker run -d --name record-store ... record-store:previous
+docker run -d --name record-store ... ghcr.io/openelementslabs/record-store:<previous>
 ```
 
 If the metadata schema changed, the old binary will refuse to open it. Then the path
@@ -118,7 +135,8 @@ See [Node Lifecycle](../cluster/node-lifecycle.md).
 
 ## Console
 
-The console is a separate image and can be upgraded independently. It is a client of
+The console is a separate image, `ghcr.io/openelementslabs/record-store-console`,
+and can be upgraded independently. It is a client of
 the management API, so a version skew between them is survivable — but keep them close
 and upgrade the console after the server.
 

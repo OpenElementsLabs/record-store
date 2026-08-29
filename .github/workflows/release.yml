@@ -1,0 +1,415 @@
+# Publishes a Record Store release.
+#
+# The Git tag is the source of truth. Pushing v0.1.1 validates that the tag and
+# the versions recorded in the repository agree, runs the same gates CI runs,
+# publishes both production images to GHCR with provenance and SBOMs, extracts
+# the Linux binaries from those images, smoke-tests what was actually published,
+# and only then creates the GitHub Release.
+#
+# Nothing that fails leaves a release behind: the GitHub Release is the last step
+# and depends on every job before it.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+# One release at a time per tag, and never cancel one that may be mid-publish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      major: ${{ steps.version.outputs.major }}
+      minor: ${{ steps.version.outputs.minor }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      server-image: ${{ steps.images.outputs.server }}
+      console-image: ${{ steps.images.outputs.console }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Refuses to continue when the tag and the repository disagree, so a
+      # 0.1.1 tag can never publish a 0.1.0 binary.
+      # Passed through the environment rather than interpolated into the shell:
+      # a ref name is attacker-influenced input everywhere else, and there is no
+      # reason for this to be the exception.
+      - name: Check the tag against the repository
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: .github/scripts/release-version.sh "$TAG"
+
+      # GHCR rejects uppercase repository names, and the owner here is not
+      # lowercase.
+      - name: Resolve image names
+        id: images
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "server=ghcr.io/${owner}/record-store"
+            echo "console=ghcr.io/${owner}/record-store-console"
+          } >> "$GITHUB_OUTPUT"
+
+  rust:
+    name: Rust checks
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --all-features --locked
+
+  console:
+    name: Console checks
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Install console dependencies
+        working-directory: console
+        run: npm ci
+
+      - name: Check console formatting
+        working-directory: console
+        run: npm run format:check
+
+      - name: Lint console
+        working-directory: console
+        run: npm run lint
+
+      - name: Type-check console
+        working-directory: console
+        run: npm run typecheck
+
+      - name: Test console
+        working-directory: console
+        run: npm test
+
+      - name: Build console
+        working-directory: console
+        run: npm run build
+
+  # Both images wait on both gates. A release is one artifact set: publishing a
+  # server image while the console is broken would leave a version half released.
+  server-image:
+    name: Server image
+    needs: [validate, rust, console]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/container-image.yml
+    with:
+      image: ${{ needs.validate.outputs.server-image }}
+      dockerfile: deploy/docker/Dockerfile
+      slug: server
+      title: Record Store
+      description: Self-hosted, S3-compatible object storage written in Rust.
+      version: ${{ needs.validate.outputs.version }}
+      minor: ${{ needs.validate.outputs.minor }}
+      major: ${{ needs.validate.outputs.major }}
+      prerelease: ${{ needs.validate.outputs.prerelease }}
+
+  console-image:
+    name: Console image
+    needs: [validate, rust, console]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/container-image.yml
+    with:
+      image: ${{ needs.validate.outputs.console-image }}
+      dockerfile: deploy/docker/Dockerfile.console
+      slug: console
+      title: Record Store Console
+      description: Web management console for Record Store.
+      version: ${{ needs.validate.outputs.version }}
+      minor: ${{ needs.validate.outputs.minor }}
+      major: ${{ needs.validate.outputs.major }}
+      prerelease: ${{ needs.validate.outputs.prerelease }}
+
+  binaries:
+    name: Binary archives
+    needs: [validate, server-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Taken out of the published image rather than compiled again, so the
+      # archive and the container can never contain different builds. `docker
+      # create` only materialises the filesystem, so the foreign architecture
+      # needs no emulation.
+      - name: Extract binaries from the published image
+        env:
+          IMAGE: ${{ needs.validate.outputs.server-image }}
+          DIGEST: ${{ needs.server-image.outputs.digest }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for architecture in amd64 arm64; do
+            staging="$(mktemp -d)"
+            container="$(docker create --platform "linux/${architecture}" "${IMAGE}@${DIGEST}")"
+            docker cp "${container}:/usr/local/bin/record-store" "${staging}/record-store"
+            docker cp "${container}:/usr/local/bin/record-store-server" "${staging}/record-store-server"
+            docker rm --force "$container" > /dev/null
+            tar --create --gzip \
+              --owner=0 --group=0 --numeric-owner \
+              --file "dist/record-store-${VERSION}-linux-${architecture}.tar.gz" \
+              --directory "$staging" record-store record-store-server
+          done
+          ls -l dist
+
+      - name: Attest binary provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke:
+    name: Smoke test
+    needs: [validate, server-image, console-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SERVER: ${{ needs.validate.outputs.server-image }}@${{ needs.server-image.outputs.digest }}
+      CONSOLE: ${{ needs.validate.outputs.console-image }}@${{ needs.console-image.outputs.digest }}
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The check that stops a 0.1.1 tag shipping a 0.1.0 binary: ask the image.
+      - name: Report the version from inside the image
+        run: |
+          set -euo pipefail
+          reported="$(docker run --rm --entrypoint record-store "$SERVER" --version)"
+          echo "$reported"
+          if [[ "$reported" != "record-store ${VERSION}" ]]; then
+            echo "the image reports '${reported}', expected 'record-store ${VERSION}'" >&2
+            exit 1
+          fi
+
+      # Ephemeral credentials, generated here and thrown away with the runner.
+      - name: Generate ephemeral credentials
+        run: |
+          set -euo pipefail
+          for name in ROOT_SECRET MASTER_KEY SYSTEM_TOKEN; do
+            value="$(openssl rand -hex 24)"
+            echo "::add-mask::${value}"
+            echo "${name}=${value}" >> "$GITHUB_ENV"
+          done
+      - name: Run the server container
+        run: |
+          set -euo pipefail
+          docker network create record-store-smoke
+          docker run --detach --name record-store --network record-store-smoke \
+            --publish 7600:7600 --publish 7601:7601 \
+            --env RECORD_STORE_ROOT_ACCESS_KEY=smoke-access-key \
+            --env "RECORD_STORE_ROOT_SECRET_KEY=${ROOT_SECRET}" \
+            --env "RECORD_STORE_CREDENTIAL_MASTER_KEY=${MASTER_KEY}" \
+            --env "RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN=${SYSTEM_TOKEN}" \
+            "$SERVER"
+
+      - name: Wait for readiness
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --show-error http://127.0.0.1:7601/ready > /dev/null; then
+              curl --fail --silent http://127.0.0.1:7601/health
+              echo
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "the server never became ready" >&2
+          docker logs record-store >&2
+          exit 1
+
+      - name: Check the S3 listener
+        run: |
+          set -euo pipefail
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:7600/)"
+          echo "S3 listener answered with HTTP ${status}"
+          if [[ ! "$status" =~ ^[1-5][0-9][0-9]$ ]]; then
+            echo "the S3 listener on 7600 did not answer" >&2
+            docker logs record-store >&2
+            exit 1
+          fi
+
+      - name: Check management status through the CLI
+        run: |
+          set -euo pipefail
+          docker exec --env "RECORD_STORE_MANAGEMENT_TOKEN=${SYSTEM_TOKEN}" record-store \
+            record-store status --endpoint http://127.0.0.1:7601
+
+      - name: Run the console container
+        run: |
+          set -euo pipefail
+          docker run --detach --name record-store-console --network record-store-smoke \
+            --publish 7602:7602 \
+            --env RECORD_STORE_API_URL=http://record-store:7601 \
+            "$CONSOLE"
+          for _ in $(seq 1 45); do
+            if curl --fail --silent --output /dev/null http://127.0.0.1:7602/login; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "the console never served /login" >&2
+          docker logs record-store-console >&2
+          exit 1
+
+      - name: Check the console runs a production build
+        run: |
+          set -euo pipefail
+          mode="$(docker exec record-store-console printenv NODE_ENV)"
+          if [[ "$mode" != "production" ]]; then
+            echo "the console image runs with NODE_ENV=${mode}" >&2
+            exit 1
+          fi
+
+      # Proves the console reached the management API rather than only that it
+      # started: an unreachable server answers 503 here, not 200.
+      - name: Check the console can reach the management API
+        run: |
+          set -euo pipefail
+          status="$(
+            curl --silent --output /dev/null --write-out '%{http_code}' \
+              --header 'content-type: application/json' \
+              --data "{\"token\":\"${SYSTEM_TOKEN}\"}" \
+              http://127.0.0.1:7602/api/auth/login
+          )"
+          if [[ "$status" != "200" ]]; then
+            echo "the console answered HTTP ${status} for a valid management token" >&2
+            docker logs record-store-console >&2
+            exit 1
+          fi
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker logs record-store || true
+          docker logs record-store-console || true
+
+  release:
+    name: GitHub Release
+    needs: [validate, server-image, console-image, binaries, smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binaries
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: sbom-*
+          merge-multiple: true
+
+      # Checksums are generated from the assets that exist, so the file can
+      # never list something that was not published.
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(*)
+          if [[ ${#assets[@]} -eq 0 ]]; then
+            echo "no release assets were produced" >&2
+            exit 1
+          fi
+          sha256sum "${assets[@]}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Compose release notes
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_IMAGE: ${{ needs.validate.outputs.server-image }}
+          SERVER_DIGEST: ${{ needs.server-image.outputs.digest }}
+          CONSOLE_IMAGE: ${{ needs.validate.outputs.console-image }}
+          CONSOLE_DIGEST: ${{ needs.console-image.outputs.digest }}
+          ASSET_DIRECTORY: dist
+        run: .github/scripts/release-notes.sh > release-notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          arguments=(
+            "$TAG"
+            --verify-tag
+            --title "Record Store $TAG"
+            --notes-file release-notes.md
+          )
+          if [[ "$PRERELEASE" == "true" ]]; then
+            arguments+=(--prerelease)
+          fi
+          gh release create "${arguments[@]}" dist/*

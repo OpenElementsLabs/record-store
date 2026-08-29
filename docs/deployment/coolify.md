@@ -9,6 +9,22 @@ from the development Compose files in three ways: it uses `expose` rather than
 `ports`, it declares Coolify magic environment variables so Coolify generates and
 retains the secrets, and it publishes only the two endpoints that should be public.
 
+It builds from source. If you would rather have Coolify pull the
+[published images](container-images.md) — faster deployments, and the same
+artifact everywhere — replace each service's `build:` block with the pinned
+image, keeping the rest of the file as it is:
+
+```yaml
+services:
+  record-store:
+    image: ghcr.io/openelementslabs/record-store:0.1.1
+  console:
+    image: ghcr.io/openelementslabs/record-store-console:0.1.1
+```
+
+Coolify needs registry credentials for that, because the packages are private
+until a maintainer makes them public.
+
 ## What you need
 
 - A Coolify server with a project and a server attached
@@ -167,6 +183,10 @@ proxy-generated `413`, raise the limit for the storage domain or have clients us
 
 Push to the tracked branch and redeploy. Coolify rebuilds the images and recreates the
 containers; the data volume is untouched. Read [Upgrading](upgrading.md) first.
+
+If you switched to the published images, updating means changing the version tag
+and redeploying — nothing is rebuilt, and the version you get is the version you
+named.
 
 ## Troubleshooting
 

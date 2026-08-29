@@ -15,6 +15,36 @@ pip install -r requirements-docs.txt
 mkdocs serve
 ```
 
+## Install
+
+Record Store publishes production container images for `linux/amd64` and
+`linux/arm64` to the GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/openelementslabs/record-store:0.1.1
+docker pull ghcr.io/openelementslabs/record-store-console:0.1.1
+```
+
+The packages are private while the repository is, so `docker login ghcr.io` with a
+token carrying `read:packages` first. To run both from the published images:
+
+```bash
+docker compose --env-file .env -f deploy/docker/compose.ghcr.yml up -d
+```
+
+Each release carries build provenance attestations, SPDX SBOMs, and SHA-256
+checksums:
+
+```bash
+gh attestation verify oci://ghcr.io/openelementslabs/record-store:0.1.1 \
+  -R OpenElementsLabs/record-store
+```
+
+See [Installation](https://openelementslabs.github.io/record-store/getting-started/installation/),
+[Container Images](https://openelementslabs.github.io/record-store/deployment/container-images/),
+and [Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/).
+Released versions are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Supported S3 surface
 
 - AWS Signature Version 4 header authentication and presigned GET/PUT URLs
@@ -464,6 +494,10 @@ it without touching the queue, progress, retry, or cancellation UI above it.
 
 ## Docker
 
+The Compose files below build from source, which is what you want while
+developing. For a real deployment, use the published images through
+`deploy/docker/compose.ghcr.yml` — see [Install](#install).
+
 `RECORD_STORE_MODE` is not set above because standalone is the default; no cluster configuration is required to run one node.
 
 Compose variables may be kept in a repo-root `.env` file (which Git ignores) and loaded explicitly with `--env-file .env`. Use `deploy/docker/compose.console.yml` for one standalone Record Store node plus the console, or `deploy/docker/compose.yml` for the same node without the console.
@@ -532,4 +566,6 @@ crates/record-store-rpc        authenticated Tonic consensus and replica transpo
 crates/record-store-replication distributed reads/writes, repair, rebalance, and operations
 console/              web console: Next.js, React, Tailwind, TanStack
 deploy/docker/        container and Compose definitions
+docs/                 MkDocs documentation site
+.github/workflows/    CI, documentation, and the release pipeline
 ```
