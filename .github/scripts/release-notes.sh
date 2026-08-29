@@ -63,15 +63,13 @@ rebuild of this one.
 
 ## Verification
 
-Each image carries a build provenance attestation binding it to this repository,
-this workflow, and this commit:
+Confirm the image reports the version it is tagged with:
 
 \`\`\`bash
-gh attestation verify oci://$SERVER_IMAGE:$VERSION -R $REPOSITORY
-gh attestation verify oci://$CONSOLE_IMAGE:$VERSION -R $REPOSITORY
+docker run --rm --entrypoint record-store $SERVER_IMAGE:$VERSION --version
 \`\`\`
 
-Inspect the published manifest and its platforms:
+Inspect the published manifest, its digest, and its platforms:
 
 \`\`\`bash
 docker buildx imagetools inspect $SERVER_IMAGE:$VERSION
@@ -94,9 +92,13 @@ cat <<NOTES
 ## Assets
 
 Linux binary archives contain \`record-store\` and \`record-store-server\`, taken from
-the published images so the archive and the container hold the same build. SPDX
-SBOMs are attached per image and per architecture, and are also published as
-attestations on the image manifests.
+the published images so the archive and the container hold the same build. An
+SPDX SBOM is attached per image and per architecture.
+
+Images are published unsigned: GitHub's artifact attestation service is not
+available to this repository, so there is no \`gh attestation verify\` to run. The
+release tag is signed, and \`SHA256SUMS\` covers every asset here. See
+[Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/).
 
 macOS builds are not published; build from source with \`cargo build --release\`.
 NOTES

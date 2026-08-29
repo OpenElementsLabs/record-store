@@ -69,8 +69,8 @@ docker run --rm --entrypoint record-store \
   ghcr.io/openelementslabs/record-store:0.1.1 --version
 ```
 
-Verify where the image came from with
-[the release's provenance attestation](verifying-releases.md).
+Check the digest and the checksums before you deploy — see
+[Verifying a Release](verifying-releases.md).
 
 ## Rolling back
 

@@ -1,11 +1,18 @@
 # Builds one production container image for linux/amd64 and linux/arm64, pushes
-# it to GHCR under the release's semantic tags, and records what produced it.
+# it to GHCR under the release's semantic tags.
 #
 # The two architectures are built on native runners rather than under QEMU: a
 # release build of the Rust workspace is slow enough that emulation turns a
 # ten-minute job into an hour-long one. Each runner pushes an unnamed manifest
 # by digest and a merge job assembles the multi-platform index, which is the
-# artifact everything downstream attests, scans, and pulls.
+# artifact everything downstream scans and pulls.
+#
+# Images are published unsigned. GitHub's artifact attestation API is not
+# available to a private repository outside an Enterprise plan, and an unsigned
+# `provenance: mode=max` blob proves nothing that a registry writer could not
+# forge, so nothing here claims provenance it cannot back up. The signed release
+# tag and the SBOMs are what a consumer gets; see
+# docs/deployment/verifying-releases.md.
 #
 # Reused by release.yml for both the server and the console so the publishing
 # rules exist in one place.
@@ -48,6 +55,13 @@ on:
         type: string
       prerelease:
         description: Whether this version is a pre-release.
+        required: true
+        type: string
+      created:
+        description: >
+          RFC 3339 build timestamp for org.opencontainers.image.created. Taken
+          from the release commit rather than the clock so that re-running a
+          release rebuilds the same digest instead of a new one.
         required: true
         type: string
     outputs:
@@ -98,6 +112,7 @@ jobs:
             org.opencontainers.image.description=${{ inputs.description }}
             org.opencontainers.image.version=${{ inputs.version }}
             org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.created=${{ inputs.created }}
 
       - name: Build and push by digest
         id: build
@@ -108,8 +123,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           # Each runner pushes a nameless manifest; the merge job below is what
-          # gives the release its tags. Attestations are attached to the merged
-          # index instead, so no orphaned attestation survives a failed build.
+          # gives the release its tags.
           outputs: type=image,name=${{ inputs.image }},push-by-digest=true,name-canonical=true,push=true
           provenance: false
           sbom: false
@@ -138,8 +152,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
     outputs:
       digest: ${{ steps.index.outputs.digest }}
     steps:
@@ -180,6 +192,7 @@ jobs:
             org.opencontainers.image.description=${{ inputs.description }}
             org.opencontainers.image.version=${{ inputs.version }}
             org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.created=${{ inputs.created }}
 
       - name: Create multi-platform manifest
         working-directory: ${{ runner.temp }}/digests
@@ -226,24 +239,13 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "Published \`${IMAGE}@${digest}\`" >> "$GITHUB_STEP_SUMMARY"
 
-      # Attesting the digest rather than a tag is the point of the exercise: a
-      # tag can be repointed, a digest cannot.
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-name: ${{ inputs.image }}
-          subject-digest: ${{ steps.index.outputs.digest }}
-          push-to-registry: true
-
   sbom:
     name: SBOM ${{ matrix.architecture }}
     needs: merge
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
+      packages: read
     strategy:
       fail-fast: true
       matrix:
@@ -304,14 +306,6 @@ jobs:
           output-file: ${{ steps.asset.outputs.path }}
           upload-artifact: false
           upload-release-assets: false
-
-      - name: Attest SBOM
-        uses: actions/attest-sbom@v4
-        with:
-          subject-name: ${{ inputs.image }}
-          subject-digest: ${{ steps.platform.outputs.digest }}
-          sbom-path: ${{ steps.asset.outputs.path }}
-          push-to-registry: true
 
       - uses: actions/upload-artifact@v4
         with:

@@ -32,13 +32,10 @@ token carrying `read:packages` first. To run both from the published images:
 docker compose --env-file .env -f deploy/docker/compose.ghcr.yml up -d
 ```
 
-Each release carries build provenance attestations, SPDX SBOMs, and SHA-256
-checksums:
-
-```bash
-gh attestation verify oci://ghcr.io/openelementslabs/record-store:0.1.1 \
-  -R OpenElementsLabs/record-store
-```
+Each release carries SPDX SBOMs and a `SHA256SUMS` file covering every asset.
+Images are published unsigned — see
+[Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/)
+for what can be checked and what that limitation means.
 
 See [Installation](https://openelementslabs.github.io/record-store/getting-started/installation/),
 [Container Images](https://openelementslabs.github.io/record-store/deployment/container-images/),

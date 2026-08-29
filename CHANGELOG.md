@@ -29,8 +29,9 @@ from a repository checkout.
   navigation; audit filtering by source IP and request ID; and a collapsible sidebar.
 - A Compose file for Coolify deployments at `deploy/docker/docker-compose.yaml`.
 - Container images published to the GitHub Container Registry for `linux/amd64`
-  and `linux/arm64`, with build provenance attestations, SPDX SBOMs, and SHA-256
-  checksums for the binary archives.
+  and `linux/arm64`, with SPDX SBOMs per image and architecture, and SHA-256
+  checksums covering every release asset. Images are published unsigned; see
+  [Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/).
 
 ### Changed
 
