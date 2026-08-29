@@ -19,9 +19,11 @@ on:
 permissions:
   contents: read
 
+# Superseded pull-request builds are cancelled; a run that may be mid-deployment
+# never is.
 concurrency:
   group: docs-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -39,6 +41,8 @@ jobs:
       - name: Install documentation dependencies
         run: pip install -r requirements-docs.txt
 
+      # --strict turns broken internal links, unrecognised configuration, and
+      # pages missing from the navigation into failures.
       - name: Build documentation
         run: mkdocs build --strict
 
@@ -50,7 +54,9 @@ jobs:
 
   deploy:
     name: Deploy
-    if: github.event_name != 'pull_request'
+    # Pages publishes the default branch only. Without the ref guard, a manual
+    # run from a topic branch would publish that branch to the live site.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -59,6 +65,11 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    # GitHub's recommended Pages grouping: one deployment at a time, and never
+    # interrupt one that has already started.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
