@@ -30,6 +30,8 @@ pub(crate) const JOIN_TOKENS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("cluster.join_tokens.v1");
 pub(crate) const NODE_CREDENTIALS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("cluster.node_credentials.v1");
+pub(crate) const STORAGE_POLICIES: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("cluster.storage_policies.v1");
 pub(crate) const SCHEMA: TableDefinition<&[u8], &[u8]> = TableDefinition::new("cluster.schema.v1");
 
 /// Every cluster table, used by consensus snapshot export and import.
@@ -48,6 +50,7 @@ pub const CLUSTER_TABLES: &[TableDefinition<'static, &'static [u8], &'static [u8
     OPERATIONS,
     JOIN_TOKENS,
     NODE_CREDENTIALS,
+    STORAGE_POLICIES,
     SCHEMA,
 ];
 

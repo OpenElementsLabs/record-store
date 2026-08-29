@@ -23,8 +23,8 @@ use crate::catalog::keys::{
 use crate::catalog::schema::{
     ACTIVE_TASKS, CLUSTER_MAP_EPOCH, CONFIG, IDENTITY, JOIN_TOKENS, LOGICAL_BYTES, NEXT_MEMBER_ID,
     NODE_BY_MEMBER, NODE_CREDENTIALS, NODE_REPLICAS, NODES, OPERATIONS, PARKED_TASKS,
-    PHYSICAL_BYTES, PLACEMENT_COUNT, PLACEMENTS, SINGLETON, TASK_BY_OBJECT, TASK_QUEUE, TASKS,
-    TOMBSTONE_COUNT, TOMBSTONES, UNAVAILABLE_PAYLOADS, UNDER_REPLICATED,
+    PHYSICAL_BYTES, PLACEMENT_COUNT, PLACEMENTS, SINGLETON, STORAGE_POLICIES, TASK_BY_OBJECT,
+    TASK_QUEUE, TASKS, TOMBSTONE_COUNT, TOMBSTONES, UNAVAILABLE_PAYLOADS, UNDER_REPLICATED,
 };
 use crate::catalog::*;
 
@@ -135,6 +135,41 @@ pub fn apply_command_tx(
             put(write, NODES, node_id.as_uuid().as_bytes(), &node)?;
             advance_cluster_map_epoch(write)?;
             Ok(ClusterOutcome::Device(device))
+        }
+        ClusterCommand::PutStoragePolicy { policy, at: _ } => {
+            policy
+                .validate()
+                .map_err(|error| ClusterCatalogError::Database {
+                    operation: "validate storage policy",
+                    reason: error.to_string(),
+                })?;
+            put(
+                write,
+                STORAGE_POLICIES,
+                policy.class.as_str().as_bytes(),
+                &*policy,
+            )?;
+            // A policy decides where data belongs, so changing one is a
+            // placement change and the map generation has to move with it.
+            advance_cluster_map_epoch(write)?;
+            Ok(ClusterOutcome::StoragePolicy(policy))
+        }
+        ClusterCommand::DeleteStoragePolicy { class, at: _ } => {
+            if class == crate::topology::StorageClass::default() {
+                return Err(ClusterCatalogError::Database {
+                    operation: "delete storage policy",
+                    reason: "the default storage policy cannot be removed".into(),
+                });
+            }
+            let mut table = write
+                .open_table(STORAGE_POLICIES)
+                .map_err(|error| backend("open storage policies", error))?;
+            table
+                .remove(class.as_str().as_bytes())
+                .map_err(|error| backend("remove storage policy", error))?;
+            drop(table);
+            advance_cluster_map_epoch(write)?;
+            Ok(ClusterOutcome::None)
         }
         ClusterCommand::SetDeviceState {
             node_id,
@@ -1209,6 +1244,129 @@ mod tests {
             .await
             .expect("register the node's data root as a device");
         device_id
+    }
+
+    /// A cluster that predates storage policies still resolves every bucket to
+    /// something explicit, so introducing them changes no existing placement.
+    #[tokio::test]
+    async fn the_default_policy_exists_without_being_defined() {
+        let (_directory, catalog) = initialized().await;
+        let policies = catalog.storage_policies().await.expect("policies");
+        assert_eq!(policies.len(), 1);
+
+        let default = &policies[0];
+        assert_eq!(default.class, StorageClass::default());
+        assert!(
+            default.device_filter.is_unrestricted(),
+            "the fallback policy must never exclude a device on hardware grounds"
+        );
+        let config = catalog.config().await.expect("read").expect("config");
+        assert_eq!(
+            default.durability.replicas(),
+            Some(config.replication_factor),
+            "the synthesized default must match what the cluster was already doing"
+        );
+
+        // A class nobody defined resolves to nothing rather than to the default,
+        // so a misconfigured bucket is visible instead of silently reinterpreted.
+        let unknown = StorageClass::new("archive").expect("class");
+        assert!(
+            catalog
+                .storage_policy(&unknown)
+                .await
+                .expect("resolve")
+                .is_none()
+        );
+    }
+
+    /// Policies are durable, replicated, and move the placement epoch, because
+    /// changing one changes where data belongs.
+    #[tokio::test]
+    async fn a_storage_policy_is_durable_and_advances_the_map() {
+        use crate::device::DeviceKind;
+        use crate::policy::{DeviceFilter, DurabilityStrategy, StoragePolicy};
+
+        let (_directory, catalog) = initialized().await;
+        let before = catalog.topology().await.expect("topology").epoch;
+
+        let class = StorageClass::new("hot").expect("class");
+        let policy = StoragePolicy {
+            class: class.clone(),
+            description: Some("solid state only".into()),
+            device_filter: DeviceFilter::allowing([DeviceKind::Nvme]).expect("filter"),
+            durability: DurabilityStrategy::Replication { replicas: 2 },
+            failure_domain: crate::topology::FailureDomainScope::Rack,
+            strict_failure_domains: true,
+            minimum_free_space_percent: 15,
+        };
+        catalog
+            .apply(ClusterCommand::PutStoragePolicy {
+                policy: Box::new(policy.clone()),
+                at: Utc::now(),
+            })
+            .await
+            .expect("define the policy");
+
+        assert!(
+            catalog.topology().await.expect("topology").epoch > before,
+            "a placement policy change must advance the cluster map epoch"
+        );
+        let stored = catalog
+            .storage_policy(&class)
+            .await
+            .expect("resolve")
+            .expect("the policy is defined");
+        assert_eq!(stored, policy);
+        assert_eq!(catalog.storage_policies().await.expect("list").len(), 2);
+
+        catalog
+            .apply(ClusterCommand::DeleteStoragePolicy {
+                class: class.clone(),
+                at: Utc::now(),
+            })
+            .await
+            .expect("remove the policy");
+        assert!(
+            catalog
+                .storage_policy(&class)
+                .await
+                .expect("resolve")
+                .is_none()
+        );
+    }
+
+    /// An invalid policy must not reach durable state, and the default must not
+    /// be removable: every unconfigured bucket depends on it.
+    #[tokio::test]
+    async fn an_unusable_policy_is_refused_and_the_default_cannot_be_removed() {
+        use crate::policy::{DeviceFilter, DurabilityStrategy, StoragePolicy};
+
+        let (_directory, catalog) = initialized().await;
+        let refused = catalog
+            .apply(ClusterCommand::PutStoragePolicy {
+                policy: Box::new(StoragePolicy {
+                    class: StorageClass::new("broken").expect("class"),
+                    description: None,
+                    device_filter: DeviceFilter::any(),
+                    durability: DurabilityStrategy::Replication { replicas: 0 },
+                    failure_domain: crate::topology::FailureDomainScope::Node,
+                    strict_failure_domains: false,
+                    minimum_free_space_percent: 0,
+                }),
+                at: Utc::now(),
+            })
+            .await
+            .expect_err("a policy asking for zero replicas is not usable");
+        assert!(refused.to_string().contains("replication factor"));
+
+        let refused = catalog
+            .apply(ClusterCommand::DeleteStoragePolicy {
+                class: StorageClass::default(),
+                at: Utc::now(),
+            })
+            .await
+            .expect_err("the default policy underpins every unconfigured bucket");
+        assert!(refused.to_string().contains("default storage policy"));
     }
 
     /// Registering a device makes it a placement resource and advances the map.

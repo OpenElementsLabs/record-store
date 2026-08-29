@@ -115,6 +115,20 @@ pub enum ClusterCommand {
         at: DateTime<Utc>,
     },
     /// Apply a validated device lifecycle transition.
+    /// Defines or replaces a storage policy.
+    PutStoragePolicy {
+        /// Policy being committed. Its class is its identity.
+        policy: Box<crate::policy::StoragePolicy>,
+        /// Commit time.
+        at: DateTime<Utc>,
+    },
+    /// Removes a storage policy.
+    DeleteStoragePolicy {
+        /// Class being removed.
+        class: crate::topology::StorageClass,
+        /// Commit time.
+        at: DateTime<Utc>,
+    },
     SetDeviceState {
         /// Node serving the device.
         node_id: NodeId,
@@ -362,6 +376,8 @@ impl ClusterCommand {
             Self::UpdateNodeDescriptor { .. } => "update_node_descriptor",
             Self::SetNodeState { .. } => "set_node_state",
             Self::RegisterDevice { .. } => "register_device",
+            Self::PutStoragePolicy { .. } => "put_storage_policy",
+            Self::DeleteStoragePolicy { .. } => "delete_storage_policy",
             Self::SetDeviceState { .. } => "set_device_state",
             Self::SetNodeMetadataVoter { .. } => "set_node_metadata_voter",
             Self::ForgetNode { .. } => "forget_node",
@@ -404,6 +420,8 @@ pub enum ClusterOutcome {
     Node(Box<NodeRecord>),
     /// A device record after the command was applied.
     Device(Box<DeviceRecord>),
+    /// A committed storage policy.
+    StoragePolicy(Box<crate::policy::StoragePolicy>),
     /// A node registration result.
     Registration {
         /// Resulting node record.

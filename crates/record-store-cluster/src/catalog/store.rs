@@ -160,6 +160,47 @@ impl ClusterCatalog {
         })
     }
 
+    /// Returns every defined storage policy, ordered by class.
+    ///
+    /// The default class is always present. It is synthesized from cluster
+    /// configuration when nobody has defined it, so a cluster that predates
+    /// storage policies still resolves every bucket to something explicit
+    /// rather than to nothing.
+    pub async fn storage_policies(&self) -> CatalogResult<Vec<crate::policy::StoragePolicy>> {
+        let (config, mut policies) = tokio::try_join!(
+            self.config(),
+            self.read(crate::catalog::codec::read_storage_policies)
+        )?;
+        let config = config.ok_or(ClusterCatalogError::NotInitialized)?;
+        if !policies
+            .iter()
+            .any(|policy| policy.class == crate::topology::StorageClass::default())
+        {
+            policies.push(crate::policy::StoragePolicy::default_policy(
+                config.failure_domain_scope,
+                config.replication_factor,
+            ));
+        }
+        policies.sort_by(|left, right| left.class.as_str().cmp(right.class.as_str()));
+        Ok(policies)
+    }
+
+    /// Resolves one storage class to the policy that defines it.
+    ///
+    /// An unknown class resolves to `None` rather than to the default: a bucket
+    /// naming a class nobody defined is a configuration error, and quietly
+    /// placing its data by default rules would hide it.
+    pub async fn storage_policy(
+        &self,
+        class: &crate::topology::StorageClass,
+    ) -> CatalogResult<Option<crate::policy::StoragePolicy>> {
+        Ok(self
+            .storage_policies()
+            .await?
+            .into_iter()
+            .find(|policy| &policy.class == class))
+    }
+
     /// Returns a topology view suitable for placement decisions.
     pub async fn topology(&self) -> CatalogResult<ClusterTopology> {
         let (identity, config, nodes, epoch) = tokio::try_join!(

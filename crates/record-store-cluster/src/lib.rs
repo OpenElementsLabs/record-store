@@ -22,6 +22,7 @@ pub mod device;
 pub mod health;
 pub mod identity;
 pub mod placement;
+pub mod policy;
 pub mod rebalance;
 pub mod replica;
 pub mod tasks;
@@ -53,6 +54,9 @@ pub use identity::{IdentityError, NodeIdentity, NodeIdentityStore, RaftNodeId};
 pub use placement::{
     CapacityAwarePlacement, ObjectPlacementRequest, PlacementCandidateExplanation, PlacementError,
     PlacementExplanation, PlacementPlan, PlacementPolicy, PlacementTarget,
+};
+pub use policy::{
+    DeviceFilter, DurabilityStrategy, MAXIMUM_POLICY_REPLICAS, StoragePolicy, StoragePolicyError,
 };
 pub use rebalance::{DecommissionSafety, RebalanceCandidate, RebalanceMove, plan_rebalance};
 pub use replica::{Durability, PayloadPlacement, Replica, ReplicaState, Tombstone};

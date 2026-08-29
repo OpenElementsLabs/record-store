@@ -14,6 +14,7 @@ use thiserror::Error;
 use crate::{
     config::CapacityLevel,
     device::{DeviceKind, DeviceRecord},
+    policy::StoragePolicy,
     topology::{ClusterMapEpoch, ClusterTopology, FailureDomainScope, NodeRecord, StorageClass},
 };
 
@@ -40,6 +41,11 @@ pub struct ObjectPlacementRequest {
     pub existing_targets: BTreeSet<(NodeId, DeviceId)>,
     /// Explicitly barred devices.
     pub excluded_devices: BTreeSet<DeviceId>,
+    /// Resolved policy for the requested class.
+    ///
+    /// `None` keeps the cluster-wide configuration, which is what standalone and
+    /// pre-storage-class deployments get.
+    pub policy: Option<StoragePolicy>,
 }
 
 impl ObjectPlacementRequest {
@@ -62,7 +68,23 @@ impl ObjectPlacementRequest {
             excluded_nodes: BTreeSet::new(),
             existing_targets: BTreeSet::new(),
             excluded_devices: BTreeSet::new(),
+            policy: None,
         }
+    }
+
+    /// Applies a resolved storage policy to the request.
+    ///
+    /// The policy decides the failure domain, the device kinds, and the free
+    /// space to hold back. It does not change the replica count already asked
+    /// for: the caller resolved that from the same policy and may have adjusted
+    /// it for an existing object.
+    #[must_use]
+    pub fn with_policy(mut self, policy: Option<StoragePolicy>) -> Self {
+        if let Some(policy) = &policy {
+            self.storage_class = policy.class.clone();
+        }
+        self.policy = policy;
+        self
     }
 
     /// Sets the known payload size.
@@ -266,7 +288,13 @@ impl PlacementPolicy for CapacityAwarePlacement {
             ));
         }
 
-        let scope = topology.config.failure_domain_scope;
+        let policy = request.policy.as_ref();
+        let scope = policy.map_or(topology.config.failure_domain_scope, |policy| {
+            policy.failure_domain
+        });
+        let strict = policy.map_or(topology.config.strict_failure_domains, |policy| {
+            policy.strict_failure_domains
+        });
         let reservation = request
             .size_hint
             .unwrap_or(topology.config.unknown_upload_size_reservation_bytes);
@@ -282,9 +310,7 @@ impl PlacementPolicy for CapacityAwarePlacement {
             }
             healthy += 1;
             for device in &node.devices {
-                if device.storage_class != request.storage_class
-                    || !device.state.accepts_new_placements()
-                {
+                if !eligible_class(request, device) || !device.state.accepts_new_placements() {
                     continue;
                 }
                 class_matches += 1;
@@ -292,9 +318,14 @@ impl PlacementPolicy for CapacityAwarePlacement {
                     .config
                     .watermarks
                     .level(device.capacity.utilization_permille() / 10);
+                // A policy reserve is held back on top of the cluster margin, so
+                // a class can keep headroom the rest of the cluster does not.
+                let reserve = margin.saturating_add(policy.map_or(0, |policy| {
+                    policy.reserved_bytes(device.capacity.usable_bytes)
+                }));
                 if level == CapacityLevel::Critical
                     || !level.accepts_new_replicas()
-                    || !device.eligible_for_placement(reservation, margin)
+                    || !device.eligible_for_placement(reservation, reserve)
                 {
                     continue;
                 }
@@ -371,7 +402,7 @@ impl PlacementPolicy for CapacityAwarePlacement {
             .len();
 
         if targets.len() < wanted {
-            if topology.config.strict_failure_domains {
+            if strict {
                 return Err(PlacementError::InsufficientFailureDomains {
                     scope: scope.to_string(),
                     required: request.desired_replicas,
@@ -463,6 +494,18 @@ fn candidate(
     }
 }
 
+/// Returns whether a device satisfies the request's class and hardware policy.
+///
+/// The class label always has to match. A policy narrows further by device kind,
+/// which is how `hot` comes to mean "solid state only" without the placement
+/// engine knowing what any of those words mean.
+fn eligible_class(request: &ObjectPlacementRequest, device: &DeviceRecord) -> bool {
+    match &request.policy {
+        Some(policy) => policy.accepts_device(device),
+        None => device.storage_class == request.storage_class,
+    }
+}
+
 fn placement_domain(node: &NodeRecord, device_id: DeviceId, scope: FailureDomainScope) -> String {
     if scope == FailureDomainScope::Device {
         format!("device:{device_id}")
@@ -513,6 +556,12 @@ impl CapacityAwarePlacement {
         topology: &ClusterTopology,
     ) -> Result<PlacementExplanation, PlacementError> {
         let decision = self.place(request, topology)?;
+        let scope = request
+            .policy
+            .as_ref()
+            .map_or(topology.config.failure_domain_scope, |policy| {
+                policy.failure_domain
+            });
         let reservation = request
             .size_hint
             .unwrap_or(topology.config.unknown_upload_size_reservation_bytes);
@@ -559,7 +608,7 @@ impl CapacityAwarePlacement {
         Ok(PlacementExplanation {
             epoch: topology.epoch,
             storage_class: request.storage_class.clone(),
-            failure_domain: topology.config.failure_domain_scope,
+            failure_domain: scope,
             decision,
             candidates,
         })
@@ -874,6 +923,180 @@ mod tests {
             .place(&request(1, 1), &topology)
             .expect("plan");
         assert_eq!(plan.targets[0].device_id, live_device);
+    }
+
+    /// A policy restricted to solid state must not spill onto rotational media.
+    ///
+    /// This is the point of separating hardware kind from storage class: the
+    /// class says what the data needs, the kind says what the device is, and
+    /// placement refuses to pretend one is the other.
+    #[test]
+    fn a_device_filter_keeps_a_class_on_the_hardware_it_asked_for() {
+        use crate::device::{DeviceKind, DeviceState};
+        use crate::policy::{DeviceFilter, DurabilityStrategy, StoragePolicy};
+
+        let mut nodes = Vec::new();
+        let mut solid_state = Vec::new();
+        for (index, kind) in [
+            DeviceKind::Nvme,
+            DeviceKind::SataSsd,
+            DeviceKind::SataHdd,
+            DeviceKind::Unknown,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut node = record(
+                NodeState::Healthy,
+                &format!("rack-{index}"),
+                1 << 40,
+                1 << 40,
+            );
+            let class = node.storage_class.clone();
+            let mut device = device_with(node.node_id, &class, 1 << 40, DeviceState::Active);
+            device.kind = kind;
+            if matches!(kind, DeviceKind::Nvme | DeviceKind::SataSsd) {
+                solid_state.push(device.id);
+            }
+            node.devices = vec![device];
+            nodes.push(node);
+        }
+        let topology = topology(nodes);
+
+        let policy = StoragePolicy {
+            class: StorageClass::default(),
+            description: None,
+            device_filter: DeviceFilter::allowing([DeviceKind::Nvme, DeviceKind::SataSsd])
+                .expect("filter"),
+            durability: DurabilityStrategy::Replication { replicas: 2 },
+            failure_domain: FailureDomainScope::Node,
+            strict_failure_domains: false,
+            minimum_free_space_percent: 0,
+        };
+        policy.validate().expect("valid policy");
+
+        let engine = CapacityAwarePlacement::new(None);
+        let allowed: BTreeSet<DeviceId> = solid_state.into_iter().collect();
+        for index in 0..200_u128 {
+            let request = ObjectPlacementRequest::new(
+                ObjectId::from_uuid(uuid::Uuid::from_u128(index)),
+                2,
+                2,
+                StorageClass::default(),
+            )
+            .with_size_hint(Some(10))
+            .with_policy(Some(policy.clone()));
+            let plan = engine.place(&request, &topology).expect("plan");
+            for target in &plan.targets {
+                assert!(
+                    allowed.contains(&target.device_id),
+                    "a solid-state class was placed on rotational or unidentified media"
+                );
+            }
+        }
+    }
+
+    /// A policy reserve keeps a class off a device the cluster still considers
+    /// usable, so one class can hold headroom the rest of the cluster does not.
+    #[test]
+    fn a_policy_reserve_withholds_capacity_the_cluster_would_otherwise_use() {
+        use crate::device::DeviceState;
+        use crate::policy::{DeviceFilter, DurabilityStrategy, StoragePolicy};
+
+        let mut node = record(NodeState::Healthy, "a", 1_000, 1_000);
+        let class = node.storage_class.clone();
+        let mut device = device_with(node.node_id, &class, 1_000, DeviceState::Active);
+        // Forty percent free, which is comfortably inside the cluster's own
+        // watermarks: whatever excludes this device has to be the policy.
+        device.capacity.available_bytes = 400;
+        node.devices = vec![device];
+        let topology = topology(vec![node]);
+
+        let mut policy = StoragePolicy {
+            class: StorageClass::default(),
+            description: None,
+            device_filter: DeviceFilter::any(),
+            durability: DurabilityStrategy::Replication { replicas: 1 },
+            failure_domain: FailureDomainScope::Node,
+            strict_failure_domains: false,
+            minimum_free_space_percent: 0,
+        };
+
+        let request = |policy: &StoragePolicy| {
+            ObjectPlacementRequest::new(ObjectId::new(), 1, 1, StorageClass::default())
+                .with_size_hint(Some(10))
+                .with_policy(Some(policy.clone()))
+        };
+
+        let engine = CapacityAwarePlacement::new(None);
+        engine
+            .place(&request(&policy), &topology)
+            .expect("without a reserve the remaining space is usable");
+
+        // Reserving half of usable capacity puts the device out of reach for
+        // this class while the cluster still considers it perfectly usable.
+        policy.minimum_free_space_percent = 50;
+        policy.validate().expect("valid");
+        let refused = engine
+            .place(&request(&policy), &topology)
+            .expect_err("a class must not eat into its own reserve");
+        assert!(matches!(refused, PlacementError::NoEligibleDevices { .. }));
+    }
+
+    /// The policy decides the failure domain, not the cluster default, or a
+    /// class asking for rack separation would silently get node separation.
+    #[test]
+    fn the_policy_failure_domain_overrides_the_cluster_default() {
+        use crate::device::DeviceState;
+        use crate::policy::{DeviceFilter, DurabilityStrategy, StoragePolicy};
+
+        // Two racks, two nodes each: enough for node separation, not for three
+        // racks.
+        let mut nodes = Vec::new();
+        for index in 0..4 {
+            let rack = if index < 2 { "rack-a" } else { "rack-b" };
+            let mut node = record(NodeState::Healthy, rack, 1 << 40, 1 << 40);
+            let class = node.storage_class.clone();
+            node.devices = vec![device_with(
+                node.node_id,
+                &class,
+                1 << 40,
+                DeviceState::Active,
+            )];
+            nodes.push(node);
+        }
+        let mut topology = topology(nodes);
+        topology.config.failure_domain_scope = FailureDomainScope::Node;
+        topology.config.strict_failure_domains = true;
+
+        let policy = StoragePolicy {
+            class: StorageClass::default(),
+            description: None,
+            device_filter: DeviceFilter::any(),
+            durability: DurabilityStrategy::Replication { replicas: 3 },
+            failure_domain: FailureDomainScope::Rack,
+            strict_failure_domains: true,
+            minimum_free_space_percent: 0,
+        };
+
+        let request = ObjectPlacementRequest::new(ObjectId::new(), 3, 2, StorageClass::default())
+            .with_size_hint(Some(10))
+            .with_policy(Some(policy));
+        let error = CapacityAwarePlacement::new(None)
+            .place(&request, &topology)
+            .expect_err("three racks are needed and only two exist");
+        assert!(
+            matches!(error, PlacementError::InsufficientFailureDomains { .. }),
+            "expected a failure-domain refusal, got {error}"
+        );
+
+        // The cluster default alone would have been satisfied by four nodes.
+        let unrestricted =
+            ObjectPlacementRequest::new(ObjectId::new(), 3, 2, StorageClass::default())
+                .with_size_hint(Some(10));
+        CapacityAwarePlacement::new(None)
+            .place(&unrestricted, &topology)
+            .expect("node separation is satisfiable");
     }
 
     /// Adding a device must move only the objects that belong on it.
