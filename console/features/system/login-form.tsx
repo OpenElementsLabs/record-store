@@ -81,7 +81,7 @@ export function LoginForm({ next }: { readonly next: string }) {
               aria-invalid={error ? true : undefined}
               aria-describedby={error ? 'management-token-error' : 'management-token-hint'}
               onChange={(event) => setToken(event.target.value)}
-              className="h-13 border-border-strong bg-surface pl-10 pr-11 shadow-sm focus-visible:border-brand-teal focus-visible:ring-brand-teal"
+              className="h-[3.25rem] border-border-strong bg-surface pl-10 pr-11 shadow-sm focus-visible:border-brand-teal focus-visible:ring-brand-teal"
               placeholder="Enter your token"
             />
             <Button
@@ -110,7 +110,7 @@ export function LoginForm({ next }: { readonly next: string }) {
           variant="primary"
           size="lg"
           disabled={pending || token.length === 0}
-          className="group h-13 w-full justify-between bg-brand-navy text-white shadow-md shadow-brand-navy/15 hover:bg-brand-navy-deep dark:bg-brand-teal dark:text-brand-navy-deep dark:hover:bg-brand-teal/90"
+          className="group h-[3.25rem] w-full justify-between bg-brand-navy text-white shadow-md shadow-brand-navy/15 hover:bg-brand-navy-deep dark:bg-brand-teal dark:text-brand-navy-deep dark:hover:bg-brand-teal/90"
         >
           <span>{pending ? 'Signing in…' : 'Continue to console'}</span>
           <ArrowRight aria-hidden className="transition-transform group-hover:translate-x-1" />

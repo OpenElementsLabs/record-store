@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Activity, Database, ShieldCheck } from 'lucide-react';
+import type * as React from 'react';
 
 import { BrandLockup, BrandMark } from '@/components/brand-mark';
 import { ThemeToggle } from '@/components/theme-toggle';
