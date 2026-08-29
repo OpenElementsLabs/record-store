@@ -149,8 +149,83 @@ docker build -t record-store-console:local -f deploy/docker/Dockerfile.console .
 ```
 
 It is deliberately separate so a headless deployment carries no frontend and the
-console can be upgraded on its own schedule. It listens on `7602` and reads
-`RECORD_STORE_API_URL` at runtime, so one image works for any deployment.
+console can be upgraded on its own schedule. It is a client of the management
+API and holds no state of its own.
 
-Running the two together is easiest with Compose — see
+### What the console image does
+
+| | |
+| --- | --- |
+| Base | `node:24-bookworm-slim` |
+| User | non-root, uid/gid `10002` |
+| Listens on | `7602` |
+| Command | `node server.js` (Next.js standalone) |
+| Stop signal | `SIGTERM` |
+| Healthcheck | `GET http://127.0.0.1:7602/login` |
+
+It reads its configuration at runtime, not at build time, so one image works for
+any deployment:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `RECORD_STORE_API_URL` | `http://record-store:7601` | Where the management API lives, reached from the **container**, not the browser |
+| `RECORD_STORE_CONSOLE_SECURE_COOKIES` | `true` in production | Whether the session cookie is marked `Secure` |
+| `PORT` | `7602` | Port to listen on |
+
+### Running the console
+
+The console has to reach the management API, and `127.0.0.1` inside the console
+container is the console itself — not the server. Put both containers on a
+user-defined network and address the server by its container name:
+
+```bash
+docker network create record-store
+```
+
+Run the server on that network, adding `--network record-store` to the
+[`docker run` above](#running). Then:
+
+```bash
+docker run -d \
+  --name record-store-console \
+  --network record-store \
+  --read-only \
+  --tmpfs /tmp \
+  --security-opt no-new-privileges:true \
+  -p 7602:7602 \
+  -e RECORD_STORE_API_URL=http://record-store:7601 \
+  ghcr.io/openelementslabs/record-store-console:0.1.1
+```
+
+Then open <http://localhost:7602> and sign in with a management token.
+
+!!! warning "Signing in over plain HTTP"
+    The session cookie is marked `Secure` by default, and a browser will not
+    store a `Secure` cookie sent over `http://` — except on `localhost`, which is
+    exempt. So the command above works on your own machine, but the same setup
+    reached at `http://a-server:7602` accepts the token and then behaves as
+    though you never signed in.
+
+    Put TLS in front of it, which is the right answer anyway — see
+    [Reverse Proxy and TLS](reverse-proxy.md). Only if you genuinely cannot,
+    and the network is trusted, set `RECORD_STORE_CONSOLE_SECURE_COOKIES=false`.
+
+Check it came up:
+
+```bash
+docker inspect --format '{{.State.Health.Status}}' record-store-console
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7602/login
+```
+
+### What to expose
+
+Publish `7602`. Do **not** publish `7601` to reach the console — the console
+talks to the management API over the Docker network, and the management API is
+unrestricted administrative access that must not face the internet. See
+[Ports](../reference/ports.md).
+
+### Two containers, one command
+
+Running both by hand is fine for a look around. For anything longer-lived use
+Compose, which handles the network, ordering, and health gating for you — see
 [Docker Compose](docker-compose.md).
