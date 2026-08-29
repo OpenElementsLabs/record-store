@@ -233,6 +233,29 @@ record-store node decommission <id> --force --endpoint <endpoint>
 `decommission` runs a durability safety check. `--force` bypasses the objection but
 still moves the data. See [Node Lifecycle](../cluster/node-lifecycle.md).
 
+## `drive`
+
+```bash
+record-store drive list --endpoint <endpoint>
+record-store drive show <node> <device> --endpoint <endpoint>
+record-store drive activate <node> <device> --endpoint <endpoint>
+record-store drive drain <node> <device> --endpoint <endpoint>
+record-store drive maintenance <node> <device> --endpoint <endpoint>
+record-store drive resume <node> <device> --endpoint <endpoint>
+record-store drive release <node> <device> --endpoint <endpoint>
+record-store drive retire <node> <device> --yes --endpoint <endpoint>
+```
+
+`<device>` is the stable device identifier from `drive list`, not a path.
+
+`release` marks a device safe to remove and **fails** while it still holds
+replicas, so success means evacuation finished rather than that it was
+requested.
+
+`retire` is permanent and prompts for confirmation. It refuses to run on a
+non-interactive terminal unless `--yes` is passed. See
+[Replacing a Drive](../cluster/replacing-a-drive.md).
+
 ## `repair`
 
 ```bash

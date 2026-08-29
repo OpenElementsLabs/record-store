@@ -1178,6 +1178,205 @@ mod tests {
         }
     }
 
+    /// Registers the node's original data root as an explicit device.
+    ///
+    /// A node's stored record carries no devices until one is registered; the
+    /// legacy directory is synthesized in the topology view, not persisted.
+    async fn register_legacy_device(
+        catalog: &ClusterCatalog,
+        node_id: NodeId,
+        now: chrono::DateTime<Utc>,
+    ) -> record_store_core::DeviceId {
+        let device = crate::DeviceRecord::legacy_directory(
+            node_id,
+            Some(std::path::PathBuf::from("/var/lib/record-store")),
+            StorageClass::default(),
+            crate::DeviceCapacity {
+                raw_bytes: 1_000,
+                usable_bytes: 900,
+                allocated_bytes: 0,
+                reserved_bytes: 100,
+                available_bytes: 900,
+            },
+        );
+        let device_id = device.id;
+        catalog
+            .apply(ClusterCommand::RegisterDevice {
+                node_id,
+                device: Box::new(device),
+                at: now,
+            })
+            .await
+            .expect("register the node's data root as a device");
+        device_id
+    }
+
+    /// Registering a device makes it a placement resource and advances the map.
+    #[tokio::test]
+    async fn a_registered_device_joins_the_cluster_map() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+
+        let before = catalog.topology().await.expect("topology").epoch;
+        let device = crate::DeviceRecord::legacy_directory(
+            node_id,
+            Some(std::path::PathBuf::from("/srv/record-store/disk-1")),
+            StorageClass::default(),
+            crate::DeviceCapacity {
+                raw_bytes: 4_000,
+                usable_bytes: 3_800,
+                allocated_bytes: 0,
+                reserved_bytes: 200,
+                available_bytes: 3_800,
+            },
+        );
+        let device_id = device.id;
+        catalog
+            .apply(ClusterCommand::RegisterDevice {
+                node_id,
+                device: Box::new(device),
+                at: now,
+            })
+            .await
+            .expect("register device");
+
+        let topology = catalog.topology().await.expect("topology");
+        assert!(
+            topology.epoch > before,
+            "registering a device must advance the cluster map epoch"
+        );
+        let node = catalog.node(node_id).await.expect("read").expect("node");
+        let stored = node
+            .devices
+            .iter()
+            .find(|candidate| candidate.id == device_id)
+            .expect("the device is part of the node's inventory");
+        // Discovery never invents telemetry, and registration must not either.
+        assert_eq!(stored.health, crate::DeviceHealth::Unknown);
+        assert_eq!(stored.hardware.temperature_celsius, None);
+    }
+
+    /// A drain has to survive a restart.
+    ///
+    /// Draining can take hours. If the intent lived only in memory, a restart
+    /// midway would silently put the device back into service and start filling
+    /// a disk somebody is trying to remove.
+    #[tokio::test]
+    async fn a_device_drain_survives_a_restart() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("cluster.redb");
+        let now = Utc::now();
+
+        let (node_id, device_id) = {
+            let catalog = ClusterCatalog::open(path.clone()).await.expect("open");
+            catalog
+                .apply(ClusterCommand::InitializeCluster {
+                    identity: identity(),
+                    config: Box::new(ClusterConfig::default()),
+                })
+                .await
+                .expect("initialize");
+            let node_id = register(&catalog, now).await;
+            let device_id = register_legacy_device(&catalog, node_id, now).await;
+            catalog
+                .apply(ClusterCommand::SetDeviceState {
+                    node_id,
+                    device_id,
+                    state: crate::DeviceState::Draining,
+                    at: now,
+                })
+                .await
+                .expect("drain the device");
+            (node_id, device_id)
+        };
+
+        let reopened = ClusterCatalog::open(path).await.expect("reopen");
+        let node = reopened.node(node_id).await.expect("read").expect("node");
+        let device = node
+            .devices
+            .iter()
+            .find(|candidate| candidate.id == device_id)
+            .expect("device");
+        assert_eq!(device.state, crate::DeviceState::Draining);
+        assert!(
+            !device.state.accepts_new_placements(),
+            "a draining device must not take new data after a restart"
+        );
+        assert!(
+            device.state.contributes_durability(),
+            "a draining device still holds real copies until they are moved"
+        );
+    }
+
+    /// "Safe to remove" is a statement about durability, not about intent.
+    ///
+    /// The catalog is the only place that can check it, because it is the only
+    /// place that knows which replicas the device still owns.
+    #[tokio::test]
+    async fn a_device_is_only_safe_to_remove_once_it_is_empty() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        // The replica records built by `replica_of` name the node's legacy
+        // device, so registering it is what makes them land here.
+        let device_id = register_legacy_device(&catalog, node_id, now).await;
+
+        let object_id = ObjectId::new();
+        catalog
+            .apply(ClusterCommand::PutPlacement {
+                placement: Box::new(placement_of(
+                    object_id,
+                    vec![replica_of(node_id, ReplicaState::Healthy, now)],
+                    now,
+                )),
+            })
+            .await
+            .expect("commit a placement onto the device");
+
+        catalog
+            .apply(ClusterCommand::SetDeviceState {
+                node_id,
+                device_id,
+                state: crate::DeviceState::Draining,
+                at: now,
+            })
+            .await
+            .expect("drain");
+        let refused = catalog
+            .apply(ClusterCommand::SetDeviceState {
+                node_id,
+                device_id,
+                state: crate::DeviceState::SafeToRemove,
+                at: now,
+            })
+            .await
+            .expect_err("a device still holding a replica cannot be safe to remove");
+        assert!(
+            refused.to_string().contains("evacuation is incomplete"),
+            "unexpected refusal: {refused}"
+        );
+
+        // Once the replica is gone the same request is allowed.
+        catalog
+            .apply(ClusterCommand::RemoveReplica {
+                object_id,
+                node_id,
+                at: now,
+            })
+            .await
+            .expect("release the replica");
+        catalog
+            .apply(ClusterCommand::SetDeviceState {
+                node_id,
+                device_id,
+                state: crate::DeviceState::SafeToRemove,
+                at: now,
+            })
+            .await
+            .expect("an evacuated device is safe to remove");
+    }
+
     /// A heartbeat is how the cluster learns a node is alive and how full it is.
     /// Losing either would make failure detection and placement blind.
     #[tokio::test]

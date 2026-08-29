@@ -143,6 +143,8 @@ nav:
       - Creating a Cluster: cluster/creating-a-cluster.md
       - Adding Nodes: cluster/adding-nodes.md
       - Node Lifecycle: cluster/node-lifecycle.md
+      - Storage Devices: cluster/storage-devices.md
+      - Replacing a Drive: cluster/replacing-a-drive.md
       - Replication: cluster/replication.md
       - Repair and Rebalance: cluster/repair-and-rebalance.md
       - Consensus: cluster/consensus.md

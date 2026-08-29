@@ -185,8 +185,23 @@ Cluster routes return `409 CLUSTER_MODE_DISABLED` in standalone mode.
 | `POST` | `/api/v1/nodes/{id}/resume` | Return to service |
 | `POST` | `/api/v1/nodes/{id}/decommission` | `{"force":false}` |
 | `GET` | `/api/v1/repair/status` | Repair queue depth |
+| `GET` | `/api/v1/devices` | Every registered device in the cluster |
+| `GET` | `/api/v1/nodes/{id}/devices` | Devices on one node |
+| `GET` | `/api/v1/nodes/{node}/devices/{device}` | Inspect a device |
+| `POST` | `/api/v1/nodes/{node}/devices/{device}/activate` | Bring into service |
+| `POST` | `/api/v1/nodes/{node}/devices/{device}/drain` | Stop placement, evacuate |
+| `POST` | `/api/v1/nodes/{node}/devices/{device}/maintenance` | Pause without evacuating |
+| `POST` | `/api/v1/nodes/{node}/devices/{device}/resume` | Return to service |
+| `POST` | `/api/v1/nodes/{node}/devices/{device}/release` | Mark safe to remove |
+| `POST` | `/api/v1/nodes/{node}/devices/{device}/retire` | Retire permanently |
 | `GET` | `/api/v1/rebalance/status` | Rebalance state |
 | `POST` | `/api/v1/rebalance` | Start a rebalance |
+
+Device routes answer `404 DEVICE_NOT_FOUND` for an unregistered device and
+`409 INVALID_DEVICE_TRANSITION` for a lifecycle move the state machine forbids.
+`release` answers `409` while the device still owns replicas, so a success means
+evacuation completed rather than that it was requested. See
+[Replacing a Drive](../cluster/replacing-a-drive.md).
 
 ## Sharing
 
