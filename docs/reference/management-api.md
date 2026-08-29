@@ -58,7 +58,7 @@ The request ID is also in the `x-request-id` response header, and an inbound
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/v1/buckets` | List buckets |
-| `POST` | `/api/v1/buckets` | Create — `{"name":"..."}` |
+| `POST` | `/api/v1/buckets` | Create — `{"name":"...","storage_class":"..."}` |
 | `DELETE` | `/api/v1/buckets/{bucket}` | Delete an empty bucket |
 | `GET` | `/api/v1/buckets/{bucket}/versioning` | Versioning state |
 | `PUT` | `/api/v1/buckets/{bucket}/versioning` | Set versioning |

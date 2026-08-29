@@ -26,8 +26,21 @@ pub struct BucketService {
 }
 
 impl BucketService {
-    /// Creates a globally unique bucket.
+    /// Creates a globally unique bucket on the default storage class.
     pub async fn create(&self, name: BucketName) -> Result<Bucket, ServiceError> {
+        self.create_on(name, None).await
+    }
+
+    /// Creates a bucket placed on a chosen storage class.
+    ///
+    /// `None` means the deployment default, which is what an unqualified
+    /// `create` gets and what every bucket predating storage classes resolves
+    /// to.
+    pub async fn create_on(
+        &self,
+        name: BucketName,
+        storage_class: Option<record_store_core::StorageClass>,
+    ) -> Result<Bucket, ServiceError> {
         self.metrics.requests.fetch_add(1, Ordering::Relaxed);
         let _permit = self.acquire().await?;
         let bucket = Bucket {
@@ -37,6 +50,7 @@ impl BucketService {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            storage_class,
             durability_policy: None,
             cors: None,
         };

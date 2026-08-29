@@ -79,20 +79,33 @@ impl DistributedObjectStore {
     }
 
     /// Streams a payload to its planned replicas and returns what became durable.
+    ///
+    /// `bucket_id` selects the storage policy. A bucket that chose no class, and
+    /// every bucket created before storage classes existed, resolves to the
+    /// default class and therefore to what the cluster was already doing.
     async fn stream_payload(
         &self,
+        bucket_id: record_store_core::BucketId,
         object_id: ObjectId,
         size_hint: Option<u64>,
         body: UploadStream,
     ) -> Result<(ReplicationOutcome, PayloadPlacement), StorageError> {
         let config = self.context.config().await?;
         let topology = self.context.topology().await?;
+        let policy = self.context.storage_policy_for(bucket_id).await?;
+        // A policy's replica count is what the class promised; the cluster
+        // factor is the fallback when no policy narrows it.
+        let replicas = policy
+            .as_ref()
+            .and_then(|policy| policy.durability.replicas())
+            .unwrap_or(config.replication_factor);
         let request = ObjectPlacementRequest::new(
             object_id,
-            config.replication_factor,
-            config.required_acknowledgements(),
+            replicas,
+            config.required_acknowledgements().min(replicas).max(1),
             self.context.default_storage_class(),
         )
+        .with_policy(policy)
         .with_size_hint(size_hint)
         .with_preferred_node(Some(self.context.node_id));
         let plan = self
@@ -102,7 +115,7 @@ impl DistributedObjectStore {
             .map_err(|error| StorageError::ClusterUnavailable(error.to_string()))?;
         if !plan.fully_replicated() && !config.allow_degraded_writes {
             return Err(StorageError::DurabilityNotMet {
-                required: config.replication_factor,
+                required: replicas,
                 achieved: u8::try_from(plan.targets.len()).unwrap_or(u8::MAX),
                 detail: "the cluster cannot currently place the configured replica count and \
                          degraded writes are disabled"
@@ -340,7 +353,9 @@ impl ObjectStore for DistributedObjectStore {
             return Err(StorageError::BucketNotFound);
         }
         let object_id = request.object_id.unwrap_or_default();
-        let (outcome, placement) = self.stream_payload(object_id, None, request.body).await?;
+        let (outcome, placement) = self
+            .stream_payload(request.bucket_id, object_id, None, request.body)
+            .await?;
 
         if let Some(expected) = request.expected_checksum
             && expected != outcome.checksum
@@ -410,7 +425,9 @@ impl ObjectStore for DistributedObjectStore {
         // temporary space but means an in-progress upload survives the loss of
         // the node that received it, and it keeps one durability story instead
         // of two.
-        let (outcome, placement) = self.stream_payload(object_id, None, request.body).await?;
+        let (outcome, placement) = self
+            .stream_payload(upload.bucket_id, object_id, None, request.body)
+            .await?;
         if let Some(expected) = request.expected_checksum
             && expected != outcome.checksum
         {
@@ -578,7 +595,12 @@ impl ObjectStore for DistributedObjectStore {
             .try_flatten();
 
         let (outcome, placement) = self
-            .stream_payload(object_id, Some(total), upload_stream(body))
+            .stream_payload(
+                persisted.bucket_id,
+                object_id,
+                Some(total),
+                upload_stream(body),
+            )
             .await?;
         let now = Utc::now();
         let metadata = ObjectMetadata {

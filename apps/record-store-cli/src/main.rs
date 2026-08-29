@@ -218,6 +218,9 @@ enum BucketCommand {
     List(EndpointArgs),
     /// Create a bucket.
     Create {
+        /// Storage class new objects are placed on.
+        #[arg(long)]
+        storage_class: Option<String>,
         /// Validated S3 bucket name.
         name: String,
         #[command(flatten)]
@@ -628,13 +631,21 @@ async fn bucket(command: BucketCommand, json: bool) -> Result<()> {
                 }
             }
         }
-        BucketCommand::Create { name, endpoint } => {
+        BucketCommand::Create {
+            name,
+            storage_class,
+            endpoint,
+        } => {
+            let mut body = serde_json::json!({ "name": &name });
+            if let Some(class) = storage_class {
+                body["storage_class"] = serde_json::Value::String(class);
+            }
             let request = client()?
                 .post(format!(
                     "{}/api/v1/buckets",
                     endpoint.endpoint.trim_end_matches('/')
                 ))
-                .json(&NameRequest { name: &name });
+                .json(&body);
             let bucket = send_admin(request)
                 .await?
                 .json::<Bucket>()
@@ -1496,11 +1507,20 @@ mod tests {
         else {
             panic!("expected a bucket command");
         };
-        let BucketCommand::Create { name, endpoint } = command else {
+        let BucketCommand::Create {
+            name,
+            storage_class,
+            endpoint,
+        } = command
+        else {
             panic!("expected bucket create");
         };
         assert_eq!(name, "photos");
         assert_eq!(endpoint.endpoint, "http://node-a:7601");
+        assert_eq!(
+            storage_class, None,
+            "a bucket created without --storage-class must not be pinned to one"
+        );
     }
 
     #[test]

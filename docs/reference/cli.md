@@ -101,7 +101,7 @@ healthcheck with no credential at all.
 
 ```bash
 record-store bucket list --endpoint <endpoint>
-record-store bucket create <name> --endpoint <endpoint>
+record-store bucket create <name> [--storage-class <class>] --endpoint <endpoint>
 record-store bucket delete <name> --endpoint <endpoint>
 
 record-store bucket versioning get <name> --endpoint <endpoint>

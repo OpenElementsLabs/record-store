@@ -54,6 +54,9 @@ pub enum CoreError {
     /// A bucket CORS rule was malformed or unsafe.
     #[error("invalid CORS rule: {0}")]
     InvalidCorsRule(String),
+    /// A storage-class label was malformed.
+    #[error("invalid storage class: {0}")]
+    InvalidStorageClass(String),
 }
 
 impl CoreError {

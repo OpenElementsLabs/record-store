@@ -438,6 +438,7 @@ impl Harness {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            storage_class: None,
             durability_policy: None,
             cors: None,
         };
@@ -2469,4 +2470,87 @@ async fn the_task_executor_drains_the_queue_it_is_given() {
         handled <= 64,
         "the executor reports how many tasks it handled: {handled}"
     );
+}
+
+/// A bucket's storage class has to reach placement, and a class nobody defined
+/// has to be reported rather than quietly replaced by the default.
+///
+/// Silently ignoring the class is the dangerous failure: an operator who created
+/// a class to keep data off certain hardware would get exactly what they
+/// excluded, and nothing would say so.
+#[tokio::test]
+async fn a_bucket_storage_class_resolves_to_a_policy_or_is_reported() {
+    use record_store_cluster::{DurabilityStrategy, StoragePolicy};
+    use record_store_core::StorageClass;
+
+    let harness = Harness::new(2, 3, WriteAcknowledgement::Quorum).await;
+
+    // A bucket that chose nothing resolves to the default policy, which is what
+    // the cluster was already doing.
+    let resolved = harness
+        .context
+        .storage_policy_for(harness.bucket_id)
+        .await
+        .expect("the default class always resolves")
+        .expect("a policy");
+    assert_eq!(resolved.class, StorageClass::default());
+    assert_eq!(
+        resolved.durability.replicas(),
+        Some(3),
+        "the synthesized default must match the cluster replication factor"
+    );
+
+    // A bucket created on a class nobody defined.
+    let metadata: Arc<dyn MetadataRepository> = Arc::new(ReplicatedMetadataRepository::new(
+        Arc::clone(&harness.consensus),
+    ));
+    let archived = Bucket {
+        id: BucketId::new(),
+        organization_id: OrganizationId::from_uuid(uuid::Uuid::from_u128(1)),
+        name: BucketName::new("archived").expect("bucket name"),
+        created_at: Utc::now(),
+        versioning: VersioningState::Disabled,
+        quota: BucketQuota::default(),
+        storage_class: Some(StorageClass::new("archive").expect("class")),
+        durability_policy: None,
+        cors: None,
+    };
+    metadata.create_bucket(&archived).await.expect("create");
+
+    let error = harness
+        .context
+        .storage_policy_for(archived.id)
+        .await
+        .expect_err("an undefined class must not fall back to the default");
+    assert!(
+        error.to_string().contains("archive"),
+        "the error should name the class: {error}"
+    );
+
+    // Defining the class makes it resolve, with the policy's own replica count.
+    harness
+        .context
+        .commit(ClusterWrite::cluster(ClusterCommand::PutStoragePolicy {
+            policy: Box::new(StoragePolicy {
+                class: StorageClass::new("archive").expect("class"),
+                description: None,
+                device_filter: record_store_cluster::DeviceFilter::any(),
+                durability: DurabilityStrategy::Replication { replicas: 2 },
+                failure_domain: record_store_cluster::FailureDomainScope::Node,
+                strict_failure_domains: false,
+                minimum_free_space_percent: 0,
+            }),
+            at: Utc::now(),
+        }))
+        .await
+        .expect("define the class");
+
+    let resolved = harness
+        .context
+        .storage_policy_for(archived.id)
+        .await
+        .expect("resolve")
+        .expect("a policy");
+    assert_eq!(resolved.class.as_str(), "archive");
+    assert_eq!(resolved.durability.replicas(), Some(2));
 }

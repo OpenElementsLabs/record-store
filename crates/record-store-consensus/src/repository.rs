@@ -925,6 +925,7 @@ mod tests {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            storage_class: None,
             durability_policy: None,
             cors: None,
         }

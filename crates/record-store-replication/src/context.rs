@@ -71,6 +71,35 @@ impl ClusterContext {
         StorageClass::default()
     }
 
+    /// Resolves the storage policy a bucket's objects should be placed by.
+    ///
+    /// A bucket that selected no class resolves to the default policy, which is
+    /// what the cluster was already doing. A bucket naming a class nobody
+    /// defined is a configuration error and is reported rather than quietly
+    /// placed by default rules — silently ignoring the class would put data on
+    /// hardware the operator deliberately excluded.
+    pub async fn storage_policy_for(
+        &self,
+        bucket_id: record_store_core::BucketId,
+    ) -> Result<Option<record_store_cluster::StoragePolicy>, StorageError> {
+        let Some(bucket) = self.metadata.get_bucket(bucket_id).await? else {
+            return Err(StorageError::BucketNotFound);
+        };
+        let class = bucket.storage_class.unwrap_or_default();
+        self.cluster
+            .storage_policies()
+            .await
+            .map_err(|error| StorageError::ClusterUnavailable(error.to_string()))?
+            .into_iter()
+            .find(|policy| policy.class == class)
+            .map(Some)
+            .ok_or_else(|| {
+                StorageError::ClusterUnavailable(format!(
+                    "bucket storage class '{class}' is not a defined storage policy"
+                ))
+            })
+    }
+
     /// Resolves the transport target for a node.
     pub async fn target(
         &self,

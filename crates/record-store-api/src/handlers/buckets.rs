@@ -48,6 +48,9 @@ pub(crate) async fn list_buckets(
 #[derive(Deserialize)]
 pub(crate) struct CreateBucketRequest {
     name: String,
+    /// Storage class new objects are placed on. Omitted uses the default class.
+    #[serde(default)]
+    storage_class: Option<String>,
 }
 
 pub(crate) async fn create_bucket(
@@ -62,10 +65,20 @@ pub(crate) async fn create_bucket(
             "Invalid bucket name",
         )
     })?;
+    let storage_class = match input.storage_class {
+        Some(value) => Some(record_store_core::StorageClass::new(value).map_err(|_| {
+            ApiError::bad_request(
+                request_id.clone(),
+                "INVALID_STORAGE_CLASS",
+                "Storage class must be 1 to 32 lowercase letters, digits, or hyphens",
+            )
+        })?),
+        None => None,
+    };
     state
         .services
         .buckets
-        .create(name)
+        .create_on(name, storage_class)
         .await
         .map(|bucket| (StatusCode::CREATED, Json(bucket)))
         .map_err(|error| service_to_api_error(error, request_id))
@@ -176,6 +189,57 @@ pub(crate) async fn set_bucket_quota(
 
 #[cfg(test)]
 mod tests {
+    /// A bucket records the class it was created on, and one that chose nothing
+    /// records nothing rather than being pinned to today's default.
+    #[tokio::test]
+    async fn a_bucket_records_the_storage_class_it_was_created_on() {
+        use axum::http::StatusCode;
+        use serde_json::json;
+
+        use crate::test_support::{admin, api, expect_status};
+
+        let (_directory, api) = api().await;
+
+        let default = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/buckets",
+                Some(json!({"name": "unqualified"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        assert!(
+            default["storage_class"].is_null(),
+            "a bucket that chose no class must not be pinned to one: {default}"
+        );
+
+        let chosen = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/buckets",
+                Some(json!({"name": "qualified", "storage_class": "archive"})),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        assert_eq!(chosen["storage_class"], "archive");
+
+        let rejected = expect_status(
+            &api,
+            admin(
+                "POST",
+                "/api/v1/buckets",
+                Some(json!({"name": "bad-class", "storage_class": "NOT VALID"})),
+            ),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+        assert_eq!(rejected["error"]["code"], "INVALID_STORAGE_CLASS");
+    }
+
     use axum::http::StatusCode;
     use serde_json::json;
 

@@ -18,6 +18,7 @@ mod preview;
 mod quota;
 mod range;
 mod shard;
+mod storage_class;
 
 pub use checksum::{Checksum, ChecksumAlgorithm, ETag};
 pub use durability::{DurabilityProfile, ErasureProfile, ReplicationProfile};
@@ -38,3 +39,4 @@ pub use preview::{CONTENT_SIGNATURE_PROBE_BYTES, PreviewKind, content_signature_
 pub use quota::{BucketQuota, ByteQuota, ExpirationDays, ObjectCountQuota, VersioningState};
 pub use range::{ByteRange, PartNumber, ResolvedByteRange};
 pub use shard::{ShardIndex, ShardKind, ShardState};
+pub use storage_class::StorageClass;

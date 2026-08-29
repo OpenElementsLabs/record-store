@@ -87,6 +87,33 @@ need the parity is worse than no promise.
 The variant exists in the durable format so enabling it later needs no
 migration.
 
+## Selecting a class for a bucket
+
+```bash
+record-store bucket create photos --storage-class hot
+```
+
+A bucket that selects nothing uses the default class, which is what every bucket
+created before storage classes existed resolves to. Nothing moves when a class
+is introduced.
+
+A bucket naming a class nobody defined is a configuration error and writes to it
+fail:
+
+```text
+bucket storage class 'archive' is not a defined storage policy
+```
+
+That is deliberate. Silently falling back to the default would put data on
+exactly the hardware an operator created the class to avoid, and nothing would
+say so.
+
+!!! note "A bucket's class is chosen at creation"
+    There is no command to change it afterwards. Changing it would affect only
+    new objects, leaving one bucket's data split across two policies with no way
+    to tell which object followed which — so the operation is deliberately
+    absent until protection migration can move existing objects too.
+
 ## Removing a class
 
 ```bash

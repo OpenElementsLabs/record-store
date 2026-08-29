@@ -838,6 +838,8 @@ pub enum ClusterStartupError {
     #[error(transparent)]
     Topology(#[from] record_store_cluster::TopologyError),
     #[error(transparent)]
+    Domain(#[from] record_store_core::CoreError),
+    #[error(transparent)]
     Catalog(#[from] record_store_cluster::ClusterCatalogError),
     #[error(transparent)]
     Consensus(#[from] record_store_consensus::ConsensusError),
@@ -993,6 +995,7 @@ mod tests {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            storage_class: None,
             durability_policy: None,
             cors: None,
         };
