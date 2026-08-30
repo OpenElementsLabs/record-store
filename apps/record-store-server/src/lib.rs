@@ -1,6 +1,7 @@
 //! Explicit Record Store server initialization and dual-listener lifecycle orchestration.
 
 mod cluster;
+pub mod discovery;
 
 use std::{
     fs::{File, OpenOptions},
@@ -331,12 +332,25 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         config.sharing.preview_text_limit_bytes,
     ));
     if let Some(dependencies) = &cluster_dependencies {
-        management_state = management_state.with_cluster(ClusterManagement::new(
-            Arc::clone(&dependencies.context),
-            Arc::clone(&dependencies.consensus),
-            Arc::clone(&dependencies.operations),
-            Arc::clone(&dependencies.task_health),
-        ));
+        // Discovery never proposes storage that is already in use, so the
+        // node's own data directory and every declared device are excluded.
+        let mut in_use = vec![config.storage.data_directory.clone()];
+        in_use.extend(
+            config
+                .storage
+                .devices
+                .iter()
+                .map(|device| device.path.clone()),
+        );
+        management_state = management_state.with_cluster(
+            ClusterManagement::new(
+                Arc::clone(&dependencies.context),
+                Arc::clone(&dependencies.consensus),
+                Arc::clone(&dependencies.operations),
+                Arc::clone(&dependencies.task_health),
+            )
+            .with_discovery(Arc::new(crate::discovery::MountDiscovery::new(in_use))),
+        );
     }
     if let Some(token) = &config.auth.management_system_token {
         management_state = management_state.with_management_auth(ManagementAuth::bearer_tokens(

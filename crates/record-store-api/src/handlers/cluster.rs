@@ -374,6 +374,34 @@ fn parse_storage_class(
     })
 }
 
+/// Lists storage this node could use, without registering any of it.
+///
+/// Read-only by construction: discovery never formats, mounts, or claims
+/// anything, and a discovered path participates only once an administrator
+/// declares it in configuration.
+pub(crate) async fn discover_devices(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<Vec<record_store_cluster::DiscoveredDevice>>, ApiError> {
+    let management = cluster_management(&state, request_id.clone())?;
+    let Some(discovery) = management.discovery() else {
+        return Err(ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "DISCOVERY_UNAVAILABLE",
+            "Storage discovery is not available on this platform; declare devices in configuration",
+            request_id,
+        ));
+    };
+    discovery.discover().await.map(Json).map_err(|error| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "DISCOVERY_FAILED",
+            error.to_string(),
+            request_id,
+        )
+    })
+}
+
 /// Lists every registered device in the cluster.
 ///
 /// Devices are the unit placement actually selects, so operators get one call

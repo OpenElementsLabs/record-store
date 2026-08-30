@@ -191,6 +191,7 @@ Cluster routes return `409 CLUSTER_MODE_DISABLED` in standalone mode.
 | `PUT` | `/api/v1/storage-classes/{class}` | Define or replace a class |
 | `DELETE` | `/api/v1/storage-classes/{class}` | Remove a class |
 | `GET` | `/api/v1/devices` | Every registered device in the cluster |
+| `GET` | `/api/v1/devices/discovered` | Storage this node could use; registers nothing |
 | `GET` | `/api/v1/nodes/{id}/devices` | Devices on one node |
 | `GET` | `/api/v1/nodes/{node}/devices/{device}` | Inspect a device |
 | `POST` | `/api/v1/nodes/{node}/devices/{device}/activate` | Bring into service |

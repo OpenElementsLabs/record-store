@@ -23,12 +23,12 @@ use crate::handlers::buckets::{
 };
 use crate::handlers::cluster::{
     activate_cluster_device, cluster_health, cluster_initialize, cluster_status,
-    decommission_cluster_node, delete_storage_class, drain_cluster_device, drain_cluster_node,
-    explain_placement, inspect_cluster_device, inspect_cluster_node, inspect_storage_class,
-    issue_cluster_join_token, list_cluster_devices, list_cluster_nodes, list_node_devices,
-    list_storage_classes, maintain_cluster_device, maintain_cluster_node, put_storage_class,
-    rebalance_status, release_cluster_device, repair_status, resume_cluster_device,
-    resume_cluster_node, retire_cluster_device, start_rebalance,
+    decommission_cluster_node, delete_storage_class, discover_devices, drain_cluster_device,
+    drain_cluster_node, explain_placement, inspect_cluster_device, inspect_cluster_node,
+    inspect_storage_class, issue_cluster_join_token, list_cluster_devices, list_cluster_nodes,
+    list_node_devices, list_storage_classes, maintain_cluster_device, maintain_cluster_node,
+    put_storage_class, rebalance_status, release_cluster_device, repair_status,
+    resume_cluster_device, resume_cluster_node, retire_cluster_device, start_rebalance,
 };
 use crate::handlers::lifecycle::{
     create_lifecycle_rule, delete_lifecycle_rule, list_lifecycle_rules, update_lifecycle_rule,
@@ -159,6 +159,11 @@ pub struct ClusterManagement {
     consensus: Arc<MetadataConsensus>,
     operations: Arc<ClusterOperations>,
     task_health: Arc<TaskHealth>,
+    /// Node-local storage discovery, when the platform supports it.
+    ///
+    /// Injected rather than imported: discovery reads this machine's mount
+    /// table, so it belongs to the process, not to the management API.
+    discovery: Option<Arc<dyn record_store_cluster::DeviceDiscovery>>,
 }
 
 impl ClusterManagement {
@@ -175,7 +180,24 @@ impl ClusterManagement {
             consensus,
             operations,
             task_health,
+            discovery: None,
         }
+    }
+
+    /// Attaches node-local storage discovery.
+    #[must_use]
+    pub fn with_discovery(
+        mut self,
+        discovery: Arc<dyn record_store_cluster::DeviceDiscovery>,
+    ) -> Self {
+        self.discovery = Some(discovery);
+        self
+    }
+
+    /// Returns node-local discovery, when this platform provides it.
+    #[must_use]
+    pub fn discovery(&self) -> Option<&Arc<dyn record_store_cluster::DeviceDiscovery>> {
+        self.discovery.as_ref()
     }
 
     async fn status(&self) -> Result<ClusterStatus, String> {
@@ -374,6 +396,7 @@ pub fn router(state: AppState) -> Router {
                 .delete(delete_storage_class),
         )
         .route("/api/v1/devices", get(list_cluster_devices))
+        .route("/api/v1/devices/discovered", get(discover_devices))
         .route("/api/v1/nodes/{id}/devices", get(list_node_devices))
         .route(
             "/api/v1/nodes/{node}/devices/{device}",
