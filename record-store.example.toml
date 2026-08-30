@@ -44,6 +44,30 @@ encryption_enabled = false # requires a stable RECORD_STORE_CREDENTIAL_MASTER_KE
 # Keep this on the same filesystem as data_directory when overriding it.
 # temporary_directory = "./data/tmp"
 
+# Additional drives this node serves. The data_directory above is always a
+# device in its own right, so these are the drives beyond it. Each becomes an
+# independent placement target, while all of them remain one node for
+# failure-domain purposes: replicas are not spread across drives in one chassis
+# and called durable.
+#
+# `name` is identity. It is derived into a stable device id, so a node restarting
+# with the same configuration keeps the same devices. Renaming one declares a
+# different device and orphans what was placed on the old name.
+#
+# Record Store never formats, mounts, or claims anything. Declaring a path here
+# is the administrator explicitly choosing it; the path must already exist and
+# be writable.
+#
+# [[storage.devices]]
+# name = "nvme0"
+# path = "/mnt/nvme0"
+# storage_class = "hot"   # defaults to the node's cluster.storage_class
+# weight = 2000           # 1000 is neutral; higher takes proportionally more
+#
+# [[storage.devices]]
+# name = "hdd0"
+# path = "/mnt/hdd0"
+
 [auth]
 # Supply root_access_key and root_secret_key through RECORD_STORE_ROOT_ACCESS_KEY and
 # RECORD_STORE_ROOT_SECRET_KEY. Record Store deliberately has no default credentials.

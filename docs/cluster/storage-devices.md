@@ -35,11 +35,53 @@ record-store drive list
 Each device reports its stable identifier, the node serving it, its kind, its
 storage class, capacity, health, and lifecycle state.
 
+## Declaring a node's drives
+
+A node always serves its `data_directory` as one device. Additional drives are
+declared in its configuration:
+
+```toml
+[storage]
+data_directory = "/var/lib/record-store"
+
+[[storage.devices]]
+name = "nvme0"
+path = "/mnt/nvme0"
+storage_class = "hot"
+weight = 2000
+
+[[storage.devices]]
+name = "hdd0"
+path = "/mnt/hdd0"
+```
+
+The node advertises all of them when it joins, and each becomes an independent
+placement target. A node declaring nothing behaves exactly as it did before
+devices existed, which is what leaves standalone and existing clusters unchanged.
+
+!!! warning "The name is identity"
+    A device's stable identity is derived from the node and this `name`, not from
+    the path. That is what lets a node restart, or a disk come back as a
+    different `/dev` node, without orphaning the replicas already on it.
+
+    Renaming a device in configuration therefore declares a *different* device.
+    The replicas placed under the old name become unreachable, and the cluster
+    repairs them elsewhere. Change a path freely; change a name only
+    deliberately.
+
+Paths must be distinct from each other and from `data_directory`. Two devices on
+one filesystem are not two devices, and Record Store refuses the configuration
+rather than reporting failure independence it does not have.
+
 ## Discovery is not ownership
 
 Finding a disk never enrolls it. Record Store does not format, mount, erase, or
-claim a device it happens to see; that only happens when an administrator
-registers one. A discovered device that nobody registered is inert.
+claim a device it happens to see; a drive participates only because an
+administrator declared it. The path must already exist and be writable —
+Record Store will not create a filesystem for you.
+
+Automatic discovery of local hardware is not implemented. Devices are declared,
+not detected.
 
 ## Kind and class are different questions
 

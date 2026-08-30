@@ -59,7 +59,7 @@ pub use deployment::DeploymentMode;
 pub use error::ConfigError;
 pub use sections::{
     AuthConfig, LifecycleConfig, LimitsConfig, ObservabilityConfig, ServerConfig, StorageConfig,
-    WebhookConfig,
+    StorageDeviceConfig, WebhookConfig,
 };
 pub use sharing::SharingConfig;
 /// Fully resolved and validated Record Store configuration.

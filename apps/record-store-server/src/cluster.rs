@@ -10,9 +10,10 @@ use std::{
 
 use chrono::Utc;
 use record_store_cluster::{
-    CapacityAwarePlacement, ClusterCommand, ClusterIdentity, DeviceCapacity, DeviceRecord,
-    FailureDomain, NodeCapacity, NodeCredential, NodeIdentity, NodeIdentityStore, NodeRegistration,
-    NodeState, NodeVersions, StorageClass,
+    CapacityAwarePlacement, ClusterCommand, ClusterIdentity, DeviceCapacity, DeviceHealth,
+    DeviceKind, DeviceRecord, DeviceState, FailureDomain, HardwareMetadata, NodeCapacity,
+    NodeCredential, NodeIdentity, NodeIdentityStore, NodeRegistration, NodeState, NodeVersions,
+    PlacementWeight, StorageClass,
 };
 use record_store_config::{Config, DeploymentMode};
 use record_store_consensus::{
@@ -35,6 +36,7 @@ use record_store_storage::{
     DeviceStore, LocalFilesystemStore, ObjectStore, ReplicaStore, StorageError,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -214,12 +216,26 @@ pub async fn initialize(config: &Config) -> Result<ClusterDependencies, ClusterS
     // Public metadata reads and every mutation still use the replicated adapter.
     let local_metadata: Arc<dyn MetadataRepository> =
         Arc::new(consensus.state().metadata().clone());
-    let local = Arc::new(open_local_store(config, local_metadata).await?);
+    let local = Arc::new(open_local_store(config, local_metadata.clone()).await?);
     let local_replica: Arc<dyn ReplicaStore> = local.clone();
-    let local_devices = Arc::new(DeviceStore::single(
+    // The data directory is always a device. Anything declared under
+    // `storage.devices` is an additional one, opened the same way, so the data
+    // plane can route to each independently.
+    let mut stores: Vec<(record_store_core::DeviceId, Arc<dyn ReplicaStore>)> = vec![(
         DeviceRecord::legacy_id(identity.node_id),
         Arc::clone(&local_replica),
-    ));
+    )];
+    for device in &config.storage.devices {
+        let store = open_device_store(config, device, local_metadata.clone()).await?;
+        stores.push((
+            declared_device_id(identity.node_id, &device.name),
+            Arc::new(store) as Arc<dyn ReplicaStore>,
+        ));
+    }
+    let local_devices = Arc::new(DeviceStore::new(
+        DeviceRecord::legacy_id(identity.node_id),
+        stores,
+    )?);
     let transport = Arc::new(RpcReplicaTransport::new(Arc::clone(&pool)));
     let context = Arc::new(ClusterContext {
         node_id: identity.node_id,
@@ -643,10 +659,11 @@ fn node_profile(
     let failure_domain = FailureDomain::parse(&config.cluster.failure_domain)
         .map(|domain| domain.labels().clone())
         .unwrap_or_default();
-    let devices = vec![DeviceRecord::legacy_directory(
+    let node_class = StorageClass::new(&config.cluster.storage_class).unwrap_or_default();
+    let mut devices = vec![DeviceRecord::legacy_directory(
         node_id,
         Some(config.storage.data_directory.clone()),
-        StorageClass::new(&config.cluster.storage_class).unwrap_or_default(),
+        node_class.clone(),
         DeviceCapacity {
             raw_bytes: capacity.total_bytes,
             usable_bytes: capacity.total_bytes,
@@ -655,6 +672,41 @@ fn node_profile(
             available_bytes: capacity.available_bytes,
         },
     )];
+    for declared in &config.storage.devices {
+        // Capacity is measured per device, because that is the whole point of
+        // declaring them separately: two mounts have two different amounts of
+        // room, and placement weights depend on knowing which is which.
+        let measured = measure_capacity(&declared.path);
+        let class = declared
+            .storage_class
+            .as_deref()
+            .and_then(|value| StorageClass::new(value).ok())
+            .unwrap_or_else(|| node_class.clone());
+        devices.push(DeviceRecord {
+            id: declared_device_id(node_id, &declared.name),
+            node_id,
+            current_path: Some(declared.path.clone()),
+            stable_hardware_identifier: None,
+            kind: DeviceKind::FilesystemDirectory,
+            storage_class: class,
+            capacity: DeviceCapacity {
+                raw_bytes: measured.total_bytes,
+                usable_bytes: measured.total_bytes,
+                allocated_bytes: measured.replica_bytes,
+                reserved_bytes: 0,
+                available_bytes: measured.available_bytes,
+            },
+            configured_weight: declared
+                .weight
+                .and_then(|weight| PlacementWeight::new(weight).ok())
+                .unwrap_or_default(),
+            // Nothing has observed this device's hardware, and saying `Healthy`
+            // would be inventing a reading nobody took.
+            health: DeviceHealth::Unknown,
+            state: DeviceState::Active,
+            hardware: HardwareMetadata::default(),
+        });
+    }
     NodeProfile {
         storage_class: config.cluster.storage_class.clone(),
         failure_domain: failure_domain.into_iter().collect(),
@@ -715,6 +767,54 @@ fn runtime_settings(config: &Config) -> RuntimeSettings {
     };
     settings.reconcile_interval = Duration::from_secs(config.cluster.reconcile_interval_seconds);
     settings
+}
+
+/// Derives a stable device identity from the node and the declared name.
+///
+/// Deriving rather than storing means a node restarting with the same
+/// configuration keeps the same devices, so a restart never orphans the replicas
+/// already placed on them. Renaming a device in configuration therefore declares
+/// a different device, which is why the name is documented as identity.
+fn declared_device_id(
+    node_id: record_store_core::NodeId,
+    name: &str,
+) -> record_store_core::DeviceId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"record-store.device.v1");
+    hasher.update(node_id.as_uuid().as_bytes());
+    hasher.update(name.as_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    record_store_core::DeviceId::from_uuid(uuid::Uuid::from_bytes(bytes))
+}
+
+/// Opens one declared device's replica store.
+///
+/// Encryption follows the node: a deployment does not get to encrypt one drive
+/// and leave another in the clear without saying so.
+async fn open_device_store(
+    config: &Config,
+    device: &record_store_config::StorageDeviceConfig,
+    metadata: Arc<dyn MetadataRepository>,
+) -> Result<LocalFilesystemStore, StorageError> {
+    let temporary = record_store_config::StorageConfig::device_temporary_directory(device);
+    if config.storage.encryption_enabled {
+        let master_key = config
+            .auth
+            .credential_master_key
+            .as_ref()
+            .ok_or(StorageError::EncryptionKeyRequired)?;
+        LocalFilesystemStore::open_encrypted(
+            &device.path,
+            temporary,
+            metadata,
+            master_key.expose().as_bytes(),
+        )
+        .await
+    } else {
+        LocalFilesystemStore::open(&device.path, temporary, metadata).await
+    }
 }
 
 async fn open_local_store(
@@ -887,6 +987,95 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
+
+    /// Device identity has to survive a restart.
+    ///
+    /// It is derived from the node and the configured name rather than stored,
+    /// so a node restarting with the same configuration keeps the same devices.
+    /// If it did not, every replica already placed on a declared drive would be
+    /// orphaned by a reboot.
+    #[test]
+    fn a_declared_device_keeps_its_identity_across_restarts() {
+        let node = record_store_core::NodeId::new();
+        assert_eq!(
+            declared_device_id(node, "nvme0"),
+            declared_device_id(node, "nvme0")
+        );
+
+        // A different name is a different device, which is why the name is
+        // documented as identity rather than as a label.
+        assert_ne!(
+            declared_device_id(node, "nvme0"),
+            declared_device_id(node, "nvme1")
+        );
+
+        // And the same name on another node is another device.
+        assert_ne!(
+            declared_device_id(node, "nvme0"),
+            declared_device_id(record_store_core::NodeId::new(), "nvme0")
+        );
+
+        // Never collides with the node's own data directory.
+        assert_ne!(
+            declared_device_id(node, "nvme0"),
+            DeviceRecord::legacy_id(node)
+        );
+    }
+
+    /// A node advertises every device it serves, so the cluster map can place
+    /// across them. Advertising only the data directory is what limited the
+    /// whole multi-device architecture to one drive per node.
+    #[test]
+    fn a_node_advertises_its_declared_devices() {
+        let node = record_store_core::NodeId::new();
+        let mut config = Config::default();
+        config.cluster.storage_class = "standard".into();
+        config.storage.devices = vec![
+            record_store_config::StorageDeviceConfig {
+                name: "nvme0".into(),
+                path: std::path::PathBuf::from("/mnt/nvme0"),
+                storage_class: Some("hot".into()),
+                weight: Some(2_000),
+            },
+            record_store_config::StorageDeviceConfig {
+                name: "hdd0".into(),
+                path: std::path::PathBuf::from("/mnt/hdd0"),
+                storage_class: None,
+                weight: None,
+            },
+        ];
+
+        let profile = node_profile(node, &config, NodeCapacity::default());
+        let devices: Vec<DeviceRecord> =
+            serde_json::from_str(&profile.devices_json).expect("devices");
+
+        assert_eq!(
+            devices.len(),
+            3,
+            "the data directory plus two declared drives"
+        );
+        assert_eq!(devices[0].id, DeviceRecord::legacy_id(node));
+
+        let nvme = &devices[1];
+        assert_eq!(nvme.id, declared_device_id(node, "nvme0"));
+        assert_eq!(nvme.storage_class.as_str(), "hot");
+        assert_eq!(nvme.configured_weight.get(), 2_000);
+        assert_eq!(
+            nvme.current_path.as_deref(),
+            Some(std::path::Path::new("/mnt/nvme0"))
+        );
+        // Nothing has inspected this hardware, and inventing a reading would be
+        // worse than admitting there is none.
+        assert_eq!(nvme.health, DeviceHealth::Unknown);
+
+        let hdd = &devices[2];
+        assert_eq!(
+            hdd.storage_class.as_str(),
+            "standard",
+            "a device that names no class inherits the node's"
+        );
+        assert_eq!(hdd.configured_weight, PlacementWeight::default());
+    }
 
     fn reserve_rpc_address() -> SocketAddr {
         let listener =
