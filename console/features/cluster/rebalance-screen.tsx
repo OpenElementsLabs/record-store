@@ -14,20 +14,29 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton';
 import { usePermissions } from '@/features/system/deployment';
 import { queryKeys } from '@/hooks/use-system';
-import { fetchRebalanceOperations, startRebalance } from '@/lib/api/cluster';
+import {
+  fetchRebalanceOperations,
+  pauseRebalance,
+  resumeRebalance,
+  startRebalance,
+} from '@/lib/api/cluster';
 import { ApiError } from '@/lib/api/error';
 import { formatBytes, formatCount, formatDateTime } from '@/lib/format';
 import type { ClusterOperation, ClusterOperationState } from '@/types/cluster';
 
 /** Whether an operation is still doing work. */
+/// A paused rebalance is still outstanding: it has not finished, and an
+/// operator still has to resume or cancel it, so it belongs with the running
+/// ones rather than the history.
 function isRunning(state: ClusterOperationState): boolean {
-  return state === 'planning' || state === 'moving' || state === 'verifying';
+  return state === 'planning' || state === 'moving' || state === 'verifying' || state === 'paused';
 }
 
 const STATE_LEVEL: Record<ClusterOperationState, 'healthy' | 'paused' | 'critical' | 'disabled'> = {
   planning: 'paused',
   moving: 'paused',
   verifying: 'paused',
+  paused: 'paused',
   completed: 'healthy',
   cancelled: 'disabled',
   failed: 'critical',
@@ -63,8 +72,21 @@ export function RebalanceScreen() {
       toast.error(error instanceof ApiError ? error.message : 'Could not start a rebalance'),
   });
 
+  // Pausing and resuming are immediate and reversible, so neither asks for
+  // confirmation; starting a rebalance still does, because it creates work.
+  const hold = useMutation({
+    mutationFn: (paused: boolean) => (paused ? resumeRebalance() : pauseRebalance()),
+    onSuccess: async (_result, paused) => {
+      toast.success(paused ? 'Rebalance resumed' : 'Rebalance paused');
+      await client.invalidateQueries({ queryKey: queryKeys.clusterRebalance });
+    },
+    onError: (error) =>
+      toast.error(error instanceof ApiError ? error.message : 'Could not change the rebalance'),
+  });
+
   const all = operations.data ?? [];
   const active = all.filter((operation) => isRunning(operation.state));
+  const paused = active.some((operation) => operation.state === 'paused');
   const finished = all.filter((operation) => !isRunning(operation.state));
 
   return (
@@ -74,14 +96,26 @@ export function RebalanceScreen() {
         description="Moves replicas between nodes to even out capacity. It never changes how many copies exist."
         actions={
           permissions.manage_cluster ? (
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={active.length > 0 || start.isPending}
-              onClick={() => setConfirming(true)}
-            >
-              Start rebalance
-            </Button>
+            <div className="flex gap-2">
+              {active.length > 0 ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={hold.isPending}
+                  onClick={() => hold.mutate(paused)}
+                >
+                  {paused ? 'Resume rebalance' : 'Pause rebalance'}
+                </Button>
+              ) : null}
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={active.length > 0 || start.isPending}
+                onClick={() => setConfirming(true)}
+              >
+                Start rebalance
+              </Button>
+            </div>
           ) : null
         }
       />

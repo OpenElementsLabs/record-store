@@ -377,6 +377,8 @@ pub enum ClusterOperationState {
     Moving,
     /// All movement finished; verifying durability before completing.
     Verifying,
+    /// Held by an operator. Still outstanding, but creating and running no work.
+    Paused,
     /// Finished successfully.
     Completed,
     /// Stopped by an operator.
@@ -386,9 +388,25 @@ pub enum ClusterOperationState {
 }
 
 impl ClusterOperationState {
-    /// Returns whether the operation still needs coordination.
+    /// Returns whether the operation is still outstanding.
+    ///
+    /// A paused operation is outstanding: it has not finished and it has not
+    /// been cancelled, so hiding it would lose track of work an operator still
+    /// has to resume or cancel.
     #[must_use]
     pub const fn active(self) -> bool {
+        matches!(
+            self,
+            Self::Planning | Self::Moving | Self::Verifying | Self::Paused
+        )
+    }
+
+    /// Returns whether the coordinator should advance the operation.
+    ///
+    /// Separate from [`Self::active`] because pausing must stop work without
+    /// making the operation disappear.
+    #[must_use]
+    pub const fn progressing(self) -> bool {
         matches!(self, Self::Planning | Self::Moving | Self::Verifying)
     }
 }
@@ -399,6 +417,7 @@ impl Display for ClusterOperationState {
             Self::Planning => "planning",
             Self::Moving => "moving",
             Self::Verifying => "verifying",
+            Self::Paused => "paused",
             Self::Completed => "completed",
             Self::Cancelled => "cancelled",
             Self::Failed => "failed",

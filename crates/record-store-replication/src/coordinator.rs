@@ -346,7 +346,8 @@ impl Coordinator {
     pub async fn progress_operations(&self) -> Result<(), String> {
         let operations = self.context.cluster.operations(64).await.map_err(display)?;
         for operation in operations {
-            if !operation.state.active() {
+            // A paused operation stays outstanding but creates no new work.
+            if !operation.state.progressing() {
                 continue;
             }
             let Some(node_id) = operation.node_id else {

@@ -133,4 +133,31 @@ describe('RebalanceScreen', () => {
 
     expect(screen.queryByRole('button', { name: 'Start rebalance' })).toBeNull();
   });
+
+  it('offers pause while a rebalance is running', async () => {
+    respond([operation('moving', { bytes_moved: 10, bytes_remaining: 90 })]);
+    renderWithProviders(<RebalanceScreen />);
+
+    expect(await screen.findByRole('button', { name: 'Pause rebalance' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Resume rebalance' })).toBeNull();
+  });
+
+  it('offers resume once a rebalance is held', async () => {
+    respond([operation('paused', { bytes_moved: 10, bytes_remaining: 90 })]);
+    renderWithProviders(<RebalanceScreen />);
+
+    expect(await screen.findByRole('button', { name: 'Resume rebalance' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Pause rebalance' })).toBeNull();
+  });
+
+  it('keeps a paused rebalance out of the history, because it is not finished', async () => {
+    respond([operation('paused', { bytes_moved: 10, bytes_remaining: 90 })]);
+    renderWithProviders(<RebalanceScreen />);
+
+    // Still outstanding: an operator has to resume or cancel it.
+    expect(await screen.findByRole('button', { name: 'Resume rebalance' })).toBeTruthy();
+    // And starting a second one is refused while it is held.
+    const start = screen.getByRole('button', { name: 'Start rebalance' });
+    expect(start.hasAttribute('disabled')).toBe(true);
+  });
 });

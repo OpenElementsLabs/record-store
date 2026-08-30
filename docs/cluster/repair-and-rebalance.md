@@ -158,3 +158,21 @@ This is what turns a silently missing or corrupt local replica into a `missing` 
 would stay invisible until something tried to read it.
 
 See [Integrity Verification](../operations/integrity-verification.md).
+
+## Holding a rebalance
+
+```bash
+record-store rebalance pause
+record-store rebalance resume
+record-store rebalance throttle 33554432   # 32 MB/s per transfer, 0 disables
+```
+
+Pausing stops the planning of new movement **and** the transfers already queued.
+A pause that only stopped planning would keep moving data for a while, which is
+not what pressing pause meant.
+
+A paused rebalance stays outstanding rather than disappearing: it has not
+finished, and it still needs an operator to resume or cancel it.
+
+Throttling is cluster configuration, not a property of one operation, so it
+applies to rebalancing generally and survives the current one completing.

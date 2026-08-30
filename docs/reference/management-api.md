@@ -203,6 +203,9 @@ Cluster routes return `409 CLUSTER_MODE_DISABLED` in standalone mode.
 | `POST` | `/api/v1/nodes/{node}/devices/{device}/retire` | Retire permanently |
 | `GET` | `/api/v1/rebalance/status` | Rebalance state |
 | `POST` | `/api/v1/rebalance` | Start a rebalance |
+| `POST` | `/api/v1/rebalance/pause` | Hold every active rebalance |
+| `POST` | `/api/v1/rebalance/resume` | Return paused rebalances to service |
+| `POST` | `/api/v1/rebalance/throttle` | `{"bytes_per_second":N}`; `0` disables |
 
 Device routes answer `404 DEVICE_NOT_FOUND` for an unregistered device and
 `409 INVALID_DEVICE_TRANSITION` for a lifecycle move the state machine forbids.

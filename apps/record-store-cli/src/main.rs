@@ -555,6 +555,17 @@ enum RepairCommand {
 
 #[derive(Subcommand)]
 enum RebalanceCommand {
+    /// Hold every active rebalance without discarding its progress.
+    Pause(EndpointArgs),
+    /// Return paused rebalances to service.
+    Resume(EndpointArgs),
+    /// Set the byte-per-second ceiling for one transfer. Zero disables it.
+    Throttle {
+        /// Bytes per second.
+        bytes_per_second: u64,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
     Status(EndpointArgs),
     Start(EndpointArgs),
 }
@@ -1437,6 +1448,18 @@ async fn rebalance(command: RebalanceCommand, json: bool) -> Result<()> {
         RebalanceCommand::Start(endpoint) => {
             client()?.post(api_url(&endpoint, "/api/v1/rebalance"))
         }
+        RebalanceCommand::Pause(endpoint) => {
+            client()?.post(api_url(&endpoint, "/api/v1/rebalance/pause"))
+        }
+        RebalanceCommand::Resume(endpoint) => {
+            client()?.post(api_url(&endpoint, "/api/v1/rebalance/resume"))
+        }
+        RebalanceCommand::Throttle {
+            bytes_per_second,
+            endpoint,
+        } => client()?
+            .post(api_url(&endpoint, "/api/v1/rebalance/throttle"))
+            .json(&serde_json::json!({ "bytes_per_second": bytes_per_second })),
     };
     let value = send_admin(request)
         .await?

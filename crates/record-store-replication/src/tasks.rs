@@ -5,13 +5,13 @@
 //! copy, verify, commit the new replica, and only then release the old one. That
 //! order is what makes a movement safe to interrupt at any point.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use chrono::Utc;
 use futures_util::TryStreamExt;
 use record_store_cluster::{
-    ClusterCommand, DeviceRecord, PayloadPlacement, Replica, ReplicaState, ReplicaTask,
-    ReplicaTaskKind, ReplicaTaskState,
+    ClusterCommand, ClusterOperationState, DeviceRecord, PayloadPlacement, Replica, ReplicaState,
+    ReplicaTask, ReplicaTaskKind, ReplicaTaskState,
 };
 use record_store_consensus::ClusterWrite;
 use record_store_core::{Checksum, DeviceId, NodeId, ObjectId, PayloadFormat};
@@ -72,11 +72,28 @@ impl TaskExecutor {
                 return 0;
             }
         };
+        // Pausing an operation has to stop the transfers it already queued, not
+        // only stop it queueing more. Otherwise "paused" would mean "still
+        // moving data for a while", which is not what an operator asked for.
+        let paused: BTreeSet<record_store_core::ClusterOperationId> = self
+            .context
+            .cluster
+            .operations(64)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|operation| operation.state == ClusterOperationState::Paused)
+            .map(|operation| operation.id)
+            .collect();
         let mine: Vec<ReplicaTask> = page
             .tasks
             .into_iter()
             .filter(|task| matches!(task.state, ReplicaTaskState::Queued))
             .filter(|task| executor_of(task) == Some(self.context.node_id))
+            .filter(|task| {
+                task.operation_id
+                    .is_none_or(|operation| !paused.contains(&operation))
+            })
             .take(limits.concurrency)
             .collect();
         if mine.is_empty() {
