@@ -21,10 +21,10 @@ use crate::catalog::keys::{
     node_replica_key, prefix_successor, replica_state_code, task_object_key, task_queue_key,
 };
 use crate::catalog::schema::{
-    ACTIVE_TASKS, CONFIG, IDENTITY, JOIN_TOKENS, LOGICAL_BYTES, NEXT_MEMBER_ID, NODE_BY_MEMBER,
-    NODE_CREDENTIALS, NODE_REPLICAS, NODES, OPERATIONS, PARKED_TASKS, PHYSICAL_BYTES,
-    PLACEMENT_COUNT, PLACEMENTS, SINGLETON, TASK_BY_OBJECT, TASK_QUEUE, TASKS, TOMBSTONE_COUNT,
-    TOMBSTONES, UNAVAILABLE_PAYLOADS, UNDER_REPLICATED,
+    ACTIVE_TASKS, CLUSTER_MAP_EPOCH, CONFIG, IDENTITY, JOIN_TOKENS, LOGICAL_BYTES, NEXT_MEMBER_ID,
+    NODE_BY_MEMBER, NODE_CREDENTIALS, NODE_REPLICAS, NODES, OPERATIONS, PARKED_TASKS,
+    PHYSICAL_BYTES, PLACEMENT_COUNT, PLACEMENTS, SINGLETON, STORAGE_POLICIES, TASK_BY_OBJECT,
+    TASK_QUEUE, TASKS, TOMBSTONE_COUNT, TOMBSTONES, UNAVAILABLE_PAYLOADS, UNDER_REPLICATED,
 };
 use crate::catalog::*;
 
@@ -45,6 +45,7 @@ pub fn apply_command_tx(
         ClusterCommand::UpdateConfig { config, at: _ } => {
             config.validate()?;
             put(write, CONFIG, SINGLETON, &*config)?;
+            advance_cluster_map_epoch(write)?;
             Ok(ClusterOutcome::Config(config))
         }
         ClusterCommand::RegisterNode { registration, at } => {
@@ -84,6 +85,7 @@ pub fn apply_command_tx(
             node.started_at = started_at;
             node.last_heartbeat_at = Some(at);
             put(write, NODES, node_id.as_uuid().as_bytes(), &node)?;
+            advance_cluster_map_epoch(write)?;
             Ok(ClusterOutcome::Node(Box::new(node)))
         }
         ClusterCommand::SetNodeState {
@@ -99,9 +101,102 @@ pub fn apply_command_tx(
             }
             put(write, NODES, node_id.as_uuid().as_bytes(), &node)?;
             if changed {
+                advance_cluster_map_epoch(write)?;
                 recount_durability(write)?;
             }
             Ok(ClusterOutcome::Node(Box::new(node)))
+        }
+        ClusterCommand::RegisterDevice {
+            node_id,
+            mut device,
+            at: _,
+        } => {
+            let mut node = require_node(write, node_id)?;
+            if device.node_id != node_id {
+                return Err(crate::device::DeviceError::WrongNode {
+                    device: device.id,
+                    expected: node_id,
+                    actual: device.node_id,
+                }
+                .into());
+            }
+            device.capacity.validate()?;
+            if let Some(existing) = node.device(device.id) {
+                // Refreshing discovery information must not reset durable
+                // administrative intent such as Draining or Maintenance.
+                device.state = existing.state;
+            }
+            match node.device_mut(device.id) {
+                Some(existing) => *existing = (*device).clone(),
+                None => node.devices.push((*device).clone()),
+            }
+            node.devices.sort_by_key(|record| record.id);
+            node.capacity = crate::topology::NodeCapacity::from_devices(&node.devices);
+            put(write, NODES, node_id.as_uuid().as_bytes(), &node)?;
+            advance_cluster_map_epoch(write)?;
+            Ok(ClusterOutcome::Device(device))
+        }
+        ClusterCommand::PutStoragePolicy { policy, at: _ } => {
+            policy
+                .validate()
+                .map_err(|error| ClusterCatalogError::Database {
+                    operation: "validate storage policy",
+                    reason: error.to_string(),
+                })?;
+            put(
+                write,
+                STORAGE_POLICIES,
+                policy.class.as_str().as_bytes(),
+                &*policy,
+            )?;
+            // A policy decides where data belongs, so changing one is a
+            // placement change and the map generation has to move with it.
+            advance_cluster_map_epoch(write)?;
+            Ok(ClusterOutcome::StoragePolicy(policy))
+        }
+        ClusterCommand::DeleteStoragePolicy { class, at: _ } => {
+            if class == crate::topology::StorageClass::default() {
+                return Err(ClusterCatalogError::Database {
+                    operation: "delete storage policy",
+                    reason: "the default storage policy cannot be removed".into(),
+                });
+            }
+            let mut table = write
+                .open_table(STORAGE_POLICIES)
+                .map_err(|error| backend("open storage policies", error))?;
+            table
+                .remove(class.as_str().as_bytes())
+                .map_err(|error| backend("remove storage policy", error))?;
+            drop(table);
+            advance_cluster_map_epoch(write)?;
+            Ok(ClusterOutcome::None)
+        }
+        ClusterCommand::SetDeviceState {
+            node_id,
+            device_id,
+            state,
+            at: _,
+        } => {
+            let mut node = require_node(write, node_id)?;
+            if state == crate::device::DeviceState::SafeToRemove
+                && device_replica_count(write, node_id, device_id)? > 0
+            {
+                return Err(ClusterCatalogError::Database {
+                    operation: "mark device safe to remove",
+                    reason: "device still owns replica records; evacuation is incomplete".into(),
+                });
+            }
+            let device = node
+                .device_mut(device_id)
+                .ok_or(ClusterCatalogError::DeviceNotFound { node_id, device_id })?;
+            let changed = device.transition(state)?;
+            let outcome = device.clone();
+            put(write, NODES, node_id.as_uuid().as_bytes(), &node)?;
+            if changed {
+                advance_cluster_map_epoch(write)?;
+                recount_durability(write)?;
+            }
+            Ok(ClusterOutcome::Device(Box::new(outcome)))
         }
         ClusterCommand::SetNodeMetadataVoter {
             node_id,
@@ -161,6 +256,40 @@ pub fn apply_command_tx(
             write_placement(write, &placement, before)?;
             Ok(ClusterOutcome::Placement(Box::new(placement)))
         }
+        ClusterCommand::SetReplicaStateOnDevice {
+            object_id,
+            node_id,
+            device_id,
+            state,
+            checksum,
+            verified,
+            at,
+        } => {
+            let mut placement = require_placement(write, object_id)?;
+            let before = physical_bytes(&placement);
+            {
+                let replica = placement
+                    .replicas
+                    .iter_mut()
+                    .find(|replica| replica.node_id == node_id && replica.device_id == device_id)
+                    .ok_or(ClusterCatalogError::ReplicaNotFound { object_id, node_id })?;
+                let promoted =
+                    replica.state != ReplicaState::Healthy && state == ReplicaState::Healthy;
+                replica.state = state;
+                if checksum.is_some() {
+                    replica.checksum = checksum;
+                }
+                if verified {
+                    replica.verified_at = Some(at);
+                }
+                if promoted {
+                    replica.generation = replica.generation.saturating_add(1);
+                }
+            }
+            placement.updated_at = at;
+            write_placement(write, &placement, before)?;
+            Ok(ClusterOutcome::Placement(Box::new(placement)))
+        }
         ClusterCommand::RemoveReplica {
             object_id,
             node_id,
@@ -171,6 +300,21 @@ pub fn apply_command_tx(
             let removed = placement.remove_replica(node_id, at);
             if removed {
                 remove_node_replica(write, node_id, object_id)?;
+            }
+            write_placement(write, &placement, before)?;
+            Ok(ClusterOutcome::Placement(Box::new(placement)))
+        }
+        ClusterCommand::RemoveReplicaFromDevice {
+            object_id,
+            node_id,
+            device_id,
+            at,
+        } => {
+            let mut placement = require_placement(write, object_id)?;
+            let before = physical_bytes(&placement);
+            let removed = placement.remove_replica_on(node_id, device_id, at);
+            if removed {
+                remove_device_replica(write, node_id, device_id, object_id)?;
             }
             write_placement(write, &placement, before)?;
             Ok(ClusterOutcome::Placement(Box::new(placement)))
@@ -412,6 +556,7 @@ pub(crate) fn initialize_cluster(
     put(write, IDENTITY, SINGLETON, &identity)?;
     put(write, CONFIG, SINGLETON, &config)?;
     set_counter(write, NEXT_MEMBER_ID, 1)?;
+    set_counter(write, CLUSTER_MAP_EPOCH, 1)?;
     Ok(ClusterOutcome::Identity(Box::new(identity)))
 }
 
@@ -432,6 +577,9 @@ pub(crate) fn register_node(
         existing.storage_class = registration.storage_class;
         existing.failure_domain = registration.failure_domain;
         existing.capacity = registration.capacity;
+        if !registration.devices.is_empty() {
+            existing.devices = registration.devices;
+        }
         existing.started_at = registration.started_at;
         existing.last_heartbeat_at = Some(at);
         if existing.state == NodeState::Offline
@@ -444,6 +592,7 @@ pub(crate) fn register_node(
         }
         let raft_id = existing.raft_id;
         put(write, NODES, node_id.as_uuid().as_bytes(), &existing)?;
+        advance_cluster_map_epoch(write)?;
         return Ok(ClusterOutcome::Registration {
             record: Box::new(existing),
             raft_id,
@@ -456,6 +605,7 @@ pub(crate) fn register_node(
     let metadata_voter = voters < u32::from(config.metadata_voter_target);
     let record = NodeRecord::joining(registration, raft_id, metadata_voter, at);
     put(write, NODES, node_id.as_uuid().as_bytes(), &record)?;
+    advance_cluster_map_epoch(write)?;
     put_raw(
         write,
         NODE_BY_MEMBER,
@@ -493,7 +643,16 @@ pub(crate) fn forget_node(
     remove(write, NODES, node_id.as_uuid().as_bytes())?;
     remove(write, NODE_BY_MEMBER, &node.raft_id.to_be_bytes())?;
     remove(write, NODE_CREDENTIALS, node_id.as_uuid().as_bytes())?;
+    advance_cluster_map_epoch(write)?;
     Ok(ClusterOutcome::Changed(true))
+}
+
+pub(crate) fn advance_cluster_map_epoch(write: &WriteTransaction) -> CatalogResult<u64> {
+    let next = crate::catalog::codec::read_counter(write, CLUSTER_MAP_EPOCH)?
+        .max(1)
+        .saturating_add(1);
+    set_counter(write, CLUSTER_MAP_EPOCH, next)?;
+    Ok(next)
 }
 
 pub(crate) fn put_placement(
@@ -555,7 +714,7 @@ pub(crate) fn delete_placement(
         put_raw(
             write,
             NODE_REPLICAS,
-            &node_replica_key(replica.node_id, object_id),
+            &node_replica_key(replica.node_id, object_id, replica.device_id),
             &[replica_state_code(ReplicaState::Deleting)],
         )?;
     }
@@ -607,7 +766,7 @@ pub(crate) fn write_placement(
         put_raw(
             write,
             NODE_REPLICAS,
-            &node_replica_key(replica.node_id, placement.object_id),
+            &node_replica_key(replica.node_id, placement.object_id, replica.device_id),
             &[replica_state_code(replica.state)],
         )?;
     }
@@ -712,7 +871,66 @@ pub(crate) fn remove_node_replica(
     node_id: NodeId,
     object_id: ObjectId,
 ) -> CatalogResult<()> {
-    remove(write, NODE_REPLICAS, &node_replica_key(node_id, object_id)).map(|_| ())
+    let mut prefix = Vec::with_capacity(32);
+    prefix.extend_from_slice(node_id.as_uuid().as_bytes());
+    prefix.extend_from_slice(object_id.as_uuid().as_bytes());
+    let end = prefix_successor(&prefix);
+    let keys = {
+        let table = write
+            .open_table(NODE_REPLICAS)
+            .map_err(|error| backend("open node replicas", error))?;
+        let mut keys = Vec::new();
+        for entry in table
+            .range(prefix.as_slice()..end.as_slice())
+            .map_err(|error| backend("range node replicas", error))?
+        {
+            let (key, _) = entry.map_err(|error| backend("read node replica", error))?;
+            keys.push(key.value().to_vec());
+        }
+        keys
+    };
+    for key in keys {
+        remove(write, NODE_REPLICAS, &key)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn device_replica_count(
+    write: &WriteTransaction,
+    node_id: NodeId,
+    device_id: record_store_core::DeviceId,
+) -> CatalogResult<u64> {
+    let table = write
+        .open_table(NODE_REPLICAS)
+        .map_err(|error| backend("open node replicas", error))?;
+    let prefix = node_id.as_uuid().as_bytes().to_vec();
+    let end = prefix_successor(&prefix);
+    let mut count = 0_u64;
+    for entry in table
+        .range(prefix.as_slice()..end.as_slice())
+        .map_err(|error| backend("range node replicas", error))?
+    {
+        let (key, _) = entry.map_err(|error| backend("read node replica", error))?;
+        let raw = key.value();
+        if raw.len() == 48 && raw[32..48] == *device_id.as_uuid().as_bytes() {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
+}
+
+pub(crate) fn remove_device_replica(
+    write: &WriteTransaction,
+    node_id: NodeId,
+    device_id: record_store_core::DeviceId,
+    object_id: ObjectId,
+) -> CatalogResult<()> {
+    remove(
+        write,
+        NODE_REPLICAS,
+        &node_replica_key(node_id, object_id, device_id),
+    )
+    .map(|_| ())
 }
 
 pub(crate) fn node_replica_count(write: &WriteTransaction, node_id: NodeId) -> CatalogResult<u64> {
@@ -995,6 +1213,328 @@ mod tests {
         }
     }
 
+    /// Registers the node's original data root as an explicit device.
+    ///
+    /// A node's stored record carries no devices until one is registered; the
+    /// legacy directory is synthesized in the topology view, not persisted.
+    async fn register_legacy_device(
+        catalog: &ClusterCatalog,
+        node_id: NodeId,
+        now: chrono::DateTime<Utc>,
+    ) -> record_store_core::DeviceId {
+        let device = crate::DeviceRecord::legacy_directory(
+            node_id,
+            Some(std::path::PathBuf::from("/var/lib/record-store")),
+            StorageClass::default(),
+            crate::DeviceCapacity {
+                raw_bytes: 1_000,
+                usable_bytes: 900,
+                allocated_bytes: 0,
+                reserved_bytes: 100,
+                available_bytes: 900,
+            },
+        );
+        let device_id = device.id;
+        catalog
+            .apply(ClusterCommand::RegisterDevice {
+                node_id,
+                device: Box::new(device),
+                at: now,
+            })
+            .await
+            .expect("register the node's data root as a device");
+        device_id
+    }
+
+    /// A cluster that predates storage policies still resolves every bucket to
+    /// something explicit, so introducing them changes no existing placement.
+    #[tokio::test]
+    async fn the_default_policy_exists_without_being_defined() {
+        let (_directory, catalog) = initialized().await;
+        let policies = catalog.storage_policies().await.expect("policies");
+        assert_eq!(policies.len(), 1);
+
+        let default = &policies[0];
+        assert_eq!(default.class, StorageClass::default());
+        assert!(
+            default.device_filter.is_unrestricted(),
+            "the fallback policy must never exclude a device on hardware grounds"
+        );
+        let config = catalog.config().await.expect("read").expect("config");
+        assert_eq!(
+            default.durability.replicas(),
+            Some(config.replication_factor),
+            "the synthesized default must match what the cluster was already doing"
+        );
+
+        // A class nobody defined resolves to nothing rather than to the default,
+        // so a misconfigured bucket is visible instead of silently reinterpreted.
+        let unknown = StorageClass::new("archive").expect("class");
+        assert!(
+            catalog
+                .storage_policy(&unknown)
+                .await
+                .expect("resolve")
+                .is_none()
+        );
+    }
+
+    /// Policies are durable, replicated, and move the placement epoch, because
+    /// changing one changes where data belongs.
+    #[tokio::test]
+    async fn a_storage_policy_is_durable_and_advances_the_map() {
+        use crate::device::DeviceKind;
+        use crate::policy::{DeviceFilter, DurabilityStrategy, StoragePolicy};
+
+        let (_directory, catalog) = initialized().await;
+        let before = catalog.topology().await.expect("topology").epoch;
+
+        let class = StorageClass::new("hot").expect("class");
+        let policy = StoragePolicy {
+            class: class.clone(),
+            description: Some("solid state only".into()),
+            device_filter: DeviceFilter::allowing([DeviceKind::Nvme]).expect("filter"),
+            durability: DurabilityStrategy::Replication { replicas: 2 },
+            failure_domain: crate::topology::FailureDomainScope::Rack,
+            strict_failure_domains: true,
+            minimum_free_space_percent: 15,
+        };
+        catalog
+            .apply(ClusterCommand::PutStoragePolicy {
+                policy: Box::new(policy.clone()),
+                at: Utc::now(),
+            })
+            .await
+            .expect("define the policy");
+
+        assert!(
+            catalog.topology().await.expect("topology").epoch > before,
+            "a placement policy change must advance the cluster map epoch"
+        );
+        let stored = catalog
+            .storage_policy(&class)
+            .await
+            .expect("resolve")
+            .expect("the policy is defined");
+        assert_eq!(stored, policy);
+        assert_eq!(catalog.storage_policies().await.expect("list").len(), 2);
+
+        catalog
+            .apply(ClusterCommand::DeleteStoragePolicy {
+                class: class.clone(),
+                at: Utc::now(),
+            })
+            .await
+            .expect("remove the policy");
+        assert!(
+            catalog
+                .storage_policy(&class)
+                .await
+                .expect("resolve")
+                .is_none()
+        );
+    }
+
+    /// An invalid policy must not reach durable state, and the default must not
+    /// be removable: every unconfigured bucket depends on it.
+    #[tokio::test]
+    async fn an_unusable_policy_is_refused_and_the_default_cannot_be_removed() {
+        use crate::policy::{DeviceFilter, DurabilityStrategy, StoragePolicy};
+
+        let (_directory, catalog) = initialized().await;
+        let refused = catalog
+            .apply(ClusterCommand::PutStoragePolicy {
+                policy: Box::new(StoragePolicy {
+                    class: StorageClass::new("broken").expect("class"),
+                    description: None,
+                    device_filter: DeviceFilter::any(),
+                    durability: DurabilityStrategy::Replication { replicas: 0 },
+                    failure_domain: crate::topology::FailureDomainScope::Node,
+                    strict_failure_domains: false,
+                    minimum_free_space_percent: 0,
+                }),
+                at: Utc::now(),
+            })
+            .await
+            .expect_err("a policy asking for zero replicas is not usable");
+        assert!(refused.to_string().contains("replication factor"));
+
+        let refused = catalog
+            .apply(ClusterCommand::DeleteStoragePolicy {
+                class: StorageClass::default(),
+                at: Utc::now(),
+            })
+            .await
+            .expect_err("the default policy underpins every unconfigured bucket");
+        assert!(refused.to_string().contains("default storage policy"));
+    }
+
+    /// Registering a device makes it a placement resource and advances the map.
+    #[tokio::test]
+    async fn a_registered_device_joins_the_cluster_map() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+
+        let before = catalog.topology().await.expect("topology").epoch;
+        let device = crate::DeviceRecord::legacy_directory(
+            node_id,
+            Some(std::path::PathBuf::from("/srv/record-store/disk-1")),
+            StorageClass::default(),
+            crate::DeviceCapacity {
+                raw_bytes: 4_000,
+                usable_bytes: 3_800,
+                allocated_bytes: 0,
+                reserved_bytes: 200,
+                available_bytes: 3_800,
+            },
+        );
+        let device_id = device.id;
+        catalog
+            .apply(ClusterCommand::RegisterDevice {
+                node_id,
+                device: Box::new(device),
+                at: now,
+            })
+            .await
+            .expect("register device");
+
+        let topology = catalog.topology().await.expect("topology");
+        assert!(
+            topology.epoch > before,
+            "registering a device must advance the cluster map epoch"
+        );
+        let node = catalog.node(node_id).await.expect("read").expect("node");
+        let stored = node
+            .devices
+            .iter()
+            .find(|candidate| candidate.id == device_id)
+            .expect("the device is part of the node's inventory");
+        // Discovery never invents telemetry, and registration must not either.
+        assert_eq!(stored.health, crate::DeviceHealth::Unknown);
+        assert_eq!(stored.hardware.temperature_celsius, None);
+    }
+
+    /// A drain has to survive a restart.
+    ///
+    /// Draining can take hours. If the intent lived only in memory, a restart
+    /// midway would silently put the device back into service and start filling
+    /// a disk somebody is trying to remove.
+    #[tokio::test]
+    async fn a_device_drain_survives_a_restart() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("cluster.redb");
+        let now = Utc::now();
+
+        let (node_id, device_id) = {
+            let catalog = ClusterCatalog::open(path.clone()).await.expect("open");
+            catalog
+                .apply(ClusterCommand::InitializeCluster {
+                    identity: identity(),
+                    config: Box::new(ClusterConfig::default()),
+                })
+                .await
+                .expect("initialize");
+            let node_id = register(&catalog, now).await;
+            let device_id = register_legacy_device(&catalog, node_id, now).await;
+            catalog
+                .apply(ClusterCommand::SetDeviceState {
+                    node_id,
+                    device_id,
+                    state: crate::DeviceState::Draining,
+                    at: now,
+                })
+                .await
+                .expect("drain the device");
+            (node_id, device_id)
+        };
+
+        let reopened = ClusterCatalog::open(path).await.expect("reopen");
+        let node = reopened.node(node_id).await.expect("read").expect("node");
+        let device = node
+            .devices
+            .iter()
+            .find(|candidate| candidate.id == device_id)
+            .expect("device");
+        assert_eq!(device.state, crate::DeviceState::Draining);
+        assert!(
+            !device.state.accepts_new_placements(),
+            "a draining device must not take new data after a restart"
+        );
+        assert!(
+            device.state.contributes_durability(),
+            "a draining device still holds real copies until they are moved"
+        );
+    }
+
+    /// "Safe to remove" is a statement about durability, not about intent.
+    ///
+    /// The catalog is the only place that can check it, because it is the only
+    /// place that knows which replicas the device still owns.
+    #[tokio::test]
+    async fn a_device_is_only_safe_to_remove_once_it_is_empty() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        // The replica records built by `replica_of` name the node's legacy
+        // device, so registering it is what makes them land here.
+        let device_id = register_legacy_device(&catalog, node_id, now).await;
+
+        let object_id = ObjectId::new();
+        catalog
+            .apply(ClusterCommand::PutPlacement {
+                placement: Box::new(placement_of(
+                    object_id,
+                    vec![replica_of(node_id, ReplicaState::Healthy, now)],
+                    now,
+                )),
+            })
+            .await
+            .expect("commit a placement onto the device");
+
+        catalog
+            .apply(ClusterCommand::SetDeviceState {
+                node_id,
+                device_id,
+                state: crate::DeviceState::Draining,
+                at: now,
+            })
+            .await
+            .expect("drain");
+        let refused = catalog
+            .apply(ClusterCommand::SetDeviceState {
+                node_id,
+                device_id,
+                state: crate::DeviceState::SafeToRemove,
+                at: now,
+            })
+            .await
+            .expect_err("a device still holding a replica cannot be safe to remove");
+        assert!(
+            refused.to_string().contains("evacuation is incomplete"),
+            "unexpected refusal: {refused}"
+        );
+
+        // Once the replica is gone the same request is allowed.
+        catalog
+            .apply(ClusterCommand::RemoveReplica {
+                object_id,
+                node_id,
+                at: now,
+            })
+            .await
+            .expect("release the replica");
+        catalog
+            .apply(ClusterCommand::SetDeviceState {
+                node_id,
+                device_id,
+                state: crate::DeviceState::SafeToRemove,
+                at: now,
+            })
+            .await
+            .expect("an evacuated device is safe to remove");
+    }
+
     /// A heartbeat is how the cluster learns a node is alive and how full it is.
     /// Losing either would make failure detection and placement blind.
     #[tokio::test]
@@ -1057,7 +1597,9 @@ mod tests {
             kind: ReplicaTaskKind::Repair,
             priority: ReplicaTaskPriority::High,
             source_node: None,
+            source_device: None,
             target_node: Some(node_id),
+            target_device: None,
             operation_id: None,
             size: 1_024,
             state: ReplicaTaskState::Queued,
@@ -1136,7 +1678,9 @@ mod tests {
             kind: ReplicaTaskKind::Repair,
             priority: ReplicaTaskPriority::Low,
             source_node: None,
+            source_device: None,
             target_node: Some(node_id),
+            target_device: None,
             operation_id: None,
             size: 1,
             state: ReplicaTaskState::Queued,
@@ -1383,6 +1927,7 @@ mod tests {
     fn replica_of(node_id: NodeId, state: ReplicaState, now: chrono::DateTime<Utc>) -> Replica {
         Replica {
             node_id,
+            device_id: crate::DeviceRecord::legacy_id(node_id),
             state,
             location: "opaque".to_owned(),
             size: 1_024,
@@ -1404,6 +1949,7 @@ mod tests {
             checksum: Checksum::sha256([4_u8; 32]),
             desired_replicas: 3,
             storage_class: StorageClass::new("standard").expect("class"),
+            placement_epoch: crate::ClusterMapEpoch::default(),
             replicas,
             created_at: now,
             updated_at: now,

@@ -1,5 +1,5 @@
 use record_store_core::{
-    ClusterId, ClusterOperationId, JoinTokenId, NodeId, ObjectId, ReplicaTaskId,
+    ClusterId, ClusterOperationId, DeviceId, JoinTokenId, NodeId, ObjectId, ReplicaTaskId,
 };
 use thiserror::Error;
 
@@ -25,6 +25,14 @@ pub enum ClusterCatalogError {
     /// The node is unknown.
     #[error("node {0} is not a member of this cluster")]
     NodeNotFound(NodeId),
+    /// A device is not registered on the named node.
+    #[error("device {device_id} is not registered on node {node_id}")]
+    DeviceNotFound {
+        /// Node expected to own the device.
+        node_id: NodeId,
+        /// Missing device.
+        device_id: DeviceId,
+    },
     /// Placement metadata is unknown.
     #[error("placement metadata for payload {0} was not found")]
     PlacementNotFound(ObjectId),
@@ -54,6 +62,9 @@ pub enum ClusterCatalogError {
     /// A node lifecycle transition was refused.
     #[error(transparent)]
     Topology(#[from] TopologyError),
+    /// Device inventory or lifecycle validation failed.
+    #[error(transparent)]
+    Device(#[from] crate::device::DeviceError),
     /// The proposed configuration was invalid.
     #[error(transparent)]
     Configuration(#[from] ClusterConfigError),

@@ -8,13 +8,14 @@
 
 use chrono::{DateTime, Utc};
 use record_store_core::{
-    Checksum, ClusterId, ClusterOperationId, JoinTokenId, NodeId, ObjectId, ReplicaTaskId,
+    Checksum, ClusterId, ClusterOperationId, DeviceId, JoinTokenId, NodeId, ObjectId, ReplicaTaskId,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     config::ClusterConfig,
     credentials::{JoinToken, NodeCredential},
+    device::{DeviceRecord, DeviceState},
     identity::RaftNodeId,
     replica::{PayloadPlacement, Replica, ReplicaState},
     tasks::{
@@ -104,6 +105,40 @@ pub enum ClusterCommand {
         /// Time of the transition.
         at: DateTime<Utc>,
     },
+    /// Register or refresh an explicitly configured device.
+    RegisterDevice {
+        /// Node serving the device.
+        node_id: NodeId,
+        /// Device record supplied by that node or an administrator.
+        device: Box<DeviceRecord>,
+        /// Time of registration.
+        at: DateTime<Utc>,
+    },
+    /// Apply a validated device lifecycle transition.
+    /// Defines or replaces a storage policy.
+    PutStoragePolicy {
+        /// Policy being committed. Its class is its identity.
+        policy: Box<crate::policy::StoragePolicy>,
+        /// Commit time.
+        at: DateTime<Utc>,
+    },
+    /// Removes a storage policy.
+    DeleteStoragePolicy {
+        /// Class being removed.
+        class: crate::topology::StorageClass,
+        /// Commit time.
+        at: DateTime<Utc>,
+    },
+    SetDeviceState {
+        /// Node serving the device.
+        node_id: NodeId,
+        /// Device being transitioned.
+        device_id: DeviceId,
+        /// Requested lifecycle state.
+        state: DeviceState,
+        /// Time of transition.
+        at: DateTime<Utc>,
+    },
     /// Change whether a node votes in the metadata consensus group.
     SetNodeMetadataVoter {
         /// Node being changed.
@@ -147,12 +182,40 @@ pub enum ClusterCommand {
         /// Time of the change.
         at: DateTime<Utc>,
     },
+    /// Change a replica's state on one exact device.
+    SetReplicaStateOnDevice {
+        /// Payload the replica belongs to.
+        object_id: ObjectId,
+        /// Node holding the replica.
+        node_id: NodeId,
+        /// Device holding the replica.
+        device_id: DeviceId,
+        /// New replica state.
+        state: ReplicaState,
+        /// Checksum the device observed, when it reported one.
+        checksum: Option<Checksum>,
+        /// Whether this update counts as successful verification.
+        verified: bool,
+        /// Time of the change.
+        at: DateTime<Utc>,
+    },
     /// Remove a replica record after its bytes were released.
     RemoveReplica {
         /// Payload the replica belonged to.
         object_id: ObjectId,
         /// Node that released the bytes.
         node_id: NodeId,
+        /// Time of the change.
+        at: DateTime<Utc>,
+    },
+    /// Remove one exact device replica after its bytes were released.
+    RemoveReplicaFromDevice {
+        /// Payload the replica belonged to.
+        object_id: ObjectId,
+        /// Node that released the bytes.
+        node_id: NodeId,
+        /// Device that released the bytes.
+        device_id: DeviceId,
         /// Time of the change.
         at: DateTime<Utc>,
     },
@@ -312,12 +375,18 @@ impl ClusterCommand {
             Self::Heartbeat { .. } => "heartbeat",
             Self::UpdateNodeDescriptor { .. } => "update_node_descriptor",
             Self::SetNodeState { .. } => "set_node_state",
+            Self::RegisterDevice { .. } => "register_device",
+            Self::PutStoragePolicy { .. } => "put_storage_policy",
+            Self::DeleteStoragePolicy { .. } => "delete_storage_policy",
+            Self::SetDeviceState { .. } => "set_device_state",
             Self::SetNodeMetadataVoter { .. } => "set_node_metadata_voter",
             Self::ForgetNode { .. } => "forget_node",
             Self::PutPlacement { .. } => "put_placement",
             Self::UpsertReplica { .. } => "upsert_replica",
             Self::SetReplicaState { .. } => "set_replica_state",
+            Self::SetReplicaStateOnDevice { .. } => "set_replica_state_on_device",
             Self::RemoveReplica { .. } => "remove_replica",
+            Self::RemoveReplicaFromDevice { .. } => "remove_replica_from_device",
             Self::SetDesiredReplicas { .. } => "set_desired_replicas",
             Self::DeletePlacement { .. } => "delete_placement",
             Self::AcknowledgeTombstone { .. } => "acknowledge_tombstone",
@@ -349,6 +418,10 @@ pub enum ClusterOutcome {
     None,
     /// A node record after the command was applied.
     Node(Box<NodeRecord>),
+    /// A device record after the command was applied.
+    Device(Box<DeviceRecord>),
+    /// A committed storage policy.
+    StoragePolicy(Box<crate::policy::StoragePolicy>),
     /// A node registration result.
     Registration {
         /// Resulting node record.
@@ -388,6 +461,15 @@ impl ClusterOutcome {
     pub fn placement(self) -> Option<PayloadPlacement> {
         match self {
             Self::Placement(placement) => Some(*placement),
+            _ => None,
+        }
+    }
+
+    /// Returns the device record, if the command produced one.
+    #[must_use]
+    pub fn device(self) -> Option<DeviceRecord> {
+        match self {
+            Self::Device(device) => Some(*device),
             _ => None,
         }
     }
@@ -513,7 +595,9 @@ mod tests {
             kind: ReplicaTaskKind::Repair,
             priority: ReplicaTaskPriority::Low,
             source_node: None,
+            source_device: None,
             target_node: None,
+            target_device: None,
             operation_id: None,
             size: 0,
             state: ReplicaTaskState::Queued,

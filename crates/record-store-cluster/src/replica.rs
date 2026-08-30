@@ -8,10 +8,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
-use record_store_core::{Checksum, NodeId, ObjectId};
-use serde::{Deserialize, Serialize};
+use record_store_core::{Checksum, DeviceId, NodeId, ObjectId};
+use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::topology::{ClusterTopology, FailureDomainScope, StorageClass};
+use crate::{
+    device::DeviceRecord,
+    topology::{ClusterMapEpoch, ClusterTopology, FailureDomainScope, StorageClass},
+};
 
 /// Explicit state of one physical replica.
 ///
@@ -63,10 +66,12 @@ impl ReplicaState {
 }
 
 /// One physical replica of a payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Replica {
     /// Node holding the bytes.
     pub node_id: NodeId,
+    /// Device holding the bytes.
+    pub device_id: DeviceId,
     /// Current replica state.
     pub state: ReplicaState,
     /// Opaque location identifier owned by the storing node.
@@ -89,10 +94,17 @@ impl Replica {
     /// Creates a pending replica record for a placement target.
     #[must_use]
     pub fn pending(node_id: NodeId, size: u64, now: DateTime<Utc>) -> Self {
+        Self::pending_on(node_id, DeviceRecord::legacy_id(node_id), size, now)
+    }
+
+    /// Creates a pending record for an exact device target.
+    #[must_use]
+    pub fn pending_on(node_id: NodeId, device_id: DeviceId, size: u64, now: DateTime<Utc>) -> Self {
         Self {
             node_id,
+            device_id,
             state: ReplicaState::Pending,
-            location: opaque_location(node_id),
+            location: opaque_location(node_id, device_id),
             size,
             checksum: None,
             created_at: now,
@@ -104,10 +116,29 @@ impl Replica {
     /// Creates a verified replica record.
     #[must_use]
     pub fn healthy(node_id: NodeId, size: u64, checksum: Checksum, now: DateTime<Utc>) -> Self {
+        Self::healthy_on(
+            node_id,
+            DeviceRecord::legacy_id(node_id),
+            size,
+            checksum,
+            now,
+        )
+    }
+
+    /// Creates a verified record for an exact device target.
+    #[must_use]
+    pub fn healthy_on(
+        node_id: NodeId,
+        device_id: DeviceId,
+        size: u64,
+        checksum: Checksum,
+        now: DateTime<Utc>,
+    ) -> Self {
         Self {
             node_id,
+            device_id,
             state: ReplicaState::Healthy,
-            location: opaque_location(node_id),
+            location: opaque_location(node_id, device_id),
             size,
             checksum: Some(checksum),
             created_at: now,
@@ -117,8 +148,48 @@ impl Replica {
     }
 }
 
-fn opaque_location(node_id: NodeId) -> String {
-    format!("node:{}", node_id.as_uuid().simple())
+#[derive(Deserialize)]
+struct ReplicaWire {
+    node_id: NodeId,
+    #[serde(default)]
+    device_id: Option<DeviceId>,
+    state: ReplicaState,
+    location: String,
+    size: u64,
+    checksum: Option<Checksum>,
+    created_at: DateTime<Utc>,
+    verified_at: Option<DateTime<Utc>>,
+    generation: u64,
+}
+
+impl<'de> Deserialize<'de> for Replica {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ReplicaWire::deserialize(deserializer)?;
+        Ok(Self {
+            node_id: wire.node_id,
+            device_id: wire
+                .device_id
+                .unwrap_or_else(|| DeviceRecord::legacy_id(wire.node_id)),
+            state: wire.state,
+            location: wire.location,
+            size: wire.size,
+            checksum: wire.checksum,
+            created_at: wire.created_at,
+            verified_at: wire.verified_at,
+            generation: wire.generation,
+        })
+    }
+}
+
+fn opaque_location(node_id: NodeId, device_id: DeviceId) -> String {
+    format!(
+        "node:{}/device:{}",
+        node_id.as_uuid().simple(),
+        device_id.as_uuid().simple()
+    )
 }
 
 /// Replicated placement metadata for one immutable payload.
@@ -134,6 +205,9 @@ pub struct PayloadPlacement {
     pub desired_replicas: u8,
     /// Storage class replicas must live on.
     pub storage_class: StorageClass,
+    /// Cluster-map generation used to choose the committed targets.
+    #[serde(default)]
+    pub placement_epoch: ClusterMapEpoch,
     /// Known replicas ordered by node identifier.
     pub replicas: Vec<Replica>,
     /// Time the placement was first committed.
@@ -154,18 +228,26 @@ impl PayloadPlacement {
         mut replicas: Vec<Replica>,
         now: DateTime<Utc>,
     ) -> Self {
-        replicas.sort_by_key(|replica| replica.node_id);
-        replicas.dedup_by_key(|replica| replica.node_id);
+        replicas.sort_by_key(|replica| (replica.node_id, replica.device_id));
+        replicas.dedup_by_key(|replica| (replica.node_id, replica.device_id));
         Self {
             object_id,
             size,
             checksum,
             desired_replicas,
             storage_class,
+            placement_epoch: ClusterMapEpoch::default(),
             replicas,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Records the committed cluster-map generation used for placement.
+    #[must_use]
+    pub const fn with_epoch(mut self, epoch: ClusterMapEpoch) -> Self {
+        self.placement_epoch = epoch;
+        self
     }
 
     /// Returns the replica stored on a node.
@@ -176,17 +258,24 @@ impl PayloadPlacement {
             .find(|replica| replica.node_id == node_id)
     }
 
+    /// Returns the replica stored on an exact device.
+    #[must_use]
+    pub fn replica_on(&self, node_id: NodeId, device_id: DeviceId) -> Option<&Replica> {
+        self.replicas
+            .iter()
+            .find(|replica| replica.node_id == node_id && replica.device_id == device_id)
+    }
+
     /// Inserts or replaces a replica, keeping deterministic order.
     pub fn upsert_replica(&mut self, replica: Replica, now: DateTime<Utc>) {
-        match self
-            .replicas
-            .iter_mut()
-            .find(|existing| existing.node_id == replica.node_id)
-        {
+        match self.replicas.iter_mut().find(|existing| {
+            existing.node_id == replica.node_id && existing.device_id == replica.device_id
+        }) {
             Some(existing) => *existing = replica,
             None => {
                 self.replicas.push(replica);
-                self.replicas.sort_by_key(|replica| replica.node_id);
+                self.replicas
+                    .sort_by_key(|replica| (replica.node_id, replica.device_id));
             }
         }
         self.updated_at = now;
@@ -203,12 +292,38 @@ impl PayloadPlacement {
         removed
     }
 
+    /// Removes one exact device replica record.
+    pub fn remove_replica_on(
+        &mut self,
+        node_id: NodeId,
+        device_id: DeviceId,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let before = self.replicas.len();
+        self.replicas
+            .retain(|replica| replica.node_id != node_id || replica.device_id != device_id);
+        let removed = self.replicas.len() != before;
+        if removed {
+            self.updated_at = now;
+        }
+        removed
+    }
+
     /// Returns every node holding a replica record of any state.
     #[must_use]
     pub fn nodes(&self) -> BTreeSet<NodeId> {
         self.replicas
             .iter()
             .map(|replica| replica.node_id)
+            .collect()
+    }
+
+    /// Returns every exact placement target holding a replica record.
+    #[must_use]
+    pub fn targets(&self) -> BTreeSet<(NodeId, DeviceId)> {
+        self.replicas
+            .iter()
+            .map(|replica| (replica.node_id, replica.device_id))
             .collect()
     }
 
@@ -222,14 +337,20 @@ impl PayloadPlacement {
         let mut damaged = 0_u32;
         for replica in &self.replicas {
             current = current.saturating_add(1);
-            let node_counts = topology.contributes_durability(replica.node_id);
-            if replica.state.durable() && node_counts {
+            let target_counts =
+                topology.device_contributes_durability(replica.node_id, replica.device_id);
+            if replica.state.durable() && target_counts {
                 healthy = healthy.saturating_add(1);
             }
-            if replica.state.readable() && topology.serves_reads(replica.node_id) {
+            if replica.state.readable()
+                && topology.serves_reads(replica.node_id)
+                && topology
+                    .device(replica.device_id)
+                    .is_some_and(|(_, device)| device.health.contributes_durability())
+            {
                 readable = readable.saturating_add(1);
             }
-            if !node_counts {
+            if !target_counts {
                 unavailable = unavailable.saturating_add(1);
             } else if replica.state.needs_repair() {
                 damaged = damaged.saturating_add(1);
@@ -258,7 +379,12 @@ impl PayloadPlacement {
                 continue;
             }
             if let Some(node) = topology.node(replica.node_id) {
-                *domains.entry(node.domain_key(scope)).or_insert(0_u32) += 1;
+                let domain = if scope == FailureDomainScope::Device {
+                    format!("device:{}", replica.device_id)
+                } else {
+                    node.domain_key(scope)
+                };
+                *domains.entry(domain).or_insert(0_u32) += 1;
             }
         }
         domains
@@ -414,6 +540,7 @@ mod tests {
                 replica_bytes: 100,
                 temporary_bytes: 0,
             },
+            devices: Vec::new(),
             activity: crate::topology::NodeActivity::default(),
             joined_at: Utc::now(),
             started_at: Utc::now(),

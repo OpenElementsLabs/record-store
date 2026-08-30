@@ -416,6 +416,11 @@ pub trait ClusterStore: Send + Sync {
     /// Returns every node record.
     async fn nodes(&self) -> Result<Vec<NodeRecord>, ClusterCatalogError>;
 
+    /// Returns every defined storage policy, including the synthesized default.
+    async fn storage_policies(
+        &self,
+    ) -> Result<Vec<record_store_cluster::StoragePolicy>, ClusterCatalogError>;
+
     /// Returns a topology view for placement decisions.
     async fn topology(&self) -> Result<ClusterTopology, ClusterCatalogError>;
 
@@ -580,6 +585,12 @@ impl ClusterStore for ReplicatedClusterStore {
 
     async fn nodes(&self) -> Result<Vec<NodeRecord>, ClusterCatalogError> {
         self.local.nodes().await
+    }
+
+    async fn storage_policies(
+        &self,
+    ) -> Result<Vec<record_store_cluster::StoragePolicy>, ClusterCatalogError> {
+        self.local.storage_policies().await
     }
 
     async fn topology(&self) -> Result<ClusterTopology, ClusterCatalogError> {
@@ -747,6 +758,12 @@ impl ClusterStore for LocalClusterStore {
         self.catalog.nodes().await
     }
 
+    async fn storage_policies(
+        &self,
+    ) -> Result<Vec<record_store_cluster::StoragePolicy>, ClusterCatalogError> {
+        self.catalog.storage_policies().await
+    }
+
     async fn topology(&self) -> Result<ClusterTopology, ClusterCatalogError> {
         self.catalog.topology().await
     }
@@ -908,6 +925,7 @@ mod tests {
             created_at: Utc::now(),
             versioning: VersioningState::Disabled,
             quota: BucketQuota::default(),
+            storage_class: None,
             durability_policy: None,
             cors: None,
         }
@@ -1026,6 +1044,7 @@ mod tests {
                     storage_class: StorageClass::new("standard").expect("class"),
                     failure_domain: FailureDomain::default(),
                     capacity: NodeCapacity::default(),
+                    devices: Vec::new(),
                     started_at: Utc::now(),
                 }),
                 at: Utc::now(),

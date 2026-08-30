@@ -11,7 +11,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use record_store_core::{Checksum, ObjectId};
+use record_store_core::{Checksum, DeviceId, ObjectId};
 use record_store_protocol::{
     consensus_v1::consensus_service_client::ConsensusServiceClient,
     replica_v1::replica_service_client::ReplicaServiceClient,
@@ -363,6 +363,8 @@ impl PeerPool {
 pub struct ReplicaTarget {
     /// Node holding or receiving the replica.
     pub node_id: record_store_core::NodeId,
+    /// Exact device holding or receiving the replica.
+    pub device_id: DeviceId,
     /// Internal RPC address of that node.
     pub address: String,
 }
@@ -508,6 +510,7 @@ impl ReplicaTransport for RpcReplicaTransport {
                     object_id: object_id.to_string(),
                     size: declared_size,
                     checksum: declared_checksum,
+                    device_id: target.device_id.to_string(),
                 }),
             })),
         };
@@ -629,6 +632,7 @@ impl ReplicaTransport for RpcReplicaTransport {
                     offset: 0,
                     length: 0,
                     whole_payload: true,
+                    device_id: target.device_id.to_string(),
                 },
                 &TraceContext::root(),
             )
@@ -659,6 +663,7 @@ impl ReplicaTransport for RpcReplicaTransport {
             .envelope(
                 DeleteReplicaRequest {
                     object_id: object_id.to_string(),
+                    device_id: target.device_id.to_string(),
                 },
                 &TraceContext::root(),
             )
@@ -687,6 +692,7 @@ impl ReplicaTransport for RpcReplicaTransport {
                     object_id: object_id.to_string(),
                     size,
                     checksum: checksum.to_string(),
+                    device_id: target.device_id.to_string(),
                 },
                 &TraceContext::root(),
             )
@@ -719,6 +725,7 @@ impl ReplicaTransport for RpcReplicaTransport {
                 ListLocalPayloadsRequest {
                     after_object_id: after.map(|id| id.to_string()).unwrap_or_default(),
                     limit: u32::try_from(limit).unwrap_or(u32::MAX),
+                    device_id: target.device_id.to_string(),
                 },
                 &TraceContext::root(),
             )

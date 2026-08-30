@@ -35,6 +35,7 @@ async fn store() -> (
         created_at: Utc::now(),
         versioning: VersioningState::Disabled,
         quota: BucketQuota::default(),
+        storage_class: None,
         durability_policy: None,
         cors: None,
     };
@@ -469,6 +470,7 @@ async fn envelope_encryption_streams_ranges_survives_restart_and_detects_tamperi
         created_at: Utc::now(),
         versioning: VersioningState::Disabled,
         quota: BucketQuota::default(),
+        storage_class: None,
         durability_policy: None,
         cors: None,
     };
@@ -607,6 +609,7 @@ async fn envelope_encryption_covers_durable_multipart_parts_and_completion() {
         created_at: Utc::now(),
         versioning: VersioningState::Disabled,
         quota: BucketQuota::default(),
+        storage_class: None,
         durability_policy: None,
         cors: None,
     };

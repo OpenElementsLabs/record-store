@@ -8,7 +8,7 @@ use crate::{
 };
 
 use crate::catalog::schema::{
-    CONFIG, COUNTERS, NEXT_MEMBER_ID, NODES, PLACEMENTS, SINGLETON, TASKS,
+    CONFIG, COUNTERS, NEXT_MEMBER_ID, NODES, PLACEMENTS, SINGLETON, STORAGE_POLICIES, TASKS,
 };
 use crate::catalog::*;
 
@@ -111,6 +111,23 @@ pub(crate) fn read_nodes(write: &WriteTransaction) -> CatalogResult<Vec<NodeReco
         nodes.push(serde_json::from_slice(value.value())?);
     }
     Ok(nodes)
+}
+
+pub(crate) fn read_storage_policies(
+    write: &WriteTransaction,
+) -> CatalogResult<Vec<crate::policy::StoragePolicy>> {
+    let table = write
+        .open_table(STORAGE_POLICIES)
+        .map_err(|error| backend("open storage policies", error))?;
+    let mut policies = Vec::new();
+    for entry in table
+        .iter()
+        .map_err(|error| backend("scan storage policies", error))?
+    {
+        let (_, value) = entry.map_err(|error| backend("read storage policy", error))?;
+        policies.push(serde_json::from_slice(value.value())?);
+    }
+    Ok(policies)
 }
 
 pub(crate) fn count_voters(write: &WriteTransaction) -> CatalogResult<u32> {

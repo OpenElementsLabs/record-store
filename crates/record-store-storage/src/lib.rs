@@ -7,6 +7,7 @@ use std::{
 
 use tokio::sync::RwLock;
 
+mod device_store;
 mod encryption;
 mod error;
 mod layout;
@@ -19,6 +20,7 @@ mod types;
 #[cfg(test)]
 mod test_support;
 
+pub use device_store::DeviceStore;
 pub use error::StorageError;
 pub use local_store::LocalFilesystemStore;
 pub use object_store::ObjectStore;

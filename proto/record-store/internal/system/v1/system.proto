@@ -33,6 +33,9 @@ message NodeProfile {
   string started_at = 7;
   // Endpoint S3 clients may use, when the node is client reachable.
   string s3_endpoint = 8;
+  // JSON-encoded DeviceRecord inventory. Empty is accepted from a V1 peer and
+  // migrated to that peer's deterministic legacy device.
+  string devices_json = 9;
 }
 
 message PingRequest {

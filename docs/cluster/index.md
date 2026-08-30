@@ -12,6 +12,8 @@ metadata through Raft consensus.
 
 -   **[Creating a Cluster](creating-a-cluster.md)** — the first node
 -   **[Adding Nodes](adding-nodes.md)** — join tokens and seeds
+-   **[Storage Devices](storage-devices.md)** — drives as independent placement targets
+-   **[Replacing a Drive](replacing-a-drive.md)** — draining and removing safely
 -   **[Node Lifecycle](node-lifecycle.md)** — drain, maintenance, decommission
 -   **[Replication](replication.md)** — where replicas go and why
 -   **[Repair and Rebalance](repair-and-rebalance.md)** — restoring and evening out

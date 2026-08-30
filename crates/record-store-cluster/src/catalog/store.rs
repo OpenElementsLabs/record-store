@@ -18,12 +18,12 @@ use crate::{
 
 use crate::catalog::codec::{get, get_raw, read_counter, read_nodes};
 use crate::catalog::commands::{node_replica_count, recount_durability};
-use crate::catalog::keys::{node_replica_key, prefix_successor};
+use crate::catalog::keys::prefix_successor;
 use crate::catalog::schema::{
-    ACTIVE_TASKS, CONFIG, IDENTITY, JOIN_TOKENS, LOGICAL_BYTES, NODE_BY_MEMBER, NODE_CREDENTIALS,
-    NODE_REPLICAS, NODES, OPERATIONS, PARKED_TASKS, PHYSICAL_BYTES, PLACEMENT_COUNT, PLACEMENTS,
-    SINGLETON, TASK_QUEUE, TASKS, TOMBSTONE_COUNT, TOMBSTONES, UNAVAILABLE_PAYLOADS,
-    UNDER_REPLICATED,
+    ACTIVE_TASKS, CLUSTER_MAP_EPOCH, CONFIG, IDENTITY, JOIN_TOKENS, LOGICAL_BYTES, NODE_BY_MEMBER,
+    NODE_CREDENTIALS, NODE_REPLICAS, NODES, OPERATIONS, PARKED_TASKS, PHYSICAL_BYTES,
+    PLACEMENT_COUNT, PLACEMENTS, SINGLETON, TASK_QUEUE, TASKS, TOMBSTONE_COUNT, TOMBSTONES,
+    UNAVAILABLE_PAYLOADS, UNDER_REPLICATED,
 };
 use crate::catalog::*;
 
@@ -160,13 +160,63 @@ impl ClusterCatalog {
         })
     }
 
+    /// Returns every defined storage policy, ordered by class.
+    ///
+    /// The default class is always present. It is synthesized from cluster
+    /// configuration when nobody has defined it, so a cluster that predates
+    /// storage policies still resolves every bucket to something explicit
+    /// rather than to nothing.
+    pub async fn storage_policies(&self) -> CatalogResult<Vec<crate::policy::StoragePolicy>> {
+        let (config, mut policies) = tokio::try_join!(
+            self.config(),
+            self.read(crate::catalog::codec::read_storage_policies)
+        )?;
+        let config = config.ok_or(ClusterCatalogError::NotInitialized)?;
+        if !policies
+            .iter()
+            .any(|policy| policy.class == crate::topology::StorageClass::default())
+        {
+            policies.push(crate::policy::StoragePolicy::default_policy(
+                config.failure_domain_scope,
+                config.replication_factor,
+            ));
+        }
+        policies.sort_by(|left, right| left.class.as_str().cmp(right.class.as_str()));
+        Ok(policies)
+    }
+
+    /// Resolves one storage class to the policy that defines it.
+    ///
+    /// An unknown class resolves to `None` rather than to the default: a bucket
+    /// naming a class nobody defined is a configuration error, and quietly
+    /// placing its data by default rules would hide it.
+    pub async fn storage_policy(
+        &self,
+        class: &crate::topology::StorageClass,
+    ) -> CatalogResult<Option<crate::policy::StoragePolicy>> {
+        Ok(self
+            .storage_policies()
+            .await?
+            .into_iter()
+            .find(|policy| &policy.class == class))
+    }
+
     /// Returns a topology view suitable for placement decisions.
     pub async fn topology(&self) -> CatalogResult<ClusterTopology> {
-        let (identity, config, nodes) =
-            tokio::try_join!(self.identity(), self.config(), self.nodes())?;
+        let (identity, config, nodes, epoch) = tokio::try_join!(
+            self.identity(),
+            self.config(),
+            self.nodes(),
+            self.read(|write| read_counter(write, CLUSTER_MAP_EPOCH))
+        )?;
         let identity = identity.ok_or(ClusterCatalogError::NotInitialized)?;
         let config = config.ok_or(ClusterCatalogError::NotInitialized)?;
-        Ok(ClusterTopology::new(identity.cluster_id, config, nodes))
+        Ok(ClusterTopology::at_epoch(
+            identity.cluster_id,
+            config,
+            nodes,
+            crate::topology::ClusterMapEpoch::new(epoch),
+        ))
     }
 
     /// Returns placement metadata for one payload.
@@ -227,11 +277,14 @@ impl ClusterCatalog {
                 .open_table(NODE_REPLICAS)
                 .map_err(|error| backend("open node replicas", error))?;
             let prefix = node_id.as_uuid().as_bytes().to_vec();
-            let mut start =
-                after.map_or_else(|| prefix.clone(), |id| node_replica_key(node_id, id));
-            if after.is_some() {
-                start.push(0);
-            }
+            let start = after.map_or_else(
+                || prefix.clone(),
+                |id| {
+                    let mut object_prefix = prefix.clone();
+                    object_prefix.extend_from_slice(id.as_uuid().as_bytes());
+                    prefix_successor(&object_prefix)
+                },
+            );
             let end = prefix_successor(&prefix);
             let mut out = Vec::new();
             for entry in table
@@ -241,7 +294,7 @@ impl ClusterCatalog {
             {
                 let (key, _) = entry.map_err(|error| backend("read node replica", error))?;
                 let raw = key.value();
-                if raw.len() != 32 {
+                if raw.len() != 48 {
                     continue;
                 }
                 let bytes: [u8; 16] =

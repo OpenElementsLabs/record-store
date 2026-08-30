@@ -75,6 +75,16 @@ enum Command {
         #[command(subcommand)]
         command: NodeCommand,
     },
+    /// Inspect and define storage classes.
+    StorageClass {
+        #[command(subcommand)]
+        command: StorageClassCommand,
+    },
+    /// Inspect or change storage device lifecycle state.
+    Drive {
+        #[command(subcommand)]
+        command: DriveCommand,
+    },
     /// Inspect the durable repair queue.
     Repair {
         #[command(subcommand)]
@@ -113,12 +123,104 @@ struct EndpointArgs {
     endpoint: String,
 }
 
+/// Arguments naming one device on one node.
+#[derive(Args)]
+struct DeviceArgs {
+    /// Stable node identifier.
+    node: String,
+    /// Stable device identifier. This is not the device's current path, which
+    /// can change across reboots.
+    device: String,
+    #[command(flatten)]
+    endpoint: EndpointArgs,
+}
+
+#[derive(Subcommand)]
+enum StorageClassCommand {
+    /// List defined storage classes.
+    List(EndpointArgs),
+    /// Inspect one storage class.
+    Show {
+        /// Class name.
+        class: String,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Define or replace a storage class.
+    Set {
+        /// Class name.
+        class: String,
+        /// Copies to keep. Omitted leaves the cluster replication factor.
+        #[arg(long)]
+        replicas: Option<u8>,
+        /// Topology level replicas must be separated across.
+        #[arg(long, value_parser = ["device", "node", "host", "rack", "datacenter", "zone", "region"])]
+        failure_domain: Option<String>,
+        /// Refuse placement that cannot satisfy the failure domain.
+        #[arg(long)]
+        strict: bool,
+        /// Device kinds this class may use. Repeatable; omitted accepts any.
+        #[arg(long = "device-kind")]
+        device_kinds: Vec<String>,
+        /// Percentage of each device's usable capacity to keep free.
+        #[arg(long)]
+        minimum_free_percent: Option<u8>,
+        /// Human-facing description.
+        #[arg(long)]
+        description: Option<String>,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Remove a storage class.
+    Delete {
+        /// Class name.
+        class: String,
+        /// Skip the confirmation prompt, for automation.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum DriveCommand {
+    /// List every registered device in the cluster.
+    List(EndpointArgs),
+    /// Inspect one registered device.
+    Show(DeviceArgs),
+    /// Bring a registered device into service.
+    Activate(DeviceArgs),
+    /// Stop new placement and move this device's replicas elsewhere.
+    Drain(DeviceArgs),
+    /// Pause a device without evacuating it.
+    Maintenance(DeviceArgs),
+    /// Return a drained or maintained device to service.
+    Resume(DeviceArgs),
+    /// Mark an evacuated device safe to remove.
+    ///
+    /// Refused while the device still owns replicas, so success means
+    /// evacuation genuinely finished.
+    Release(DeviceArgs),
+    /// Permanently retire a device.
+    Retire {
+        #[command(flatten)]
+        device: DeviceArgs,
+        /// Skip the confirmation prompt, for automation.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum BucketCommand {
     /// List buckets.
     List(EndpointArgs),
     /// Create a bucket.
     Create {
+        /// Storage class new objects are placed on.
+        #[arg(long)]
+        storage_class: Option<String>,
         /// Validated S3 bucket name.
         name: String,
         #[command(flatten)]
@@ -445,6 +547,8 @@ async fn main() -> Result<()> {
         Command::Storage { command } => storage(command, json).await?,
         Command::Cluster { command } => cluster(command, json).await?,
         Command::Node { command } => node(command, json).await?,
+        Command::Drive { command } => drive(command, json).await?,
+        Command::StorageClass { command } => storage_class(command, json).await?,
         Command::Repair { command } => repair(command, json).await?,
         Command::Rebalance { command } => rebalance(command, json).await?,
     }
@@ -527,13 +631,21 @@ async fn bucket(command: BucketCommand, json: bool) -> Result<()> {
                 }
             }
         }
-        BucketCommand::Create { name, endpoint } => {
+        BucketCommand::Create {
+            name,
+            storage_class,
+            endpoint,
+        } => {
+            let mut body = serde_json::json!({ "name": &name });
+            if let Some(class) = storage_class {
+                body["storage_class"] = serde_json::Value::String(class);
+            }
             let request = client()?
                 .post(format!(
                     "{}/api/v1/buckets",
                     endpoint.endpoint.trim_end_matches('/')
                 ))
-                .json(&NameRequest { name: &name });
+                .json(&body);
             let bucket = send_admin(request)
                 .await?
                 .json::<Bucket>()
@@ -1015,6 +1127,152 @@ async fn node(command: NodeCommand, json: bool) -> Result<()> {
     print_value(&value, json)
 }
 
+async fn storage_class(command: StorageClassCommand, json: bool) -> Result<()> {
+    let (request, no_content_action) = match command {
+        StorageClassCommand::List(endpoint) => (
+            client()?.get(api_url(&endpoint, "/api/v1/storage-classes")),
+            None,
+        ),
+        StorageClassCommand::Show { class, endpoint } => (
+            client()?.get(api_url(
+                &endpoint,
+                &format!("/api/v1/storage-classes/{class}"),
+            )),
+            None,
+        ),
+        StorageClassCommand::Set {
+            class,
+            replicas,
+            failure_domain,
+            strict,
+            device_kinds,
+            minimum_free_percent,
+            description,
+            endpoint,
+        } => {
+            // The class is sent in the body as well as the path because the body
+            // is the durable record; the server refuses a mismatch rather than
+            // guessing which one the operator meant.
+            let mut policy = serde_json::json!({
+                "class": class,
+                "durability": {
+                    "strategy": "replication",
+                    "replicas": replicas.unwrap_or(3),
+                },
+                "failure_domain": failure_domain.unwrap_or_else(|| "node".to_owned()),
+                "strict_failure_domains": strict,
+                "minimum_free_space_percent": minimum_free_percent.unwrap_or(0),
+            });
+            if !device_kinds.is_empty() {
+                policy["device_filter"] = serde_json::json!({ "allowed_kinds": device_kinds });
+            }
+            if let Some(description) = description {
+                policy["description"] = serde_json::Value::String(description);
+            }
+            (
+                client()?
+                    .put(api_url(
+                        &endpoint,
+                        &format!("/api/v1/storage-classes/{class}"),
+                    ))
+                    .json(&policy),
+                None,
+            )
+        }
+        StorageClassCommand::Delete {
+            class,
+            yes,
+            endpoint,
+        } => {
+            confirm(yes, &format!("Remove storage class {class}?"))?;
+            (
+                client()?.delete(api_url(
+                    &endpoint,
+                    &format!("/api/v1/storage-classes/{class}"),
+                )),
+                Some(("removed", class)),
+            )
+        }
+    };
+    let response = send_admin(request).await?;
+    if let Some((action, class)) = no_content_action {
+        return print_action(action, &class, json);
+    }
+    let value = response
+        .json::<serde_json::Value>()
+        .await
+        .context("decode storage class response")?;
+    print_value(&value, json)
+}
+
+async fn drive(command: DriveCommand, json: bool) -> Result<()> {
+    let request = match command {
+        DriveCommand::List(endpoint) => client()?.get(api_url(&endpoint, "/api/v1/devices")),
+        DriveCommand::Show(device) => client()?.get(device_url(&device, "")),
+        DriveCommand::Activate(device) => client()?.post(device_url(&device, "/activate")),
+        DriveCommand::Drain(device) => client()?.post(device_url(&device, "/drain")),
+        DriveCommand::Maintenance(device) => client()?.post(device_url(&device, "/maintenance")),
+        DriveCommand::Resume(device) => client()?.post(device_url(&device, "/resume")),
+        DriveCommand::Release(device) => client()?.post(device_url(&device, "/release")),
+        DriveCommand::Retire { device, yes } => {
+            // Retiring is the one device command that cannot be walked back, so
+            // it asks before acting unless a script opted out.
+            confirm(
+                yes,
+                &format!(
+                    "Permanently retire device {} on node {}?",
+                    device.device, device.node
+                ),
+            )?;
+            client()?.post(device_url(&device, "/retire"))
+        }
+    };
+    let value = send_admin(request)
+        .await?
+        .json::<serde_json::Value>()
+        .await
+        .context("decode device response")?;
+    print_value(&value, json)
+}
+
+fn device_url(device: &DeviceArgs, action: &str) -> String {
+    api_url(
+        &device.endpoint,
+        &format!(
+            "/api/v1/nodes/{}/devices/{}{action}",
+            device.node, device.device
+        ),
+    )
+}
+
+/// Requires an interactive confirmation before a destructive action.
+///
+/// A non-interactive session must pass `--yes` explicitly: prompting into a pipe
+/// would either hang or silently read nothing, and neither should be mistaken
+/// for consent.
+fn confirm(assumed: bool, question: &str) -> Result<()> {
+    use std::io::{IsTerminal, Write};
+
+    if assumed {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        bail!("{question} Refusing without --yes because this is not an interactive terminal");
+    }
+    print!("{question} [y/N] ");
+    std::io::stdout()
+        .flush()
+        .context("prompt for confirmation")?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .context("read confirmation")?;
+    if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+        bail!("cancelled");
+    }
+    Ok(())
+}
+
 async fn repair(command: RepairCommand, json: bool) -> Result<()> {
     let RepairCommand::Status(endpoint) = command;
     let value = send_admin(client()?.get(api_url(&endpoint, "/api/v1/repair/status")))
@@ -1132,6 +1390,8 @@ mod tests {
                 Command::Storage { .. } => "storage",
                 Command::Cluster { .. } => "cluster",
                 Command::Node { .. } => "node",
+                Command::Drive { .. } => "drive",
+                Command::StorageClass { .. } => "storage-class",
                 Command::Repair { .. } => "repair",
                 Command::Rebalance { .. } => "rebalance",
             };
@@ -1247,11 +1507,20 @@ mod tests {
         else {
             panic!("expected a bucket command");
         };
-        let BucketCommand::Create { name, endpoint } = command else {
+        let BucketCommand::Create {
+            name,
+            storage_class,
+            endpoint,
+        } = command
+        else {
             panic!("expected bucket create");
         };
         assert_eq!(name, "photos");
         assert_eq!(endpoint.endpoint, "http://node-a:7601");
+        assert_eq!(
+            storage_class, None,
+            "a bucket created without --storage-class must not be pinned to one"
+        );
     }
 
     #[test]

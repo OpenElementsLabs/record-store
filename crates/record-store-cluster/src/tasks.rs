@@ -8,7 +8,7 @@
 use std::fmt::{self, Display, Formatter};
 
 use chrono::{DateTime, TimeDelta, Utc};
-use record_store_core::{ClusterOperationId, NodeId, ObjectId, ReplicaTaskId};
+use record_store_core::{ClusterOperationId, DeviceId, NodeId, ObjectId, ReplicaTaskId};
 use serde::{Deserialize, Serialize};
 
 /// Why a replica needs to move or be rebuilt.
@@ -194,8 +194,14 @@ pub struct ReplicaTask {
     pub priority: ReplicaTaskPriority,
     /// Node whose replica must be removed, for movement and deletion tasks.
     pub source_node: Option<NodeId>,
+    /// Exact source device, when known.
+    #[serde(default)]
+    pub source_device: Option<DeviceId>,
     /// Node the replica must exist on when the task completes.
     pub target_node: Option<NodeId>,
+    /// Exact destination device, when known.
+    #[serde(default)]
+    pub target_device: Option<DeviceId>,
     /// Long-running operation this task belongs to.
     pub operation_id: Option<ClusterOperationId>,
     /// Payload size, used for progress accounting and throttling.
@@ -228,7 +234,9 @@ impl ReplicaTask {
             kind,
             priority,
             source_node: None,
+            source_device: None,
             target_node: None,
+            target_device: None,
             operation_id: None,
             size,
             state: ReplicaTaskState::Queued,
@@ -246,10 +254,24 @@ impl ReplicaTask {
         self
     }
 
+    /// Pins the source device.
+    #[must_use]
+    pub const fn with_source_device(mut self, device_id: Option<DeviceId>) -> Self {
+        self.source_device = device_id;
+        self
+    }
+
     /// Pins the destination node.
     #[must_use]
     pub const fn with_target(mut self, node_id: Option<NodeId>) -> Self {
         self.target_node = node_id;
+        self
+    }
+
+    /// Pins the destination device.
+    #[must_use]
+    pub const fn with_target_device(mut self, device_id: Option<DeviceId>) -> Self {
+        self.target_device = device_id;
         self
     }
 

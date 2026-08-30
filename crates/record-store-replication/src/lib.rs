@@ -32,7 +32,7 @@ pub use coordinator::{Coordinator, CoordinatorSettings};
 pub use operations::{ClusterOperations, OperationError};
 pub use read::{ReadCandidate, ReplicaRead, open_replica, read_candidates};
 pub use runtime::{ClusterRuntime, RuntimeSettings, SupervisedTasks, TaskHealth, TaskStatus};
-pub use status::{ClusterStatus, NodeStatus, RepairStatus, ReplicationStatus};
+pub use status::{ClusterStatus, DeviceStatus, NodeStatus, RepairStatus, ReplicationStatus};
 pub use store::{DistributedObjectStore, DistributedSettings};
 pub use tasks::TaskExecutor;
 pub use write::{ReplicationOutcome, WriteSettings, replicate};

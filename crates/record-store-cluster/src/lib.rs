@@ -18,9 +18,11 @@ pub mod catalog;
 pub mod command;
 pub mod config;
 pub mod credentials;
+pub mod device;
 pub mod health;
 pub mod identity;
 pub mod placement;
+pub mod policy;
 pub mod rebalance;
 pub mod replica;
 pub mod tasks;
@@ -41,13 +43,20 @@ pub use credentials::{
     ClusterSecret, CredentialError, IssuedJoinToken, IssuedNodeCredential, JoinToken,
     NodeCredential, parse_join_token, parse_node_credential,
 };
+pub use device::{
+    DeviceCapacity, DeviceDiscovery, DeviceDiscoveryError, DeviceError, DeviceHealth, DeviceKind,
+    DeviceManager, DeviceRecord, DeviceState, DiscoveredDevice, HardwareMetadata, PlacementWeight,
+};
 pub use health::{
     ClusterHealth, DataHealth, HealthTransition, QuorumStatus, Readiness, evaluate_node,
 };
 pub use identity::{IdentityError, NodeIdentity, NodeIdentityStore, RaftNodeId};
 pub use placement::{
-    CapacityAwarePlacement, ObjectPlacementRequest, PlacementError, PlacementPlan, PlacementPolicy,
-    PlacementTarget,
+    CapacityAwarePlacement, ObjectPlacementRequest, PlacementCandidateExplanation, PlacementError,
+    PlacementExplanation, PlacementPlan, PlacementPolicy, PlacementTarget,
+};
+pub use policy::{
+    DeviceFilter, DurabilityStrategy, MAXIMUM_POLICY_REPLICAS, StoragePolicy, StoragePolicyError,
 };
 pub use rebalance::{DecommissionSafety, RebalanceCandidate, RebalanceMove, plan_rebalance};
 pub use replica::{Durability, PayloadPlacement, Replica, ReplicaState, Tombstone};
@@ -56,8 +65,8 @@ pub use tasks::{
     OperationProgress, ReplicaTask, ReplicaTaskKind, ReplicaTaskPriority, ReplicaTaskState,
 };
 pub use topology::{
-    ClusterTopology, FailureDomain, FailureDomainScope, NodeActivity, NodeCapacity, NodeRecord,
-    NodeRegistration, NodeState, StorageClass, TopologyError,
+    ClusterMapEpoch, ClusterTopology, FailureDomain, FailureDomainScope, NodeActivity,
+    NodeCapacity, NodeRecord, NodeRegistration, NodeState, StorageClass, TopologyError,
 };
 pub use version::{
     CLUSTER_FORMAT_VERSION, CompatibilityError, MINIMUM_COMPATIBLE_PROTOCOL_MINOR_VERSION,

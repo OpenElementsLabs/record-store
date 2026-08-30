@@ -101,7 +101,7 @@ healthcheck with no credential at all.
 
 ```bash
 record-store bucket list --endpoint <endpoint>
-record-store bucket create <name> --endpoint <endpoint>
+record-store bucket create <name> [--storage-class <class>] --endpoint <endpoint>
 record-store bucket delete <name> --endpoint <endpoint>
 
 record-store bucket versioning get <name> --endpoint <endpoint>
@@ -232,6 +232,45 @@ record-store node decommission <id> --force --endpoint <endpoint>
 
 `decommission` runs a durability safety check. `--force` bypasses the objection but
 still moves the data. See [Node Lifecycle](../cluster/node-lifecycle.md).
+
+## `storage-class`
+
+```bash
+record-store storage-class list --endpoint <endpoint>
+record-store storage-class show <class> --endpoint <endpoint>
+record-store storage-class set <class> [--replicas N] [--failure-domain <scope>]
+    [--strict] [--device-kind <kind>]... [--minimum-free-percent N]
+    [--description <text>] --endpoint <endpoint>
+record-store storage-class delete <class> --yes --endpoint <endpoint>
+```
+
+`--device-kind` is repeatable. Omitting it accepts any device kind.
+
+`delete` is refused while devices still carry the class. See
+[Storage Classes](../administration/storage-classes.md).
+
+## `drive`
+
+```bash
+record-store drive list --endpoint <endpoint>
+record-store drive show <node> <device> --endpoint <endpoint>
+record-store drive activate <node> <device> --endpoint <endpoint>
+record-store drive drain <node> <device> --endpoint <endpoint>
+record-store drive maintenance <node> <device> --endpoint <endpoint>
+record-store drive resume <node> <device> --endpoint <endpoint>
+record-store drive release <node> <device> --endpoint <endpoint>
+record-store drive retire <node> <device> --yes --endpoint <endpoint>
+```
+
+`<device>` is the stable device identifier from `drive list`, not a path.
+
+`release` marks a device safe to remove and **fails** while it still holds
+replicas, so success means evacuation finished rather than that it was
+requested.
+
+`retire` is permanent and prompts for confirmation. It refuses to run on a
+non-interactive terminal unless `--yes` is passed. See
+[Replacing a Drive](../cluster/replacing-a-drive.md).
 
 ## `repair`
 

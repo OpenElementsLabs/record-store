@@ -15,7 +15,7 @@ use record_store_cluster::{
     StorageClass,
 };
 use record_store_consensus::{ClusterWrite, ConsensusError, MetadataConsensus};
-use record_store_core::{Checksum, ClusterId, NodeId, ObjectId, PayloadFormat};
+use record_store_core::{Checksum, ClusterId, DeviceId, NodeId, ObjectId, PayloadFormat};
 use record_store_protocol::{
     consensus_v1::{
         ConsensusEnvelope, ConsensusReply, ForwardWriteRequest, ForwardWriteResponse,
@@ -32,7 +32,7 @@ use record_store_protocol::{
         PingRequest, PingResponse, system_service_server::SystemService,
     },
 };
-use record_store_storage::{ReplicaCommitment, ReplicaStore, StorageError, WriteReplicaRequest};
+use record_store_storage::{DeviceStore, ReplicaCommitment, StorageError, WriteReplicaRequest};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming, metadata::MetadataMap};
@@ -215,7 +215,7 @@ fn encode_reply<T: serde::Serialize>(value: &T) -> Result<Response<ConsensusRepl
 
 /// Replica transfer and integrity service.
 pub struct ReplicaRpcService {
-    storage: Arc<dyn ReplicaStore>,
+    storage: Arc<DeviceStore>,
     verifier: Arc<PeerVerifier>,
     payload_format: PayloadFormat,
 }
@@ -224,7 +224,7 @@ impl ReplicaRpcService {
     /// Creates the service for one node.
     #[must_use]
     pub const fn new(
-        storage: Arc<dyn ReplicaStore>,
+        storage: Arc<DeviceStore>,
         verifier: Arc<PeerVerifier>,
         payload_format: PayloadFormat,
     ) -> Self {
@@ -276,6 +276,10 @@ impl ReplicaService for ReplicaRpcService {
             let object_id: ObjectId = descriptor.object_id.parse().map_err(|_| {
                 Status::invalid_argument("replica header has an invalid payload id")
             })?;
+            let device_id: DeviceId = descriptor
+                .device_id
+                .parse()
+                .map_err(|_| Status::invalid_argument("replica header has an invalid device id"))?;
             if header.operation_id.is_empty() || header.operation_id.len() > 128 {
                 return Err(Status::invalid_argument(
                     "replica header has an invalid operation identity",
@@ -375,10 +379,15 @@ impl ReplicaService for ReplicaRpcService {
                     body,
                 ),
             };
-            let result = storage.write_replica(request).await.map_err(|error| {
-                warn!(%error, %object_id, "replica transfer refused");
-                storage_status(&error)
-            })?;
+            let result = storage
+                .for_device(device_id)
+                .map_err(|error| storage_status(&error))?
+                .write_replica(request)
+                .await
+                .map_err(|error| {
+                    warn!(%error, %object_id, "replica transfer refused");
+                    storage_status(&error)
+                })?;
             Ok(Response::new(WriteReplicaResponse {
                 operation_id,
                 object_id: result.object_id.to_string(),
@@ -397,6 +406,10 @@ impl ReplicaService for ReplicaRpcService {
     ) -> Result<Response<Self::ReadReplicaStream>, Status> {
         let peer = self.authorize(request.metadata()).await?;
         let input = request.into_inner();
+        let device_id: DeviceId = input
+            .device_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid device identifier"))?;
         let object_id: ObjectId = input
             .object_id
             .parse()
@@ -422,6 +435,8 @@ impl ReplicaService for ReplicaRpcService {
         };
         let opened = self
             .storage
+            .for_device(device_id)
+            .map_err(|error| storage_status(&error))?
             .read_replica(record_store_storage::ReadReplicaRequest {
                 object_id,
                 size: input.size,
@@ -474,13 +489,19 @@ impl ReplicaService for ReplicaRpcService {
         request: Request<DeleteReplicaRequest>,
     ) -> Result<Response<DeleteReplicaResponse>, Status> {
         self.authorize(request.metadata()).await?;
-        let object_id: ObjectId = request
-            .into_inner()
+        let input = request.into_inner();
+        let object_id: ObjectId = input
             .object_id
             .parse()
             .map_err(|_| Status::invalid_argument("invalid payload identifier"))?;
+        let device_id: DeviceId = input
+            .device_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid device identifier"))?;
         let removed = self
             .storage
+            .for_device(device_id)
+            .map_err(|error| storage_status(&error))?
             .delete_replica(object_id)
             .await
             .map_err(|error| storage_status(&error))?;
@@ -493,6 +514,10 @@ impl ReplicaService for ReplicaRpcService {
     ) -> Result<Response<VerifyReplicaResponse>, Status> {
         self.authorize(request.metadata()).await?;
         let input = request.into_inner();
+        let device_id: DeviceId = input
+            .device_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid device identifier"))?;
         let object_id: ObjectId = input
             .object_id
             .parse()
@@ -503,6 +528,8 @@ impl ReplicaService for ReplicaRpcService {
             .map_err(|_| Status::invalid_argument("invalid checksum"))?;
         let verification = self
             .storage
+            .for_device(device_id)
+            .map_err(|error| storage_status(&error))?
             .verify_replica(object_id, input.size, self.payload_format, checksum)
             .await
             .map_err(|error| storage_status(&error))?;
@@ -522,13 +549,19 @@ impl ReplicaService for ReplicaRpcService {
         request: Request<StatReplicaRequest>,
     ) -> Result<Response<StatReplicaResponse>, Status> {
         self.authorize(request.metadata()).await?;
-        let object_id: ObjectId = request
-            .into_inner()
+        let input = request.into_inner();
+        let object_id: ObjectId = input
             .object_id
             .parse()
             .map_err(|_| Status::invalid_argument("invalid payload identifier"))?;
+        let device_id: DeviceId = input
+            .device_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid device identifier"))?;
         let stat = self
             .storage
+            .for_device(device_id)
+            .map_err(|error| storage_status(&error))?
             .stat_replica(object_id)
             .await
             .map_err(|error| storage_status(&error))?;
@@ -544,6 +577,10 @@ impl ReplicaService for ReplicaRpcService {
     ) -> Result<Response<ListLocalPayloadsResponse>, Status> {
         self.authorize(request.metadata()).await?;
         let input = request.into_inner();
+        let device_id: DeviceId = input
+            .device_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid device identifier"))?;
         let after = if input.after_object_id.is_empty() {
             None
         } else {
@@ -559,6 +596,8 @@ impl ReplicaService for ReplicaRpcService {
             .clamp(1, 10_000);
         let payloads = self
             .storage
+            .for_device(device_id)
+            .map_err(|error| storage_status(&error))?
             .list_local_payloads(after, limit)
             .await
             .map_err(|error| storage_status(&error))?;
@@ -772,6 +811,12 @@ fn registration_from(
             available_bytes: profile.available_bytes,
             replica_bytes: profile.replica_bytes,
             temporary_bytes: profile.temporary_bytes,
+        },
+        devices: if profile.devices_json.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(&profile.devices_json)
+                .map_err(|_| Status::invalid_argument("invalid device inventory"))?
         },
         started_at,
     })

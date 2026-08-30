@@ -11,7 +11,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use md5::Md5;
 use record_store_cluster::{PlacementPlan, PlacementTarget};
-use record_store_core::{Checksum, ETag, NodeId, ObjectId};
+use record_store_core::{Checksum, DeviceId, ETag, NodeId, ObjectId};
 use record_store_rpc::{ReplicaTarget, TransferExpectation};
 use record_store_storage::{
     ReplicaCommitment, StorageError, UploadStream, WriteReplicaRequest, upload_stream,
@@ -52,6 +52,8 @@ pub struct ReplicationOutcome {
     pub etag: ETag,
     /// Nodes that verified and published the replica.
     pub durable: Vec<NodeId>,
+    /// Exact devices that verified and published replicas.
+    pub durable_devices: Vec<(NodeId, DeviceId)>,
     /// Nodes that failed, with the reason.
     pub failed: Vec<(NodeId, String)>,
 }
@@ -60,7 +62,7 @@ impl ReplicationOutcome {
     /// Returns how many replicas became durable.
     #[must_use]
     pub fn acknowledgements(&self) -> u8 {
-        u8::try_from(self.durable.len()).unwrap_or(u8::MAX)
+        u8::try_from(self.durable_devices.len()).unwrap_or(u8::MAX)
     }
 
     /// Returns a compact per-target explanation for operators.
@@ -112,9 +114,10 @@ pub async fn replicate(
         match destination {
             Destination::Local => {
                 let (commit_sender, commit_receiver) = oneshot::channel();
-                let local = Arc::clone(&context.local);
+                let local = context.local.for_device(target.device_id)?;
                 let operation = operation_id.to_owned();
                 let node_id = target.node_id;
+                let device_id = target.device_id;
                 writers.push(tokio::spawn(async move {
                     let result = local
                         .write_replica(WriteReplicaRequest::trailing(
@@ -125,7 +128,7 @@ pub async fn replicate(
                         ))
                         .await;
                     (
-                        node_id,
+                        (node_id, device_id),
                         result
                             .map(|written| written.checksum)
                             .map_err(|error| error.to_string()),
@@ -144,6 +147,7 @@ pub async fn replicate(
                 let transport = Arc::clone(&context.transport);
                 let operation = operation_id.to_owned();
                 let node_id = target.node_id;
+                let device_id = target.device_id;
                 writers.push(tokio::spawn(async move {
                     let result = transport
                         .write_replica(
@@ -155,7 +159,7 @@ pub async fn replicate(
                         )
                         .await;
                     (
-                        node_id,
+                        (node_id, device_id),
                         result
                             .map(|written| written.checksum)
                             .map_err(|error| error.to_string()),
@@ -247,12 +251,14 @@ pub async fn replicate(
     }
 
     let mut durable = Vec::new();
+    let mut durable_devices = Vec::new();
     let mut failed = Vec::new();
     for writer in writers {
         match writer.await {
-            Ok((node_id, Ok(reported))) => {
+            Ok(((node_id, device_id), Ok(reported))) => {
                 if reported == checksum {
                     durable.push(node_id);
+                    durable_devices.push((node_id, device_id));
                 } else {
                     // A replica that reports a different checksum did not store
                     // what the client sent, so it is not counted as durable.
@@ -262,7 +268,7 @@ pub async fn replicate(
                     ));
                 }
             }
-            Ok((node_id, Err(reason))) => failed.push((node_id, reason)),
+            Ok(((node_id, _), Err(reason))) => failed.push((node_id, reason)),
             Err(error) => failed.push((NodeId::from_uuid(uuid::Uuid::nil()), error.to_string())),
         }
     }
@@ -278,7 +284,7 @@ pub async fn replicate(
     if let Some(reason) = source_failure {
         // The upload itself failed, so nothing was published anywhere. Any
         // staged bytes are cleaned up by the destinations themselves.
-        rollback(context, object_id, &durable).await;
+        rollback(context, object_id, &durable_devices).await;
         return Err(StorageError::UploadStream(std::io::Error::other(reason)));
     }
 
@@ -293,6 +299,7 @@ pub async fn replicate(
         checksum,
         etag,
         durable,
+        durable_devices,
         failed,
     })
 }
@@ -311,6 +318,7 @@ fn destination_for(
     } else {
         Ok(Destination::Remote(ReplicaTarget {
             node_id: target.node_id,
+            device_id: target.device_id,
             address: target.rpc_address.clone(),
         }))
     }
@@ -321,15 +329,26 @@ fn destination_for(
 /// This is best effort: anything left behind is unreferenced by metadata and is
 /// collected by the garbage collector, which is why the collector is
 /// conservative about what it considers garbage.
-pub async fn rollback(context: &ClusterContext, object_id: ObjectId, nodes: &[NodeId]) {
-    for node_id in nodes {
+pub async fn rollback(
+    context: &ClusterContext,
+    object_id: ObjectId,
+    targets: &[(NodeId, DeviceId)],
+) {
+    for (node_id, device_id) in targets {
         if *node_id == context.node_id {
-            if let Err(error) = context.local.delete_replica(object_id).await {
+            let local = match context.local.for_device(*device_id) {
+                Ok(local) => local,
+                Err(error) => {
+                    warn!(%object_id, %device_id, %error, "could not resolve local replica device");
+                    continue;
+                }
+            };
+            if let Err(error) = local.delete_replica(object_id).await {
                 warn!(%object_id, %error, "could not release a local uncommitted replica");
             }
             continue;
         }
-        match context.target(*node_id).await {
+        match context.target(*node_id, *device_id).await {
             Ok(target) => {
                 if let Err(error) = context.transport.delete_replica(&target, object_id).await {
                     warn!(
@@ -354,11 +373,16 @@ mod tests {
     use super::*;
 
     fn outcome(durable: Vec<NodeId>, failed: Vec<(NodeId, String)>) -> ReplicationOutcome {
+        let durable_devices = durable
+            .iter()
+            .map(|node| (*node, record_store_cluster::DeviceRecord::legacy_id(*node)))
+            .collect();
         ReplicationOutcome {
             size: 1_024,
             checksum: Checksum::sha256([2_u8; 32]),
             etag: ETag::from_md5([3_u8; 16]),
             durable,
+            durable_devices,
             failed,
         }
     }

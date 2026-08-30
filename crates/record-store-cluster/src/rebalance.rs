@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use record_store_core::{NodeId, ObjectId};
+use record_store_core::{DeviceId, NodeId, ObjectId};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -29,8 +29,12 @@ pub struct RebalanceMove {
     pub object_id: ObjectId,
     /// Node the replica is released from, after the target is verified.
     pub source_node: NodeId,
+    /// Exact source device.
+    pub source_device: DeviceId,
     /// Node the replica is copied to.
     pub target_node: NodeId,
+    /// Exact destination device.
+    pub target_device: DeviceId,
     /// Payload size, used for progress accounting.
     pub size: u64,
 }
@@ -97,15 +101,15 @@ pub fn plan_rebalance(
         }
         let placement = &candidate.placement;
         let holders = placement.nodes();
-        let Some(source) = holders
+        let Some(source) = placement
+            .replicas
             .iter()
-            .copied()
-            .find(|node_id| donors.contains(node_id))
+            .find(|replica| donors.contains(&replica.node_id))
         else {
             continue;
         };
         if placement
-            .replica(source)
+            .replica_on(source.node_id, source.device_id)
             .is_none_or(|replica| !replica.state.usable_as_source())
         {
             continue;
@@ -140,8 +144,10 @@ pub fn plan_rebalance(
         *arrivals.entry(target.node_id).or_insert(0) += 1;
         moves.push(RebalanceMove {
             object_id: placement.object_id,
-            source_node: source,
+            source_node: source.node_id,
+            source_device: source.device_id,
             target_node: target.node_id,
+            target_device: target.device_id,
             size: placement.size,
         });
     }
@@ -264,6 +270,7 @@ mod tests {
                 replica_bytes: total.saturating_sub(available),
                 temporary_bytes: 0,
             },
+            devices: Vec::new(),
             activity: NodeActivity::default(),
             joined_at: Utc::now(),
             started_at: Utc::now(),

@@ -2092,6 +2092,7 @@ dependencies = [
 name = "record-store-cluster"
 version = "0.1.1"
 dependencies = [
+ "async-trait",
  "chrono",
  "hex",
  "proptest",

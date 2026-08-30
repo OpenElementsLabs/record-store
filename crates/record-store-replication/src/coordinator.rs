@@ -209,30 +209,41 @@ impl Coordinator {
             return Ok(None);
         }
 
-        let existing: BTreeSet<NodeId> = placement
+        let existing: BTreeSet<(NodeId, record_store_core::DeviceId)> = placement
             .replicas
             .iter()
             .filter(|replica| replica.state == ReplicaState::Healthy)
-            .map(|replica| replica.node_id)
+            .map(|replica| (replica.node_id, replica.device_id))
             .collect();
-        let damaged: Vec<NodeId> = placement
+        let damaged: Vec<(NodeId, record_store_core::DeviceId)> = placement
             .replicas
             .iter()
             .filter(|replica| replica.state.needs_repair())
-            .map(|replica| replica.node_id)
+            .map(|replica| (replica.node_id, replica.device_id))
             .collect();
-        let leaving: Vec<NodeId> = placement
+        let leaving: Vec<(NodeId, record_store_core::DeviceId)> = placement
             .replicas
             .iter()
-            .filter(|replica| draining.contains(&replica.node_id))
-            .map(|replica| replica.node_id)
+            .filter(|replica| {
+                draining.contains(&replica.node_id)
+                    || topology
+                        .device(replica.device_id)
+                        .is_some_and(|(_, device)| {
+                            matches!(
+                                device.state,
+                                record_store_cluster::DeviceState::Draining
+                                    | record_store_cluster::DeviceState::Failed
+                            )
+                        })
+            })
+            .map(|replica| (replica.node_id, replica.device_id))
             .collect();
 
-        let (kind, source_node) = if !leaving.is_empty() {
+        let (kind, source) = if !leaving.is_empty() {
             (ReplicaTaskKind::Drain, leaving.first().copied())
-        } else if damaged.iter().any(|node| {
+        } else if damaged.iter().any(|(node, device)| {
             placement
-                .replica(*node)
+                .replica_on(*node, *device)
                 .is_some_and(|replica| replica.state == ReplicaState::Corrupt)
         }) {
             (ReplicaTaskKind::RepairCorrupt, None)
@@ -242,11 +253,9 @@ impl Coordinator {
 
         // A damaged replica is rebuilt in place where possible, so the node that
         // holds it is preferred as the destination.
-        let target = if let Some(node) = damaged.first().copied() {
-            Some(node)
+        let target = if let Some(target) = damaged.first().copied() {
+            Some(target)
         } else {
-            let mut excluded = existing.clone();
-            excluded.extend(draining.iter().copied());
             let request = ObjectPlacementRequest::new(
                 placement.object_id,
                 placement.desired_replicas.max(1),
@@ -254,10 +263,13 @@ impl Coordinator {
                 placement.storage_class.clone(),
             )
             .with_size_hint(Some(placement.size))
-            .with_existing_nodes(existing.iter().copied())
-            .with_excluded_nodes(excluded);
+            .with_existing_targets(existing.iter().copied())
+            .with_excluded_nodes(draining.iter().copied());
             match self.context.placement.place(&request, topology) {
-                Ok(plan) => plan.targets.first().map(|target| target.node_id),
+                Ok(plan) => plan
+                    .targets
+                    .first()
+                    .map(|target| (target.node_id, target.device_id)),
                 Err(error) => {
                     debug!(
                         object = %placement.object_id,
@@ -268,7 +280,7 @@ impl Coordinator {
                 }
             }
         };
-        let Some(target) = target else {
+        let Some((target_node, target_device)) = target else {
             return Ok(None);
         };
 
@@ -281,8 +293,10 @@ impl Coordinator {
                 placement.size,
                 Utc::now(),
             )
-            .with_target(Some(target))
-            .with_source(source_node),
+            .with_target(Some(target_node))
+            .with_target_device(Some(target_device))
+            .with_source(source.map(|(node, _)| node))
+            .with_source_device(source.map(|(_, device)| device)),
         ))
     }
 
@@ -459,7 +473,9 @@ impl Coordinator {
                 Utc::now(),
             )
             .with_source(Some(movement.source_node))
+            .with_source_device(Some(movement.source_device))
             .with_target(Some(movement.target_node))
+            .with_target_device(Some(movement.target_device))
             .with_operation(operation_id);
             self.apply(ClusterCommand::EnqueueTask {
                 task: Box::new(task),

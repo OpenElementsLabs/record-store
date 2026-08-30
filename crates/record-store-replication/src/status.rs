@@ -9,10 +9,11 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use record_store_cluster::{
-    ClusterHealth, ClusterOperation, ClusterUsage, DataHealth, NodeState, QuorumStatus,
+    ClusterHealth, ClusterOperation, ClusterUsage, DataHealth, DeviceHealth, DeviceKind,
+    DeviceState, NodeState, QuorumStatus,
 };
 use record_store_consensus::{MetadataConsensus, MetadataQuorum};
-use record_store_core::{ClusterId, NodeId};
+use record_store_core::{ClusterId, DeviceId, NodeId};
 use serde::{Deserialize, Serialize};
 
 use crate::{context::ClusterContext, runtime::TaskStatus};
@@ -50,6 +51,47 @@ pub struct NodeStatus {
     pub state_changed_at: DateTime<Utc>,
     /// Operator-facing reason for the current state.
     pub state_reason: Option<String>,
+    /// Independently managed storage devices on this node.
+    #[serde(default)]
+    pub devices: Vec<DeviceStatus>,
+}
+
+/// One storage device's operator-facing status.
+///
+/// Health and lifecycle stay separate fields because they answer different
+/// questions: lifecycle is what an administrator decided, health is what the
+/// platform reported. A device can be administratively `Active` while its health
+/// is `Unknown`, and neither value is inferred from the other.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceStatus {
+    /// Stable device identity, which is not its current path.
+    pub device_id: DeviceId,
+    /// Node serving the device.
+    pub node_id: NodeId,
+    /// Physical technology, or `Unknown` when the platform did not say.
+    pub kind: DeviceKind,
+    /// Logical storage class used by placement policy.
+    pub storage_class: String,
+    /// Durable administrative lifecycle state.
+    pub state: DeviceState,
+    /// Best available health observation. Never inferred.
+    pub health: DeviceHealth,
+    /// Capacity exposed by the platform.
+    pub capacity_bytes: u64,
+    /// Capacity Record Store may allocate from.
+    pub usable_bytes: u64,
+    /// Capacity currently available for allocation.
+    pub available_bytes: u64,
+    /// Utilization of usable capacity, in whole percent.
+    pub utilization_percent: u32,
+    /// Administrator-configured placement weight, where 1000 is neutral.
+    pub configured_weight: u32,
+    /// Whether placement may currently select this device.
+    pub accepts_placement: bool,
+    /// Current platform path, when one is known. Descriptive only.
+    pub current_path: Option<String>,
+    /// Manufacturer model, when the platform exposed one.
+    pub model: Option<String>,
 }
 
 /// Replication and repair progress.
@@ -145,6 +187,30 @@ impl ClusterStatus {
                 last_heartbeat_at: node.last_heartbeat_at,
                 state_changed_at: node.state_changed_at,
                 state_reason: node.state_reason.clone(),
+                devices: node
+                    .devices
+                    .iter()
+                    .map(|device| DeviceStatus {
+                        device_id: device.id,
+                        node_id: node.node_id,
+                        kind: device.kind,
+                        storage_class: device.storage_class.to_string(),
+                        state: device.state,
+                        health: device.health,
+                        capacity_bytes: device.capacity.raw_bytes,
+                        usable_bytes: device.capacity.usable_bytes,
+                        available_bytes: device.capacity.available_bytes,
+                        utilization_percent: device.capacity.utilization_permille() / 10,
+                        configured_weight: device.configured_weight.get(),
+                        accepts_placement: device.state.accepts_new_placements()
+                            && device.health.permits_placement(),
+                        current_path: device
+                            .current_path
+                            .as_ref()
+                            .map(|path| path.display().to_string()),
+                        model: device.hardware.model.clone(),
+                    })
+                    .collect(),
             });
         }
         let operations = context

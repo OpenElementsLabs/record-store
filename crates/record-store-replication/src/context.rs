@@ -6,10 +6,10 @@ use record_store_cluster::{
     ClusterConfig, ClusterTopology, PayloadPlacement, PlacementPolicy, StorageClass,
 };
 use record_store_consensus::{ClusterStore, ClusterWrite, ConsensusError, MetadataConsensus};
-use record_store_core::{NodeId, ObjectId};
+use record_store_core::{DeviceId, NodeId, ObjectId};
 use record_store_metadata::MetadataRepository;
 use record_store_rpc::{ReplicaTarget, ReplicaTransport};
-use record_store_storage::{ReplicaStore, StorageError};
+use record_store_storage::{DeviceStore, StorageError};
 
 /// Everything the distributed data plane needs to serve one node's requests.
 pub struct ClusterContext {
@@ -20,7 +20,7 @@ pub struct ClusterContext {
     /// Replicated object catalog.
     pub metadata: Arc<dyn MetadataRepository>,
     /// This node's local replica storage.
-    pub local: Arc<dyn ReplicaStore>,
+    pub local: Arc<DeviceStore>,
     /// Transport to peer nodes.
     pub transport: Arc<dyn ReplicaTransport>,
     /// Replica placement decisions.
@@ -71,8 +71,41 @@ impl ClusterContext {
         StorageClass::default()
     }
 
+    /// Resolves the storage policy a bucket's objects should be placed by.
+    ///
+    /// A bucket that selected no class resolves to the default policy, which is
+    /// what the cluster was already doing. A bucket naming a class nobody
+    /// defined is a configuration error and is reported rather than quietly
+    /// placed by default rules — silently ignoring the class would put data on
+    /// hardware the operator deliberately excluded.
+    pub async fn storage_policy_for(
+        &self,
+        bucket_id: record_store_core::BucketId,
+    ) -> Result<Option<record_store_cluster::StoragePolicy>, StorageError> {
+        let Some(bucket) = self.metadata.get_bucket(bucket_id).await? else {
+            return Err(StorageError::BucketNotFound);
+        };
+        let class = bucket.storage_class.unwrap_or_default();
+        self.cluster
+            .storage_policies()
+            .await
+            .map_err(|error| StorageError::ClusterUnavailable(error.to_string()))?
+            .into_iter()
+            .find(|policy| policy.class == class)
+            .map(Some)
+            .ok_or_else(|| {
+                StorageError::ClusterUnavailable(format!(
+                    "bucket storage class '{class}' is not a defined storage policy"
+                ))
+            })
+    }
+
     /// Resolves the transport target for a node.
-    pub async fn target(&self, node_id: NodeId) -> Result<ReplicaTarget, StorageError> {
+    pub async fn target(
+        &self,
+        node_id: NodeId,
+        device_id: DeviceId,
+    ) -> Result<ReplicaTarget, StorageError> {
         let node = self
             .cluster
             .node(node_id)
@@ -83,6 +116,7 @@ impl ClusterContext {
             })?;
         Ok(ReplicaTarget {
             node_id,
+            device_id,
             address: node.rpc_address,
         })
     }

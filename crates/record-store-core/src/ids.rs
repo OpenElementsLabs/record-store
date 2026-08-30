@@ -69,6 +69,7 @@ uuid_identifier!(ObjectId, "object");
 uuid_identifier!(VersionId, "version");
 uuid_identifier!(UploadId, "multipart upload");
 uuid_identifier!(NodeId, "node");
+uuid_identifier!(DeviceId, "device");
 uuid_identifier!(ClusterId, "cluster");
 uuid_identifier!(OrganizationId, "organization");
 uuid_identifier!(ServiceAccountId, "service account");

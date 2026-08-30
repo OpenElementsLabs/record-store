@@ -22,6 +22,13 @@ pub struct Bucket {
     /// Limits enforced transactionally at metadata publication.
     #[serde(default)]
     pub quota: BucketQuota,
+    /// Storage class new objects in this bucket are placed on.
+    ///
+    /// `None` means the deployment default class, which is what every bucket
+    /// created before storage classes existed resolves to. Changing this affects
+    /// where new objects are placed; it never moves objects already written.
+    #[serde(default)]
+    pub storage_class: Option<StorageClass>,
     /// Optional physical durability policy for new object versions.
     ///
     /// `None` means the deployment default: single-copy in standalone mode and

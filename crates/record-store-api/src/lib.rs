@@ -22,9 +22,13 @@ use crate::handlers::buckets::{
     set_bucket_versioning,
 };
 use crate::handlers::cluster::{
-    cluster_health, cluster_initialize, cluster_status, decommission_cluster_node,
-    drain_cluster_node, inspect_cluster_node, issue_cluster_join_token, list_cluster_nodes,
-    maintain_cluster_node, rebalance_status, repair_status, resume_cluster_node, start_rebalance,
+    activate_cluster_device, cluster_health, cluster_initialize, cluster_status,
+    decommission_cluster_node, delete_storage_class, drain_cluster_device, drain_cluster_node,
+    inspect_cluster_device, inspect_cluster_node, inspect_storage_class, issue_cluster_join_token,
+    list_cluster_devices, list_cluster_nodes, list_node_devices, list_storage_classes,
+    maintain_cluster_device, maintain_cluster_node, put_storage_class, rebalance_status,
+    release_cluster_device, repair_status, resume_cluster_device, resume_cluster_node,
+    retire_cluster_device, start_rebalance,
 };
 use crate::handlers::lifecycle::{
     create_lifecycle_rule, delete_lifecycle_rule, list_lifecycle_rules, update_lifecycle_rule,
@@ -357,6 +361,43 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/nodes/{id}/decommission",
             axum::routing::post(decommission_cluster_node),
+        )
+        .route("/api/v1/storage-classes", get(list_storage_classes))
+        .route(
+            "/api/v1/storage-classes/{class}",
+            get(inspect_storage_class)
+                .put(put_storage_class)
+                .delete(delete_storage_class),
+        )
+        .route("/api/v1/devices", get(list_cluster_devices))
+        .route("/api/v1/nodes/{id}/devices", get(list_node_devices))
+        .route(
+            "/api/v1/nodes/{node}/devices/{device}",
+            get(inspect_cluster_device),
+        )
+        .route(
+            "/api/v1/nodes/{node}/devices/{device}/activate",
+            axum::routing::post(activate_cluster_device),
+        )
+        .route(
+            "/api/v1/nodes/{node}/devices/{device}/drain",
+            axum::routing::post(drain_cluster_device),
+        )
+        .route(
+            "/api/v1/nodes/{node}/devices/{device}/maintenance",
+            axum::routing::post(maintain_cluster_device),
+        )
+        .route(
+            "/api/v1/nodes/{node}/devices/{device}/resume",
+            axum::routing::post(resume_cluster_device),
+        )
+        .route(
+            "/api/v1/nodes/{node}/devices/{device}/release",
+            axum::routing::post(release_cluster_device),
+        )
+        .route(
+            "/api/v1/nodes/{node}/devices/{device}/retire",
+            axum::routing::post(retire_cluster_device),
         )
         .route("/api/v1/repair/status", get(repair_status))
         .route("/api/v1/rebalance", axum::routing::post(start_rebalance))

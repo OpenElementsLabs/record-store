@@ -325,6 +325,7 @@ fn bucket(name: &str) -> Bucket {
         created_at: Utc::now(),
         versioning: VersioningState::Disabled,
         quota: BucketQuota::default(),
+        storage_class: None,
         durability_policy: None,
         cors: None,
     }
@@ -344,6 +345,7 @@ fn registration() -> NodeRegistration {
             replica_bytes: 100,
             temporary_bytes: 0,
         },
+        devices: Vec::new(),
         started_at: Utc::now(),
     }
 }
