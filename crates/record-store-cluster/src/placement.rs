@@ -1330,6 +1330,60 @@ mod tests {
         );
     }
 
+    /// A node with several drives really does receive proportionally more data.
+    ///
+    /// The drives are independent placement targets, so a machine with four of
+    /// them should take about four times the share of a machine with one. This
+    /// is the property that makes declaring extra drives worth doing at all, and
+    /// it is not implied by any of the failure-domain rules.
+    #[test]
+    fn a_node_with_more_drives_takes_proportionally_more_data() {
+        use crate::device::DeviceState;
+
+        let mut wide = record(NodeState::Healthy, "rack-a", 1 << 40, 1 << 40);
+        let class = wide.storage_class.clone();
+        wide.devices = (0..4)
+            .map(|_| device_with(wide.node_id, &class, 1 << 40, DeviceState::Active))
+            .collect();
+        let wide_id = wide.node_id;
+
+        let mut narrow = record(NodeState::Healthy, "rack-b", 1 << 40, 1 << 40);
+        narrow.devices = vec![device_with(
+            narrow.node_id,
+            &class,
+            1 << 40,
+            DeviceState::Active,
+        )];
+
+        let mut topology = topology(vec![wide, narrow]);
+        // Device scope, so both nodes compete per drive rather than per machine.
+        topology.config.failure_domain_scope = FailureDomainScope::Device;
+
+        let policy = CapacityAwarePlacement::new(None);
+        let samples = 4_000_u128;
+        let mut on_wide = 0_usize;
+        for index in 0..samples {
+            let request = ObjectPlacementRequest::new(
+                ObjectId::from_uuid(uuid::Uuid::from_u128(index)),
+                1,
+                1,
+                StorageClass::default(),
+            )
+            .with_size_hint(Some(10));
+            let plan = policy.place(&request, &topology).expect("plan");
+            if plan.targets[0].node_id == wide_id {
+                on_wide += 1;
+            }
+        }
+
+        // Four drives of five, so about 80 percent. Statistical, not exact.
+        let share = on_wide as f64 / samples as f64;
+        assert!(
+            (share - 0.8).abs() < 0.05,
+            "a four-drive node took {share:.3} of placements, expected about 0.8"
+        );
+    }
+
     /// Adding a device must move only the objects that belong on it.
     ///
     /// Rendezvous hashing exists to bound movement: with `n` devices growing to
