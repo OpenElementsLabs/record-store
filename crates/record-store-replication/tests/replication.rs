@@ -2554,3 +2554,78 @@ async fn a_bucket_storage_class_resolves_to_a_policy_or_is_reported() {
     assert_eq!(resolved.class.as_str(), "archive");
     assert_eq!(resolved.durability.replicas(), Some(2));
 }
+
+/// Simulation runs the real placement engine against a hypothetical map and
+/// changes nothing.
+///
+/// A prediction that does not use the actual algorithm is a guess, and one that
+/// mutates cluster state to answer a question is a trap.
+#[tokio::test]
+async fn simulating_an_expansion_measures_movement_without_changing_anything() {
+    use record_store_replication::TopologyChange;
+
+    let harness = Harness::new(2, 3, WriteAcknowledgement::Quorum).await;
+    for index in 0..4_u8 {
+        harness
+            .put(&format!("object-{index}.txt"), b"payload")
+            .await
+            .expect("put");
+    }
+
+    let before = harness.context.cluster.topology().await.expect("topology");
+
+    let report = harness
+        .operations()
+        .simulate(
+            TopologyChange::AddNode {
+                failure_domain: "rack=simulated".into(),
+                storage_class: None,
+                devices: vec![1 << 40],
+            },
+            100,
+        )
+        .await
+        .expect("simulate");
+
+    assert_eq!(report.devices_after, report.devices_before + 1);
+    assert!(
+        report.raw_capacity_after > report.raw_capacity_before,
+        "adding a device must add capacity"
+    );
+    assert!(
+        report.placements_sampled > 0,
+        "a cluster holding objects must sample some of them"
+    );
+    assert!(
+        report.placements_moved <= report.placements_sampled,
+        "more payloads cannot move than were examined"
+    );
+    assert_eq!(report.placements_unsatisfiable, 0);
+
+    // Nothing about the real cluster may have changed.
+    let after = harness.context.cluster.topology().await.expect("topology");
+    assert_eq!(
+        after.epoch, before.epoch,
+        "simulating must not advance the cluster map"
+    );
+    assert_eq!(after.nodes.len(), before.nodes.len());
+}
+
+/// Removing a device an operator names wrongly has to be reported, not silently
+/// simulated as a no-op that looks safe.
+#[tokio::test]
+async fn simulating_an_unknown_device_is_refused() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::Quorum).await;
+    let error = harness
+        .operations()
+        .simulate(
+            record_store_replication::TopologyChange::RemoveDevice {
+                node_id: harness.context.node_id,
+                device_id: record_store_core::DeviceId::new(),
+            },
+            10,
+        )
+        .await
+        .expect_err("an unregistered device cannot be removed, even hypothetically");
+    assert!(error.to_string().contains("device"), "{error}");
+}

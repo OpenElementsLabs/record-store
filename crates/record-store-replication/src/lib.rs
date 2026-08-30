@@ -29,7 +29,7 @@ mod test_support;
 pub use admission::{ClusterAdmissionService, JoinCoordinator};
 pub use context::ClusterContext;
 pub use coordinator::{Coordinator, CoordinatorSettings};
-pub use operations::{ClusterOperations, OperationError};
+pub use operations::{ClusterOperations, OperationError, SimulationReport, TopologyChange};
 pub use read::{ReadCandidate, ReplicaRead, open_replica, read_candidates};
 pub use runtime::{ClusterRuntime, RuntimeSettings, SupervisedTasks, TaskHealth, TaskStatus};
 pub use status::{ClusterStatus, DeviceStatus, NodeStatus, RepairStatus, ReplicationStatus};

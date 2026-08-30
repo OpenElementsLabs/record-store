@@ -126,6 +126,23 @@ record-store repair status
 Once repair has finished, the failed device can go straight to
 `safe_to_remove` — it holds nothing that still counts.
 
+## Before you start: what will move
+
+```bash
+record-store placement simulate remove-device <node> <device>
+```
+
+This runs the real placement engine against a cluster map without the device and
+reports what would move, without changing anything. `placements_unsatisfiable`
+above zero means the remaining devices cannot satisfy the policy — evacuate
+somewhere else first, or the drain will not finish.
+
+The same command answers the expansion question:
+
+```bash
+record-store placement simulate add-node --device-bytes 4000000000000
+```
+
 ## Adding the replacement
 
 ```bash

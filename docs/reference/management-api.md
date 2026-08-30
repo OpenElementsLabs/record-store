@@ -186,6 +186,7 @@ Cluster routes return `409 CLUSTER_MODE_DISABLED` in standalone mode.
 | `POST` | `/api/v1/nodes/{id}/decommission` | `{"force":false}` |
 | `GET` | `/api/v1/repair/status` | Repair queue depth |
 | `GET` | `/api/v1/placement/explain/{bucket}/{key}` | Why an object is placed where it is |
+| `POST` | `/api/v1/placement/simulate` | What a topology change would move; mutates nothing |
 | `GET` | `/api/v1/storage-classes` | Defined storage classes |
 | `GET` | `/api/v1/storage-classes/{class}` | Inspect a class |
 | `PUT` | `/api/v1/storage-classes/{class}` | Define or replace a class |

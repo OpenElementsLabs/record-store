@@ -28,7 +28,8 @@ use crate::handlers::cluster::{
     inspect_storage_class, issue_cluster_join_token, list_cluster_devices, list_cluster_nodes,
     list_node_devices, list_storage_classes, maintain_cluster_device, maintain_cluster_node,
     put_storage_class, rebalance_status, release_cluster_device, repair_status,
-    resume_cluster_device, resume_cluster_node, retire_cluster_device, start_rebalance,
+    resume_cluster_device, resume_cluster_node, retire_cluster_device, simulate_topology,
+    start_rebalance,
 };
 use crate::handlers::lifecycle::{
     create_lifecycle_rule, delete_lifecycle_rule, list_lifecycle_rules, update_lifecycle_rule,
@@ -387,6 +388,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/placement/explain/{bucket}/{key}",
             get(explain_placement),
+        )
+        .route(
+            "/api/v1/placement/simulate",
+            axum::routing::post(simulate_topology),
         )
         .route("/api/v1/storage-classes", get(list_storage_classes))
         .route(

@@ -5,13 +5,13 @@
 //! proceed when it would knowingly drop object versions below their required
 //! durability, unless an operator explicitly overrides that.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use chrono::Utc;
 use record_store_cluster::{
-    ClusterCommand, ClusterOperation, ClusterOperationKind, ClusterOperationState,
+    ClusterCommand, ClusterOperation, ClusterOperationKind, ClusterOperationState, ClusterTopology,
     DecommissionSafety, DeviceRecord, DeviceState, IssuedJoinToken, JoinToken, NodeState,
-    StorageClass, StoragePolicy,
+    PlacementPolicy, StorageClass, StoragePolicy,
 };
 use record_store_consensus::{ClusterWrite, MetadataConsensus};
 use record_store_core::{ClusterOperationId, DeviceId, NodeId};
@@ -153,6 +153,93 @@ impl ClusterOperations {
             }
         }
         Ok(())
+    }
+
+    /// Simulates a topology change without altering anything.
+    ///
+    /// The real placement engine is run against a hypothetical cluster map, so
+    /// the answer is what would actually happen rather than a model of it. A
+    /// bounded sample of committed placements is replayed through both the
+    /// current and proposed maps, and the movement is measured rather than
+    /// predicted.
+    pub async fn simulate(
+        &self,
+        change: TopologyChange,
+        sample_size: usize,
+    ) -> Result<SimulationReport, OperationError> {
+        let topology = self.context.cluster.topology().await.map_err(cluster)?;
+        let proposed = change.apply(&topology)?;
+
+        let sample_size = sample_size.clamp(1, 5_000);
+        let page = self
+            .context
+            .cluster
+            .list_placements(None, sample_size)
+            .await
+            .map_err(cluster)?;
+
+        let engine = record_store_cluster::CapacityAwarePlacement::new(None);
+        let policies = self.storage_policies().await?;
+
+        let mut sampled = 0_u64;
+        let mut moved = 0_u64;
+        let mut moved_bytes = 0_u64;
+        let mut unsatisfiable = 0_u64;
+        for placement in &page.placements {
+            let policy = policies
+                .iter()
+                .find(|policy| policy.class == placement.storage_class)
+                .cloned();
+            let request = record_store_cluster::ObjectPlacementRequest::new(
+                placement.object_id,
+                placement.desired_replicas.max(1),
+                1,
+                placement.storage_class.clone(),
+            )
+            .with_size_hint(Some(placement.size))
+            .with_policy(policy);
+
+            let before = engine.place(&request, &topology);
+            let after = engine.place(&request, &proposed);
+            sampled += 1;
+            match (before, after) {
+                (Ok(before), Ok(after)) => {
+                    let was: BTreeSet<_> = before
+                        .targets
+                        .iter()
+                        .map(|target| (target.node_id, target.device_id))
+                        .collect();
+                    let now: BTreeSet<_> = after
+                        .targets
+                        .iter()
+                        .map(|target| (target.node_id, target.device_id))
+                        .collect();
+                    if was != now {
+                        moved += 1;
+                        moved_bytes = moved_bytes.saturating_add(placement.size);
+                    }
+                }
+                // A payload the proposed map cannot place is the important
+                // result, not a rounding error in the movement estimate.
+                (_, Err(_)) => unsatisfiable += 1,
+                (Err(_), Ok(_)) => {}
+            }
+        }
+
+        let usage = self.context.cluster.usage().await.map_err(cluster)?;
+        Ok(SimulationReport {
+            change: change.describe(),
+            raw_capacity_before: capacity_of(&topology),
+            raw_capacity_after: capacity_of(&proposed),
+            devices_before: device_count(&topology),
+            devices_after: device_count(&proposed),
+            placements_total: usage.payloads,
+            placements_sampled: sampled,
+            placements_moved: moved,
+            sampled_bytes_moved: moved_bytes,
+            placements_unsatisfiable: unsatisfiable,
+            truncated: page.next_object_id.is_some(),
+        })
     }
 
     /// Explains where an object would be placed, and why.
@@ -629,4 +716,196 @@ fn cluster<E: std::fmt::Display>(error: E) -> OperationError {
 #[must_use]
 pub const fn operation_id(operation: &ClusterOperation) -> ClusterOperationId {
     operation.id
+}
+
+/// A hypothetical change to the cluster map.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "change", rename_all = "snake_case")]
+pub enum TopologyChange {
+    /// A new node joining with the given devices.
+    AddNode {
+        /// Failure-domain labels the node would carry, for example `rack=b`.
+        #[serde(default)]
+        failure_domain: String,
+        /// Storage class its devices would belong to.
+        #[serde(default)]
+        storage_class: Option<String>,
+        /// Usable capacity of each device the node would bring.
+        devices: Vec<u64>,
+    },
+    /// A device added to a node already in the cluster.
+    AddDevice {
+        /// Node that would gain the device.
+        node_id: NodeId,
+        /// Usable capacity it would contribute.
+        usable_bytes: u64,
+        /// Storage class it would belong to. Defaults to the node's.
+        #[serde(default)]
+        storage_class: Option<String>,
+    },
+    /// A device leaving the cluster, as a drain or a failure would remove it.
+    RemoveDevice {
+        /// Node holding the device.
+        node_id: NodeId,
+        /// Device that would go away.
+        device_id: DeviceId,
+    },
+}
+
+impl TopologyChange {
+    /// Returns the proposed cluster map.
+    fn apply(&self, topology: &ClusterTopology) -> Result<ClusterTopology, OperationError> {
+        let mut nodes = topology.nodes.clone();
+        match self {
+            Self::AddNode {
+                failure_domain,
+                storage_class,
+                devices,
+            } => {
+                if devices.is_empty() {
+                    return Err(OperationError::Cluster(
+                        "a simulated node must bring at least one device".into(),
+                    ));
+                }
+                let template = nodes.first().cloned().ok_or_else(|| {
+                    OperationError::Cluster("the cluster has no node to model against".into())
+                })?;
+                let node_id = NodeId::new();
+                let class = storage_class
+                    .as_deref()
+                    .and_then(|value| StorageClass::new(value).ok())
+                    .unwrap_or_else(|| template.storage_class.clone());
+                let mut node = template;
+                node.node_id = node_id;
+                node.state = record_store_cluster::NodeState::Healthy;
+                node.storage_class = class.clone();
+                node.failure_domain =
+                    record_store_cluster::FailureDomain::parse(failure_domain).unwrap_or_default();
+                node.devices = devices
+                    .iter()
+                    .map(|capacity| simulated_device(node_id, &class, *capacity))
+                    .collect();
+                node.capacity = record_store_cluster::NodeCapacity {
+                    total_bytes: devices.iter().copied().sum(),
+                    available_bytes: devices.iter().copied().sum(),
+                    replica_bytes: 0,
+                    temporary_bytes: 0,
+                };
+                nodes.push(node);
+            }
+            Self::AddDevice {
+                node_id,
+                usable_bytes,
+                storage_class,
+            } => {
+                let node = nodes
+                    .iter_mut()
+                    .find(|node| node.node_id == *node_id)
+                    .ok_or(OperationError::NodeNotFound(*node_id))?;
+                let class = storage_class
+                    .as_deref()
+                    .and_then(|value| StorageClass::new(value).ok())
+                    .unwrap_or_else(|| node.storage_class.clone());
+                node.devices
+                    .push(simulated_device(*node_id, &class, *usable_bytes));
+            }
+            Self::RemoveDevice { node_id, device_id } => {
+                let node = nodes
+                    .iter_mut()
+                    .find(|node| node.node_id == *node_id)
+                    .ok_or(OperationError::NodeNotFound(*node_id))?;
+                let before = node.devices.len();
+                node.devices.retain(|device| device.id != *device_id);
+                if node.devices.len() == before {
+                    return Err(OperationError::DeviceNotFound {
+                        node: *node_id,
+                        device: *device_id,
+                    });
+                }
+            }
+        }
+        Ok(ClusterTopology::at_epoch(
+            topology.cluster_id,
+            topology.config.clone(),
+            nodes,
+            topology.epoch.next(),
+        ))
+    }
+
+    /// Returns an operator-facing description of the change.
+    fn describe(&self) -> String {
+        match self {
+            Self::AddNode { devices, .. } => {
+                format!("add a node with {} device(s)", devices.len())
+            }
+            Self::AddDevice { node_id, .. } => format!("add a device to node {node_id}"),
+            Self::RemoveDevice { device_id, .. } => format!("remove device {device_id}"),
+        }
+    }
+}
+
+/// A device that exists only inside a simulation.
+fn simulated_device(node_id: NodeId, class: &StorageClass, usable_bytes: u64) -> DeviceRecord {
+    let mut device = DeviceRecord::legacy_directory(
+        node_id,
+        None,
+        class.clone(),
+        record_store_cluster::DeviceCapacity {
+            raw_bytes: usable_bytes,
+            usable_bytes,
+            allocated_bytes: 0,
+            reserved_bytes: 0,
+            available_bytes: usable_bytes,
+        },
+    );
+    device.id = DeviceId::new();
+    device
+}
+
+fn capacity_of(topology: &ClusterTopology) -> u64 {
+    topology
+        .nodes
+        .iter()
+        .flat_map(|node| &node.devices)
+        .map(|device| device.capacity.usable_bytes)
+        .sum()
+}
+
+fn device_count(topology: &ClusterTopology) -> u64 {
+    topology
+        .nodes
+        .iter()
+        .map(|node| node.devices.len() as u64)
+        .sum()
+}
+
+/// What a simulated topology change would do.
+///
+/// Movement is measured over a bounded sample of real placements, never
+/// extrapolated into a duration: how long a migration takes depends on
+/// bandwidth nobody has told us about.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SimulationReport {
+    /// The change that was simulated.
+    pub change: String,
+    /// Usable capacity across every device today.
+    pub raw_capacity_before: u64,
+    /// Usable capacity after the change.
+    pub raw_capacity_after: u64,
+    /// Devices in the cluster today.
+    pub devices_before: u64,
+    /// Devices after the change.
+    pub devices_after: u64,
+    /// Payloads the cluster tracks in total.
+    pub placements_total: u64,
+    /// Payloads actually replayed through both maps.
+    pub placements_sampled: u64,
+    /// Sampled payloads whose targets would change.
+    pub placements_moved: u64,
+    /// Bytes belonging to the moved payloads in the sample.
+    pub sampled_bytes_moved: u64,
+    /// Sampled payloads the proposed map could not place at all.
+    pub placements_unsatisfiable: u64,
+    /// Whether more placements exist than were sampled.
+    pub truncated: bool,
 }

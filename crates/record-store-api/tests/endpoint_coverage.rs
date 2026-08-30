@@ -64,6 +64,7 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/devices", Audience::ConsoleAndCli),
     ("/api/v1/devices/discovered", Audience::Cli),
     ("/api/v1/placement/explain/{}/{}", Audience::Cli),
+    ("/api/v1/placement/simulate", Audience::Cli),
     ("/api/v1/storage-classes", Audience::ConsoleAndCli),
     ("/api/v1/storage-classes/{}", Audience::Cli),
     ("/api/v1/nodes/{}/devices", Audience::Cli),

@@ -237,7 +237,22 @@ still moves the data. See [Node Lifecycle](../cluster/node-lifecycle.md).
 
 ```bash
 record-store placement explain <bucket> <key> --endpoint <endpoint>
+
+record-store placement simulate add-node --device-bytes <n> [--device-bytes <n>]...
+    [--failure-domain <labels>] [--storage-class <class>] --endpoint <endpoint>
+record-store placement simulate add-device <node> --usable-bytes <n>
+    [--storage-class <class>] --endpoint <endpoint>
+record-store placement simulate remove-device <node> <device> --endpoint <endpoint>
 ```
+
+`simulate` changes nothing. It runs the real placement engine against a
+hypothetical cluster map over a sample of committed placements, and reports what
+would move.
+
+The movement figure is **measured over that sample**, not extrapolated to a
+duration: how long a migration takes depends on bandwidth Record Store has not
+been told about. `placements_sampled` against `placements_total` says how much
+of the cluster the answer is based on.
 
 Runs the placement engine against committed state and changes nothing. Reports
 the storage class and policy, the placement epoch, the failure domain in force,

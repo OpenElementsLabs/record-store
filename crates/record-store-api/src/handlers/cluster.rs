@@ -261,6 +261,26 @@ pub(crate) async fn collect_cluster_status(
         })
 }
 
+/// Simulates a topology change without applying it.
+///
+/// Read-only. The real placement engine runs against a hypothetical cluster map
+/// and a bounded sample of committed placements, so the movement reported is
+/// measured rather than modelled.
+pub(crate) async fn simulate_topology(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    Json(change): Json<record_store_replication::TopologyChange>,
+) -> Result<Json<record_store_replication::SimulationReport>, ApiError> {
+    cluster_management(&state, request_id.clone())?
+        .operations
+        // A sample rather than every placement: a simulation an operator will
+        // not wait for is a simulation they will not run.
+        .simulate(change, 1_000)
+        .await
+        .map(Json)
+        .map_err(|error| cluster_operation_error(error, request_id))
+}
+
 /// Explains where an object is, or would be, placed.
 ///
 /// Read-only: it runs the placement engine against committed state and changes
