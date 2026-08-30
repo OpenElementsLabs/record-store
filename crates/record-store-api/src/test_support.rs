@@ -522,6 +522,10 @@ pub(crate) async fn clustered_api() -> (TempDir, Router) {
         SYSTEM_TOKEN.as_bytes(),
         Some(STORAGE_TOKEN.as_bytes()),
         Some(AUDITOR_TOKEN.as_bytes()),
-    ));
+    ))
+    // Without this the scrape endpoint answers 401 in cluster mode, which left
+    // every cluster and device metric untested: the only harness that has a
+    // cluster could not reach /metrics.
+    .with_metrics_auth(MetricsAuth::bearer_token(METRICS_TOKEN.as_bytes()));
     (directory, router(state))
 }

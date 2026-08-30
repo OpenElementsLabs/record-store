@@ -486,6 +486,57 @@ mod tests {
         String::from_utf8(bytes.to_vec()).expect("UTF-8")
     }
 
+    /// Cluster and device metrics have to survive a real scrape, not just
+    /// render from a hand-built snapshot.
+    ///
+    /// This went untested for a long time because the only harness with a
+    /// cluster could not authenticate to `/metrics`, so a regression here would
+    /// have been invisible.
+    #[tokio::test]
+    async fn a_cluster_scrape_reports_cluster_and_device_metrics() {
+        use crate::test_support::clustered_api;
+
+        let (_directory, clustered) = clustered_api().await;
+        let response = call(&clustered, signed("GET", "/metrics", METRICS_TOKEN, None)).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the scrape endpoint must be reachable in cluster mode"
+        );
+        let body = text(response).await;
+
+        for metric in [
+            "record_store_cluster_nodes",
+            "record_store_node_health",
+            "record_store_metadata_quorum_health",
+            "record_store_devices_total",
+            "record_store_devices_accepting_placement",
+            "record_store_device_capacity_raw_bytes",
+        ] {
+            assert!(
+                body.contains(metric),
+                "{metric} is missing from a cluster scrape"
+            );
+        }
+
+        // The harness registers exactly one node.
+        assert!(
+            body.contains("record_store_cluster_nodes 1\n"),
+            "expected one node in the scrape"
+        );
+
+        // A standalone deployment omits them rather than reporting zeroes that
+        // read as a broken cluster.
+        let (_standalone_directory, standalone) = api().await;
+        let standalone_body =
+            text(call(&standalone, signed("GET", "/metrics", METRICS_TOKEN, None)).await).await;
+        assert!(
+            !standalone_body.contains("record_store_devices_total"),
+            "standalone must not report device metrics"
+        );
+        assert!(!standalone_body.contains("record_store_cluster_nodes"));
+    }
+
     /// Device counts are derived from state and health, and a device is only
     /// eligible when both agree.
     #[test]
