@@ -5,6 +5,7 @@ import type {
   ClusterOperation,
   ClusterStatus,
   RepairStatus,
+  StoragePolicy,
 } from '@/types/cluster';
 
 import { request } from './client';
@@ -25,6 +26,11 @@ export function fetchClusterNodes(signal?: AbortSignal): Promise<ClusterNode[]> 
 
 export function fetchClusterNode(id: string, signal?: AbortSignal): Promise<ClusterNode> {
   return request<ClusterNode>(`/v1/nodes/${encodeURIComponent(id)}`, signal ? { signal } : {});
+}
+
+/** Lists every defined storage class and the policy behind it. */
+export function fetchStorageClasses(signal?: AbortSignal): Promise<StoragePolicy[]> {
+  return request<StoragePolicy[]>('/v1/storage-classes', signal ? { signal } : {});
 }
 
 /** Lists every registered storage device in the cluster. */

@@ -8,6 +8,7 @@ import {
   HardDrive,
   HeartPulse,
   KeyRound,
+  Layers,
   LayoutDashboard,
   Network,
   ScrollText,
@@ -103,6 +104,12 @@ export function buildNavigation(input: NavigationInput): readonly NavSection[] {
       { href: '/cluster', label: 'Cluster overview', icon: Boxes },
       { href: '/cluster/nodes', label: 'Nodes', prefix: '/cluster/nodes', icon: Server },
       { href: '/cluster/drives', label: 'Drives', prefix: '/cluster/drives', icon: HardDrive },
+      {
+        href: '/cluster/storage-classes',
+        label: 'Storage classes',
+        prefix: '/cluster/storage-classes',
+        icon: Layers,
+      },
       {
         href: '/cluster/durability',
         label: 'Durability',

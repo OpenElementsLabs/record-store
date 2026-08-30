@@ -49,7 +49,7 @@ read-only console. See [Authorization](../security/authorization.md).
 | System | Deployment mode and capabilities |
 
 In cluster mode the console additionally shows **Nodes**, **Drives**,
-**Consensus**, **Durability**, and **Rebalance**. In standalone mode those
+**Storage classes**, **Consensus**, **Durability**, and **Rebalance**. In standalone mode those
 screens are absent — the console discovers the mode from
 `GET /api/v1/system/info` and adapts.
 
@@ -67,6 +67,17 @@ maintenance, resume, retire — plus **Check if safe to remove**, which asks the
 server whether the device still owns replicas. The console never decides that
 itself; a success means evacuation actually finished. See
 [Replacing a Drive](../cluster/replacing-a-drive.md).
+
+**Storage classes** shows what each class name means: the devices it may use, how
+many copies it keeps, what those copies are separated across, and how much space
+it holds back. It is read-only. Classes are defined with
+`record-store storage-class set`, because the server validates a policy and a
+form that guessed at that validation would be a second, weaker copy of it. See
+[Storage Classes](../administration/storage-classes.md).
+
+The **Cluster overview** counts drives alongside nodes, leading with whatever
+needs attention: failed drives first, then draining, and only then how many are
+accepting data.
 
 ## Object browsing
 

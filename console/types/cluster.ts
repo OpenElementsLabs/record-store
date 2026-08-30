@@ -113,6 +113,29 @@ export type ClusterDevice = {
   readonly model: string | null;
 };
 
+/** How a storage class achieves durability. */
+export type DurabilityStrategy =
+  | { readonly strategy: 'replication'; readonly replicas: number }
+  | {
+      readonly strategy: 'erasure_coding';
+      readonly profile: { readonly data_shards: number; readonly parity_shards: number };
+    };
+
+/** The topology level a class separates replicas across. */
+export type FailureDomainScope =
+  'device' | 'node' | 'host' | 'rack' | 'datacenter' | 'zone' | 'region';
+
+/** What a storage class means: devices, durability, separation, and headroom. */
+export type StoragePolicy = {
+  readonly class: string;
+  readonly description: string | null;
+  readonly device_filter: { readonly allowed_kinds: readonly DeviceKind[] };
+  readonly durability: DurabilityStrategy;
+  readonly failure_domain: FailureDomainScope;
+  readonly strict_failure_domains: boolean;
+  readonly minimum_free_space_percent: number;
+};
+
 export type ClusterNode = {
   readonly node_id: string;
   readonly member_id: number;
