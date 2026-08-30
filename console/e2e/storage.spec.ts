@@ -81,6 +81,10 @@ test.describe('storage workflows', () => {
 
     // Prefixes are logical: they exist only because objects sit under them.
     await page.goto(`/buckets/${bucket}?prefix=reports%2F`);
+    // Wait for the browser to finish loading *this* prefix before uploading.
+    // Without it the file can be attached while the previous listing is still on
+    // screen, and the upload races the view it is meant to land in.
+    await expect(page.getByText('Nothing under this prefix')).toBeVisible({ timeout: 20_000 });
     await page.setInputFiles('input[type="file"]', {
       name: 'q1.txt',
       mimeType: 'text/plain',
@@ -146,13 +150,25 @@ test.describe('storage workflows', () => {
     await expect(page.getByText('Enabled', { exact: true }).first()).toBeVisible();
 
     await page.getByRole('tab', { name: 'Objects' }).click();
-    for (const body of ['first revision', 'second revision']) {
+    // Each revision is a distinct size, and the wait is on that size rather than
+    // on the object's name. Waiting for the name would pass instantly on the
+    // second pass — the row is already there from the first upload — and the
+    // version history would then be read before the second write had landed.
+    for (const [size, body] of [
+      [12, 'a'.repeat(12)],
+      [34, 'b'.repeat(34)],
+    ] as const) {
       await page.setInputFiles('input[type="file"]', {
         name: 'doc.txt',
         mimeType: 'text/plain',
         buffer: Buffer.from(body),
       });
-      await expect(page.getByRole('link', { name: /doc\.txt/ })).toBeVisible({ timeout: 20_000 });
+      await expect(
+        page
+          .getByRole('row')
+          .filter({ hasText: 'doc.txt' })
+          .filter({ hasText: `${size} B` }),
+      ).toBeVisible({ timeout: 20_000 });
     }
 
     await page.getByRole('tab', { name: 'Versioning' }).click();

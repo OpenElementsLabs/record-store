@@ -48,9 +48,25 @@ read-only console. See [Authorization](../security/authorization.md).
 | Metrics | The same numbers Prometheus scrapes, rendered |
 | System | Deployment mode and capabilities |
 
-In cluster mode the console additionally shows **Nodes**, **Consensus**,
-**Durability**, and **Rebalance**. In standalone mode those screens are absent —
-the console discovers the mode from `GET /api/v1/system/info` and adapts.
+In cluster mode the console additionally shows **Nodes**, **Drives**,
+**Consensus**, **Durability**, and **Rebalance**. In standalone mode those
+screens are absent — the console discovers the mode from
+`GET /api/v1/system/info` and adapts.
+
+**Drives** lists every registered storage device with its lifecycle state,
+observed health, type, storage class, and capacity. Lifecycle and health are
+separate columns because they answer different questions: what an administrator
+decided, and what the platform reported. A device can be `Active` while its
+health is `Unknown`, and neither value is inferred from the other.
+
+Devices are addressed by their stable identifier. The path is shown underneath
+as description only, because a path can change across reboots.
+
+The row menu drives the same lifecycle the CLI does — activate, drain,
+maintenance, resume, retire — plus **Check if safe to remove**, which asks the
+server whether the device still owns replicas. The console never decides that
+itself; a success means evacuation actually finished. See
+[Replacing a Drive](../cluster/replacing-a-drive.md).
 
 ## Object browsing
 

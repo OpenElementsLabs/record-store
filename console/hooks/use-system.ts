@@ -46,6 +46,7 @@ export const queryKeys = {
   clusterStatus: ['cluster', 'status'] as const,
   clusterHealth: ['cluster', 'health'] as const,
   clusterNodes: ['cluster', 'nodes'] as const,
+  clusterDevices: ['cluster', 'devices'] as const,
   clusterRepair: ['cluster', 'repair'] as const,
   clusterRebalance: ['cluster', 'rebalance'] as const,
   clusterNode: (id: string) => ['cluster', 'nodes', id] as const,

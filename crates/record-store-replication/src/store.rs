@@ -80,19 +80,21 @@ impl DistributedObjectStore {
 
     /// Streams a payload to its planned replicas and returns what became durable.
     ///
-    /// `bucket_id` selects the storage policy. A bucket that chose no class, and
-    /// every bucket created before storage classes existed, resolves to the
+    /// The caller supplies the bucket's storage class rather than its
+    /// identifier: reading a bucket is a linearizable metadata read, and every
+    /// write path here has already performed one. A bucket that chose no class,
+    /// and every bucket created before storage classes existed, resolves to the
     /// default class and therefore to what the cluster was already doing.
     async fn stream_payload(
         &self,
-        bucket_id: record_store_core::BucketId,
+        storage_class: Option<record_store_core::StorageClass>,
         object_id: ObjectId,
         size_hint: Option<u64>,
         body: UploadStream,
     ) -> Result<(ReplicationOutcome, PayloadPlacement), StorageError> {
         let config = self.context.config().await?;
         let topology = self.context.topology().await?;
-        let policy = self.context.storage_policy_for(bucket_id).await?;
+        let policy = self.context.storage_policy_for_class(storage_class).await?;
         // A policy's replica count is what the class promised; the cluster
         // factor is the fallback when no policy narrows it.
         let replicas = policy
@@ -343,18 +345,13 @@ impl DistributedObjectStore {
 #[async_trait::async_trait]
 impl ObjectStore for DistributedObjectStore {
     async fn put(&self, request: PutObjectRequest) -> Result<PutObjectResult, StorageError> {
-        if self
-            .context
-            .metadata
-            .get_bucket(request.bucket_id)
-            .await?
-            .is_none()
-        {
+        // The bucket is read once, here, and its class travels with the write.
+        let Some(bucket) = self.context.metadata.get_bucket(request.bucket_id).await? else {
             return Err(StorageError::BucketNotFound);
-        }
+        };
         let object_id = request.object_id.unwrap_or_default();
         let (outcome, placement) = self
-            .stream_payload(request.bucket_id, object_id, None, request.body)
+            .stream_payload(bucket.storage_class, object_id, None, request.body)
             .await?;
 
         if let Some(expected) = request.expected_checksum
@@ -425,8 +422,9 @@ impl ObjectStore for DistributedObjectStore {
         // temporary space but means an in-progress upload survives the loss of
         // the node that received it, and it keeps one durability story instead
         // of two.
+        let storage_class = self.context.storage_class_for(upload.bucket_id).await?;
         let (outcome, placement) = self
-            .stream_payload(upload.bucket_id, object_id, None, request.body)
+            .stream_payload(storage_class, object_id, None, request.body)
             .await?;
         if let Some(expected) = request.expected_checksum
             && expected != outcome.checksum
@@ -573,6 +571,9 @@ impl ObjectStore for DistributedObjectStore {
                 ))
             })?;
 
+        // Resolved before the part stream is built: awaiting after it is
+        // constructed confuses inference for the boxed async-trait future.
+        let storage_class = self.context.storage_class_for(persisted.bucket_id).await?;
         let context = Arc::clone(&self.context);
         let parts = request.parts.clone();
         let body = stream::iter(parts)
@@ -595,12 +596,7 @@ impl ObjectStore for DistributedObjectStore {
             .try_flatten();
 
         let (outcome, placement) = self
-            .stream_payload(
-                persisted.bucket_id,
-                object_id,
-                Some(total),
-                upload_stream(body),
-            )
+            .stream_payload(storage_class, object_id, Some(total), upload_stream(body))
             .await?;
         let now = Utc::now();
         let metadata = ObjectMetadata {

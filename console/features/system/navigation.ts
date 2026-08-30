@@ -5,6 +5,7 @@ import {
   Database,
   FileStack,
   Gauge,
+  HardDrive,
   HeartPulse,
   KeyRound,
   LayoutDashboard,
@@ -101,6 +102,7 @@ export function buildNavigation(input: NavigationInput): readonly NavSection[] {
     const cluster: NavItem[] = [
       { href: '/cluster', label: 'Cluster overview', icon: Boxes },
       { href: '/cluster/nodes', label: 'Nodes', prefix: '/cluster/nodes', icon: Server },
+      { href: '/cluster/drives', label: 'Drives', prefix: '/cluster/drives', icon: HardDrive },
       {
         href: '/cluster/durability',
         label: 'Durability',

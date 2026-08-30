@@ -64,20 +64,32 @@ impl ClusterContext {
 
     /// Returns the storage class new replicas should use.
     ///
-    /// Bucket-level placement policy is modelled but not yet exposed, so every
-    /// payload currently uses the default class.
+    /// The class a payload falls back to when a bucket selected none.
     #[must_use]
     pub fn default_storage_class(&self) -> StorageClass {
         StorageClass::default()
     }
 
-    /// Resolves the storage policy a bucket's objects should be placed by.
+    /// Returns the storage class a bucket's new objects belong to.
     ///
-    /// A bucket that selected no class resolves to the default policy, which is
-    /// what the cluster was already doing. A bucket naming a class nobody
-    /// defined is a configuration error and is reported rather than quietly
-    /// placed by default rules — silently ignoring the class would put data on
-    /// hardware the operator deliberately excluded.
+    /// One linearizable read. Callers on the write path use this and pass the
+    /// class onward rather than resolving the bucket twice.
+    pub async fn storage_class_for(
+        &self,
+        bucket_id: record_store_core::BucketId,
+    ) -> Result<Option<record_store_core::StorageClass>, StorageError> {
+        self.metadata
+            .get_bucket(bucket_id)
+            .await?
+            .map(|bucket| bucket.storage_class)
+            .ok_or(StorageError::BucketNotFound)
+    }
+
+    /// Resolves the policy a bucket's objects should be placed by.
+    ///
+    /// Convenience for callers that hold only a bucket identifier. The write
+    /// path should use [`ClusterContext::storage_policy_for_class`] instead,
+    /// which avoids a second linearizable read.
     pub async fn storage_policy_for(
         &self,
         bucket_id: record_store_core::BucketId,
@@ -85,7 +97,24 @@ impl ClusterContext {
         let Some(bucket) = self.metadata.get_bucket(bucket_id).await? else {
             return Err(StorageError::BucketNotFound);
         };
-        let class = bucket.storage_class.unwrap_or_default();
+        self.storage_policy_for_class(bucket.storage_class).await
+    }
+
+    /// Resolves the policy a storage class means.
+    ///
+    /// Takes the class rather than a bucket on purpose: reading a bucket is a
+    /// linearizable metadata read, and the write path has already read one. A
+    /// second read per write would put an avoidable consensus round trip in
+    /// front of every upload.
+    ///
+    /// A class nobody defined is reported rather than quietly replaced by the
+    /// default — silently ignoring it would put data on hardware the operator
+    /// deliberately excluded.
+    pub async fn storage_policy_for_class(
+        &self,
+        class: Option<record_store_core::StorageClass>,
+    ) -> Result<Option<record_store_cluster::StoragePolicy>, StorageError> {
+        let class = class.unwrap_or_default();
         self.cluster
             .storage_policies()
             .await

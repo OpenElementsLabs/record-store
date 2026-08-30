@@ -59,21 +59,35 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/buckets/{}/quota", Audience::Console),
     ("/api/v1/buckets/{}/versioning", Audience::ConsoleAndCli),
     ("/api/v1/cluster", Audience::ConsoleAndCli),
-    // Device management is CLI-only for now. The console's cluster views do not
-    // render devices yet, and classifying these as Console before that exists
-    // would make this table describe an intention rather than the product.
-    ("/api/v1/devices", Audience::Cli),
+    // The console's Drives screen lists devices and drives their lifecycle; the
+    // CLI covers the same ground for automation.
+    ("/api/v1/devices", Audience::ConsoleAndCli),
     ("/api/v1/placement/explain/{}/{}", Audience::Cli),
     ("/api/v1/storage-classes", Audience::Cli),
     ("/api/v1/storage-classes/{}", Audience::Cli),
     ("/api/v1/nodes/{}/devices", Audience::Cli),
     ("/api/v1/nodes/{}/devices/{}", Audience::Cli),
-    ("/api/v1/nodes/{}/devices/{}/activate", Audience::Cli),
-    ("/api/v1/nodes/{}/devices/{}/drain", Audience::Cli),
-    ("/api/v1/nodes/{}/devices/{}/maintenance", Audience::Cli),
-    ("/api/v1/nodes/{}/devices/{}/release", Audience::Cli),
-    ("/api/v1/nodes/{}/devices/{}/resume", Audience::Cli),
-    ("/api/v1/nodes/{}/devices/{}/retire", Audience::Cli),
+    (
+        "/api/v1/nodes/{}/devices/{}/activate",
+        Audience::ConsoleAndCli,
+    ),
+    ("/api/v1/nodes/{}/devices/{}/drain", Audience::ConsoleAndCli),
+    (
+        "/api/v1/nodes/{}/devices/{}/maintenance",
+        Audience::ConsoleAndCli,
+    ),
+    (
+        "/api/v1/nodes/{}/devices/{}/release",
+        Audience::ConsoleAndCli,
+    ),
+    (
+        "/api/v1/nodes/{}/devices/{}/resume",
+        Audience::ConsoleAndCli,
+    ),
+    (
+        "/api/v1/nodes/{}/devices/{}/retire",
+        Audience::ConsoleAndCli,
+    ),
     ("/api/v1/cluster/health", Audience::Console),
     // Cluster bootstrap stays out of the browser on purpose: initializing a
     // cluster and minting node join credentials are operator actions performed
