@@ -44,4 +44,27 @@ test.describe('real cluster deployment', () => {
     await signedIn.getByRole('menuitem', { name: 'Resume node' }).click();
     await expect(signedIn.getByText('Healthy', { exact: true })).toHaveCount(3);
   });
+
+  test('a node serving several drives registers all of them', async ({ signedIn }) => {
+    // The first node is configured with two drives beyond its data directory.
+    // Nothing before this exercised a real server declaring, opening, and
+    // advertising more than one device.
+    await signedIn.goto('/cluster/drives');
+    await expect(signedIn.getByRole('heading', { level: 1, name: 'Drives' })).toBeVisible();
+
+    // Three one-drive nodes would give three rows; the multi-drive node adds two.
+    const rows = signedIn.getByRole('row').filter({ hasText: /standard/ });
+    await expect(rows).toHaveCount(5, { timeout: 30_000 });
+  });
+
+  test('the topology view places drives under the node serving them', async ({ signedIn }) => {
+    await signedIn.goto('/cluster/topology');
+    await expect(signedIn.getByRole('heading', { level: 1, name: 'Topology' })).toBeVisible();
+
+    // The cluster labels region, zone, and rack, so all three levels are drawn.
+    await expect(signedIn.getByText('region e2e')).toBeVisible();
+    await expect(signedIn.getByText('rack r1')).toBeVisible();
+    // Nothing is unlabelled, so nothing may claim separation it cannot prove.
+    await expect(signedIn.getByText('not proven separate')).toHaveCount(0);
+  });
 });

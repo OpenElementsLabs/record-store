@@ -1,6 +1,6 @@
 /** Starts and verifies a disposable three-storage-node Record Store cluster. */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -15,7 +15,9 @@ const harnessPort = port('RECORD_STORE_CLUSTER_E2E_HARNESS_PORT', 18_604);
 const managementToken =
   process.env.RECORD_STORE_E2E_TOKEN ?? 'e2e-management-system-token-32-bytes-long';
 const nodes = [
-  nodePorts(1, 18_600, 18_601, 18_603),
+  // The first node serves two extra drives, so the cluster exercises a
+  // multi-device machine rather than only the one-drive-per-node shape.
+  { ...nodePorts(1, 18_600, 18_601, 18_603), extraDrives: 2 },
   nodePorts(2, 18_700, 18_701, 18_703),
   nodePorts(3, 18_800, 18_801, 18_803),
 ];
@@ -81,13 +83,40 @@ function assertPortFree(value, label) {
   });
 }
 
+/**
+ * Writes a node's configuration file when it serves more than one drive.
+ *
+ * Devices are structural configuration with no environment form, so a
+ * multi-drive node needs a file. Returns the path, or null when the node runs on
+ * its data directory alone.
+ */
+function writeNodeConfig(node) {
+  if (!node.extraDrives) {
+    return null;
+  }
+  const dataDirectory = join(runDirectory, `node-${node.number}`);
+  const devices = [];
+  for (let index = 0; index < node.extraDrives; index += 1) {
+    const path = join(runDirectory, `node-${node.number}-drive-${index}`);
+    // The directory has to exist: Record Store never creates storage it was
+    // pointed at, which is the same rule a real deployment lives under.
+    mkdirSync(path, { recursive: true });
+    devices.push(`[[storage.devices]]\nname = "drive${index}"\npath = "${path}"\n`);
+  }
+  const file = join(runDirectory, `node-${node.number}.toml`);
+  writeFileSync(file, `[storage]\ndata_directory = "${dataDirectory}"\n\n${devices.join('\n')}`);
+  return file;
+}
+
 function spawnNode(node, joinToken) {
+  const configFile = writeNodeConfig(node);
   const child = spawn('cargo', ['run', '--quiet', '--bin', 'record-store-server'], {
     cwd: repositoryRoot,
     env: {
       ...process.env,
       RECORD_STORE_MODE: 'cluster',
       RECORD_STORE_STORAGE_DATA_DIRECTORY: join(runDirectory, `node-${node.number}`),
+      ...(configFile ? { RECORD_STORE_CONFIG_FILE: configFile } : {}),
       RECORD_STORE_S3_BIND: `${host}:${node.s3}`,
       RECORD_STORE_API_BIND: `${host}:${node.api}`,
       RECORD_STORE_RPC_BIND: `${host}:${node.rpc}`,
