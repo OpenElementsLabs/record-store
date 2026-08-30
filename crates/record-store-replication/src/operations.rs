@@ -155,6 +155,65 @@ impl ClusterOperations {
         Ok(())
     }
 
+    /// Explains where an object would be placed, and why.
+    ///
+    /// A read-only dry run against committed state. Placement is a pure
+    /// function of the object identity, the policy, and the cluster map, so
+    /// explaining a placement never touches data or changes anything.
+    pub async fn explain_placement(
+        &self,
+        bucket: &record_store_core::BucketName,
+        key: &record_store_core::ObjectKey,
+    ) -> Result<record_store_cluster::PlacementExplanation, OperationError> {
+        let bucket_record = self
+            .context
+            .metadata
+            .get_bucket_by_name(bucket)
+            .await
+            .map_err(|error| OperationError::Cluster(error.to_string()))?
+            .ok_or_else(|| OperationError::Cluster(format!("bucket '{bucket}' does not exist")))?;
+        let class = bucket_record.storage_class.clone().unwrap_or_default();
+        let policy = self.storage_policy(&class).await?;
+
+        // An existing object is explained where it actually lives; one that does
+        // not exist yet is explained as the write that would create it.
+        let object = self
+            .context
+            .metadata
+            .get_object(bucket_record.id, key)
+            .await
+            .map_err(|error| OperationError::Cluster(error.to_string()))?;
+        let (object_id, size_hint) = match &object {
+            Some(metadata) => (metadata.id, Some(metadata.size)),
+            None => (record_store_core::ObjectId::new(), None),
+        };
+
+        let topology = self.context.cluster.topology().await.map_err(cluster)?;
+        let config = self
+            .context
+            .cluster
+            .config()
+            .await
+            .map_err(cluster)?
+            .ok_or_else(|| OperationError::Cluster("cluster is not initialized".into()))?;
+        let replicas = policy
+            .durability
+            .replicas()
+            .unwrap_or(config.replication_factor);
+        let request = record_store_cluster::ObjectPlacementRequest::new(
+            object_id,
+            replicas,
+            config.required_acknowledgements().min(replicas).max(1),
+            class,
+        )
+        .with_policy(Some(policy))
+        .with_size_hint(size_hint);
+
+        record_store_cluster::CapacityAwarePlacement::new(Some(self.context.node_id))
+            .explain(&request, &topology)
+            .map_err(|error| OperationError::Cluster(error.to_string()))
+    }
+
     /// Returns every defined storage policy.
     pub async fn storage_policies(&self) -> Result<Vec<StoragePolicy>, OperationError> {
         self.context

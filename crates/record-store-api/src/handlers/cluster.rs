@@ -261,6 +261,37 @@ pub(crate) async fn collect_cluster_status(
         })
 }
 
+/// Explains where an object is, or would be, placed.
+///
+/// Read-only: it runs the placement engine against committed state and changes
+/// nothing, which is what makes it safe to answer "why is my data there?"
+pub(crate) async fn explain_placement(
+    State(state): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<record_store_cluster::PlacementExplanation>, ApiError> {
+    let bucket = record_store_core::BucketName::new(bucket).map_err(|_| {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_BUCKET_NAME",
+            "Invalid bucket name",
+        )
+    })?;
+    let key = record_store_core::ObjectKey::new(key).map_err(|_| {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_OBJECT_KEY",
+            "Invalid object key",
+        )
+    })?;
+    cluster_management(&state, request_id.clone())?
+        .operations
+        .explain_placement(&bucket, &key)
+        .await
+        .map(Json)
+        .map_err(|error| cluster_operation_error(error, request_id))
+}
+
 /// Lists every defined storage class.
 pub(crate) async fn list_storage_classes(
     State(state): State<AppState>,

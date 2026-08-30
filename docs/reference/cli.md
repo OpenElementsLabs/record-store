@@ -233,6 +233,21 @@ record-store node decommission <id> --force --endpoint <endpoint>
 `decommission` runs a durability safety check. `--force` bypasses the objection but
 still moves the data. See [Node Lifecycle](../cluster/node-lifecycle.md).
 
+## `placement`
+
+```bash
+record-store placement explain <bucket> <key> --endpoint <endpoint>
+```
+
+Runs the placement engine against committed state and changes nothing. Reports
+the storage class and policy, the placement epoch, the failure domain in force,
+every eligible device with its capacity weight and rendezvous score, the devices
+that were selected, and every device that was **not** eligible with the rule that
+ruled it out.
+
+An object that does not exist yet is explained as the write that would create
+it.
+
 ## `storage-class`
 
 ```bash

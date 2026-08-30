@@ -75,6 +75,11 @@ enum Command {
         #[command(subcommand)]
         command: NodeCommand,
     },
+    /// Explain placement decisions.
+    Placement {
+        #[command(subcommand)]
+        command: PlacementCommand,
+    },
     /// Inspect and define storage classes.
     StorageClass {
         #[command(subcommand)]
@@ -133,6 +138,19 @@ struct DeviceArgs {
     device: String,
     #[command(flatten)]
     endpoint: EndpointArgs,
+}
+
+#[derive(Subcommand)]
+enum PlacementCommand {
+    /// Explain where an object is, or would be, placed.
+    Explain {
+        /// Bucket name.
+        bucket: String,
+        /// Object key.
+        key: String,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
 }
 
 #[derive(Subcommand)]
@@ -549,6 +567,7 @@ async fn main() -> Result<()> {
         Command::Node { command } => node(command, json).await?,
         Command::Drive { command } => drive(command, json).await?,
         Command::StorageClass { command } => storage_class(command, json).await?,
+        Command::Placement { command } => placement(command, json).await?,
         Command::Repair { command } => repair(command, json).await?,
         Command::Rebalance { command } => rebalance(command, json).await?,
     }
@@ -1127,6 +1146,24 @@ async fn node(command: NodeCommand, json: bool) -> Result<()> {
     print_value(&value, json)
 }
 
+async fn placement(command: PlacementCommand, json: bool) -> Result<()> {
+    let PlacementCommand::Explain {
+        bucket,
+        key,
+        endpoint,
+    } = command;
+    let request = client()?.get(api_url(
+        &endpoint,
+        &format!("/api/v1/placement/explain/{bucket}/{key}"),
+    ));
+    let value = send_admin(request)
+        .await?
+        .json::<serde_json::Value>()
+        .await
+        .context("decode placement explanation")?;
+    print_value(&value, json)
+}
+
 async fn storage_class(command: StorageClassCommand, json: bool) -> Result<()> {
     let (request, no_content_action) = match command {
         StorageClassCommand::List(endpoint) => (
@@ -1392,6 +1429,7 @@ mod tests {
                 Command::Node { .. } => "node",
                 Command::Drive { .. } => "drive",
                 Command::StorageClass { .. } => "storage-class",
+                Command::Placement { .. } => "placement",
                 Command::Repair { .. } => "repair",
                 Command::Rebalance { .. } => "rebalance",
             };
