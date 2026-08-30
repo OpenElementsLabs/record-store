@@ -69,12 +69,21 @@ node stays one failure domain.
 | `path` | path | — | Directory the device stores payloads under |
 | `storage_class` | string | the node's `cluster.storage_class` | Class the device belongs to |
 | `weight` | integer | `1000` | Placement weight; 1000 is neutral |
+| `movement_concurrency` | integer | derived | Repair and rebalance transfers this device runs at once |
 
 Names and paths must be distinct, and no path may repeat `data_directory`.
 
 Device identity is derived from the node and the `name`, so a restart keeps the
 same devices. **Renaming a device declares a different one**, orphaning what was
 placed under the old name. Paths may change freely.
+
+`movement_concurrency` is derived from the hardware when unset: **1** for
+rotational media, **4** for solid state, and **2** when nobody identified it. A
+rotational drive serves one transfer far better than several — parallel
+movement turns sequential reads into seeks — while an SSD idles if it is only
+ever given one thing to do. Unidentified media gets the cautious middle rather
+than a generous guess. Set the value when you have measured something better;
+a configured value always wins.
 
 Encryption follows the node: a device does not get its own setting, so a
 deployment cannot encrypt one drive and leave another in the clear by accident.

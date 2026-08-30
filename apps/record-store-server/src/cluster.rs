@@ -705,6 +705,7 @@ fn node_profile(
             health: DeviceHealth::Unknown,
             state: DeviceState::Active,
             hardware: HardwareMetadata::default(),
+            movement_concurrency: declared.movement_concurrency,
         });
     }
     NodeProfile {
@@ -1036,12 +1037,14 @@ mod tests {
                 path: std::path::PathBuf::from("/mnt/nvme0"),
                 storage_class: Some("hot".into()),
                 weight: Some(2_000),
+                movement_concurrency: None,
             },
             record_store_config::StorageDeviceConfig {
                 name: "hdd0".into(),
                 path: std::path::PathBuf::from("/mnt/hdd0"),
                 storage_class: None,
                 weight: None,
+                movement_concurrency: None,
             },
         ];
 

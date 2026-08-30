@@ -277,6 +277,7 @@ mod tests {
                 path: PathBuf::from(path),
                 storage_class: None,
                 weight: None,
+                movement_concurrency: None,
             }
         }
 

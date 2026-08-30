@@ -5,7 +5,11 @@
 //! copy, verify, commit the new replica, and only then release the old one. That
 //! order is what makes a movement safe to interrupt at any point.
 
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use chrono::Utc;
 use futures_util::TryStreamExt;
@@ -85,17 +89,52 @@ impl TaskExecutor {
             .filter(|operation| operation.state == ClusterOperationState::Paused)
             .map(|operation| operation.id)
             .collect();
-        let mine: Vec<ReplicaTask> = page
-            .tasks
-            .into_iter()
-            .filter(|task| matches!(task.state, ReplicaTaskState::Queued))
-            .filter(|task| executor_of(task) == Some(self.context.node_id))
-            .filter(|task| {
-                task.operation_id
-                    .is_none_or(|operation| !paused.contains(&operation))
+        // Per-device caps, so one slow drive does not take the whole pass and a
+        // rotational disk is not handed the same load as an NVMe.
+        let devices: BTreeMap<record_store_core::DeviceId, u32> = self
+            .context
+            .cluster
+            .topology()
+            .await
+            .map(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .flat_map(|node| &node.devices)
+                    .map(|device| (device.id, device.movement_concurrency()))
+                    .collect()
             })
-            .take(limits.concurrency)
-            .collect();
+            .unwrap_or_default();
+
+        let mut per_device: BTreeMap<record_store_core::DeviceId, u32> = BTreeMap::new();
+        let mut mine: Vec<ReplicaTask> = Vec::new();
+        for task in page.tasks {
+            if mine.len() >= limits.concurrency {
+                break;
+            }
+            if !matches!(task.state, ReplicaTaskState::Queued)
+                || executor_of(&task) != Some(self.context.node_id)
+            {
+                continue;
+            }
+            if task
+                .operation_id
+                .is_some_and(|operation| paused.contains(&operation))
+            {
+                continue;
+            }
+            // A task with no named target predates device-aware movement, and is
+            // bounded by the pass limit alone rather than being skipped.
+            if let Some(device) = task.target_device {
+                let allowed = devices.get(&device).copied().unwrap_or(1).max(1);
+                let running = per_device.entry(device).or_insert(0);
+                if *running >= allowed {
+                    continue;
+                }
+                *running += 1;
+            }
+            mine.push(task);
+        }
         if mine.is_empty() {
             return 0;
         }
