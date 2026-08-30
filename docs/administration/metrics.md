@@ -110,6 +110,31 @@ reporting zeroes that look like a broken cluster.
 | `record_store_cluster_logical_bytes` | gauge | Cluster-wide logical bytes |
 | `record_store_cluster_physical_bytes` | gauge | Cluster-wide physical bytes |
 
+### Devices
+
+Also cluster-mode only.
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `record_store_devices_total` | gauge | Registered devices cluster-wide |
+| `record_store_devices_accepting_placement` | gauge | Devices eligible for new data |
+| `record_store_devices_draining` | gauge | Devices being evacuated |
+| `record_store_devices_failed` | gauge | Devices whose data no longer counts for durability |
+| `record_store_devices_unavailable` | gauge | Devices held out of service by an administrator |
+| `record_store_device_capacity_raw_bytes` | gauge | Raw capacity across all devices |
+| `record_store_device_capacity_usable_bytes` | gauge | Capacity Record Store may allocate from |
+| `record_store_device_capacity_available_bytes` | gauge | Capacity currently free |
+
+!!! note "Counts, not one series per device"
+    Device metrics carry **no labels**. A series per device would grow without
+    bound as hardware is replaced, so the scrape reports counts by state and
+    summed capacity. To see individual devices, use
+    `record-store drive list` or `GET /api/v1/devices`.
+
+`record_store_devices_failed` counts a device that either an administrator marked
+failed **or** whose health the platform reports as failed. The two are recorded
+separately and either one is disqualifying.
+
 !!! note "`record_store_replication_queue_depth`"
     The name predates what it now reports: active repair tasks. It is kept as-is so
     existing dashboards keep working.

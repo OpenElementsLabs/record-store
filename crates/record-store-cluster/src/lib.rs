@@ -53,7 +53,8 @@ pub use health::{
 pub use identity::{IdentityError, NodeIdentity, NodeIdentityStore, RaftNodeId};
 pub use placement::{
     CapacityAwarePlacement, ObjectPlacementRequest, PlacementCandidateExplanation, PlacementError,
-    PlacementExplanation, PlacementPlan, PlacementPolicy, PlacementTarget,
+    PlacementExclusion, PlacementExplanation, PlacementPlan, PlacementPolicy, PlacementRejection,
+    PlacementTarget,
 };
 pub use policy::{
     DeviceFilter, DurabilityStrategy, MAXIMUM_POLICY_REPLICAS, StoragePolicy, StoragePolicyError,

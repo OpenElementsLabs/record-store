@@ -33,6 +33,14 @@ The four that matter most:
 | `record_store_metadata_quorum_health` | Dropping to `0` |
 | `record_store_under_replicated_objects` | Staying above `0` |
 
+In a cluster, watch device health too:
+
+| Metric | Watch for |
+| --- | --- |
+| `record_store_devices_failed` | Any value above `0` |
+| `record_store_devices_accepting_placement` | Falling toward `0` while `record_store_devices_total` holds steady |
+| `record_store_device_capacity_available_bytes` | Falling faster than capacity is added |
+
 ## Logs
 
 Structured through `tracing`.

@@ -24,11 +24,11 @@ use crate::handlers::buckets::{
 use crate::handlers::cluster::{
     activate_cluster_device, cluster_health, cluster_initialize, cluster_status,
     decommission_cluster_node, delete_storage_class, drain_cluster_device, drain_cluster_node,
-    inspect_cluster_device, inspect_cluster_node, inspect_storage_class, issue_cluster_join_token,
-    list_cluster_devices, list_cluster_nodes, list_node_devices, list_storage_classes,
-    maintain_cluster_device, maintain_cluster_node, put_storage_class, rebalance_status,
-    release_cluster_device, repair_status, resume_cluster_device, resume_cluster_node,
-    retire_cluster_device, start_rebalance,
+    explain_placement, inspect_cluster_device, inspect_cluster_node, inspect_storage_class,
+    issue_cluster_join_token, list_cluster_devices, list_cluster_nodes, list_node_devices,
+    list_storage_classes, maintain_cluster_device, maintain_cluster_node, put_storage_class,
+    rebalance_status, release_cluster_device, repair_status, resume_cluster_device,
+    resume_cluster_node, retire_cluster_device, start_rebalance,
 };
 use crate::handlers::lifecycle::{
     create_lifecycle_rule, delete_lifecycle_rule, list_lifecycle_rules, update_lifecycle_rule,
@@ -361,6 +361,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/nodes/{id}/decommission",
             axum::routing::post(decommission_cluster_node),
+        )
+        .route(
+            "/api/v1/placement/explain/{bucket}/{key}",
+            get(explain_placement),
         )
         .route("/api/v1/storage-classes", get(list_storage_classes))
         .route(

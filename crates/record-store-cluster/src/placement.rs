@@ -4,7 +4,10 @@
 //! operations never select nodes themselves: they describe what they need and
 //! receive a plan.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::{self, Display, Formatter},
+};
 
 use record_store_core::{DeviceId, NodeId, ObjectId};
 use serde::{Deserialize, Serialize};
@@ -514,6 +517,66 @@ fn placement_domain(node: &NodeRecord, device_id: DeviceId, scope: FailureDomain
     }
 }
 
+/// Why a device was not available to a placement decision.
+///
+/// An explanation that only lists winners answers the easy question. The useful
+/// one is why the device an operator expected was passed over, so every
+/// rejection carries the rule that rejected it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementRejection {
+    /// The node is not accepting new replicas.
+    NodeNotAcceptingReplicas,
+    /// The device's lifecycle state bars new placement.
+    DeviceNotActive,
+    /// Observed device health bars new placement.
+    DeviceUnhealthy,
+    /// The device belongs to a different storage class.
+    WrongStorageClass,
+    /// The policy's device filter excludes this hardware kind.
+    DeviceKindFiltered,
+    /// The device is above the cluster capacity watermark.
+    AboveCapacityWatermark,
+    /// Free space is below the request size plus the reserved margin.
+    InsufficientFreeSpace,
+    /// The request excluded this node.
+    NodeExcluded,
+    /// The request excluded this device.
+    DeviceExcluded,
+    /// A replica of this payload already lives here.
+    AlreadyHoldsReplica,
+}
+
+impl Display for PlacementRejection {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NodeNotAcceptingReplicas => "node is not accepting new replicas",
+            Self::DeviceNotActive => "device is not active",
+            Self::DeviceUnhealthy => "device health bars placement",
+            Self::WrongStorageClass => "device belongs to another storage class",
+            Self::DeviceKindFiltered => "storage policy excludes this device kind",
+            Self::AboveCapacityWatermark => "device is above the capacity watermark",
+            Self::InsufficientFreeSpace => "not enough free space for this write plus the reserve",
+            Self::NodeExcluded => "node excluded by the request",
+            Self::DeviceExcluded => "device excluded by the request",
+            Self::AlreadyHoldsReplica => "already holds a replica of this payload",
+        })
+    }
+}
+
+/// One device that could not be selected, and the rule that ruled it out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementExclusion {
+    /// Node owning the device.
+    pub node_id: NodeId,
+    /// Device that was not selected.
+    pub device_id: DeviceId,
+    /// Physical kind.
+    pub kind: DeviceKind,
+    /// Why it was not eligible.
+    pub reason: PlacementRejection,
+}
+
 /// One candidate in an operator-facing placement explanation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlacementCandidateExplanation {
@@ -546,48 +609,101 @@ pub struct PlacementExplanation {
     pub decision: PlacementPlan,
     /// Eligible candidates in rendezvous order.
     pub candidates: Vec<PlacementCandidateExplanation>,
+    /// Devices that were not eligible, and why.
+    pub excluded: Vec<PlacementExclusion>,
 }
 
 impl CapacityAwarePlacement {
-    /// Explains eligible weights, domains, scores, and selected devices.
+    /// Explains which devices were eligible, which were not, and why.
+    ///
+    /// The walk mirrors `place` rather than approximating it: the same filters
+    /// in the same order, so an explanation cannot describe a decision the
+    /// engine would not make.
     pub fn explain(
         &self,
         request: &ObjectPlacementRequest,
         topology: &ClusterTopology,
     ) -> Result<PlacementExplanation, PlacementError> {
         let decision = self.place(request, topology)?;
-        let scope = request
-            .policy
-            .as_ref()
-            .map_or(topology.config.failure_domain_scope, |policy| {
-                policy.failure_domain
-            });
+        let policy = request.policy.as_ref();
+        let scope = policy.map_or(topology.config.failure_domain_scope, |policy| {
+            policy.failure_domain
+        });
         let reservation = request
             .size_hint
             .unwrap_or(topology.config.unknown_upload_size_reservation_bytes);
+        let margin = topology.config.capacity_safety_margin_bytes;
         let selected: BTreeSet<DeviceId> = decision
             .targets
             .iter()
             .map(|target| target.device_id)
             .collect();
+
         let mut candidates = Vec::new();
+        let mut excluded = Vec::new();
         for node in &topology.nodes {
-            if !node.state.accepts_new_replicas() || request.excluded_nodes.contains(&node.node_id)
-            {
-                continue;
-            }
             for device in &node.devices {
-                if device.storage_class != request.storage_class
-                    || request.excluded_devices.contains(&device.id)
-                    || !device.eligible_for_placement(
-                        reservation,
-                        topology.config.capacity_safety_margin_bytes,
-                    )
-                {
+                let mut reject = |reason: PlacementRejection| {
+                    excluded.push(PlacementExclusion {
+                        node_id: node.node_id,
+                        device_id: device.id,
+                        kind: device.kind,
+                        reason,
+                    });
+                };
+                if !node.state.accepts_new_replicas() {
+                    reject(PlacementRejection::NodeNotAcceptingReplicas);
                     continue;
                 }
-                let candidate =
-                    candidate(node, device, request, topology.config.failure_domain_scope);
+                if device.storage_class != request.storage_class {
+                    reject(PlacementRejection::WrongStorageClass);
+                    continue;
+                }
+                if !eligible_class(request, device) {
+                    reject(PlacementRejection::DeviceKindFiltered);
+                    continue;
+                }
+                if !device.state.accepts_new_placements() {
+                    reject(PlacementRejection::DeviceNotActive);
+                    continue;
+                }
+                if !device.health.permits_placement() {
+                    reject(PlacementRejection::DeviceUnhealthy);
+                    continue;
+                }
+                let level = topology
+                    .config
+                    .watermarks
+                    .level(device.capacity.utilization_permille() / 10);
+                if level == CapacityLevel::Critical || !level.accepts_new_replicas() {
+                    reject(PlacementRejection::AboveCapacityWatermark);
+                    continue;
+                }
+                let reserve = margin.saturating_add(policy.map_or(0, |policy| {
+                    policy.reserved_bytes(device.capacity.usable_bytes)
+                }));
+                if !device.eligible_for_placement(reservation, reserve) {
+                    reject(PlacementRejection::InsufficientFreeSpace);
+                    continue;
+                }
+                if request.excluded_nodes.contains(&node.node_id) {
+                    reject(PlacementRejection::NodeExcluded);
+                    continue;
+                }
+                if request.excluded_devices.contains(&device.id) {
+                    reject(PlacementRejection::DeviceExcluded);
+                    continue;
+                }
+                if request.existing_nodes.contains(&node.node_id)
+                    || request
+                        .existing_targets
+                        .contains(&(node.node_id, device.id))
+                {
+                    reject(PlacementRejection::AlreadyHoldsReplica);
+                    continue;
+                }
+
+                let candidate = candidate(node, device, request, scope);
                 candidates.push(PlacementCandidateExplanation {
                     node_id: candidate.node_id,
                     device_id: candidate.device_id,
@@ -605,12 +721,14 @@ impl CapacityAwarePlacement {
                 .then(left.node_id.cmp(&right.node_id))
                 .then(left.device_id.cmp(&right.device_id))
         });
+        excluded.sort_by_key(|entry| (entry.node_id, entry.device_id));
         Ok(PlacementExplanation {
             epoch: topology.epoch,
             storage_class: request.storage_class.clone(),
             failure_domain: scope,
             decision,
             candidates,
+            excluded,
         })
     }
 }
@@ -1097,6 +1215,119 @@ mod tests {
         CapacityAwarePlacement::new(None)
             .place(&unrestricted, &topology)
             .expect("node separation is satisfiable");
+    }
+
+    /// An explanation has to name the rule that ruled a device out, or an
+    /// operator is left guessing why the drive they expected was skipped.
+    #[test]
+    fn an_explanation_says_why_each_device_was_passed_over() {
+        use crate::device::{DeviceHealth, DeviceKind, DeviceState};
+        use crate::policy::{DeviceFilter, DurabilityStrategy, StoragePolicy};
+
+        // One node per situation, so each rejection is unambiguous.
+        let mut chosen = record(NodeState::Healthy, "a", 1 << 40, 1 << 40);
+        let class = chosen.storage_class.clone();
+        chosen.devices = vec![device_with(
+            chosen.node_id,
+            &class,
+            1 << 40,
+            DeviceState::Active,
+        )];
+        let chosen_device = chosen.devices[0].id;
+
+        let mut draining = record(NodeState::Healthy, "b", 1 << 40, 1 << 40);
+        draining.devices = vec![device_with(
+            draining.node_id,
+            &class,
+            1 << 40,
+            DeviceState::Draining,
+        )];
+        let draining_device = draining.devices[0].id;
+
+        let mut sick = record(NodeState::Healthy, "c", 1 << 40, 1 << 40);
+        sick.devices = vec![device_with(
+            sick.node_id,
+            &class,
+            1 << 40,
+            DeviceState::Active,
+        )];
+        sick.devices[0].health = DeviceHealth::Failed;
+        let sick_device = sick.devices[0].id;
+
+        let mut rotational = record(NodeState::Healthy, "d", 1 << 40, 1 << 40);
+        rotational.devices = vec![device_with(
+            rotational.node_id,
+            &class,
+            1 << 40,
+            DeviceState::Active,
+        )];
+        rotational.devices[0].kind = DeviceKind::SataHdd;
+        let rotational_device = rotational.devices[0].id;
+
+        let mut offline = record(NodeState::Offline, "e", 1 << 40, 1 << 40);
+        offline.devices = vec![device_with(
+            offline.node_id,
+            &class,
+            1 << 40,
+            DeviceState::Active,
+        )];
+        let offline_device = offline.devices[0].id;
+
+        let topology = topology(vec![chosen, draining, sick, rotational, offline]);
+        let policy = StoragePolicy {
+            class: StorageClass::default(),
+            description: None,
+            device_filter: DeviceFilter::allowing([DeviceKind::FilesystemDirectory])
+                .expect("filter"),
+            durability: DurabilityStrategy::Replication { replicas: 1 },
+            failure_domain: FailureDomainScope::Node,
+            strict_failure_domains: false,
+            minimum_free_space_percent: 0,
+        };
+        let request = ObjectPlacementRequest::new(ObjectId::new(), 1, 1, StorageClass::default())
+            .with_size_hint(Some(10))
+            .with_policy(Some(policy));
+
+        let explanation = CapacityAwarePlacement::new(None)
+            .explain(&request, &topology)
+            .expect("explain");
+
+        assert_eq!(explanation.decision.targets.len(), 1);
+        assert_eq!(explanation.decision.targets[0].device_id, chosen_device);
+        assert!(
+            explanation
+                .candidates
+                .iter()
+                .any(|candidate| candidate.device_id == chosen_device && candidate.selected)
+        );
+
+        let reason = |device: DeviceId| {
+            explanation
+                .excluded
+                .iter()
+                .find(|entry| entry.device_id == device)
+                .map(|entry| entry.reason)
+        };
+        assert_eq!(
+            reason(draining_device),
+            Some(PlacementRejection::DeviceNotActive)
+        );
+        assert_eq!(
+            reason(sick_device),
+            Some(PlacementRejection::DeviceUnhealthy)
+        );
+        assert_eq!(
+            reason(rotational_device),
+            Some(PlacementRejection::DeviceKindFiltered)
+        );
+        assert_eq!(
+            reason(offline_device),
+            Some(PlacementRejection::NodeNotAcceptingReplicas)
+        );
+        assert!(
+            reason(chosen_device).is_none(),
+            "the selected device must not also be reported as excluded"
+        );
     }
 
     /// Adding a device must move only the objects that belong on it.
