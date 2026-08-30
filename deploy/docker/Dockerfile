@@ -14,6 +14,8 @@ RUN apt-get update \
 
 COPY --from=builder /src/target/release/record-store-server /usr/local/bin/record-store-server
 COPY --from=builder /src/target/release/record-store /usr/local/bin/record-store
+# The image is labelled Apache-2.0, so it carries the licence it claims.
+COPY --from=builder /src/LICENSE /usr/share/licenses/record-store/LICENSE
 
 ENV RECORD_STORE_S3_BIND=0.0.0.0:7600 \
     RECORD_STORE_API_BIND=0.0.0.0:7601 \
