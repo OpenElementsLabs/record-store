@@ -80,8 +80,31 @@ claim a device it happens to see; a drive participates only because an
 administrator declared it. The path must already exist and be writable —
 Record Store will not create a filesystem for you.
 
-Automatic discovery of local hardware is not implemented. Devices are declared,
-not detected.
+To see what a node *could* use:
+
+```bash
+record-store drive discover
+```
+
+This reads the node's mount table and lists filesystems that could hold
+payloads. It registers nothing. Copy a path into a `[[storage.devices]]` entry
+and restart the node to actually use it.
+
+Discovery deliberately never proposes:
+
+| Excluded | Why |
+| --- | --- |
+| `/`, `/boot`, `/usr`, `/var`, `/etc` | The operating system. A full disk would take the machine down |
+| `tmpfs`, `proc`, `sysfs`, `overlay`, and other pseudo filesystems | Memory or kernel state, not durable storage |
+| Read-only mounts | A device that would fail on its first write |
+| Paths already in use | The data directory and every declared device |
+
+It reports capacity and, on Linux, whether the backing device is rotational.
+It reports health as `unknown`, because nothing has inspected the hardware and
+`healthy` would be a reading nobody took.
+
+Discovery is implemented for Linux. Elsewhere the command reports that plainly
+rather than returning an empty list, which would read as "no storage here".
 
 ## Kind and class are different questions
 

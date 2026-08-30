@@ -62,6 +62,7 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     // The console's Drives screen lists devices and drives their lifecycle; the
     // CLI covers the same ground for automation.
     ("/api/v1/devices", Audience::ConsoleAndCli),
+    ("/api/v1/devices/discovered", Audience::Cli),
     ("/api/v1/placement/explain/{}/{}", Audience::Cli),
     ("/api/v1/storage-classes", Audience::ConsoleAndCli),
     ("/api/v1/storage-classes/{}", Audience::Cli),

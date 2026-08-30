@@ -268,6 +268,7 @@ record-store storage-class delete <class> --yes --endpoint <endpoint>
 
 ```bash
 record-store drive list --endpoint <endpoint>
+record-store drive discover --endpoint <endpoint>
 record-store drive show <node> <device> --endpoint <endpoint>
 record-store drive activate <node> <device> --endpoint <endpoint>
 record-store drive drain <node> <device> --endpoint <endpoint>
@@ -278,6 +279,10 @@ record-store drive retire <node> <device> --yes --endpoint <endpoint>
 ```
 
 `<device>` is the stable device identifier from `drive list`, not a path.
+
+`discover` is read-only: it lists storage the node could use and registers
+nothing. Devices are declared in configuration — see
+[Storage Devices](../cluster/storage-devices.md).
 
 `release` marks a device safe to remove and **fails** while it still holds
 replicas, so success means evacuation finished rather than that it was

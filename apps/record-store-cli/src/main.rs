@@ -205,6 +205,11 @@ enum StorageClassCommand {
 enum DriveCommand {
     /// List every registered device in the cluster.
     List(EndpointArgs),
+    /// List storage this node could use, without registering any of it.
+    ///
+    /// Discovery never formats, mounts, or claims anything. Add what you want
+    /// to a `[[storage.devices]]` entry and restart the node.
+    Discover(EndpointArgs),
     /// Inspect one registered device.
     Show(DeviceArgs),
     /// Bring a registered device into service.
@@ -1245,6 +1250,9 @@ async fn storage_class(command: StorageClassCommand, json: bool) -> Result<()> {
 async fn drive(command: DriveCommand, json: bool) -> Result<()> {
     let request = match command {
         DriveCommand::List(endpoint) => client()?.get(api_url(&endpoint, "/api/v1/devices")),
+        DriveCommand::Discover(endpoint) => {
+            client()?.get(api_url(&endpoint, "/api/v1/devices/discovered"))
+        }
         DriveCommand::Show(device) => client()?.get(device_url(&device, "")),
         DriveCommand::Activate(device) => client()?.post(device_url(&device, "/activate")),
         DriveCommand::Drain(device) => client()?.post(device_url(&device, "/drain")),
