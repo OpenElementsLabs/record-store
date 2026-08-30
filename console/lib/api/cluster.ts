@@ -1,4 +1,5 @@
 import type {
+  ClusterDevice,
   ClusterHealthReport,
   ClusterNode,
   ClusterOperation,
@@ -24,6 +25,73 @@ export function fetchClusterNodes(signal?: AbortSignal): Promise<ClusterNode[]> 
 
 export function fetchClusterNode(id: string, signal?: AbortSignal): Promise<ClusterNode> {
   return request<ClusterNode>(`/v1/nodes/${encodeURIComponent(id)}`, signal ? { signal } : {});
+}
+
+/** Lists every registered storage device in the cluster. */
+export function fetchClusterDevices(signal?: AbortSignal): Promise<ClusterDevice[]> {
+  return request<ClusterDevice[]>('/v1/devices', signal ? { signal } : {});
+}
+
+/**
+ * Device lifecycle actions.
+ *
+ * Each is its own function with the whole path written out rather than composed
+ * from a helper. The repetition is deliberate: the endpoint-coverage test reads
+ * these literals to check that every route the console calls is one the server
+ * actually serves, and a composed path is invisible to it.
+ */
+
+/** Brings a registered device into service. */
+export function activateDevice(nodeId: string, deviceId: string): Promise<ClusterDevice> {
+  return request<ClusterDevice>(
+    `/v1/nodes/${encodeURIComponent(nodeId)}/devices/${encodeURIComponent(deviceId)}/activate`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/** Stops new placement and moves the device's replicas elsewhere. */
+export function drainDevice(nodeId: string, deviceId: string): Promise<ClusterDevice> {
+  return request<ClusterDevice>(
+    `/v1/nodes/${encodeURIComponent(nodeId)}/devices/${encodeURIComponent(deviceId)}/drain`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/** Pauses a device without evacuating it. */
+export function maintainDevice(nodeId: string, deviceId: string): Promise<ClusterDevice> {
+  return request<ClusterDevice>(
+    `/v1/nodes/${encodeURIComponent(nodeId)}/devices/${encodeURIComponent(deviceId)}/maintenance`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/** Returns a drained or paused device to service. */
+export function resumeDevice(nodeId: string, deviceId: string): Promise<ClusterDevice> {
+  return request<ClusterDevice>(
+    `/v1/nodes/${encodeURIComponent(nodeId)}/devices/${encodeURIComponent(deviceId)}/resume`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/**
+ * Asks whether a device is safe to remove.
+ *
+ * The server refuses while the device still owns replicas, which is what makes
+ * a success worth trusting. The console never decides this itself.
+ */
+export function releaseDevice(nodeId: string, deviceId: string): Promise<ClusterDevice> {
+  return request<ClusterDevice>(
+    `/v1/nodes/${encodeURIComponent(nodeId)}/devices/${encodeURIComponent(deviceId)}/release`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/** Permanently retires a device. */
+export function retireDevice(nodeId: string, deviceId: string): Promise<ClusterDevice> {
+  return request<ClusterDevice>(
+    `/v1/nodes/${encodeURIComponent(nodeId)}/devices/${encodeURIComponent(deviceId)}/retire`,
+    { method: 'POST', body: {} },
+  );
 }
 
 /** Stops new placement on a node and moves its replicas elsewhere. */

@@ -60,6 +60,59 @@ export type DataHealth = {
   readonly notes: readonly string[];
 };
 
+/** Physical technology a device reports, or `unknown` when the platform did not say. */
+export type DeviceKind =
+  | 'nvme'
+  | 'sata_ssd'
+  | 'sas_ssd'
+  | 'sata_hdd'
+  | 'sas_hdd'
+  | 'ssd'
+  | 'hdd'
+  | 'block_device'
+  | 'raid_logical_volume'
+  | 'cloud_block_volume'
+  | 'filesystem_directory'
+  | 'unknown';
+
+/** Durable administrative lifecycle of a registered device. */
+export type DeviceState =
+  | 'discovered'
+  | 'available'
+  | 'active'
+  | 'degraded'
+  | 'draining'
+  | 'maintenance'
+  | 'failed'
+  | 'safe_to_remove'
+  | 'retired';
+
+/**
+ * Best available health observation.
+ *
+ * `unknown` and `unsupported` are real values, not placeholders: the platform
+ * either did not report health or cannot. Neither is inferred from lifecycle.
+ */
+export type DeviceHealth =
+  'unknown' | 'healthy' | 'degraded' | 'failed' | 'unavailable' | 'unsupported';
+
+export type ClusterDevice = {
+  readonly device_id: string;
+  readonly node_id: string;
+  readonly kind: DeviceKind;
+  readonly storage_class: string;
+  readonly state: DeviceState;
+  readonly health: DeviceHealth;
+  readonly capacity_bytes: number;
+  readonly usable_bytes: number;
+  readonly available_bytes: number;
+  readonly utilization_percent: number;
+  readonly configured_weight: number;
+  readonly accepts_placement: boolean;
+  readonly current_path: string | null;
+  readonly model: string | null;
+};
+
 export type ClusterNode = {
   readonly node_id: string;
   readonly member_id: number;
@@ -76,6 +129,7 @@ export type ClusterNode = {
   readonly last_heartbeat_at: string | null;
   readonly state_changed_at: string;
   readonly state_reason: string | null;
+  readonly devices?: readonly ClusterDevice[];
 };
 
 export type ReplicationStatus = {
