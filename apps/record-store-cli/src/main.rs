@@ -142,12 +142,57 @@ struct DeviceArgs {
 
 #[derive(Subcommand)]
 enum PlacementCommand {
+    /// Predict what a topology change would move, without changing anything.
+    Simulate {
+        #[command(subcommand)]
+        command: SimulateCommand,
+    },
     /// Explain where an object is, or would be, placed.
     Explain {
         /// Bucket name.
         bucket: String,
         /// Object key.
         key: String,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum SimulateCommand {
+    /// Adding a node with the given device capacities, in bytes.
+    AddNode {
+        /// Usable bytes for each device the node would bring. Repeatable.
+        #[arg(long = "device-bytes", required = true)]
+        device_bytes: Vec<u64>,
+        /// Failure-domain labels, for example `rack=b`.
+        #[arg(long, default_value = "")]
+        failure_domain: String,
+        /// Storage class its devices would belong to.
+        #[arg(long)]
+        storage_class: Option<String>,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Adding one device to a node already in the cluster.
+    AddDevice {
+        /// Node that would gain the device.
+        node: String,
+        /// Usable bytes it would contribute.
+        #[arg(long)]
+        usable_bytes: u64,
+        /// Storage class it would belong to.
+        #[arg(long)]
+        storage_class: Option<String>,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Removing a device, as a drain or a failure would.
+    RemoveDevice {
+        /// Node holding the device.
+        node: String,
+        /// Device that would go away.
+        device: String,
         #[command(flatten)]
         endpoint: EndpointArgs,
     },
@@ -1152,21 +1197,77 @@ async fn node(command: NodeCommand, json: bool) -> Result<()> {
 }
 
 async fn placement(command: PlacementCommand, json: bool) -> Result<()> {
-    let PlacementCommand::Explain {
-        bucket,
-        key,
-        endpoint,
-    } = command;
-    let request = client()?.get(api_url(
-        &endpoint,
-        &format!("/api/v1/placement/explain/{bucket}/{key}"),
-    ));
+    let request = match command {
+        PlacementCommand::Simulate { command } => {
+            let (endpoint, body) = match command {
+                SimulateCommand::AddNode {
+                    device_bytes,
+                    failure_domain,
+                    storage_class,
+                    endpoint,
+                } => (
+                    endpoint,
+                    serde_json::json!({
+                        "change": "add_node",
+                        "devices": device_bytes,
+                        "failure_domain": failure_domain,
+                        "storage_class": storage_class,
+                    }),
+                ),
+                SimulateCommand::AddDevice {
+                    node,
+                    usable_bytes,
+                    storage_class,
+                    endpoint,
+                } => (
+                    endpoint,
+                    serde_json::json!({
+                        "change": "add_device",
+                        "node_id": node,
+                        "usable_bytes": usable_bytes,
+                        "storage_class": storage_class,
+                    }),
+                ),
+                SimulateCommand::RemoveDevice {
+                    node,
+                    device,
+                    endpoint,
+                } => (
+                    endpoint,
+                    serde_json::json!({
+                        "change": "remove_device",
+                        "node_id": node,
+                        "device_id": device,
+                    }),
+                ),
+            };
+            client()?
+                .post(api_url(&endpoint, "/api/v1/placement/simulate"))
+                .json(&body)
+        }
+        PlacementCommand::Explain {
+            bucket,
+            key,
+            endpoint,
+        } => explain_request(&bucket, &key, &endpoint)?,
+    };
     let value = send_admin(request)
         .await?
         .json::<serde_json::Value>()
         .await
-        .context("decode placement explanation")?;
+        .context("decode placement response")?;
     print_value(&value, json)
+}
+
+fn explain_request(
+    bucket: &str,
+    key: &str,
+    endpoint: &EndpointArgs,
+) -> Result<reqwest::RequestBuilder> {
+    Ok(client()?.get(api_url(
+        endpoint,
+        &format!("/api/v1/placement/explain/{bucket}/{key}"),
+    )))
 }
 
 async fn storage_class(command: StorageClassCommand, json: bool) -> Result<()> {
