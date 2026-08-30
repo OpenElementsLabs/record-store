@@ -214,3 +214,180 @@ impl ReplicaStore for DeviceStore {
         self.for_device(self.default_device)?.local_capacity().await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use record_store_core::{Checksum, DeviceId, ObjectId};
+    use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
+
+    use super::*;
+    use crate::{LocalFilesystemStore, upload_stream};
+
+    /// Two devices backed by two directories, as a node with two drives has.
+    async fn two_devices() -> (tempfile::TempDir, DeviceStore, DeviceId, DeviceId) {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let metadata: Arc<dyn MetadataRepository> = Arc::new(
+            RedbMetadataRepository::open(directory.path().join("metadata.redb"))
+                .await
+                .expect("metadata repository"),
+        );
+
+        let mut stores: Vec<(DeviceId, Arc<dyn ReplicaStore>)> = Vec::new();
+        let mut ids = Vec::new();
+        for name in ["disk-a", "disk-b"] {
+            let root = directory.path().join(name);
+            let store = LocalFilesystemStore::open(&root, root.join("tmp"), Arc::clone(&metadata))
+                .await
+                .expect("replica store");
+            let id = DeviceId::new();
+            ids.push(id);
+            stores.push((id, Arc::new(store) as Arc<dyn ReplicaStore>));
+        }
+
+        let registry = DeviceStore::new(ids[0], stores).expect("registry");
+        (directory, registry, ids[0], ids[1])
+    }
+
+    async fn write(registry: &DeviceStore, device: DeviceId, object_id: ObjectId, body: &[u8]) {
+        let payload = body.to_vec();
+        registry
+            .for_device(device)
+            .expect("device")
+            .write_replica(WriteReplicaRequest::known(
+                format!("test-{object_id}"),
+                object_id,
+                payload.len() as u64,
+                Checksum::sha256(<[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(
+                    &payload,
+                ))),
+                upload_stream(futures_util::stream::once(async move {
+                    Ok(bytes::Bytes::from(payload))
+                })),
+            ))
+            .await
+            .expect("write");
+    }
+
+    /// A registry that names a device it has no store for would route writes
+    /// into nothing, so it is refused at construction.
+    #[tokio::test]
+    async fn a_registry_must_hold_the_device_it_defaults_to() {
+        let (_directory, registry, first, second) = two_devices().await;
+        assert_eq!(registry.len(), 2);
+        // Identifiers come back in stable sorted order, not insertion order, so
+        // every node iterating a registry sees the same sequence.
+        let mut expected = vec![first, second];
+        expected.sort_unstable();
+        assert_eq!(registry.device_ids().collect::<Vec<_>>(), expected);
+
+        let absent = DeviceId::new();
+        assert!(matches!(
+            registry.for_device(absent),
+            Err(StorageError::UnknownDevice(_))
+        ));
+    }
+
+    /// Capacity is a question about the node, not about whichever device is
+    /// nominated as default.
+    ///
+    /// Both devices here share one filesystem, so the sum double-counts it. That
+    /// is the documented assumption — registered devices are independent
+    /// resources — and pinning it here keeps the limitation visible rather than
+    /// leaving it as a surprise for whoever puts two device roots on one mount.
+    #[tokio::test]
+    async fn capacity_sums_across_devices() {
+        let (_directory, registry, first, _second) = two_devices().await;
+
+        let one = registry
+            .for_device(first)
+            .expect("device")
+            .local_capacity()
+            .await
+            .expect("capacity");
+        let all = registry.capacity().await.expect("capacity");
+        assert_eq!(
+            all.capacity_bytes,
+            one.capacity_bytes * 2,
+            "capacity adds per registered device"
+        );
+    }
+
+    /// Reconciliation walks what the node stores, which spans drives. Missing a
+    /// payload here would report a healthy replica as lost and repair it
+    /// needlessly.
+    #[tokio::test]
+    async fn listing_and_locating_span_every_device() {
+        let (_directory, registry, first, second) = two_devices().await;
+        let on_first = ObjectId::new();
+        let on_second = ObjectId::new();
+        write(&registry, first, on_first, b"first").await;
+        write(&registry, second, on_second, b"second").await;
+
+        let listed = registry.list_payloads(None, 100).await.expect("list");
+        assert!(
+            listed.contains(&on_first),
+            "a payload on the default device is listed"
+        );
+        assert!(
+            listed.contains(&on_second),
+            "a payload on a non-default device must not be invisible"
+        );
+
+        let (located, _) = registry
+            .locate(on_second)
+            .await
+            .expect("locate")
+            .expect("the payload exists");
+        assert_eq!(
+            located, second,
+            "located on the device that actually holds it"
+        );
+        assert!(
+            registry
+                .locate(ObjectId::new())
+                .await
+                .expect("locate")
+                .is_none(),
+            "a payload nobody stored is not found somewhere"
+        );
+    }
+
+    /// A tombstone is a node-wide instruction. Deleting only from the default
+    /// device would leave bytes behind on a drive nobody named.
+    #[tokio::test]
+    async fn deletion_reaches_every_device_holding_the_payload() {
+        let (_directory, registry, first, second) = two_devices().await;
+        // The same payload on both drives, as a repair mid-flight can leave it.
+        let object_id = ObjectId::new();
+        write(&registry, first, object_id, b"copy").await;
+        write(&registry, second, object_id, b"copy").await;
+
+        assert!(registry.delete_everywhere(object_id).await.expect("delete"));
+        assert!(
+            registry.locate(object_id).await.expect("locate").is_none(),
+            "bytes survived on a device the caller did not name"
+        );
+        assert!(
+            !registry.delete_everywhere(object_id).await.expect("delete"),
+            "deleting what is already gone reports no removal, and does not fail"
+        );
+    }
+
+    /// Compatibility routing targets the default device, which is what keeps
+    /// standalone and single-drive deployments behaving exactly as before.
+    #[tokio::test]
+    async fn unqualified_operations_use_the_default_device() {
+        let (_directory, registry, first, _second) = two_devices().await;
+        let object_id = ObjectId::new();
+        write(&registry, first, object_id, b"payload").await;
+
+        let stat = registry.stat_replica(object_id).await.expect("stat");
+        assert!(
+            stat.is_some(),
+            "the default device answers unqualified reads"
+        );
+        assert_eq!(registry.default_device_id(), first);
+    }
+}
