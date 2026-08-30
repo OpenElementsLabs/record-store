@@ -57,6 +57,33 @@ Constraints:
 committed payloads; it does not re-encrypt existing objects. See
 [Encryption](../security/encryption.md).
 
+### `[[storage.devices]]`
+
+Additional drives this node serves. `data_directory` is always a device; these
+are the drives beyond it. Each becomes an independent placement target while the
+node stays one failure domain.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `name` | string | — | Stable identity. Letters, digits, hyphens, underscores |
+| `path` | path | — | Directory the device stores payloads under |
+| `storage_class` | string | the node's `cluster.storage_class` | Class the device belongs to |
+| `weight` | integer | `1000` | Placement weight; 1000 is neutral |
+
+Names and paths must be distinct, and no path may repeat `data_directory`.
+
+Device identity is derived from the node and the `name`, so a restart keeps the
+same devices. **Renaming a device declares a different one**, orphaning what was
+placed under the old name. Paths may change freely.
+
+Encryption follows the node: a device does not get its own setting, so a
+deployment cannot encrypt one drive and leave another in the clear by accident.
+
+There is no environment-variable form. A list of devices is structural
+configuration, not a single value.
+
+See [Storage Devices](../cluster/storage-devices.md).
+
 ## `[auth]`
 
 | Key | Type | Default | Environment |
@@ -232,6 +259,12 @@ shutdown_grace_period_seconds = 30
 [storage]
 data_directory = "/var/lib/record-store"
 encryption_enabled = true
+
+[[storage.devices]]
+name = "nvme0"
+path = "/mnt/nvme0"
+storage_class = "hot"
+weight = 2000
 
 [limits]
 maximum_concurrent_operations = 256

@@ -63,6 +63,32 @@ impl Default for ServerConfig {
     }
 }
 
+/// One additional storage device this node serves.
+///
+/// A device is a durable location Record Store places data on. Declaring one
+/// here is the administrator explicitly choosing it: Record Store never adopts a
+/// disk it happens to find, and never formats or claims anything.
+///
+/// The node's `data_directory` is always a device in its own right, so this list
+/// describes the drives *beyond* it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageDeviceConfig {
+    /// Stable name for this device on this node.
+    ///
+    /// Identity is derived from it, so renaming a device is the same as
+    /// declaring a different one. It is not the mount path, which can move.
+    pub name: String,
+    /// Directory this device stores payloads under. Normally a mount point.
+    pub path: PathBuf,
+    /// Storage class the device belongs to. Defaults to the node's class.
+    #[serde(default)]
+    pub storage_class: Option<String>,
+    /// Placement weight, where 1000 is neutral.
+    #[serde(default)]
+    pub weight: Option<u32>,
+}
+
 /// Durable local-storage locations.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,6 +100,9 @@ pub struct StorageConfig {
     /// Encrypt newly committed object and multipart payload bytes at rest.
     #[serde(default)]
     pub encryption_enabled: bool,
+    /// Additional devices this node serves, beyond `data_directory`.
+    #[serde(default)]
+    pub devices: Vec<StorageDeviceConfig>,
 }
 
 impl StorageConfig {
@@ -84,6 +113,15 @@ impl StorageConfig {
             .clone()
             .unwrap_or_else(|| self.data_directory.join("tmp"))
     }
+
+    /// Returns where a declared device keeps its incomplete uploads.
+    ///
+    /// Alongside the device's own payloads, so a part never has to cross devices
+    /// to become an object.
+    #[must_use]
+    pub fn device_temporary_directory(device: &StorageDeviceConfig) -> PathBuf {
+        device.path.join("tmp")
+    }
 }
 
 impl Default for StorageConfig {
@@ -92,6 +130,7 @@ impl Default for StorageConfig {
             data_directory: PathBuf::from("./data"),
             temporary_directory: None,
             encryption_enabled: false,
+            devices: Vec::new(),
         }
     }
 }

@@ -64,6 +64,52 @@ impl Config {
         {
             issues.push("storage.temporary_directory must not be empty".to_owned());
         }
+        // Declared devices are independent placement targets, so two of them
+        // sharing a name or a path would make the cluster believe it has more
+        // failure independence than it does.
+        let mut device_names = std::collections::BTreeSet::new();
+        let mut device_paths = std::collections::BTreeSet::new();
+        for device in &self.storage.devices {
+            if device.name.is_empty() {
+                issues.push("storage.devices[].name must not be empty".to_owned());
+            } else if !device
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                issues.push(format!(
+                    "storage.devices[].name '{}' may only contain letters, digits, hyphens, and underscores",
+                    device.name
+                ));
+            } else if !device_names.insert(device.name.as_str()) {
+                issues.push(format!(
+                    "storage.devices[].name '{}' is declared more than once",
+                    device.name
+                ));
+            }
+            if device.path.as_os_str().is_empty() {
+                issues.push("storage.devices[].path must not be empty".to_owned());
+            } else if !device_paths.insert(device.path.as_path()) {
+                issues.push(format!(
+                    "storage.devices[].path '{}' is declared more than once",
+                    device.path.display()
+                ));
+            } else if device.path == self.storage.data_directory {
+                issues.push(format!(
+                    "storage.devices[].path '{}' is already the node's data_directory",
+                    device.path.display()
+                ));
+            }
+            if device
+                .weight
+                .is_some_and(|weight| weight == 0 || weight > 10_000)
+            {
+                issues.push(format!(
+                    "storage.devices[] '{}' weight must be between 1 and 10000",
+                    device.name
+                ));
+            }
+        }
         if self.storage.encryption_enabled && self.auth.credential_master_key.is_none() {
             issues.push(
                 "auth.credential_master_key is required when storage.encryption_enabled is true"
@@ -218,6 +264,82 @@ mod tests {
     use super::*;
     use crate::Config;
     use crate::test_support::*;
+
+    /// Two devices sharing a name or a path would make the cluster believe it
+    /// has more failure independence than it does, so both are refused.
+    #[test]
+    fn declared_devices_must_be_distinct_and_separate_from_the_data_directory() {
+        use crate::sections::StorageDeviceConfig;
+
+        fn device(name: &str, path: &str) -> StorageDeviceConfig {
+            StorageDeviceConfig {
+                name: name.to_owned(),
+                path: PathBuf::from(path),
+                storage_class: None,
+                weight: None,
+            }
+        }
+
+        let base = valid_config();
+
+        let mut config = base.clone();
+        config.storage.devices = vec![device("nvme0", "/mnt/nvme0"), device("nvme1", "/mnt/nvme1")];
+        config.validate().expect("two distinct devices are valid");
+
+        let mut duplicate_name = base.clone();
+        duplicate_name.storage.devices = vec![device("nvme0", "/mnt/a"), device("nvme0", "/mnt/b")];
+        let error = duplicate_name
+            .validate()
+            .expect_err("a repeated device name is refused");
+        assert!(
+            error.to_string().contains("declared more than once"),
+            "{error}"
+        );
+
+        let mut duplicate_path = base.clone();
+        duplicate_path.storage.devices = vec![device("nvme0", "/mnt/a"), device("nvme1", "/mnt/a")];
+        assert!(
+            duplicate_path.validate().is_err(),
+            "two devices on one path are not two devices"
+        );
+
+        let mut collides = base.clone();
+        collides.storage.devices = vec![device("root", "./data")];
+        let error = collides
+            .validate()
+            .expect_err("the data directory is already a device");
+        assert!(error.to_string().contains("data_directory"), "{error}");
+
+        let mut unnamed = base.clone();
+        unnamed.storage.devices = vec![device("", "/mnt/a")];
+        assert!(unnamed.validate().is_err(), "a device needs a name");
+
+        let mut odd_name = base.clone();
+        odd_name.storage.devices = vec![device("nvme 0", "/mnt/a")];
+        assert!(
+            odd_name.validate().is_err(),
+            "a device name is an identifier, not free text"
+        );
+
+        let mut weightless = base;
+        weightless.storage.devices = vec![StorageDeviceConfig {
+            weight: Some(0),
+            ..device("nvme0", "/mnt/a")
+        }];
+        assert!(
+            weightless.validate().is_err(),
+            "a zero weight places nothing"
+        );
+    }
+
+    /// A node with no declared devices behaves exactly as it did before they
+    /// existed, which is what keeps standalone and existing clusters unchanged.
+    #[test]
+    fn declaring_no_devices_is_valid_and_changes_nothing() {
+        let config = valid_config();
+        assert!(config.storage.devices.is_empty());
+        config.validate().expect("valid");
+    }
 
     #[test]
     fn metrics_use_a_dedicated_validated_secret() {
