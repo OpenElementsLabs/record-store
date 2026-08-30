@@ -27,9 +27,9 @@ use crate::handlers::cluster::{
     drain_cluster_node, explain_placement, inspect_cluster_device, inspect_cluster_node,
     inspect_storage_class, issue_cluster_join_token, list_cluster_devices, list_cluster_nodes,
     list_node_devices, list_storage_classes, maintain_cluster_device, maintain_cluster_node,
-    put_storage_class, rebalance_status, release_cluster_device, repair_status,
-    resume_cluster_device, resume_cluster_node, retire_cluster_device, simulate_topology,
-    start_rebalance,
+    pause_rebalance, put_storage_class, rebalance_status, release_cluster_device, repair_status,
+    resume_cluster_device, resume_cluster_node, resume_rebalance as resume_cluster_rebalance,
+    retire_cluster_device, simulate_topology, start_rebalance, throttle_rebalance,
 };
 use crate::handlers::lifecycle::{
     create_lifecycle_rule, delete_lifecycle_rule, list_lifecycle_rules, update_lifecycle_rule,
@@ -434,6 +434,18 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/repair/status", get(repair_status))
         .route("/api/v1/rebalance", axum::routing::post(start_rebalance))
         .route("/api/v1/rebalance/status", get(rebalance_status))
+        .route(
+            "/api/v1/rebalance/pause",
+            axum::routing::post(pause_rebalance),
+        )
+        .route(
+            "/api/v1/rebalance/resume",
+            axum::routing::post(resume_cluster_rebalance),
+        )
+        .route(
+            "/api/v1/rebalance/throttle",
+            axum::routing::post(throttle_rebalance),
+        )
         .route(
             "/api/v1/storage/repair",
             axum::routing::post(storage_repair),

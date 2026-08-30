@@ -19,8 +19,15 @@ pub enum ReplicaTaskKind {
     Repair,
     /// Replace a replica whose stored bytes failed verification.
     RepairCorrupt,
-    /// Move replicas off a node being drained.
+    /// Move replicas off a node or device being drained.
     Drain,
+    /// Rebuild replicas lost with a failed device.
+    ///
+    /// Distinct from `Drain` because the two are different events: a drain is
+    /// planned and its replicas are still readable, while a failed device has
+    /// already taken its copies with it. Reading a repair queue that called both
+    /// "drain" gives no way to tell an incident from an evacuation.
+    DeviceFailed,
     /// Even out capacity utilization across nodes.
     Rebalance,
     /// Improve failure-domain spread without changing the replica count.
@@ -46,9 +53,11 @@ impl ReplicaTaskKind {
     #[must_use]
     pub const fn budget(self) -> MovementBudget {
         match self {
-            Self::Repair | Self::RepairCorrupt | Self::Drain | Self::Delete => {
-                MovementBudget::Repair
-            }
+            Self::Repair
+            | Self::RepairCorrupt
+            | Self::Drain
+            | Self::DeviceFailed
+            | Self::Delete => MovementBudget::Repair,
             Self::Rebalance | Self::RebalanceDomain => MovementBudget::Rebalance,
         }
     }
@@ -60,6 +69,7 @@ impl Display for ReplicaTaskKind {
             Self::Repair => "repair",
             Self::RepairCorrupt => "repair-corrupt",
             Self::Drain => "drain",
+            Self::DeviceFailed => "device-failed",
             Self::Rebalance => "rebalance",
             Self::RebalanceDomain => "rebalance-topology",
             Self::Delete => "delete",
@@ -120,6 +130,17 @@ impl ReplicaTaskPriority {
                     Self::Critical
                 } else {
                     Self::Normal
+                }
+            }
+            // A failed device has already lost its copies, so this is repair
+            // work rather than administrative movement and is ranked as such.
+            ReplicaTaskKind::DeviceFailed => {
+                if healthy == 0 {
+                    Self::Unavailable
+                } else if healthy == 1 && desired > 1 {
+                    Self::Critical
+                } else {
+                    Self::High
                 }
             }
             ReplicaTaskKind::Repair | ReplicaTaskKind::RepairCorrupt => {
@@ -377,6 +398,8 @@ pub enum ClusterOperationState {
     Moving,
     /// All movement finished; verifying durability before completing.
     Verifying,
+    /// Held by an operator. Still outstanding, but creating and running no work.
+    Paused,
     /// Finished successfully.
     Completed,
     /// Stopped by an operator.
@@ -386,9 +409,25 @@ pub enum ClusterOperationState {
 }
 
 impl ClusterOperationState {
-    /// Returns whether the operation still needs coordination.
+    /// Returns whether the operation is still outstanding.
+    ///
+    /// A paused operation is outstanding: it has not finished and it has not
+    /// been cancelled, so hiding it would lose track of work an operator still
+    /// has to resume or cancel.
     #[must_use]
     pub const fn active(self) -> bool {
+        matches!(
+            self,
+            Self::Planning | Self::Moving | Self::Verifying | Self::Paused
+        )
+    }
+
+    /// Returns whether the coordinator should advance the operation.
+    ///
+    /// Separate from [`Self::active`] because pausing must stop work without
+    /// making the operation disappear.
+    #[must_use]
+    pub const fn progressing(self) -> bool {
         matches!(self, Self::Planning | Self::Moving | Self::Verifying)
     }
 }
@@ -399,6 +438,7 @@ impl Display for ClusterOperationState {
             Self::Planning => "planning",
             Self::Moving => "moving",
             Self::Verifying => "verifying",
+            Self::Paused => "paused",
             Self::Completed => "completed",
             Self::Cancelled => "cancelled",
             Self::Failed => "failed",
@@ -471,6 +511,37 @@ pub struct OperationProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failed device and a draining one are different events, and the queue
+    /// has to say which. Reading a repair queue that called both "drain" gives
+    /// no way to tell an incident from planned maintenance.
+    #[test]
+    fn a_failed_device_is_repair_work_not_administrative_movement() {
+        // The source is gone, so there is nothing to release afterwards.
+        assert!(!ReplicaTaskKind::DeviceFailed.removes_source());
+        assert!(ReplicaTaskKind::Drain.removes_source());
+
+        // It draws from the repair budget, not the rebalance one.
+        assert_eq!(
+            ReplicaTaskKind::DeviceFailed.budget(),
+            MovementBudget::Repair
+        );
+
+        // And it outranks a planned drain at the same durability, because the
+        // copies are already lost rather than merely being moved.
+        assert_eq!(
+            ReplicaTaskPriority::classify(ReplicaTaskKind::DeviceFailed, 2, 3),
+            ReplicaTaskPriority::High
+        );
+        assert_eq!(
+            ReplicaTaskPriority::classify(ReplicaTaskKind::Drain, 2, 3),
+            ReplicaTaskPriority::Normal
+        );
+        assert_eq!(
+            ReplicaTaskPriority::classify(ReplicaTaskKind::DeviceFailed, 0, 3),
+            ReplicaTaskPriority::Unavailable
+        );
+    }
 
     #[test]
     fn repair_priority_follows_remaining_durability() {

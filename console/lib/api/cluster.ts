@@ -158,6 +158,22 @@ export function fetchRebalanceOperations(signal?: AbortSignal): Promise<ClusterO
  * The backend decides whether a rebalance is warranted and how much movement it
  * will allow; this only requests one.
  */
+/** Holds every active rebalance without discarding its progress. */
+export function pauseRebalance(): Promise<{ operations_changed: number }> {
+  return request<{ operations_changed: number }>('/v1/rebalance/pause', {
+    method: 'POST',
+    body: {},
+  });
+}
+
+/** Returns paused rebalances to service. */
+export function resumeRebalance(): Promise<{ operations_changed: number }> {
+  return request<{ operations_changed: number }>('/v1/rebalance/resume', {
+    method: 'POST',
+    body: {},
+  });
+}
+
 export function startRebalance(): Promise<ClusterOperation> {
   return request<ClusterOperation>('/v1/rebalance', { method: 'POST' });
 }

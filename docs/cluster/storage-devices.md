@@ -187,6 +187,25 @@ Weight is a stable input. It is deliberately **not** adjusted from live latency
 or queue depth — permanent placement should not move because a drive was briefly
 busy. Transient measurements belong to read routing and scheduling instead.
 
+## Movement concurrency
+
+Repair and rebalance transfers are capped per device, derived from the hardware:
+
+| Media | Transfers at once |
+| --- | --- |
+| Rotational | 1 |
+| Solid state | 4 |
+| Unidentified | 2 |
+
+A rotational drive serves one transfer far better than several, because parallel
+movement turns sequential reads into seeks. Solid-state media has no such
+penalty. Media nobody identified gets the cautious middle: guessing generously
+about unknown hardware risks flooding the drive least able to cope.
+
+Override it per device with `movement_concurrency`. A configured value always
+wins — derived defaults are a starting point, not a policy that overrides
+something you measured.
+
 ## Next
 
 - [Replacing a Drive](replacing-a-drive.md) — draining and removing safely

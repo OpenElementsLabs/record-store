@@ -155,6 +155,84 @@ impl ClusterOperations {
         Ok(())
     }
 
+    /// Holds every active rebalance without discarding its progress.
+    ///
+    /// Pausing stops both the planning of new movement and the transfers
+    /// already queued. A pause that only stopped planning would keep moving
+    /// data for a while, which is not what an operator pressing pause meant.
+    pub async fn pause_rebalance(&self) -> Result<usize, OperationError> {
+        self.set_rebalance_state(ClusterOperationState::Paused, "paused by an operator")
+            .await
+    }
+
+    /// Returns paused rebalances to service.
+    pub async fn resume_rebalance(&self) -> Result<usize, OperationError> {
+        self.set_rebalance_state(ClusterOperationState::Moving, "resumed by an operator")
+            .await
+    }
+
+    async fn set_rebalance_state(
+        &self,
+        state: ClusterOperationState,
+        message: &str,
+    ) -> Result<usize, OperationError> {
+        let wanted = if state == ClusterOperationState::Paused {
+            ClusterOperationState::Paused
+        } else {
+            ClusterOperationState::Moving
+        };
+        let mut changed = 0;
+        for operation in self.context.cluster.operations(64).await.map_err(cluster)? {
+            if operation.kind != ClusterOperationKind::Rebalance || !operation.state.active() {
+                continue;
+            }
+            // Pausing what is already paused, or resuming what is running, is a
+            // no-op rather than an error: an operator repeating a command should
+            // not have to care whether it already took effect.
+            let already_paused = operation.state == ClusterOperationState::Paused;
+            if (wanted == ClusterOperationState::Paused) == already_paused {
+                continue;
+            }
+            self.apply(ClusterCommand::UpdateOperation {
+                operation_id: operation.id,
+                state: wanted,
+                progress: operation.progress,
+                message: Some(message.to_owned()),
+                at: Utc::now(),
+            })
+            .await?;
+            changed += 1;
+        }
+        info!(%state, changed, "rebalance state changed");
+        Ok(changed)
+    }
+
+    /// Sets the byte-per-second ceiling for one rebalance transfer.
+    ///
+    /// Zero disables throttling. This is cluster configuration rather than a
+    /// property of a running operation, so it applies to rebalancing generally
+    /// and survives the current one finishing.
+    pub async fn throttle_rebalance(&self, bytes_per_second: u64) -> Result<u64, OperationError> {
+        let mut config = self
+            .context
+            .cluster
+            .config()
+            .await
+            .map_err(cluster)?
+            .ok_or_else(|| OperationError::Cluster("cluster is not initialized".into()))?;
+        config.rebalance.movement.maximum_bytes_per_second = bytes_per_second;
+        config
+            .validate()
+            .map_err(|error| OperationError::Cluster(error.to_string()))?;
+        self.apply(ClusterCommand::UpdateConfig {
+            config: Box::new(config),
+            at: Utc::now(),
+        })
+        .await?;
+        info!(bytes_per_second, "rebalance throttle changed");
+        Ok(bytes_per_second)
+    }
+
     /// Simulates a topology change without altering anything.
     ///
     /// The real placement engine is run against a hypothetical cluster map, so

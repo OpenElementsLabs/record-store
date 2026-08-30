@@ -41,6 +41,9 @@ pub(crate) const fn task_kind_code(kind: ReplicaTaskKind) -> u8 {
         ReplicaTaskKind::Rebalance => 3,
         ReplicaTaskKind::RebalanceDomain => 4,
         ReplicaTaskKind::Delete => 5,
+        // Appended rather than inserted: these codes are durable, and
+        // renumbering would make queued work unreadable after an upgrade.
+        ReplicaTaskKind::DeviceFailed => 6,
     }
 }
 

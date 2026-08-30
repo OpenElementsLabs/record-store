@@ -566,3 +566,7 @@ deploy/docker/        container and Compose definitions
 docs/                 MkDocs documentation site
 .github/workflows/    CI, documentation, and the release pipeline
 ```
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

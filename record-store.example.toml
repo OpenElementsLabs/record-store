@@ -63,6 +63,7 @@ encryption_enabled = false # requires a stable RECORD_STORE_CREDENTIAL_MASTER_KE
 # path = "/mnt/nvme0"
 # storage_class = "hot"   # defaults to the node's cluster.storage_class
 # weight = 2000           # 1000 is neutral; higher takes proportionally more
+# movement_concurrency = 4  # repair/rebalance transfers at once; derived if unset
 #
 # [[storage.devices]]
 # name = "hdd0"

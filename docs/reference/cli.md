@@ -318,7 +318,19 @@ record-store repair status --endpoint <endpoint>
 ```bash
 record-store rebalance status --endpoint <endpoint>
 record-store rebalance start --endpoint <endpoint>
+record-store rebalance pause --endpoint <endpoint>
+record-store rebalance resume --endpoint <endpoint>
+record-store rebalance throttle <bytes-per-second> --endpoint <endpoint>
 ```
+
+`pause` holds every active rebalance without discarding its progress. It stops
+both the planning of new movement **and** the transfers already queued, so a
+paused rebalance moves nothing. A paused operation is still outstanding: resume
+or cancel it.
+
+`throttle` sets the byte-per-second ceiling for one transfer, and `0` disables
+throttling. It is cluster configuration rather than a property of the running
+operation, so it survives the current rebalance finishing.
 
 ## Scripting
 

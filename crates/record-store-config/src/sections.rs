@@ -87,6 +87,12 @@ pub struct StorageDeviceConfig {
     /// Placement weight, where 1000 is neutral.
     #[serde(default)]
     pub weight: Option<u32>,
+    /// Movement transfers this device runs at once.
+    ///
+    /// Omitted derives it from the hardware: one for rotational media, more for
+    /// solid state. Set it when you have measured something better.
+    #[serde(default)]
+    pub movement_concurrency: Option<u32>,
 }
 
 /// Durable local-storage locations.

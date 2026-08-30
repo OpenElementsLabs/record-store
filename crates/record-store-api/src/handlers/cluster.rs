@@ -261,6 +261,68 @@ pub(crate) async fn collect_cluster_status(
         })
 }
 
+/// How many operations a control changed.
+#[derive(Serialize)]
+pub(crate) struct RebalanceControlResult {
+    /// Operations whose state actually moved.
+    ///
+    /// Zero is a success, not a failure: pausing what is already paused is a
+    /// no-op an operator should not have to reason about.
+    operations_changed: usize,
+}
+
+/// Holds every active rebalance.
+pub(crate) async fn pause_rebalance(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<RebalanceControlResult>, ApiError> {
+    let operations_changed = cluster_management(&state, request_id.clone())?
+        .operations
+        .pause_rebalance()
+        .await
+        .map_err(|error| cluster_operation_error(error, request_id))?;
+    Ok(Json(RebalanceControlResult { operations_changed }))
+}
+
+/// Returns paused rebalances to service.
+pub(crate) async fn resume_rebalance(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<RebalanceControlResult>, ApiError> {
+    let operations_changed = cluster_management(&state, request_id.clone())?
+        .operations
+        .resume_rebalance()
+        .await
+        .map_err(|error| cluster_operation_error(error, request_id))?;
+    Ok(Json(RebalanceControlResult { operations_changed }))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ThrottleRequest {
+    /// Byte-per-second ceiling for one transfer. Zero disables throttling.
+    bytes_per_second: u64,
+}
+
+/// The throttle now in force.
+#[derive(Serialize)]
+pub(crate) struct ThrottleResult {
+    bytes_per_second: u64,
+}
+
+/// Sets the rebalance transfer rate ceiling.
+pub(crate) async fn throttle_rebalance(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    Json(body): Json<ThrottleRequest>,
+) -> Result<Json<ThrottleResult>, ApiError> {
+    let bytes_per_second = cluster_management(&state, request_id.clone())?
+        .operations
+        .throttle_rebalance(body.bytes_per_second)
+        .await
+        .map_err(|error| cluster_operation_error(error, request_id))?;
+    Ok(Json(ThrottleResult { bytes_per_second }))
+}
+
 /// Simulates a topology change without applying it.
 ///
 /// Read-only. The real placement engine runs against a hypothetical cluster map

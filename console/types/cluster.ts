@@ -174,7 +174,7 @@ export type RepairStatus = {
 export type ClusterOperationKind = 'drain' | 'rebalance' | 'decommission';
 
 export type ClusterOperationState =
-  'planning' | 'moving' | 'verifying' | 'completed' | 'cancelled' | 'failed';
+  'planning' | 'moving' | 'verifying' | 'paused' | 'completed' | 'cancelled' | 'failed';
 
 export type OperationProgress = {
   readonly objects_remaining: number;

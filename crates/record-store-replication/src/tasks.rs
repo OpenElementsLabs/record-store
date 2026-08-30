@@ -5,13 +5,17 @@
 //! copy, verify, commit the new replica, and only then release the old one. That
 //! order is what makes a movement safe to interrupt at any point.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use chrono::Utc;
 use futures_util::TryStreamExt;
 use record_store_cluster::{
-    ClusterCommand, DeviceRecord, PayloadPlacement, Replica, ReplicaState, ReplicaTask,
-    ReplicaTaskKind, ReplicaTaskState,
+    ClusterCommand, ClusterOperationState, DeviceRecord, PayloadPlacement, Replica, ReplicaState,
+    ReplicaTask, ReplicaTaskKind, ReplicaTaskState,
 };
 use record_store_consensus::ClusterWrite;
 use record_store_core::{Checksum, DeviceId, NodeId, ObjectId, PayloadFormat};
@@ -72,13 +76,65 @@ impl TaskExecutor {
                 return 0;
             }
         };
-        let mine: Vec<ReplicaTask> = page
-            .tasks
+        // Pausing an operation has to stop the transfers it already queued, not
+        // only stop it queueing more. Otherwise "paused" would mean "still
+        // moving data for a while", which is not what an operator asked for.
+        let paused: BTreeSet<record_store_core::ClusterOperationId> = self
+            .context
+            .cluster
+            .operations(64)
+            .await
+            .unwrap_or_default()
             .into_iter()
-            .filter(|task| matches!(task.state, ReplicaTaskState::Queued))
-            .filter(|task| executor_of(task) == Some(self.context.node_id))
-            .take(limits.concurrency)
+            .filter(|operation| operation.state == ClusterOperationState::Paused)
+            .map(|operation| operation.id)
             .collect();
+        // Per-device caps, so one slow drive does not take the whole pass and a
+        // rotational disk is not handed the same load as an NVMe.
+        let devices: BTreeMap<record_store_core::DeviceId, u32> = self
+            .context
+            .cluster
+            .topology()
+            .await
+            .map(|topology| {
+                topology
+                    .nodes
+                    .iter()
+                    .flat_map(|node| &node.devices)
+                    .map(|device| (device.id, device.movement_concurrency()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut per_device: BTreeMap<record_store_core::DeviceId, u32> = BTreeMap::new();
+        let mut mine: Vec<ReplicaTask> = Vec::new();
+        for task in page.tasks {
+            if mine.len() >= limits.concurrency {
+                break;
+            }
+            if !matches!(task.state, ReplicaTaskState::Queued)
+                || executor_of(&task) != Some(self.context.node_id)
+            {
+                continue;
+            }
+            if task
+                .operation_id
+                .is_some_and(|operation| paused.contains(&operation))
+            {
+                continue;
+            }
+            // A task with no named target predates device-aware movement, and is
+            // bounded by the pass limit alone rather than being skipped.
+            if let Some(device) = task.target_device {
+                let allowed = devices.get(&device).copied().unwrap_or(1).max(1);
+                let running = per_device.entry(device).or_insert(0);
+                if *running >= allowed {
+                    continue;
+                }
+                *running += 1;
+            }
+            mine.push(task);
+        }
         if mine.is_empty() {
             return 0;
         }

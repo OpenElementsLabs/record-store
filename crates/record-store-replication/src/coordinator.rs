@@ -239,7 +239,27 @@ impl Coordinator {
             .map(|replica| (replica.node_id, replica.device_id))
             .collect();
 
-        let (kind, source) = if !leaving.is_empty() {
+        // A failed device has already taken its copies; a draining one still
+        // has readable replicas that must be moved and then released. Calling
+        // both "drain" makes an incident indistinguishable from an evacuation in
+        // the repair queue, and makes the executor try to delete from a device
+        // that is gone.
+        let failed: Vec<(NodeId, record_store_core::DeviceId)> = placement
+            .replicas
+            .iter()
+            .filter(|replica| {
+                topology
+                    .device(replica.device_id)
+                    .is_some_and(|(_, device)| {
+                        device.state == record_store_cluster::DeviceState::Failed
+                    })
+            })
+            .map(|replica| (replica.node_id, replica.device_id))
+            .collect();
+
+        let (kind, source) = if !failed.is_empty() {
+            (ReplicaTaskKind::DeviceFailed, None)
+        } else if !leaving.is_empty() {
             (ReplicaTaskKind::Drain, leaving.first().copied())
         } else if damaged.iter().any(|(node, device)| {
             placement
@@ -346,7 +366,8 @@ impl Coordinator {
     pub async fn progress_operations(&self) -> Result<(), String> {
         let operations = self.context.cluster.operations(64).await.map_err(display)?;
         for operation in operations {
-            if !operation.state.active() {
+            // A paused operation stays outstanding but creates no new work.
+            if !operation.state.progressing() {
                 continue;
             }
             let Some(node_id) = operation.node_id else {

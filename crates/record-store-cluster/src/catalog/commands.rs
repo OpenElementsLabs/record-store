@@ -121,6 +121,12 @@ pub fn apply_command_tx(
                 .into());
             }
             device.capacity.validate()?;
+            // A node with no registered devices is served by an implicit one
+            // covering its data directory, synthesized into the topology view.
+            // That synthesis only happens while the list is empty, so gaining a
+            // second drive would otherwise make the first disappear from
+            // placement while its replicas still exist.
+            node.ensure_legacy_device();
             if let Some(existing) = node.device(device.id) {
                 // Refreshing discovery information must not reset durable
                 // administrative intent such as Draining or Maintenance.
@@ -1413,6 +1419,63 @@ mod tests {
         // Discovery never invents telemetry, and registration must not either.
         assert_eq!(stored.health, crate::DeviceHealth::Unknown);
         assert_eq!(stored.hardware.temperature_celsius, None);
+    }
+
+    /// Gaining a second drive must not make the first disappear.
+    ///
+    /// A node with no registered devices is served by an implicit one covering
+    /// its data directory, and that is synthesized only while the list is empty.
+    /// Registering a drive would otherwise drop the implicit device from
+    /// placement while the replicas on it still existed.
+    #[tokio::test]
+    async fn registering_a_drive_does_not_remove_the_node_s_implicit_device() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+
+        // A freshly registered node stores no devices; the topology view
+        // synthesizes one.
+        assert!(
+            catalog
+                .node(node_id)
+                .await
+                .expect("read")
+                .expect("node")
+                .devices
+                .is_empty()
+        );
+
+        let mut extra = crate::DeviceRecord::legacy_directory(
+            node_id,
+            Some(std::path::PathBuf::from("/mnt/second")),
+            StorageClass::default(),
+            crate::DeviceCapacity {
+                raw_bytes: 1_000,
+                usable_bytes: 900,
+                allocated_bytes: 0,
+                reserved_bytes: 0,
+                available_bytes: 900,
+            },
+        );
+        extra.id = record_store_core::DeviceId::new();
+        let extra_id = extra.id;
+        catalog
+            .apply(ClusterCommand::RegisterDevice {
+                node_id,
+                device: Box::new(extra),
+                at: now,
+            })
+            .await
+            .expect("register the second drive");
+
+        let node = catalog.node(node_id).await.expect("read").expect("node");
+        let ids: Vec<_> = node.devices.iter().map(|device| device.id).collect();
+        assert!(
+            ids.contains(&crate::DeviceRecord::legacy_id(node_id)),
+            "the node's original device was dropped by gaining another"
+        );
+        assert!(ids.contains(&extra_id));
+        assert_eq!(ids.len(), 2);
     }
 
     /// A drain has to survive a restart.

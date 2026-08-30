@@ -84,6 +84,39 @@ pub enum DeviceKind {
     Unknown,
 }
 
+impl DeviceKind {
+    /// Returns whether this kind is rotational media, when the kind says so.
+    ///
+    /// `None` means the kind carries no answer — a generic block device or an
+    /// unidentified one — and callers must not read that as "solid state".
+    #[must_use]
+    pub const fn rotational(self) -> Option<bool> {
+        match self {
+            Self::SataHdd | Self::SasHdd | Self::Hdd => Some(true),
+            Self::Nvme | Self::SataSsd | Self::SasSsd | Self::Ssd => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Returns how many movement transfers this kind should run at once.
+    ///
+    /// A rotational drive serves one stream far better than several: parallel
+    /// transfers turn sequential reads into seeks and make the drive slower
+    /// under more load. Solid-state media has no such penalty and idles if it is
+    /// only ever given one thing to do.
+    ///
+    /// Media nobody identified gets the conservative answer. Guessing generously
+    /// about unknown hardware risks flooding the one drive least able to cope.
+    #[must_use]
+    pub const fn default_movement_concurrency(self) -> u32 {
+        match self.rotational() {
+            Some(true) => 1,
+            Some(false) => 4,
+            None => 2,
+        }
+    }
+}
+
 /// Stable administrator-configured contribution to placement weight.
 ///
 /// `1000` is neutral. The bounded integer representation keeps replicated
@@ -373,6 +406,13 @@ pub struct DeviceRecord {
     pub state: DeviceState,
     /// Optional platform facts.
     pub hardware: HardwareMetadata,
+    /// Movement transfers this device runs at once.
+    ///
+    /// `None` derives it from the device kind. An administrator setting it
+    /// explicitly always wins: derived defaults are a starting point, not a
+    /// policy that overrides what somebody measured.
+    #[serde(default)]
+    pub movement_concurrency: Option<u32>,
 }
 
 impl DeviceRecord {
@@ -402,6 +442,7 @@ impl DeviceRecord {
             health: DeviceHealth::Unknown,
             state: DeviceState::Active,
             hardware: HardwareMetadata::default(),
+            movement_concurrency: None,
         }
     }
 
@@ -420,6 +461,26 @@ impl DeviceRecord {
         u128::from(self.capacity.usable_bytes)
             .saturating_mul(u128::from(self.configured_weight.get()))
             / u128::from(PlacementWeight::DEFAULT)
+    }
+
+    /// Returns how many movement transfers this device should run at once.
+    ///
+    /// The configured value when there is one, otherwise the conservative
+    /// default for the hardware. Never zero: a device that runs no transfers can
+    /// never be drained.
+    #[must_use]
+    pub fn movement_concurrency(&self) -> u32 {
+        self.movement_concurrency
+            .filter(|value| *value > 0)
+            .unwrap_or_else(|| {
+                // A platform-reported rotational flag is better evidence than
+                // the kind, which may be a generic `block_device`.
+                match self.hardware.rotational {
+                    Some(true) => 1,
+                    Some(false) => 4,
+                    None => self.kind.default_movement_concurrency(),
+                }
+            })
     }
 
     /// Applies a validated lifecycle transition.
@@ -534,6 +595,54 @@ mod tests {
                 available_bytes: 800,
             },
         )
+    }
+
+    /// A rotational drive serves one transfer far better than several, and an
+    /// unidentified one gets the conservative answer rather than a generous
+    /// guess about hardware nobody has confirmed.
+    #[test]
+    fn movement_concurrency_follows_the_hardware() {
+        let node = NodeId::new();
+
+        let mut spinning = device(node);
+        spinning.kind = DeviceKind::SataHdd;
+        assert_eq!(spinning.movement_concurrency(), 1);
+
+        let mut solid = device(node);
+        solid.kind = DeviceKind::Nvme;
+        assert_eq!(solid.movement_concurrency(), 4);
+
+        let unknown = device(node);
+        assert_eq!(unknown.kind, DeviceKind::FilesystemDirectory);
+        assert_eq!(
+            unknown.movement_concurrency(),
+            2,
+            "unidentified media gets the cautious middle, not the generous end"
+        );
+
+        // A platform-reported flag is better evidence than the kind, which may
+        // be a generic block device.
+        let mut reported = device(node);
+        reported.kind = DeviceKind::BlockDevice;
+        reported.hardware.rotational = Some(true);
+        assert_eq!(reported.movement_concurrency(), 1);
+    }
+
+    /// A measured value beats a derived one, and zero is refused because a
+    /// device that runs no transfers can never be drained.
+    #[test]
+    fn a_configured_concurrency_overrides_the_derived_default() {
+        let mut device = device(NodeId::new());
+        device.kind = DeviceKind::SataHdd;
+        device.movement_concurrency = Some(6);
+        assert_eq!(device.movement_concurrency(), 6);
+
+        device.movement_concurrency = Some(0);
+        assert_eq!(
+            device.movement_concurrency(),
+            1,
+            "zero would make the device impossible to evacuate"
+        );
     }
 
     #[test]

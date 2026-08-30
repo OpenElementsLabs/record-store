@@ -319,6 +319,8 @@ struct Harness {
     transport: Arc<FakeTransport>,
     peers: Vec<NodeId>,
     bucket_id: BucketId,
+    /// Devices registered on the local node, in registration order.
+    drives: Vec<record_store_core::DeviceId>,
 }
 
 impl Harness {
@@ -338,6 +340,22 @@ impl Harness {
         .await
     }
 
+    /// Builds a single node serving `drives` independent devices.
+    ///
+    /// Device scope, so the drives compete with one another rather than being
+    /// collapsed into one machine-shaped domain.
+    async fn with_drives(drives: usize) -> Self {
+        Self::build_with(
+            0,
+            1,
+            WriteAcknowledgement::All,
+            BTreeMap::new(),
+            true,
+            drives,
+        )
+        .await
+    }
+
     async fn with_behaviour(
         peers: usize,
         replication_factor: u8,
@@ -353,6 +371,25 @@ impl Harness {
         acknowledgement: WriteAcknowledgement,
         behaviour: BTreeMap<usize, Peer>,
         allow_degraded_writes: bool,
+    ) -> Self {
+        Self::build_with(
+            peers,
+            replication_factor,
+            acknowledgement,
+            behaviour,
+            allow_degraded_writes,
+            1,
+        )
+        .await
+    }
+
+    async fn build_with(
+        peers: usize,
+        replication_factor: u8,
+        acknowledgement: WriteAcknowledgement,
+        behaviour: BTreeMap<usize, Peer>,
+        allow_degraded_writes: bool,
+        drives: usize,
     ) -> Self {
         let directory = tempfile::tempdir().expect("temporary directory");
         let local_node = NodeId::new();
@@ -420,15 +457,52 @@ impl Harness {
         // replicated adapters.
         let local_metadata: Arc<dyn MetadataRepository> =
             Arc::new(consensus.state().metadata().clone());
-        let local = Arc::new(
-            LocalFilesystemStore::open(
-                directory.path().join("data"),
-                directory.path().join("tmp"),
-                local_metadata,
-            )
-            .await
-            .expect("local store"),
-        );
+        // One store per declared drive. The first is the node's default device,
+        // which is what a single-drive node has always had.
+        let mut drive_ids = Vec::new();
+        let mut drive_stores: Vec<(record_store_core::DeviceId, Arc<dyn ReplicaStore>)> =
+            Vec::new();
+        for index in 0..drives.max(1) {
+            let root = directory.path().join(format!("data-{index}"));
+            let store =
+                LocalFilesystemStore::open(&root, root.join("tmp"), Arc::clone(&local_metadata))
+                    .await
+                    .expect("local store");
+            let id = if index == 0 {
+                DeviceRecord::legacy_id(local_node)
+            } else {
+                record_store_core::DeviceId::new()
+            };
+            drive_ids.push(id);
+            drive_stores.push((id, Arc::new(store) as Arc<dyn ReplicaStore>));
+        }
+        // A drive that exists on disk but was never registered is invisible to
+        // placement, and that is the correct rule: registration is what makes a
+        // device a placement target. A node's default device is synthesized into
+        // the topology view, so only the drives beyond it need registering.
+        for id in drive_ids.iter().skip(1) {
+            let mut record = DeviceRecord::legacy_directory(
+                local_node,
+                None,
+                StorageClass::default(),
+                record_store_cluster::DeviceCapacity {
+                    raw_bytes: 100 * 1024 * 1024 * 1024,
+                    usable_bytes: 100 * 1024 * 1024 * 1024,
+                    allocated_bytes: 0,
+                    reserved_bytes: 0,
+                    available_bytes: 90 * 1024 * 1024 * 1024,
+                },
+            );
+            record.id = *id;
+            consensus
+                .write(ClusterWrite::cluster(ClusterCommand::RegisterDevice {
+                    node_id: local_node,
+                    device: Box::new(record),
+                    at: Utc::now(),
+                }))
+                .await
+                .expect("register a drive");
+        }
         let metadata: Arc<dyn MetadataRepository> =
             Arc::new(ReplicatedMetadataRepository::new(Arc::clone(&consensus)));
         let bucket = Bucket {
@@ -453,10 +527,10 @@ impl Harness {
             cluster: Arc::new(ReplicatedClusterStore::new(Arc::clone(&consensus)))
                 as Arc<dyn ClusterStore>,
             metadata,
-            local: Arc::new(DeviceStore::single(
-                DeviceRecord::legacy_id(local_node),
-                local.clone() as Arc<dyn ReplicaStore>,
-            )),
+            local: Arc::new(
+                DeviceStore::new(DeviceRecord::legacy_id(local_node), drive_stores)
+                    .expect("device registry"),
+            ),
             transport: transport.clone(),
             placement: Arc::new(CapacityAwarePlacement::new(Some(local_node))),
             consensus: Some(Arc::clone(&consensus)),
@@ -473,6 +547,7 @@ impl Harness {
             transport,
             peers: peer_ids,
             bucket_id: bucket.id,
+            drives: drive_ids,
         }
     }
 
@@ -2628,4 +2703,60 @@ async fn simulating_an_unknown_device_is_refused() {
         .await
         .expect_err("an unregistered device cannot be removed, even hypothetically");
     assert!(error.to_string().contains("device"), "{error}");
+}
+
+/// A node's second drive really does receive object data.
+///
+/// Everything else about multi-device is proven against topologies built in
+/// memory. This drives the real path: two filesystem stores on one node, the
+/// real placement engine choosing between them, and the real write path routing
+/// to whichever it chose.
+#[tokio::test]
+async fn objects_land_on_both_of_a_node_s_drives() {
+    let harness = Harness::with_drives(2).await;
+    let (first, second) = (harness.drives[0], harness.drives[1]);
+
+    // Enough objects that using only one drive would be an extraordinary
+    // coincidence if placement were genuinely choosing between two.
+    let mut used = std::collections::BTreeSet::new();
+    for index in 0..40 {
+        let key = format!("object-{index}.txt");
+        harness.put(&key, b"payload").await.expect("put");
+        let object = harness
+            .context
+            .metadata
+            .get_object(harness.bucket_id, &ObjectKey::new(&key).expect("key"))
+            .await
+            .expect("read")
+            .expect("object");
+        let placement = harness
+            .context
+            .cluster
+            .placement(object.id)
+            .await
+            .expect("read")
+            .expect("placement");
+        used.extend(placement.replicas.iter().map(|replica| replica.device_id));
+    }
+
+    assert!(
+        used.contains(&first) && used.contains(&second),
+        "a declared drive that never receives data is not a placement target"
+    );
+
+    // And the bytes are on the drive the metadata names, not merely recorded.
+    for device in [first, second] {
+        let listed = harness
+            .context
+            .local
+            .for_device(device)
+            .expect("device")
+            .list_local_payloads(None, 100)
+            .await
+            .expect("list");
+        assert!(
+            !listed.is_empty(),
+            "metadata claims this drive holds replicas but it stores nothing"
+        );
+    }
 }

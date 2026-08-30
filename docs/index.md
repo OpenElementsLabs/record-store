@@ -86,3 +86,9 @@ Being precise about this is more useful than a longer feature list.
 | Running it already | [Administration](administration/index.md) and [Operations](operations/index.md) |
 | Running a cluster | [Cluster Overview](cluster/index.md) |
 | Contributing to it | [Development Setup](contributing/development-setup.md) |
+
+## License
+
+Record Store is licensed under the Apache License 2.0. The full text ships with
+the source and inside the published container images at
+`/usr/share/licenses/record-store/LICENSE`.

@@ -25,6 +25,7 @@ RUN groupadd --system --gid 10002 console \
 COPY --from=builder --chown=console:console /app/.next/standalone ./
 COPY --from=builder --chown=console:console /app/.next/static ./.next/static
 COPY --from=builder --chown=console:console /app/public ./public
+COPY --chown=console:console LICENSE /usr/share/licenses/record-store/LICENSE
 
 ENV NODE_ENV=production \
     PORT=7602 \
