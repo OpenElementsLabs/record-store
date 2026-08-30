@@ -63,7 +63,7 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     // CLI covers the same ground for automation.
     ("/api/v1/devices", Audience::ConsoleAndCli),
     ("/api/v1/placement/explain/{}/{}", Audience::Cli),
-    ("/api/v1/storage-classes", Audience::Cli),
+    ("/api/v1/storage-classes", Audience::ConsoleAndCli),
     ("/api/v1/storage-classes/{}", Audience::Cli),
     ("/api/v1/nodes/{}/devices", Audience::Cli),
     ("/api/v1/nodes/{}/devices/{}", Audience::Cli),

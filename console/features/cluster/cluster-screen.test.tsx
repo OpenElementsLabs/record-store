@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ClusterScreen } from './cluster-screen';
 import { jsonResponse, renderWithProviders, systemInfo } from '@/test/render';
-import type { ClusterStatus } from '@/types/cluster';
+import type { ClusterDevice, ClusterNode, ClusterStatus } from '@/types/cluster';
 
 function status(overrides: Partial<ClusterStatus> = {}): ClusterStatus {
   return {
@@ -57,6 +57,47 @@ function status(overrides: Partial<ClusterStatus> = {}): ClusterStatus {
   };
 }
 
+function device(overrides: Partial<ClusterDevice> = {}): ClusterDevice {
+  return {
+    device_id: `device-${Math.random().toString(16).slice(2)}`,
+    node_id: 'node-1',
+    kind: 'nvme',
+    storage_class: 'standard',
+    state: 'active',
+    health: 'healthy',
+    capacity_bytes: 1_000,
+    usable_bytes: 1_000,
+    available_bytes: 500,
+    utilization_percent: 50,
+    configured_weight: 1_000,
+    accepts_placement: true,
+    current_path: null,
+    model: null,
+    ...overrides,
+  };
+}
+
+function node(devices: ClusterDevice[]): ClusterNode {
+  return {
+    node_id: 'node-1',
+    member_id: 1,
+    state: 'healthy',
+    metadata_voter: true,
+    rpc_address: '127.0.0.1:7603',
+    storage_class: 'standard',
+    failure_domain: {},
+    software_version: 'test',
+    capacity_bytes: 3_000,
+    available_bytes: 1_500,
+    utilization_percent: 50,
+    replicas: 0,
+    last_heartbeat_at: '2026-08-22T12:00:00Z',
+    state_changed_at: '2026-08-22T12:00:00Z',
+    state_reason: null,
+    devices,
+  };
+}
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe('ClusterScreen', () => {
@@ -93,5 +134,43 @@ describe('ClusterScreen', () => {
     expect(await screen.findByText('What needs attention')).toBeTruthy();
     expect(screen.getByText('four payloads need another replica')).toBeTruthy();
     expect(screen.getByText('4')).toBeTruthy();
+  });
+
+  it('leads the drive summary with whatever needs attention', async () => {
+    // A count of healthy drives is the least interesting thing on a screen an
+    // operator opened because something is wrong.
+    const withDrives = status({
+      nodes: [
+        node([
+          device({ state: 'active', health: 'healthy', accepts_placement: true }),
+          device({ state: 'active', health: 'failed', accepts_placement: false }),
+          device({ state: 'draining', health: 'healthy', accepts_placement: false }),
+        ]),
+      ],
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(withDrives)));
+    renderWithProviders(<ClusterScreen />, {
+      info: systemInfo({
+        mode: 'cluster',
+        capabilities: { ...systemInfo().capabilities, cluster: true },
+      }),
+    });
+
+    expect(await screen.findByText('Drives')).toBeTruthy();
+    // Failed outranks draining, which outranks the healthy count.
+    expect(await screen.findByText('1 failed')).toBeTruthy();
+    expect(screen.queryByText('1 accepting data')).toBeNull();
+  });
+
+  it('says no drives are registered rather than reporting zero accepting', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(status())));
+    renderWithProviders(<ClusterScreen />, {
+      info: systemInfo({
+        mode: 'cluster',
+        capabilities: { ...systemInfo().capabilities, cluster: true },
+      }),
+    });
+
+    expect(await screen.findByText('None registered')).toBeTruthy();
   });
 });

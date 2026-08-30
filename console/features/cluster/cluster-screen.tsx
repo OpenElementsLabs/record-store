@@ -13,6 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { queryKeys } from '@/hooks/use-system';
 import { fetchClusterStatus } from '@/lib/api/cluster';
 import { formatBytes, formatCount, formatDateTime } from '@/lib/format';
+import type { ClusterNode } from '@/types/cluster';
 
 /**
  * Cluster overview.
@@ -40,6 +41,7 @@ export function ClusterScreen() {
   }
 
   const data = status.data;
+  const drives = summariseDrives(data?.nodes ?? []);
 
   return (
     <>
@@ -118,6 +120,11 @@ export function ClusterScreen() {
           label="Nodes"
           value={data ? formatCount(data.data.nodes) : <Skeleton className="h-7 w-12" />}
           detail={data ? `${data.data.healthy_nodes} healthy` : undefined}
+        />
+        <MetricCard
+          label="Drives"
+          value={data ? formatCount(drives.total) : <Skeleton className="h-7 w-12" />}
+          detail={data ? driveDetail(drives) : undefined}
         />
         <MetricCard
           label="Logical data"
@@ -265,4 +272,43 @@ function Row({ label, value }: { readonly label: string; readonly value: string 
 
 function capitalise(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/** Device counts across the cluster, derived from the nodes already fetched. */
+type DriveSummary = {
+  readonly total: number;
+  readonly accepting: number;
+  readonly failed: number;
+  readonly draining: number;
+};
+
+function summariseDrives(nodes: readonly ClusterNode[]): DriveSummary {
+  let total = 0;
+  let accepting = 0;
+  let failed = 0;
+  let draining = 0;
+  for (const node of nodes) {
+    for (const device of node.devices ?? []) {
+      total += 1;
+      if (device.accepts_placement) accepting += 1;
+      // Lifecycle and health are separate facts, and either one being failed
+      // means the device is not carrying durable data.
+      if (device.state === 'failed' || device.health === 'failed') failed += 1;
+      if (device.state === 'draining') draining += 1;
+    }
+  }
+  return { total, accepting, failed, draining };
+}
+
+/**
+ * Describes the drives in one line, leading with whatever needs attention.
+ *
+ * A count of healthy drives is the least interesting thing on a screen an
+ * operator opened because something is wrong.
+ */
+function driveDetail(drives: DriveSummary): string {
+  if (drives.total === 0) return 'None registered';
+  if (drives.failed > 0) return `${formatCount(drives.failed)} failed`;
+  if (drives.draining > 0) return `${formatCount(drives.draining)} draining`;
+  return `${formatCount(drives.accepting)} accepting data`;
 }
