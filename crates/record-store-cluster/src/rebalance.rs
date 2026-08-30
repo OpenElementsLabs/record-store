@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::CapacityLevel,
+    device::DeviceRecord,
     placement::{ObjectPlacementRequest, PlacementPolicy},
     replica::PayloadPlacement,
-    topology::{ClusterTopology, NodeState},
+    topology::{ClusterTopology, NodeRecord, NodeState},
 };
 
 /// One payload considered for movement.
@@ -41,11 +42,20 @@ pub struct RebalanceMove {
 
 /// Plans capacity-driven replica movement.
 ///
-/// The algorithm is deliberately the simplest one that is correct and
-/// explainable: find nodes above the tolerated spread, find nodes below it, and
-/// move replicas from the former to the latter while preserving the replica count
-/// and failure-domain spread. It never removes a source replica; that only
-/// happens after the destination replica is written, verified, and committed.
+/// Balance is measured per device, not per node. A node holding one full drive
+/// and three empty ones is not balanced, and a node-level view cannot see the
+/// difference: it reports a comfortable average while writes to the class backed
+/// by the full drive fail. Devices are what placement selects, so devices are
+/// what rebalancing has to even out.
+///
+/// A move preserves the replica count. The source replica is described to
+/// placement as absent and its device excluded, so the engine chooses one
+/// replacement under the same failure-domain rules that governed the original
+/// decision. That also makes a drive-to-drive move within one node fall out
+/// naturally: the node still ends up holding exactly one copy.
+///
+/// A source replica is never removed here; that happens only after the
+/// destination is written, verified, and committed.
 #[must_use]
 pub fn plan_rebalance(
     topology: &ClusterTopology,
@@ -53,46 +63,54 @@ pub fn plan_rebalance(
     policy: &dyn PlacementPolicy,
     maximum_moves: usize,
 ) -> Vec<RebalanceMove> {
-    let members: Vec<_> = topology
+    if maximum_moves == 0 {
+        return Vec::new();
+    }
+
+    // Only devices on participating nodes can send or receive.
+    let devices: Vec<(&NodeRecord, &DeviceRecord)> = topology
         .nodes
         .iter()
         .filter(|node| node.state == NodeState::Healthy)
+        .flat_map(|node| node.devices.iter().map(move |device| (node, device)))
         .collect();
-    if members.len() < 2 || maximum_moves == 0 {
+    if devices.len() < 2 {
         return Vec::new();
     }
-    let total: u64 = members
+
+    let total: u64 = devices
         .iter()
-        .map(|node| u64::from(node.capacity.utilization_percent()))
+        .map(|(_, device)| u64::from(device.capacity.utilization_permille() / 10))
         .sum();
-    let mean = total / u64::try_from(members.len()).unwrap_or(1).max(1);
+    let mean = total / u64::try_from(devices.len()).unwrap_or(1).max(1);
     let tolerance = u64::from(topology.config.rebalance.tolerance_percent);
 
-    let donors: BTreeSet<NodeId> = members
-        .iter()
-        .filter(|node| {
-            let utilization = u64::from(node.capacity.utilization_percent());
-            utilization > mean.saturating_add(tolerance)
-                || node.capacity_level(&topology.config).needs_relief()
-        })
-        .map(|node| node.node_id)
-        .collect();
-    let recipients: BTreeSet<NodeId> = members
-        .iter()
-        .filter(|node| {
-            let utilization = u64::from(node.capacity.utilization_percent());
-            utilization + tolerance < mean
-                && node.capacity_level(&topology.config) == CapacityLevel::Normal
-        })
-        .map(|node| node.node_id)
-        .collect();
+    let mut donors: BTreeSet<DeviceId> = BTreeSet::new();
+    let mut recipients: BTreeSet<DeviceId> = BTreeSet::new();
+    for (_, device) in &devices {
+        let utilization = u64::from(device.capacity.utilization_permille() / 10);
+        let level = topology
+            .config
+            .watermarks
+            .level(device.capacity.utilization_permille() / 10);
+        if utilization > mean.saturating_add(tolerance) || level.needs_relief() {
+            donors.insert(device.id);
+        }
+        // A device that cannot take new placement cannot take a rebalance
+        // either, so draining and failed drives are never destinations.
+        if utilization.saturating_add(tolerance) < mean
+            && level == CapacityLevel::Normal
+            && device.state.accepts_new_placements()
+        {
+            recipients.insert(device.id);
+        }
+    }
     if donors.is_empty() || recipients.is_empty() {
         return Vec::new();
     }
 
     let mut moves = Vec::new();
-    // Track planned arrivals so one pass does not overfill a single recipient.
-    let mut arrivals: BTreeMap<NodeId, usize> = BTreeMap::new();
+    let mut arrivals: BTreeMap<DeviceId, usize> = BTreeMap::new();
     let fair_share = candidates.len().div_ceil(recipients.len().max(1)).max(1);
 
     for candidate in candidates {
@@ -100,48 +118,50 @@ pub fn plan_rebalance(
             break;
         }
         let placement = &candidate.placement;
-        let holders = placement.nodes();
         let Some(source) = placement
             .replicas
             .iter()
-            .find(|replica| donors.contains(&replica.node_id))
+            .find(|replica| donors.contains(&replica.device_id))
         else {
             continue;
         };
-        if placement
-            .replica_on(source.node_id, source.device_id)
-            .is_none_or(|replica| !replica.state.usable_as_source())
-        {
+        if !source.state.usable_as_source() {
             continue;
         }
-        // Placement counts existing replicas towards the desired total, so ask
-        // for exactly one more than the payload already has.
-        let desired = u8::try_from(holders.len().saturating_add(1)).unwrap_or(u8::MAX);
-        let request = ObjectPlacementRequest::new(
-            placement.object_id,
-            desired,
-            1,
-            placement.storage_class.clone(),
-        )
-        .with_size_hint(Some(placement.size))
-        .with_existing_nodes(holders.iter().copied())
-        .with_excluded_nodes(
-            topology
-                .nodes
-                .iter()
-                .map(|node| node.node_id)
-                .filter(|node_id| {
-                    !recipients.contains(node_id)
-                        || arrivals.get(node_id).copied().unwrap_or(0) >= fair_share
-                }),
-        );
+
+        // Every other replica stays where it is, so placement sees them as
+        // occupied domains. The source is deliberately omitted: its slot is the
+        // one being refilled.
+        let remaining: Vec<(NodeId, DeviceId)> = placement
+            .replicas
+            .iter()
+            .filter(|replica| replica.device_id != source.device_id)
+            .map(|replica| (replica.node_id, replica.device_id))
+            .collect();
+        let desired = u8::try_from(placement.replicas.len()).unwrap_or(u8::MAX);
+        let request =
+            ObjectPlacementRequest::new(
+                placement.object_id,
+                desired,
+                1,
+                placement.storage_class.clone(),
+            )
+            .with_size_hint(Some(placement.size))
+            .with_existing_targets(remaining)
+            .with_excluded_devices(devices.iter().map(|(_, device)| device.id).filter(
+                |device_id| {
+                    *device_id == source.device_id
+                        || !recipients.contains(device_id)
+                        || arrivals.get(device_id).copied().unwrap_or(0) >= fair_share
+                },
+            ));
         let Ok(plan) = policy.place(&request, topology) else {
             continue;
         };
         let Some(target) = plan.targets.first() else {
             continue;
         };
-        *arrivals.entry(target.node_id).or_insert(0) += 1;
+        *arrivals.entry(target.device_id).or_insert(0) += 1;
         moves.push(RebalanceMove {
             object_id: placement.object_id,
             source_node: source.node_id,
@@ -328,6 +348,117 @@ mod tests {
             assert_eq!(movement.target_node, fresh_id);
             assert_ne!(movement.source_node, fresh_id);
         }
+    }
+
+    /// Builds a device with an explicit utilization.
+    fn drive(node: NodeId, usable: u64, available: u64) -> DeviceRecord {
+        let mut device = DeviceRecord::legacy_directory(
+            node,
+            None,
+            StorageClass::default(),
+            crate::device::DeviceCapacity {
+                raw_bytes: usable,
+                usable_bytes: usable,
+                allocated_bytes: usable.saturating_sub(available),
+                reserved_bytes: 0,
+                available_bytes: available,
+            },
+        );
+        device.id = DeviceId::new();
+        device
+    }
+
+    /// One full drive on an otherwise-healthy node has to be relieved.
+    ///
+    /// This is the case a node-level view cannot see: the node's average looks
+    /// comfortable while the class backed by the full drive can take no more
+    /// writes. Devices are what placement selects, so devices are what has to be
+    /// evened out.
+    #[test]
+    fn a_full_drive_is_relieved_even_when_its_node_looks_balanced() {
+        let mut node = node("a", 4_000, 3_000);
+        let full = drive(node.node_id, 1_000, 20);
+        let full_id = full.id;
+        node.devices = vec![
+            full,
+            drive(node.node_id, 1_000, 990),
+            drive(node.node_id, 1_000, 990),
+            drive(node.node_id, 1_000, 990),
+        ];
+        let node_id = node.node_id;
+
+        let mut topology = ClusterTopology::new(
+            ClusterId::new(),
+            ClusterConfig {
+                capacity_safety_margin_bytes: 0,
+                unknown_upload_size_reservation_bytes: 1,
+                ..ClusterConfig::default()
+            },
+            vec![node],
+        );
+        // Spreading within one machine is what this cluster can do.
+        topology.config.failure_domain_scope = crate::topology::FailureDomainScope::Device;
+
+        let mut record = placement(&[node_id], 1);
+        record.replicas[0].device_id = full_id;
+        let candidates = vec![RebalanceCandidate { placement: record }];
+
+        let moves = plan_rebalance(
+            &topology,
+            &candidates,
+            &CapacityAwarePlacement::new(None),
+            8,
+        );
+
+        assert_eq!(moves.len(), 1, "the full drive should be relieved");
+        assert_eq!(moves[0].source_device, full_id);
+        assert_ne!(
+            moves[0].target_device, full_id,
+            "a move onto the same drive relieves nothing"
+        );
+        assert_eq!(
+            moves[0].target_node, node_id,
+            "the only node available is the one it is already on"
+        );
+    }
+
+    /// A drive that cannot take new placement must not be a destination, or a
+    /// rebalance would fill a drive somebody is trying to empty.
+    #[test]
+    fn a_draining_drive_never_receives_a_rebalance() {
+        let mut node = node("a", 2_000, 1_000);
+        let full = drive(node.node_id, 1_000, 20);
+        let full_id = full.id;
+        let mut draining = drive(node.node_id, 1_000, 990);
+        draining.state = crate::device::DeviceState::Draining;
+        node.devices = vec![full, draining];
+        let node_id = node.node_id;
+
+        let mut topology = ClusterTopology::new(
+            ClusterId::new(),
+            ClusterConfig {
+                capacity_safety_margin_bytes: 0,
+                unknown_upload_size_reservation_bytes: 1,
+                ..ClusterConfig::default()
+            },
+            vec![node],
+        );
+        topology.config.failure_domain_scope = crate::topology::FailureDomainScope::Device;
+
+        let mut record = placement(&[node_id], 1);
+        record.replicas[0].device_id = full_id;
+        let candidates = vec![RebalanceCandidate { placement: record }];
+
+        let moves = plan_rebalance(
+            &topology,
+            &candidates,
+            &CapacityAwarePlacement::new(None),
+            8,
+        );
+        assert!(
+            moves.is_empty(),
+            "the only spare drive is draining, so there is nowhere safe to move"
+        );
     }
 
     #[test]

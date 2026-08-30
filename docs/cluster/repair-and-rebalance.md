@@ -181,6 +181,26 @@ on a device that is gone.
 
 Failed-device work outranks a drain at the same durability, for the same reason.
 
+## What "balanced" means
+
+Balance is measured **per device**, not per node.
+
+A node holding one full drive and three empty ones is not balanced, but its
+average looks comfortable. A node-level view reports a healthy number while the
+storage class backed by the full drive can take no more writes. Devices are what
+placement selects, so devices are what rebalancing evens out — including moving
+data between drives inside one machine.
+
+A move preserves the replica count. The source replica is described to placement
+as absent and its device excluded, so the engine picks one replacement under the
+same failure-domain rules that governed the original decision. That is what lets
+a drive-to-drive move within a node happen without changing how many machines
+hold a copy.
+
+Drives that cannot take new placement — draining, failed, in maintenance — are
+never destinations. Filling a drive somebody is trying to empty would be worse
+than leaving the imbalance.
+
 ## Holding a rebalance
 
 ```bash
