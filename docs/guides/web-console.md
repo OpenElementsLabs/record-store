@@ -48,8 +48,9 @@ read-only console. See [Authorization](../security/authorization.md).
 | Metrics | The same numbers Prometheus scrapes, rendered |
 | System | Deployment mode and capabilities |
 
-In cluster mode the console additionally shows **Nodes**, **Drives**,
-**Storage classes**, **Consensus**, **Durability**, and **Rebalance**. In standalone mode those
+In cluster mode the console additionally shows **Nodes**, **Topology**,
+**Drives**, **Storage classes**, **Consensus**, **Durability**, and
+**Rebalance**. In standalone mode those
 screens are absent — the console discovers the mode from
 `GET /api/v1/system/info` and adapts.
 
@@ -78,6 +79,15 @@ form that guessed at that validation would be a second, weaker copy of it. See
 The **Cluster overview** counts drives alongside nodes, leading with whatever
 needs attention: failed drives first, then draining, and only then how many are
 accepting data.
+
+**Topology** draws the cluster as the failure domains its nodes declare, with
+their devices underneath. Only levels somebody actually labelled are drawn — a
+deployment with racks but no regions gets racks, not a row of empty containers.
+
+A group of nodes carrying no label for a level is shown as **not proven
+separate**, because that is how placement treats them. Drawing them as separate
+racks would show separation the cluster cannot guarantee. See
+[Failure Domains](../cluster/storage-devices.md).
 
 ## Object browsing
 

@@ -103,6 +103,12 @@ export function buildNavigation(input: NavigationInput): readonly NavSection[] {
     const cluster: NavItem[] = [
       { href: '/cluster', label: 'Cluster overview', icon: Boxes },
       { href: '/cluster/nodes', label: 'Nodes', prefix: '/cluster/nodes', icon: Server },
+      {
+        href: '/cluster/topology',
+        label: 'Topology',
+        prefix: '/cluster/topology',
+        icon: Network,
+      },
       { href: '/cluster/drives', label: 'Drives', prefix: '/cluster/drives', icon: HardDrive },
       {
         href: '/cluster/storage-classes',
