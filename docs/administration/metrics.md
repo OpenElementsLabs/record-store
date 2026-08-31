@@ -92,87 +92,39 @@ Successful public accesses are counted here rather than written to the
 [audit log](audit-log.md) — a shared video would otherwise let an anonymous visitor
 fill the security trail. The denial counters are the ones worth alerting on.
 
-### Cluster
-
-Present **only in cluster mode**. A standalone deployment omits them rather than
-reporting zeroes that look like a broken cluster.
-
-| Metric | Type | Meaning |
-| --- | --- | --- |
-| `record_store_cluster_nodes` | gauge | Nodes known to the cluster |
-| `record_store_node_health` | gauge | `1` when this node is healthy |
-| `record_store_metadata_quorum_health` | gauge | `1` when metadata quorum is writable |
-| `record_store_under_replicated_objects` | gauge | Objects below their replication factor |
-| `record_store_replication_queue_depth` | gauge | Repair tasks currently running |
-| `record_store_node_capacity_bytes` | gauge | This node's total capacity |
-| `record_store_node_used_bytes` | gauge | This node's used bytes |
-| `record_store_node_available_bytes` | gauge | This node's available bytes |
-| `record_store_cluster_logical_bytes` | gauge | Cluster-wide logical bytes |
-| `record_store_cluster_physical_bytes` | gauge | Cluster-wide physical bytes |
-
-### Devices
-
-Also cluster-mode only.
-
-| Metric | Type | Meaning |
-| --- | --- | --- |
-| `record_store_devices_total` | gauge | Registered devices cluster-wide |
-| `record_store_devices_accepting_placement` | gauge | Devices eligible for new data |
-| `record_store_devices_draining` | gauge | Devices being evacuated |
-| `record_store_devices_failed` | gauge | Devices whose data no longer counts for durability |
-| `record_store_devices_unavailable` | gauge | Devices held out of service by an administrator |
-| `record_store_device_capacity_raw_bytes` | gauge | Raw capacity across all devices |
-| `record_store_device_capacity_usable_bytes` | gauge | Capacity Record Store may allocate from |
-| `record_store_device_capacity_available_bytes` | gauge | Capacity currently free |
-
-!!! note "Counts, not one series per device"
-    Device metrics carry **no labels**. A series per device would grow without
-    bound as hardware is replaced, so the scrape reports counts by state and
-    summed capacity. To see individual devices, use
-    `record-store drive list` or `GET /api/v1/devices`.
-
-`record_store_devices_failed` counts a device that either an administrator marked
-failed **or** whose health the platform reports as failed. The two are recorded
-separately and either one is disqualifying.
-
-!!! note "`record_store_replication_queue_depth`"
-    The name predates what it now reports: active repair tasks. It is kept as-is so
-    existing dashboards keep working.
-
 ## Alerts worth having
 
 ```yaml
 groups:
   - name: record-store
     rules:
-      - alert: RecordStoreMetadataQuorumLost
-        expr: record_store_metadata_quorum_health == 0
-        for: 1m
+      - alert: RecordStoreDown
+        expr: up{job="record-store"} == 0
+        for: 2m
         annotations:
-          summary: Metadata quorum is not writable
-
-      - alert: RecordStoreUnderReplicated
-        expr: record_store_under_replicated_objects > 0
-        for: 15m
-        annotations:
-          summary: Objects have been below their replication factor for 15 minutes
-
-      - alert: RecordStoreDiskNearlyFull
-        expr: record_store_node_available_bytes / record_store_node_capacity_bytes < 0.1
-        for: 5m
-        annotations:
-          summary: Less than 10% of node capacity remains
+          summary: Record Store is not being scraped
 
       - alert: RecordStoreErrorRate
         expr: rate(record_store_errors_total[5m]) / rate(record_store_requests_total[5m]) > 0.05
         for: 10m
         annotations:
           summary: Over 5% of requests are failing
+
+      - alert: RecordStoreShareDenials
+        expr: rate(record_store_share_access_denied_total[5m]) > 1
+        for: 10m
+        annotations:
+          summary: Sustained refused share-link access
 ```
 
-The `for:` clauses matter. Under-replication during a rolling restart is expected and
-resolves itself; alerting instantly produces noise that gets muted, which is worse
-than no alert.
+The `for:` clauses matter. A brief spike during a restart resolves itself; alerting
+instantly produces noise that gets muted, which is worse than no alert.
+
+!!! note "Free disk space is not a Record Store metric"
+    `record_store_storage_bytes` is what Record Store has stored, not what the
+    filesystem has left. Alert on free space with a host exporter — Record Store
+    does not report the disk's own capacity. See
+    [Capacity Planning](../operations/capacity-planning.md).
 
 ## JSON view
 
@@ -184,7 +136,6 @@ curl https://management.example.com/api/v1/system/metrics \
 ```
 
 Use this when you want the numbers in a script and already hold a management token.
-The `cluster` object is omitted entirely in standalone mode.
 
 ## What is not here
 

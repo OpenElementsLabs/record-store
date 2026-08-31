@@ -18,23 +18,21 @@ database, message queue, or object gateway to run alongside it.
 
 ## How it is organised
 
-Record Store exposes four listeners. Each has a distinct audience.
+Record Store exposes three listeners. Each has a distinct audience.
 
 | Port | Listener | Who talks to it |
 | --- | --- | --- |
 | 7600 | S3 API | Applications, AWS SDKs, embed links |
 | 7601 | Management API | The console, the CLI, automation |
 | 7602 | Web console | Administrators, share-link recipients |
-| 7603 | Internal RPC | Other cluster nodes only |
 
 Only 7600 and 7602 are normally reachable from outside your network. See
 [Ports](../reference/ports.md) for the full picture and
 [Reverse Proxy and TLS](../deployment/reverse-proxy.md) for publishing them.
 
-## Standalone first
+## The shape of a deployment
 
-A standalone deployment is one process with one copy of your data. It is the default,
-it needs no cluster configuration, and it is the right starting point.
+A deployment is one process with one copy of your data, on one machine.
 
 ```mermaid
 flowchart LR
@@ -43,14 +41,14 @@ flowchart LR
     RS --> Disk[(Data directory)]
 ```
 
-A cluster replicates objects across several nodes and keeps metadata consistent with
-Raft. It protects against losing a node; it costs you a distributed system to operate.
-Start standalone and move to a cluster when you actually need the availability. See
-[Deployment Modes](../concepts/deployment-modes.md).
+There is nothing else to stand up: no external database to provision, no coordination
+service, and no gateway in front. What you are responsible for is the data directory
+underneath it. Put it on durable storage, and read
+[Durability](../concepts/durability.md) for exactly what a successful write promises.
 
-!!! warning "Replication is not backup"
-    A cluster protects against hardware failure. It does not protect against a
-    mistaken delete, which replicates just as reliably as anything else. Read
+!!! warning "Redundant storage is not backup"
+    Redundant disks protect against hardware failure. They do not protect against a
+    mistaken delete, which is written through just as reliably as anything else. Read
     [Backup and Restore](../operations/backup-and-restore.md).
 
 ## Next

@@ -147,20 +147,6 @@ credentials are unreadable — which is exactly the failure a test should catch.
 
 Test quarterly, and after any upgrade that changed the metadata schema.
 
-## Clusters
-
-Each node's metadata backup covers its own consensus state. A cluster's authoritative
-metadata is replicated, so:
-
-- **A single failed node** is not a restore. Decommission it and join a replacement;
-  the cluster repairs the data. See
-  [Node Lifecycle](../cluster/node-lifecycle.md).
-- **Whole-cluster loss** is a restore. Restore one node from backup, bring it up as the
-  initial cluster, and join fresh nodes to it.
-
-Do not restore several nodes from backups and expect them to form a cluster. They will
-each hold consensus state describing a group that no longer exists.
-
 ## Retention
 
 A workable schedule:

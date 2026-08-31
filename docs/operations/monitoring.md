@@ -24,22 +24,16 @@ curl https://management.example.com/metrics \
 The complete metric list, and suggested alert rules, are in
 [Metrics](../administration/metrics.md).
 
-The four that matter most:
+The ones that matter most:
 
 | Metric | Watch for |
 | --- | --- |
-| `record_store_node_available_bytes` | Falling toward zero |
 | `record_store_errors_total` | A rising rate relative to requests |
-| `record_store_metadata_quorum_health` | Dropping to `0` |
-| `record_store_under_replicated_objects` | Staying above `0` |
+| `record_store_storage_physical_bytes` | Growing faster than you are adding disk |
+| `record_store_share_access_denied_total` | A sustained rate — probing, or a broken link |
 
-In a cluster, watch device health too:
-
-| Metric | Watch for |
-| --- | --- |
-| `record_store_devices_failed` | Any value above `0` |
-| `record_store_devices_accepting_placement` | Falling toward `0` while `record_store_devices_total` holds steady |
-| `record_store_device_capacity_available_bytes` | Falling faster than capacity is added |
+Free disk space is not among them: Record Store reports what it has stored, not what
+the filesystem has left. Watch free space with a host exporter alongside these.
 
 ## Logs
 
@@ -70,7 +64,7 @@ defaults to JSON for exactly that reason.
 | `record_store=debug` | Verbose, for investigation |
 | `record_store=warn` | Quiet |
 | `record_store=info,record_store_s3=debug` | Info overall, debug for the S3 adapter |
-| `record_store=info,record_store_cluster=debug` | Info overall, debug for cluster internals |
+| `record_store=info,record_store_storage=debug` | Info overall, debug for the storage backend |
 
 An invalid filter is rejected before the subscriber is installed, so a typo fails at
 startup rather than silently disabling logging.
@@ -131,24 +125,15 @@ Reports counts and byte totals, including the split between logical and physical
 
 See [Capacity Planning](capacity-planning.md).
 
-## Cluster
-
-```bash
-record-store cluster status --endpoint https://management.example.com
-record-store repair status --endpoint https://management.example.com
-record-store rebalance status --endpoint https://management.example.com
-```
-
 ## A monitoring setup that works
 
 1. Prometheus scraping `/metrics` with its token.
-2. Alerts on quorum, under-replication, disk headroom, and error rate — each with a
+2. Alerts on the process being down, disk headroom, and error rate — each with a
    `for:` clause so transient states do not page.
 3. Logs collected as JSON, indexed on `request_id` and `status`.
-4. A dashboard showing request rate, error rate, storage growth, and — in a cluster —
-   node health.
+4. A dashboard showing request rate, error rate, and storage growth.
 5. A weekly look at audit denials.
 
-The `for:` clauses matter more than the thresholds. Under-replication during a rolling
-restart is expected; an alert that fires instantly gets muted, and a muted alert is
-worse than none.
+The `for:` clauses matter more than the thresholds. A brief spike during a restart is
+expected; an alert that fires instantly gets muted, and a muted alert is worse than
+none.

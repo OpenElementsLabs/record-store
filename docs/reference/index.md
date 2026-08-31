@@ -22,13 +22,10 @@ Exact values, verified against the implementation.
 | S3 API | `7600` |
 | Management API | `7601` |
 | Web console | `7602` |
-| Internal RPC | `7603` |
 | Signing | AWS SigV4 only |
 | Addressing | Path-style |
 | Presign ceiling | 604800 seconds (7 days) |
-| Replication factor | 1–3, default 3 |
 | Temporary credential lifetime | 60–86400 seconds |
-| Join token lifetime | 60–86400 seconds |
 | Audit query limit | 1–1000, default 100 |
 | Lifecycle expiration | 1–36500 days |
 
@@ -38,8 +35,7 @@ Documented so you do not go looking:
 
 | | Status |
 | --- | --- |
-| Erasure coding | Not implemented. Replication is the durability model |
-| Multi-region conflict resolution | Not implemented |
+| Erasure coding | Not implemented — nothing produces or reads erasure stripes |
 | `UploadPartCopy` | Unsupported |
 | Server-side encryption request headers | Unsupported — encryption is a deployment setting |
 | Access control lists | Unsupported — use [policies](../administration/policies.md) |

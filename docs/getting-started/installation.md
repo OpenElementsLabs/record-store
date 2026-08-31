@@ -56,15 +56,14 @@ image came from.
 
 ## Docker Compose from source
 
-The repository ships four Compose files under `deploy/docker/`. All but the first
+The repository ships three Compose files under `deploy/docker/`. All but the first
 build the image from source on first use.
 
 | File | What it runs |
 | --- | --- |
-| `compose.ghcr.yml` | A standalone node and the console, from the published images. |
-| `compose.yml` | One standalone node. S3 on 7600, management on 7601. |
-| `compose.console.yml` | One standalone node plus the web console on 7602. |
-| `compose.cluster.yml` | Three storage nodes, a control node, and the console. |
+| `compose.ghcr.yml` | Record Store and the console, from the published images. |
+| `compose.yml` | Record Store alone. S3 on 7600, management on 7601. |
+| `compose.console.yml` | Record Store plus the web console on 7602. |
 
 ```bash
 git clone https://github.com/OpenElementsLabs/record-store.git

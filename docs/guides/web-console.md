@@ -17,7 +17,7 @@ management credential and forwards the request, so:
 
 - the credential lives in an HTTP-only cookie the page cannot read
 - no CORS configuration is needed for administration
-- the browser never reaches storage, metadata, consensus, or port 7603
+- the browser never reaches the management API, the stored objects, or the metadata catalog
 
 Public [share pages](share-links.md) are served by the same application but authorize
 differently: that path attaches no credential at all, because the token in the URL is
@@ -46,48 +46,7 @@ read-only console. See [Authorization](../security/authorization.md).
 | Webhooks | Configure endpoints and inspect delivery attempts |
 | Integrity | Verify checksums for an object or a whole bucket |
 | Metrics | The same numbers Prometheus scrapes, rendered |
-| System | Deployment mode and capabilities |
-
-In cluster mode the console additionally shows **Nodes**, **Topology**,
-**Drives**, **Storage classes**, **Consensus**, **Durability**, and
-**Rebalance**. In standalone mode those
-screens are absent — the console discovers the mode from
-`GET /api/v1/system/info` and adapts.
-
-**Drives** lists every registered storage device with its lifecycle state,
-observed health, type, storage class, and capacity. Lifecycle and health are
-separate columns because they answer different questions: what an administrator
-decided, and what the platform reported. A device can be `Active` while its
-health is `Unknown`, and neither value is inferred from the other.
-
-Devices are addressed by their stable identifier. The path is shown underneath
-as description only, because a path can change across reboots.
-
-The row menu drives the same lifecycle the CLI does — activate, drain,
-maintenance, resume, retire — plus **Check if safe to remove**, which asks the
-server whether the device still owns replicas. The console never decides that
-itself; a success means evacuation actually finished. See
-[Replacing a Drive](../cluster/replacing-a-drive.md).
-
-**Storage classes** shows what each class name means: the devices it may use, how
-many copies it keeps, what those copies are separated across, and how much space
-it holds back. It is read-only. Classes are defined with
-`record-store storage-class set`, because the server validates a policy and a
-form that guessed at that validation would be a second, weaker copy of it. See
-[Storage Classes](../administration/storage-classes.md).
-
-The **Cluster overview** counts drives alongside nodes, leading with whatever
-needs attention: failed drives first, then draining, and only then how many are
-accepting data.
-
-**Topology** draws the cluster as the failure domains its nodes declare, with
-their devices underneath. Only levels somebody actually labelled are drawn — a
-deployment with racks but no regions gets racks, not a row of empty containers.
-
-A group of nodes carrying no label for a level is shown as **not proven
-separate**, because that is how placement treats them. Drawing them as separate
-racks would show separation the cluster cannot guarantee. See
-[Failure Domains](../cluster/storage-devices.md).
+| System | Version and deployment capabilities |
 
 ## Object browsing
 

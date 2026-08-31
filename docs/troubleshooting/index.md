@@ -6,7 +6,6 @@
 -   **[Upload Problems](uploads.md)** — failed, truncated, or refused uploads
 -   **[Networking and Proxies](networking.md)** — proxy, TLS, and CORS problems
 -   **[Docker and Coolify](docker-and-coolify.md)** — container-specific issues
--   **[Cluster Problems](cluster.md)** — nodes, quorum, replication
 -   **[FAQ](faq.md)** — common questions
 
 </div>
@@ -51,7 +50,7 @@ debugging everything:
 | Area | Filter |
 | --- | --- |
 | S3 requests | `record_store=info,record_store_s3=debug` |
-| Cluster | `record_store=info,record_store_cluster=debug` |
+| Storage | `record_store=info,record_store_storage=debug` |
 | Webhooks | `record_store=info,record_store_events=debug` |
 | Sharing | `record_store=info,record_store_sharing=debug` |
 
@@ -64,5 +63,4 @@ debugging everything:
 | Uploads fail above a size | A proxy body-size limit |
 | Console signs you straight out | `RECORD_STORE_CONSOLE_SECURE_COOKIES` not set behind TLS |
 | Share or embed links point at `127.0.0.1` | The two base URLs are not set |
-| A node starts and never joins | `RECORD_STORE_RPC_ADVERTISE` is wrong |
 | `403` from a working key | The policy does not cover the action or resource |

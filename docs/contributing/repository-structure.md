@@ -34,15 +34,10 @@ Roughly bottom-up:
 | `record-store-service` | Object and bucket services over storage and metadata |
 | `record-store-s3` | S3 protocol adapter: SigV4, routing, XML |
 | `record-store-api` | Management API, sharing routes, metrics |
-| `record-store-protocol` | Wire types shared between nodes |
-| `record-store-rpc` | Internal gRPC transport, TLS, peer verification |
-| `record-store-consensus` | Raft-backed replicated metadata |
-| `record-store-cluster` | Topology, placement, health, replica catalog |
-| `record-store-replication` | Coordinator, movement, repair, rebalance, status |
-| `record-store-erasure` | **Not wired in.** Replication is the durability model |
+| `record-store-erasure` | **Not wired in.** Nothing depends on it |
 
-`record-store-erasure` exists in the workspace and nothing depends on it. Erasure
-coding is not implemented.
+`cargo metadata` lists further crates that are not part of the documented deployment
+and are not covered here.
 
 ## Data flow
 
@@ -54,12 +49,10 @@ flowchart TB
     API --> SVC
     SVC --> META[record-store-metadata]
     SVC --> STORE[record-store-storage]
-    META -.cluster mode.-> CONS[record-store-consensus]
-    STORE -.cluster mode.-> REPL[record-store-replication]
 ```
 
-In standalone mode, metadata and storage are local. In cluster mode the same interfaces
-are backed by consensus and replication — the service layer above does not change.
+Metadata and storage sit behind interfaces the service layer depends on, so a change to
+either backend does not reach the protocol crates above it.
 
 ## Where to make a change
 
@@ -70,7 +63,6 @@ are backed by consensus and replication — the service layer above does not cha
 | A new configuration setting | `record-store-config` — sections, partial, environment, validate |
 | A new CLI command | `apps/record-store-cli` |
 | Policy actions or evaluation | `record-store-auth` |
-| Placement or repair | `record-store-cluster`, `record-store-replication` |
 | Console UI | `console/` |
 
 Adding a configuration setting touches four files in `record-store-config`: the section
@@ -92,8 +84,8 @@ See [Testing](testing.md).
 console/
 ├── app/          Next.js routes
 ├── components/   shared UI
-├── features/     per-area code: access, audit, buckets, cluster, events,
-│                 integrity, objects, overview, sharing, system, webhooks
+├── features/     per-area code: access, audit, buckets, events, integrity,
+│                 objects, overview, sharing, system, webhooks
 ├── hooks/
 ├── lib/
 ├── e2e/          Playwright
@@ -110,9 +102,8 @@ carries no frontend.
 | --- | --- |
 | `Dockerfile` | The server image |
 | `Dockerfile.console` | The console image |
-| `compose.yml` | Standalone, development |
-| `compose.console.yml` | Standalone plus console, development |
-| `compose.cluster.yml` | Three storage nodes, a control node, and the console |
+| `compose.yml` | The server alone, development |
+| `compose.console.yml` | The server plus console, development |
 | `docker-compose.yaml` | Coolify — `expose` plus Coolify magic variables |
 
 The last is the one Coolify uses. See [Coolify](../deployment/coolify.md).

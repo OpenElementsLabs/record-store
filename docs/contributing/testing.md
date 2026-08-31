@@ -9,7 +9,7 @@
 | Test | `cargo test --workspace --all-features --locked` |
 | Build | `cargo build --workspace --release --locked` |
 | Console | `npm run format:check`, `lint`, `typecheck`, `test`, `build` |
-| End-to-end | `npm run test:e2e`, `npm run test:e2e:cluster` |
+| End-to-end | `npm run test:e2e` |
 | Compatibility | `tests/compatibility/run.sh` |
 | Audit | `tests/rust-audit.sh` |
 
@@ -74,22 +74,14 @@ implementation's own assumptions proves less than one that passes against a real
 cd console
 
 npm test              # unit tests
-npm run test:e2e      # Playwright, standalone
-npm run test:e2e:cluster
+npm run test:e2e      # Playwright
 ```
 
-The end-to-end suites build the console and run it against a real server. The cluster
-suite runs a real multi-node cluster, not a mock.
+The end-to-end suite builds the console and runs it against a real server, not a mock.
 
 ```bash
 npm run test:e2e:install    # first run only
 ```
-
-## Consensus storage conformance
-
-The Raft storage implementation is exercised by openraft's own `testing::Suite`. That
-suite is the specification: if it passes, the storage layer satisfies the contract
-openraft relies on. It is worth running whenever consensus storage changes.
 
 ## Dependency audit
 
@@ -137,7 +129,7 @@ sure is right — say so in the comment rather than leaving it untested.
 clients branch on.
 
 **Test the refusals.** Most of Record Store's security properties are things it declines
-to do: a deny that overrides an allow, a decommission that is refused, an embed update
+to do: a deny that overrides an allow, a quota that is enforced, an embed update
 that would broaden access. Those need tests more than the happy paths do.
 
 ## Coverage

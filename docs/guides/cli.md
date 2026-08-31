@@ -76,24 +76,6 @@ record-store storage repair --apply     # actually delete orphaned payloads
     catalog no longer references, but read
     [Integrity Verification](../operations/integrity-verification.md) first.
 
-## Cluster administration
-
-These require a system token and a deployment in cluster mode.
-
-```bash
-record-store cluster init
-record-store cluster status
-record-store cluster issue-join-token --lifetime-seconds 3600
-record-store node list
-record-store node inspect <node-id>
-record-store node drain <node-id>
-record-store node decommission <node-id> --force
-record-store repair status
-record-store rebalance start
-```
-
-See [Cluster](../cluster/index.md).
-
 ## Offline backup
 
 ```bash

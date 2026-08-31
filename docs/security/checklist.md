@@ -27,7 +27,6 @@ The master key cannot be rotated. It is the one item here with no recovery path.
 ## Network
 
 - [ ] 7601 is not reachable from the internet
-- [ ] 7603 is not published, or is restricted to cluster peers
 - [ ] 7600 and 7602 are behind TLS
 - [ ] The proxy preserves the `Host` header
 - [ ] The proxy sets `X-Forwarded-For` and overwrites any client-supplied value
@@ -70,21 +69,13 @@ server-side fetch. Turning them on makes webhook creation a privileged operation
 ## Monitoring
 
 - [ ] `/metrics` is scraped with its dedicated token
-- [ ] Alerts on error rate, disk space, and — in a cluster — quorum and
-      under-replication
+- [ ] Alerts on error rate and disk space
 - [ ] Audit denials are reviewed or alerted on
 - [ ] Logs are collected and searchable
 
 ```bash
 record-store audit --limit 100 --endpoint https://management.example.com
 ```
-
-## Cluster
-
-- [ ] Internal TLS configured if cluster traffic crosses a network you do not control
-- [ ] Mutual TLS where node certificates are issued
-- [ ] Join tokens are treated as secrets and issued one per node
-- [ ] The master key is byte-identical across nodes
 
 ## Ongoing
 

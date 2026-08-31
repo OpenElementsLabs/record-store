@@ -8,10 +8,11 @@ For the [supported operations](../reference/s3-compatibility.md), yes — point 
 at the endpoint and use path-style addressing. Access control lists, Object Lock,
 `UploadPartCopy`, and server-side-encryption request headers are not supported.
 
-**Do I need a cluster?**
+**What happens if the machine dies?**
 
-No. Standalone is a first-class deployment. Use a cluster when you need to survive
-losing a machine, and accept the operational weight that comes with it.
+The service is down until you restore it. A deployment is one process with one copy of
+your data, so put the data directory on redundant storage and take backups — see
+[Durability](../concepts/durability.md).
 
 **Which port do applications use?**
 
@@ -151,32 +152,10 @@ record-store audit --operation "s3:DELETE" --limit 100 --endpoint <endpoint>
 No. Configuration is read at startup. Validate first with
 `record-store server check-config`.
 
-## Cluster
-
-**How many nodes do I need?**
-
-Three storage nodes minimum. Consensus needs a majority, and two voters tolerate no
-failures at all — worse than one.
-
-**Can I change the replication factor later?**
-
-It is fixed when the cluster is initialized. Setting it on a joining node has no effect.
-
-**Why did nothing move to my new node?**
-
-Automatic rebalancing is off by default. New writes use the node immediately; run
-`record-store rebalance start` to move existing data.
-
-**A node died. What do I do?**
-
-Wait for it to reach `offline` — repair is already restoring redundancy. Then
-decommission it with `--force` and join a replacement with an empty data directory.
-
 **Does erasure coding exist?**
 
-No. Replication is the durability model. `GET /api/v1/system/info` reports
-`capabilities.erasure_coding` as `false`, and multi-region conflict resolution is
-likewise not implemented.
+No. `GET /api/v1/system/info` reports `capabilities.erasure_coding` as `false`, and no
+code path produces or reads erasure stripes.
 
 ## Development
 

@@ -9,7 +9,6 @@ Record Store serves plain HTTP. Put a TLS terminator in front of the public endp
 | 7600 — S3 API | **Yes**, over TLS | Applications and embed links |
 | 7602 — Web console | **Yes**, over TLS | Administrators and share links |
 | 7601 — Management API | **No** | Unrestricted administrative access |
-| 7603 — Internal RPC | **No** | Cluster traffic between nodes |
 
 The console reaches the management API over the internal network, so 7601 does not
 need to be reachable from a browser at all.

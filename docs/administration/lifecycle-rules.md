@@ -111,9 +111,8 @@ Three properties follow from this design:
   action. A rule over ten million objects does not stall the deployment.
 - **Restart-safe.** The cursor is durable. A restart resumes the scan; it does not
   start over.
-- **Single-writer in a cluster.** An activation gate lets one node scan at a time.
-  Expiring the same object from several nodes would produce duplicate delete markers
-  and duplicated work.
+- **Single-writer.** An activation gate lets one scan run at a time, so a slow pass
+  never overlaps the next one and produces duplicate delete markers.
 
 Tuning:
 

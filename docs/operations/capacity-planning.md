@@ -9,7 +9,6 @@
 | Multipart parts | Uploads not completed or aborted | Completion or abort |
 | Metadata | Object **count**, not size | Nothing |
 | Audit trail | Request volume | **Nothing** |
-| Consensus log | Metadata write volume | Snapshots and compaction |
 
 Two of those have no automatic retention: metadata and the audit trail. Budget for
 them.
@@ -51,10 +50,10 @@ means multipart uploads are being started and not finished — see
 [Multipart Uploads](../guides/multipart-uploads.md).
 
 Prometheus equivalents: `record_store_storage_logical_bytes`,
-`record_store_storage_physical_bytes`, `record_store_multipart_bytes`, and in a cluster
-`record_store_node_available_bytes`.
+`record_store_storage_physical_bytes`, and `record_store_multipart_bytes`. None of
+them reports free disk — that comes from a host exporter.
 
-## Sizing a standalone deployment
+## Sizing the disk
 
 ```text
 disk = payloads
@@ -73,39 +72,11 @@ Rules of thumb:
   than a thousand large ones of the same total size.
 - **Audit trail**: grows with request volume and is never pruned. A high-traffic
   deployment accumulates it steadily.
-- **Headroom**: keep at least 20 percent free. Writes fail at zero, and repair and
-  rebalance need somewhere to put things.
+- **Headroom**: keep at least 20 percent free. Writes fail at zero, and every recovery
+  option needs somewhere to put things.
 
 Measure your own ratios rather than trusting an estimate — run for a week and read
 `storage inspect`.
-
-## Sizing a cluster
-
-Total raw capacity needed is roughly:
-
-```text
-raw = logical × replication_factor / target_utilization
-```
-
-With a replication factor of 3 and a target of 70 percent utilization, 1 TB of logical
-data needs about 4.3 TB raw.
-
-Also:
-
-- **Every node needs headroom.** A node at the critical watermark stops accepting new
-  placement, which pushes load onto the others.
-- **Losing a node means its replicas are rebuilt elsewhere.** The remaining nodes need
-  space for that. Size for `n-1`.
-- **Failure domains need capacity too.** Three replicas across three racks means each
-  rack needs a third of the total.
-
-Watermarks:
-
-```bash
-RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT=80
-RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT=90
-RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT=95
-```
 
 ## Bounding growth
 
@@ -147,20 +118,24 @@ Immediate options, cheapest first:
 2. Abort stale multipart uploads if `temporary_upload_bytes` is large.
 3. Run lifecycle rules more aggressively — lower `interval_seconds`, raise `batch_size`.
 4. Delete data you can identify as disposable.
-5. Add capacity — a bigger disk standalone, another node in a cluster.
+5. Add capacity — a bigger disk, or grow the volume the data directory sits on.
 
-In a cluster, a full node stops accepting placement but keeps serving reads. Adding a
-node and rebalancing is the durable fix.
+Growing the underlying storage is the durable fix; the rest buy time.
 
 ## Alerting
 
+Free space is a host metric, so alert on it from a node exporter watching the
+filesystem the data directory sits on:
+
 ```yaml
 - alert: RecordStoreDiskNearlyFull
-  expr: record_store_node_available_bytes / record_store_node_capacity_bytes < 0.2
+  expr: node_filesystem_avail_bytes{mountpoint="/var/lib/record-store"}
+        / node_filesystem_size_bytes{mountpoint="/var/lib/record-store"} < 0.2
   for: 10m
 
 - alert: RecordStoreDiskCritical
-  expr: record_store_node_available_bytes / record_store_node_capacity_bytes < 0.1
+  expr: node_filesystem_avail_bytes{mountpoint="/var/lib/record-store"}
+        / node_filesystem_size_bytes{mountpoint="/var/lib/record-store"} < 0.1
   for: 1m
 ```
 

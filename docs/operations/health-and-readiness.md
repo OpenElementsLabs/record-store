@@ -65,7 +65,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD ["record-store", "status", "--endpoint", "http://127.0.0.1:7601"]
 ```
 
-Provide `RECORD_STORE_MANAGEMENT_TOKEN` when you want the mode and cluster ID too.
+Provide `RECORD_STORE_MANAGEMENT_TOKEN` when you want the version and capabilities too.
 
 ## System information
 
@@ -79,10 +79,7 @@ curl https://management.example.com/api/v1/system/info \
   "name": "record-store",
   "version": "...",
   "status": "ready",
-  "mode": "standalone",
-  "cluster_id": null,
   "capabilities": {
-    "cluster": false,
     "versioning": true,
     "webhooks": true,
     "events": true,
@@ -94,10 +91,10 @@ curl https://management.example.com/api/v1/system/info \
 ```
 
 `capabilities` is what the deployment can actually do, resolved from its current
-configuration. `webhooks` and `events` reflect whether the event store is configured;
-`cluster` reflects the mode.
+configuration — `webhooks` and `events`, for instance, reflect whether the event store
+is configured.
 
-`erasure_coding` is always `false`. Replication is the durability model — see
+`erasure_coding` is always `false`; no code path produces or reads erasure stripes. See
 [Durability](../concepts/durability.md).
 
 ## Orchestrator probes
@@ -120,19 +117,6 @@ readinessProbe:
 
 Wiring both to `/ready` is a common mistake: a transient storage problem then restarts
 a process that would have recovered, and the restart makes it worse.
-
-## Cluster health
-
-Readiness is per process. For the cluster as a whole:
-
-```bash
-record-store cluster status --endpoint https://management.example.com
-curl https://management.example.com/api/v1/cluster/health \
-  -H "Authorization: Bearer <your-management-token>"
-```
-
-A node can be `ready` while the cluster is `degraded` — it is serving fine, and
-something else is not. See [Cluster](../cluster/index.md).
 
 ## When readiness fails
 

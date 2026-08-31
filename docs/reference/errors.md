@@ -99,7 +99,7 @@ call. See [Authorization](../security/authorization.md).
 
 | Status | Code |
 | --- | --- |
-| `404` | `BUCKET_NOT_FOUND`, `OBJECT_NOT_FOUND`, `NODE_NOT_FOUND`, `SHARE_NOT_FOUND`, `EMBED_NOT_FOUND`, `LIFECYCLE_RULE_NOT_FOUND`, `MULTIPART_UPLOAD_NOT_FOUND`, `ROUTE_NOT_FOUND` |
+| `404` | `BUCKET_NOT_FOUND`, `OBJECT_NOT_FOUND`, `SHARE_NOT_FOUND`, `EMBED_NOT_FOUND`, `LIFECYCLE_RULE_NOT_FOUND`, `MULTIPART_UPLOAD_NOT_FOUND`, `ROUTE_NOT_FOUND` |
 | `409` | `BUCKET_ALREADY_EXISTS`, `BUCKET_NOT_EMPTY`, `POLICY_ALREADY_EXISTS` |
 | `404` | `OBJECT_DELETED` — the current version is a delete marker, reported distinctly from a missing key so a caller knows history exists and can be restored |
 
@@ -109,9 +109,8 @@ call. See [Authorization](../security/authorization.md).
 | --- | --- |
 | `INVALID_BUCKET_NAME` | Naming rules |
 | `INVALID_OBJECT_KEY` | Key rules |
-| `INVALID_SERVICE_ACCOUNT_ID`, `INVALID_CREDENTIAL_ID`, `INVALID_POLICY_ID`, `INVALID_NODE_ID`, `INVALID_WEBHOOK_ID`, `INVALID_SHARE_ID`, `INVALID_EMBED_ID`, `INVALID_LIFECYCLE_RULE_ID` | Not a valid identifier |
+| `INVALID_SERVICE_ACCOUNT_ID`, `INVALID_CREDENTIAL_ID`, `INVALID_POLICY_ID`, `INVALID_WEBHOOK_ID`, `INVALID_SHARE_ID`, `INVALID_EMBED_ID`, `INVALID_LIFECYCLE_RULE_ID` | Not a valid identifier |
 | `INVALID_EXPIRATION` | Outside 60–86400 seconds |
-| `INVALID_JOIN_TOKEN_LIFETIME` | Outside 60–86400 seconds |
 | `INVALID_LIFECYCLE_RULE` | No expiration action, or the prefix is too long |
 | `INVALID_LIMIT` | Outside the accepted range |
 | `INVALID_AUDIT_CURSOR`, `INVALID_EVENT_CURSOR`, `INVALID_VERSION_CURSOR` | Only one of the two cursor fields was sent |
@@ -124,18 +123,6 @@ call. See [Authorization](../security/authorization.md).
 `INVALID_WEBHOOK` covers a target refused by the SSRF guards — a plain-HTTP URL with
 `allow_http` off, or a private address with `allow_private_networks` off. See
 [Events and Webhooks](../administration/events-and-webhooks.md).
-
-### Cluster
-
-| Status | Code | Cause |
-| --- | --- | --- |
-| `409` | `CLUSTER_MODE_DISABLED` | The process is running standalone |
-| `503` | `CLUSTER_UNAVAILABLE` | Cluster state could not be read |
-| `409` | `INVALID_NODE_TRANSITION` | The requested state change is not permitted |
-| `409` | `DURABILITY_AT_RISK` | Decommission would lose data — the message says how much |
-
-`DURABILITY_AT_RISK` is the safety check. Drain the node first, or pass `force` to
-accept the loss deliberately. See [Node Lifecycle](../cluster/node-lifecycle.md).
 
 ### Sharing
 

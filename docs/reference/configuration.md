@@ -19,7 +19,7 @@ line.
 Check a file without starting the server:
 
 ```bash
-record-store server check-config --config /etc/record-store/config.toml
+record-store server --config /etc/record-store/config.toml check-config
 ```
 
 Not every setting has an environment variable. Where the "Environment" column is
@@ -30,20 +30,17 @@ empty, TOML is the only way to set it. See
 
 | Key | Type | Default | Environment |
 | --- | --- | --- | --- |
-| `mode` | `standalone` \| `cluster` \| `control` | `standalone` | `RECORD_STORE_MODE` |
 | `s3_bind` | socket address | `0.0.0.0:7600` | `RECORD_STORE_S3_BIND` |
 | `api_bind` | socket address | `0.0.0.0:7601` | `RECORD_STORE_API_BIND` |
-| `rpc_bind` | socket address | `0.0.0.0:7603` | `RECORD_STORE_RPC_BIND` |
-| `rpc_advertise` | `host:port` | falls back to `rpc_bind` | `RECORD_STORE_RPC_ADVERTISE` |
 | `shutdown_grace_period_seconds` | integer 1–300 | `30` | `RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS` |
 
 Constraints:
 
-- The three listeners must differ from each other.
+- The listeners must differ from each other.
 - None may use port `7602`, which is reserved for the web console.
-- `rpc_advertise` must be non-empty and under 253 bytes.
 
-`rpc_bind` is internal cluster traffic. Do not publish it. See [Ports](ports.md).
+`api_bind` is unrestricted administrative access. Do not publish it. See
+[Ports](ports.md).
 
 ## `[storage]`
 
@@ -56,42 +53,6 @@ Constraints:
 `encryption_enabled` requires `auth.credential_master_key`. It applies to newly
 committed payloads; it does not re-encrypt existing objects. See
 [Encryption](../security/encryption.md).
-
-### `[[storage.devices]]`
-
-Additional drives this node serves. `data_directory` is always a device; these
-are the drives beyond it. Each becomes an independent placement target while the
-node stays one failure domain.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `name` | string | — | Stable identity. Letters, digits, hyphens, underscores |
-| `path` | path | — | Directory the device stores payloads under |
-| `storage_class` | string | the node's `cluster.storage_class` | Class the device belongs to |
-| `weight` | integer | `1000` | Placement weight; 1000 is neutral |
-| `movement_concurrency` | integer | derived | Repair and rebalance transfers this device runs at once |
-
-Names and paths must be distinct, and no path may repeat `data_directory`.
-
-Device identity is derived from the node and the `name`, so a restart keeps the
-same devices. **Renaming a device declares a different one**, orphaning what was
-placed under the old name. Paths may change freely.
-
-`movement_concurrency` is derived from the hardware when unset: **1** for
-rotational media, **4** for solid state, and **2** when nobody identified it. A
-rotational drive serves one transfer far better than several — parallel
-movement turns sequential reads into seeks — while an SSD idles if it is only
-ever given one thing to do. Unidentified media gets the cautious middle rather
-than a generous guess. Set the value when you have measured something better;
-a configured value always wins.
-
-Encryption follows the node: a device does not get its own setting, so a
-deployment cannot encrypt one drive and leave another in the clear by accident.
-
-There is no environment-variable form. A list of devices is structural
-configuration, not a single value.
-
-See [Storage Devices](../cluster/storage-devices.md).
 
 ## `[auth]`
 
@@ -188,60 +149,10 @@ The two base URLs are different addresses on purpose:
 - `embed_base_url` is the **storage endpoint**, because an embed serves object bytes
   into somebody else's page.
 
-When `embed_base_url` is unset, Record Store falls back to `cluster.s3_endpoint`, and
-then to the S3 listener address rendered as loopback. Both fallbacks are wrong behind
-a proxy. Set it explicitly in production. See
+When `embed_base_url` is unset, Record Store falls back to the S3 listener address,
+rendered as loopback when the bind address is unspecified. That fallback is wrong
+behind a proxy. Set it explicitly in production. See
 [Sharing Security](../security/sharing-security.md).
-
-## `[cluster]`
-
-Node-local settings. Cluster-wide policy lives in replicated cluster state so every
-node agrees on it.
-
-| Key | Type | Default | Environment |
-| --- | --- | --- | --- |
-| `seeds` | list of `host:port`, max 32 | empty | `RECORD_STORE_CLUSTER_SEEDS` |
-| `join_token` | secret | none | `RECORD_STORE_CLUSTER_JOIN_TOKEN` |
-| `storage_class` | string 1–32 chars | `standard` | `RECORD_STORE_CLUSTER_STORAGE_CLASS` |
-| `failure_domain` | `key=value,key=value` | empty | `RECORD_STORE_CLUSTER_FAILURE_DOMAIN` |
-| `s3_endpoint` | string | none | `RECORD_STORE_CLUSTER_S3_ENDPOINT` |
-| `replication_factor` | integer 1–3 | `3` | `RECORD_STORE_CLUSTER_REPLICATION_FACTOR` |
-| `capacity_low_watermark_percent` | integer | `80` | `RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT` |
-| `capacity_high_watermark_percent` | integer | `90` | `RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT` |
-| `capacity_critical_watermark_percent` | integer | `95` | `RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT` |
-| `consensus_heartbeat_millis` | integer 1–10000 | `250` | — |
-| `election_timeout_min_millis` | integer | `1000` | — |
-| `election_timeout_max_millis` | integer | `2000` | — |
-| `snapshot_logs_threshold` | integer > 0 | `8192` | — |
-| `retained_logs` | integer | `2048` | — |
-| `movement_concurrency` | integer 1–256 | `4` | `RECORD_STORE_CLUSTER_MOVEMENT_CONCURRENCY` |
-| `movement_bytes_per_second` | integer | `67108864` | `RECORD_STORE_CLUSTER_MOVEMENT_BYTES_PER_SECOND` |
-| `reconcile_interval_seconds` | integer 1–86400 | `300` | `RECORD_STORE_CLUSTER_RECONCILE_INTERVAL_SECONDS` |
-
-Constraints:
-
-- `storage_class` accepts lowercase letters, digits, and hyphens only.
-- Watermarks must satisfy `0 < low < high < critical <= 100`.
-- `election_timeout_min_millis` must exceed twice `consensus_heartbeat_millis`.
-- `election_timeout_max_millis` must exceed `election_timeout_min_millis`.
-- `replication_factor` is the value used when **this node initializes a new cluster**.
-  It does not retroactively change an existing one.
-- Mode `control` requires `seeds`.
-- `join_token` requires `seeds` — a token alone does not say whom to join.
-
-### `[cluster.tls]`
-
-| Key | Type | Environment |
-| --- | --- | --- |
-| `certificate_path` | path | `RECORD_STORE_CLUSTER_TLS_CERTIFICATE` |
-| `private_key_path` | path | `RECORD_STORE_CLUSTER_TLS_PRIVATE_KEY` |
-| `peer_ca_path` | path | `RECORD_STORE_CLUSTER_TLS_PEER_CA` |
-| `client_ca_path` | path | `RECORD_STORE_CLUSTER_TLS_CLIENT_CA` |
-| `server_name` | string | `RECORD_STORE_CLUSTER_TLS_SERVER_NAME` |
-
-`certificate_path` and `private_key_path` must be set together. `client_ca_path`
-turns on mutual TLS and requires this node to present its own certificate. See
-[Internal TLS](../security/internal-tls.md).
 
 ## `[observability]`
 
@@ -254,26 +165,18 @@ turns on mutual TLS and requires this node to present its own certificate. See
 
 ## Complete example
 
-A standalone deployment behind a reverse proxy. Secrets come from the environment,
+A deployment behind a reverse proxy. Secrets come from the environment,
 not from the file.
 
 ```toml
 [server]
-mode = "standalone"
 s3_bind = "0.0.0.0:7600"
 api_bind = "127.0.0.1:7601"
-rpc_bind = "127.0.0.1:7603"
 shutdown_grace_period_seconds = 30
 
 [storage]
 data_directory = "/var/lib/record-store"
 encryption_enabled = true
-
-[[storage.devices]]
-name = "nvme0"
-path = "/mnt/nvme0"
-storage_class = "hot"
-weight = 2000
 
 [limits]
 maximum_concurrent_operations = 256

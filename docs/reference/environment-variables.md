@@ -19,11 +19,8 @@ Some settings are file-only. Those are listed at the end.
 
 | Variable | Effect | Default |
 | --- | --- | --- |
-| `RECORD_STORE_MODE` | `standalone`, `cluster`, or `control` | `standalone` |
 | `RECORD_STORE_S3_BIND` | S3 API listener | `0.0.0.0:7600` |
 | `RECORD_STORE_API_BIND` | Management API listener | `0.0.0.0:7601` |
-| `RECORD_STORE_RPC_BIND` | Internal RPC listener | `0.0.0.0:7603` |
-| `RECORD_STORE_RPC_ADVERTISE` | Address peers use to reach this node | `rpc_bind` |
 | `RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS` | Graceful drain ceiling, 1–300 | `30` |
 
 ## Storage
@@ -93,36 +90,6 @@ Length requirements are in the [Configuration Reference](configuration.md#auth).
 | `RECORD_STORE_SHARING_SHARE_BASE_URL` | Public console URL used to build share links | unset |
 | `RECORD_STORE_SHARING_EMBED_BASE_URL` | Public storage URL used to build embed links | unset |
 
-## Cluster
-
-| Variable | Effect | Default |
-| --- | --- | --- |
-| `RECORD_STORE_CLUSTER_SEEDS` | Comma-separated `host:port` list, max 32 | empty |
-| `RECORD_STORE_CLUSTER_JOIN_TOKEN` | Single-use join token — secret | unset |
-| `RECORD_STORE_CLUSTER_STORAGE_CLASS` | Class this node advertises | `standard` |
-| `RECORD_STORE_CLUSTER_FAILURE_DOMAIN` | `key=value,key=value` labels | empty |
-| `RECORD_STORE_CLUSTER_S3_ENDPOINT` | Client-facing endpoint this node advertises | unset |
-| `RECORD_STORE_CLUSTER_REPLICATION_FACTOR` | Factor used when initializing a cluster, 1–3 | `3` |
-| `RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT` | Low watermark | `80` |
-| `RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT` | High watermark | `90` |
-| `RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT` | Critical watermark | `95` |
-| `RECORD_STORE_CLUSTER_MOVEMENT_CONCURRENCY` | Concurrent replica movements, 1–256 | `4` |
-| `RECORD_STORE_CLUSTER_MOVEMENT_BYTES_PER_SECOND` | Per-movement throughput ceiling | `67108864` |
-| `RECORD_STORE_CLUSTER_RECONCILE_INTERVAL_SECONDS` | Local reconciliation interval, 1–86400 | `300` |
-
-Whitespace around each seed is trimmed and empty entries are dropped, so
-`a:7603, b:7603` and `a:7603,b:7603` are equivalent.
-
-### Cluster TLS
-
-| Variable | Effect |
-| --- | --- |
-| `RECORD_STORE_CLUSTER_TLS_CERTIFICATE` | PEM chain this node presents |
-| `RECORD_STORE_CLUSTER_TLS_PRIVATE_KEY` | PEM private key for that chain |
-| `RECORD_STORE_CLUSTER_TLS_PEER_CA` | PEM authority used to verify peers |
-| `RECORD_STORE_CLUSTER_TLS_CLIENT_CA` | PEM authority for mutual TLS |
-| `RECORD_STORE_CLUSTER_TLS_SERVER_NAME` | Handshake server name, when it differs |
-
 ## Logging
 
 | Variable | Effect | Default |
@@ -150,8 +117,3 @@ These have no environment variable. Use a TOML file.
 | --- | --- |
 | `maximum_custom_metadata_entries` | `[limits]` |
 | `maximum_custom_metadata_bytes` | `[limits]` |
-| `consensus_heartbeat_millis` | `[cluster]` |
-| `election_timeout_min_millis` | `[cluster]` |
-| `election_timeout_max_millis` | `[cluster]` |
-| `snapshot_logs_threshold` | `[cluster]` |
-| `retained_logs` | `[cluster]` |

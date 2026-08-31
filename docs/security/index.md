@@ -5,7 +5,6 @@
 -   **[Authentication](authentication.md)** — proving who you are
 -   **[Authorization](authorization.md)** — what you are allowed to do
 -   **[Encryption](encryption.md)** — at rest and in transit
--   **[Internal TLS](internal-tls.md)** — securing cluster traffic
 -   **[Sharing Security](sharing-security.md)** — share and embed links
 -   **[Security Checklist](checklist.md)** — the short version
 
