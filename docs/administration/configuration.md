@@ -25,7 +25,7 @@ The split that works in practice:
 | | Put here | Why |
 | --- | --- | --- |
 | **TOML file** | Ports, paths, limits, policy, log settings | Reviewable, diffable, belongs in change control |
-| **Environment** | Root credentials, master key, management tokens, join tokens | Never lands in a repository or an image layer |
+| **Environment** | Root credentials, master key, management tokens | Never lands in a repository or an image layer |
 
 ```bash
 record-store server --config /etc/record-store/config.toml
@@ -36,7 +36,7 @@ The file is optional. A container deployment can run on environment variables al
 ## Validate before restarting
 
 ```bash
-record-store server check-config --config /etc/record-store/config.toml
+record-store server --config /etc/record-store/config.toml check-config
 ```
 
 This loads the file, applies the current environment, validates, and exits. It writes
@@ -98,5 +98,6 @@ Configuration is read at startup. There is no reload signal — apply a change b
 restarting the process. A graceful shutdown drains in-flight requests within
 `server.shutdown_grace_period_seconds`.
 
-In a cluster, restart one node at a time and wait for it to rejoin before moving on.
-See [Node Lifecycle](../cluster/node-lifecycle.md).
+Restarting takes the service down for as long as the process is stopped. Plan a
+configuration change into a maintenance window, or accept the gap. See
+[Upgrading](../deployment/upgrading.md).

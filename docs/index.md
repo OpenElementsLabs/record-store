@@ -1,7 +1,7 @@
 # Record Store
 
 Record Store is a self-hosted, S3-compatible object storage service written in Rust.
-It runs as a single process on one server, or as a replicated cluster across several.
+It runs as a single process on one server.
 
 Applications talk to it with the AWS SDKs they already use. Administrators manage it
 through a web console, a command-line tool, or a native HTTP API.
@@ -36,7 +36,7 @@ through a web console, a command-line tool, or a native HTTP API.
 
     ---
 
-    Signature errors, upload failures, proxy problems, cluster issues.
+    Signature errors, upload failures, and proxy problems.
 
     [:octicons-arrow-right-24: Troubleshooting](troubleshooting/index.md)
 
@@ -48,8 +48,8 @@ through a web console, a command-line tool, or a native HTTP API.
 versioning, range and conditional reads, and per-bucket CORS. See
 [S3 Compatibility](reference/s3-compatibility.md) for the exact surface.
 
-**Standalone or clustered.** One process needs no cluster configuration. A cluster
-replicates objects across nodes and keeps metadata consistent through Raft.
+**One process to run.** A single binary with a single data directory. No external
+database, no message broker, and no coordination service to operate.
 
 **Encryption at rest.** Optional chunked AES-256-GCM with a per-object data key
 wrapped by a master key you supply and control.
@@ -68,8 +68,10 @@ metrics, lifecycle expiration, integrity verification, and offline metadata back
 
 Being precise about this is more useful than a longer feature list.
 
-- **Erasure coding is not implemented.** Cluster durability is replication.
-- **Multi-region replication is not implemented.** A cluster is single-region.
+- **A deployment is one process on one machine.** Durability is whatever the storage
+  underneath it gives you, so use redundant disks and take
+  [backups](operations/backup-and-restore.md). If the machine is gone, the service is
+  down until you restore it.
 - **ACLs, Object Lock, `UploadPartCopy`, server-side encryption headers, and AWS
   `aws-chunked` trailing checksums are not implemented.** Unsupported operations
   return an S3 `NotImplemented` error rather than being silently accepted.
@@ -84,7 +86,6 @@ Being precise about this is more useful than a longer feature list.
 | Writing an application against it | [Application Integration](guides/application-integration.md) |
 | Deploying it | [Deployment Overview](deployment/index.md) |
 | Running it already | [Administration](administration/index.md) and [Operations](operations/index.md) |
-| Running a cluster | [Cluster Overview](cluster/index.md) |
 | Contributing to it | [Development Setup](contributing/development-setup.md) |
 
 ## License

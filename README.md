@@ -1,10 +1,10 @@
 # Record Store
 
-Record Store is a self-hosted object storage service written in Rust. It supports a simple standalone mode and a single-region replicated cluster mode. Public S3 traffic uses port 7600, the native management API uses 7601, the web console uses 7602, and authenticated internal gRPC uses 7603. Every listener is configurable; 
+Record Store is a self-hosted, S3-compatible object storage service written in Rust. It runs as a single process on one server, with no external database, message broker, or coordination service alongside it. Public S3 traffic uses port 7600, the native management API uses 7601, and the web console uses 7602. Every listener is configurable.
 
 ## Documentation
 
-Full documentation — installation, configuration, deployment, clustering, security, and
+Full documentation — installation, configuration, deployment, security, and
 reference — is published at
 **<https://openelementslabs.github.io/record-store/>** and lives in [`docs/`](docs/).
 
@@ -60,25 +60,18 @@ Presigned multipart part uploads use the same canonical SigV4 verifier. ACLs, Ob
 
 ## Architecture and durability
 
-Protocol crates call shared application services; they do not access filesystem internals. In cluster mode the same service layer is backed by replicated object storage and a strongly consistent metadata repository:
+Protocol crates call shared application services; they do not access filesystem internals. Both protocol surfaces go through the same service layer, so an object written over S3 and an object written through the console are the same object under the same rules:
 
 ```text
-record-store-s3 ─────┐                         ┌── local replica store
-            ├──> record-store-service ────────>├── bounded gRPC replica streams
-record-store-api ────┘          │              └── checksum verification
+record-store-s3 ─────┐                         ┌── filesystem store
+            ├──> record-store-service ────────>├── checksum verification
+record-store-api ────┘          │              └── objects/
                        ▼
-             replicated metadata adapter
-                       │
-                       ▼
-              OpenRaft metadata group
-              (object bytes never enter Raft)
+              metadata catalog
+              (buckets, objects, versions)
 ```
 
-Each node persists an opaque `NodeId`, cluster binding, Raft member ID, and unique node credential separately from its hostname or address. Nodes join with expiring single-use tokens. Internal calls carry node identity, cluster identity, protocol major/minor, software version, storage format, cluster format, trace context, and the node credential. TLS and mutual TLS are supported for production internal networks.
-
-Replica placement is deterministic, capacity-aware, storage-class-aware, and failure-domain-aware. A replicated PUT fans out one bounded stream to selected nodes, each destination independently verifies and publishes its bytes durably, and metadata plus placement become visible atomically only after the acknowledgement policy succeeds. Reads prefer a healthy local replica, fall back before response bytes are emitted, and record missing or corrupt replicas for repair. Leader-elected workers detect failures, repair under-replication, reconcile returning nodes, retain deletion tombstones, rebalance, drain, and decommission without deleting a source before its replacement is committed and verified.
-
-Cluster mode does not by itself make a client endpoint highly available. Use at least three metadata voters and three failure-domain-separated storage nodes, and put healthy S3 ingress nodes behind a load balancer. Two Raft voters cannot survive either member's loss. Erasure coding and multi-region conflict resolution are intentionally outside this release.
+A deployment is one process with one copy of your data. A successful write means the payload was streamed to a temporary file, checksummed, fsynced, and atomically renamed into place, with metadata published afterwards — so it survives process crash and power loss to the extent the filesystem honours fsync, and does not survive losing the disk. Redundancy under the data directory is the redundancy you have: use RAID, a mirrored pool, or a replicated volume, and take backups. Erasure coding is not implemented; the unused `record-store-erasure` crate is not wired into any code path.
 
 Payloads are immutable and addressed by generated UUIDs. Logical bucket names and object keys never become filesystem paths. Uploads stream through bounded chunks into create-only temporary files while SHA-256 and MD5 are calculated, then use fsync and atomic rename before metadata publication.
 
@@ -90,12 +83,7 @@ Local state uses this layout:
 
 ```text
 <data-directory>/
-├── node-identity.json                     # cluster mode
-├── node-credential.json                   # cluster mode, permission 0600 on Unix
-├── metadata/catalog.redb                  # standalone mode
-├── metadata/consensus/consensus-log.redb  # cluster mode
-├── metadata/consensus/consensus-state.redb
-├── metadata/consensus/snapshots/
+├── metadata/catalog.redb
 ├── metadata/credentials.redb
 ├── metadata/audit.redb
 ├── metadata/events.redb
@@ -158,7 +146,6 @@ The equivalent daemon entry point is `cargo run --bin record-store-server`. Defa
 S3 API          http://localhost:7600 (also serves /e/<token> embeds)
 Management API  http://localhost:7601
 Web console     http://localhost:7602 (also serves /s/<token> share pages)
-Internal RPC    0.0.0.0:7603 (cluster mode only; do not publish publicly)
 ```
 
 Load the example file with `cargo run --bin record-store -- server --config record-store.example.toml`; secrets should still come from the environment.
@@ -230,35 +217,6 @@ cargo run --bin record-store -- storage repair              # dry run
 cargo run --bin record-store -- storage repair --apply      # explicit orphan deletion
 ```
 
-Cluster administration uses separate management authorization. System administrators can mutate cluster state; storage administrators and auditors can read cluster status, while ordinary S3 service accounts receive no cluster permission.
-
-```bash
-export RECORD_STORE_MANAGEMENT_TOKEN="$RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN"
-cargo run --bin record-store -- cluster init
-cargo run --bin record-store -- cluster status
-cargo run --bin record-store -- cluster issue-join-token --lifetime-seconds 3600
-cargo run --bin record-store -- node list
-cargo run --bin record-store -- node inspect <node-id>
-cargo run --bin record-store -- node drain <node-id>
-cargo run --bin record-store -- node maintenance <node-id>
-cargo run --bin record-store -- node resume <node-id>
-cargo run --bin record-store -- node decommission <node-id>
-cargo run --bin record-store -- repair status
-cargo run --bin record-store -- rebalance start
-cargo run --bin record-store -- rebalance status
-```
-
-The first process configured with `RECORD_STORE_MODE=cluster` and no seeds forms the initial one-member group. Join another storage node with a token from the command above:
-
-```bash
-cargo run --bin record-store -- node join \
-  --control storage-1.internal:7603 \
-  --token "$RECORD_STORE_CLUSTER_JOIN_TOKEN" \
-  --config ./node-2.toml
-```
-
-The joining node persists the returned binding and unique credential before activation. A restart reuses both. A node refuses a conflicting cluster or Raft identity rather than silently rebinding stale data.
-
 Service-account and webhook signing secrets are returned only when created or rotated. Stored signing material is encrypted with AES-256-GCM under the injected `RECORD_STORE_CREDENTIAL_MASTER_KEY`. The same injected master material derives a domain-separated object key-encryption key when payload encryption is enabled. Record Store refuses to create encrypted credentials without it and refuses startup if encrypted records or payload state exist but the key is unavailable. The master key is never stored by Record Store.
 
 S3 service accounts use attached allow/deny policies. Explicit deny overrides allow; no matching allow is an implicit deny. Policy resources use canonical decoded logical keys and support only a trailing wildcard, avoiding filesystem or ambiguous wildcard semantics.
@@ -288,24 +246,6 @@ Configuration file values overlay defaults, then environment variables take prec
 | --- | --- |
 | `RECORD_STORE_S3_BIND` | `server.s3_bind` |
 | `RECORD_STORE_API_BIND` | `server.api_bind` |
-| `RECORD_STORE_MODE` | `server.mode` (`standalone`, `cluster`, or `control`) |
-| `RECORD_STORE_RPC_BIND` | `server.rpc_bind` |
-| `RECORD_STORE_RPC_ADVERTISE` | `server.rpc_advertise` |
-| `RECORD_STORE_CLUSTER_SEEDS` | `cluster.seeds` (comma-separated) |
-| `RECORD_STORE_CLUSTER_JOIN_TOKEN` | one-time cluster admission token |
-| `RECORD_STORE_CLUSTER_STORAGE_CLASS` | `cluster.storage_class` |
-| `RECORD_STORE_CLUSTER_FAILURE_DOMAIN` | `cluster.failure_domain` |
-| `RECORD_STORE_CLUSTER_REPLICATION_FACTOR` | initial replicated policy |
-| `RECORD_STORE_CLUSTER_MOVEMENT_CONCURRENCY` | node-local movement concurrency |
-| `RECORD_STORE_CLUSTER_MOVEMENT_BYTES_PER_SECOND` | movement bandwidth ceiling |
-| `RECORD_STORE_CLUSTER_RECONCILE_INTERVAL_SECONDS` | returning-node reconciliation interval |
-| `RECORD_STORE_CLUSTER_CAPACITY_LOW_WATERMARK_PERCENT` | initial cluster low-capacity watermark |
-| `RECORD_STORE_CLUSTER_CAPACITY_HIGH_WATERMARK_PERCENT` | initial cluster high-capacity watermark |
-| `RECORD_STORE_CLUSTER_CAPACITY_CRITICAL_WATERMARK_PERCENT` | initial cluster critical-capacity watermark |
-| `RECORD_STORE_CLUSTER_TLS_CERTIFICATE` | internal TLS certificate chain |
-| `RECORD_STORE_CLUSTER_TLS_PRIVATE_KEY` | internal TLS private key |
-| `RECORD_STORE_CLUSTER_TLS_PEER_CA` | internal peer trust root |
-| `RECORD_STORE_CLUSTER_TLS_CLIENT_CA` | internal client trust root (enables mTLS) |
 | `RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS` | `server.shutdown_grace_period_seconds` |
 | `RECORD_STORE_STORAGE_DATA_DIRECTORY` | `storage.data_directory` |
 | `RECORD_STORE_STORAGE_TEMPORARY_DIRECTORY` | `storage.temporary_directory` |
@@ -414,22 +354,20 @@ Applications ──────► S3 API        :7600
 Embedding sites ───► S3 API        :7600  /e/<token>
 Share recipients ──► Web console   :7602  /s/<token>
 Administrators ────► Web console   :7602 ──► Management API :7601
-Record Store internal ──────► Node RPC      :7603
 ```
 
 The browser talks only to the console's own origin. The console server attaches
 the management credential and forwards the request to 7601, so the credential
 lives in an HTTP-only cookie the page cannot read, no CORS configuration is
-needed, and the browser never reaches storage, metadata, consensus, or 7603.
+needed, and the browser never reaches the management API, the stored objects, or
+the metadata catalog.
 
 Public share pages are served by the same application but authorize differently:
 that boundary attaches no credential at all, because the token in the path is the
 authorization. Embed bytes do not pass through the console.
 
-After sign-in, deployment mode is discovered from `GET /api/v1/system/info`, which reports
-`mode` and a capability set. A standalone deployment shows a storage-management
-interface with no nodes, quorum, replication, repair, or rebalancing; the same
-build exposes those screens when the backend reports cluster mode.
+After sign-in, the console reads `GET /api/v1/system/info` for the deployment's
+capability set and renders only the screens that capability set supports.
 
 ### Develop
 
@@ -454,7 +392,7 @@ npm run test
 npm run build
 ```
 
-End-to-end tests drive a real standalone Record Store server rather than a mock, so
+End-to-end tests drive a real Record Store server rather than a mock, so
 console and API drift is caught rather than papered over:
 
 ```bash
@@ -495,9 +433,7 @@ The Compose files below build from source, which is what you want while
 developing. For a real deployment, use the published images through
 `deploy/docker/compose.ghcr.yml` — see [Install](#install).
 
-`RECORD_STORE_MODE` is not set above because standalone is the default; no cluster configuration is required to run one node.
-
-Compose variables may be kept in a repo-root `.env` file (which Git ignores) and loaded explicitly with `--env-file .env`. Use `deploy/docker/compose.console.yml` for one standalone Record Store node plus the console, or `deploy/docker/compose.yml` for the same node without the console.
+Compose variables may be kept in a repo-root `.env` file (which Git ignores) and loaded explicitly with `--env-file .env`. Use `deploy/docker/compose.console.yml` for Record Store plus the console, or `deploy/docker/compose.yml` for the server on its own.
 
 ```bash
 docker build -f deploy/docker/Dockerfile -t record-store .
@@ -511,38 +447,28 @@ docker run --read-only \
   -v record-store-data:/var/lib/record-store record-store
 ```
 
-The default Compose file (`deploy/docker/compose.yml`) runs one standalone node: no cluster configuration, no internal RPC listener, and no control-plane process. It publishes only S3 on localhost:7600 and management on localhost:7601. Development secrets have explicit local defaults and must not be copied into production:
+The default Compose file (`deploy/docker/compose.yml`) runs the server on its own. It publishes only S3 on localhost:7600 and management on localhost:7601. Development secrets have explicit local defaults and must not be copied into production:
 
 ```bash
 docker compose -f deploy/docker/compose.yml up --build -d
 docker compose -f deploy/docker/compose.yml ps
 ```
 
-A separate Compose file (`deploy/docker/compose.cluster.yml`) is an explicit, opt-in example of a three-node replicated cluster, a management-only `control` process, and the web console. It publishes S3 on 7600, management on 7601, and the console on 7602; 7603 remains private to the Compose network. Nothing here is required for the default standalone experience:
-
-```bash
-docker compose -f deploy/docker/compose.cluster.yml up --build -d
-docker compose -f deploy/docker/compose.cluster.yml ps
-# open http://localhost:7602 and sign in with RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN
-RECORD_STORE_MANAGEMENT_TOKEN=local-development-management-token-change-me \
-  docker compose -f deploy/docker/compose.cluster.yml exec control record-store cluster status
-```
-
-A third Compose file (`deploy/docker/compose.console.yml`) runs a standalone node together with the web console. It publishes S3 on 7600, management on 7601, and the console on 7602:
+A second Compose file (`deploy/docker/compose.console.yml`) runs the server together with the web console. It publishes S3 on 7600, management on 7601, and the console on 7602:
 
 ```bash
 docker compose --env-file .env -f deploy/docker/compose.console.yml up --build -d
 # open http://localhost:7602 and sign in with RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN
 ```
 
-The Compose network uses plaintext internal traffic strictly for local development. Configure the cluster TLS fields, preferably mutual TLS, in every real cluster deployment.
+The Compose network carries plaintext traffic and is intended for local development. Terminate TLS in a reverse proxy in front of 7600 and 7602 for any real deployment, and keep 7601 private.
 
-The runtime image is non-root, supports a read-only root filesystem, declares 7600/7601/7603, publishes only ports selected by the operator, uses the management health endpoint, and performs SIGTERM-aware graceful shutdown across HTTP, Raft, RPC, and background workers.
+The runtime image is non-root, supports a read-only root filesystem, publishes only ports selected by the operator, uses the management health endpoint, and performs SIGTERM-aware graceful shutdown across the HTTP listeners and background workers.
 
 ## Repository structure
 
 ```text
-apps/record-store-server       startup, dual listeners, backup, and worker supervision
+apps/record-store-server       startup, listeners, backup, and worker supervision
 apps/record-store-cli          server and management command-line interface
 crates/record-store-core       validated domain model
 crates/record-store-service    shared bucket/object application services
@@ -552,15 +478,11 @@ crates/record-store-storage    streaming filesystem backend and recovery journal
 crates/record-store-metadata   durable indexed catalog and ordered migrations
 crates/record-store-auth       encrypted credentials and authorization policies
 crates/record-store-audit      durable bounded security audit trail
-crates/record-store-cluster    membership, placement, health, credentials, and movement model
-crates/record-store-consensus  persistent OpenRaft metadata state machine and snapshots
+crates/record-store-sharing    share and embed capabilities
 crates/record-store-events     durable events and signed webhook delivery
 crates/record-store-lifecycle  incremental lifecycle expiration worker
 crates/record-store-config     configuration loading and validation
 crates/record-store-observability structured tracing initialization
-crates/record-store-protocol   versioned Protobuf internal contracts
-crates/record-store-rpc        authenticated Tonic consensus and replica transport
-crates/record-store-replication distributed reads/writes, repair, rebalance, and operations
 console/              web console: Next.js, React, Tailwind, TanStack
 deploy/docker/        container and Compose definitions
 docs/                 MkDocs documentation site

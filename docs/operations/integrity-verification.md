@@ -85,33 +85,10 @@ What it does:
   deleted. An unrecognised file might be someone else's, or evidence.
 
 What it cannot do: recover a missing payload. `metadata_without_data` is not repairable
-from within a standalone deployment — the bytes are gone. In a cluster, another replica
-can restore it; see [Repair and Rebalance](../cluster/repair-and-rebalance.md).
+from within the deployment — the bytes are gone, and they come back from a
+[backup](backup-and-restore.md) or not at all.
 
 Always dry-run first and read the numbers.
-
-## Cluster verification
-
-In a cluster, integrity works at two levels:
-
-| | Checks | Runs |
-| --- | --- | --- |
-| Node reconciliation | What a node holds against what the cluster believes | Every `reconcile_interval_seconds` (default 300) |
-| Repair | Restores replicas found missing or corrupt | Automatically |
-
-Reconciliation is what turns a silently lost or corrupt local replica into a `missing`
-or `corrupt` record — which is what queues a repair. Without it, a lost replica stays
-invisible until something tries to read it.
-
-Replica states relevant here:
-
-| State | Meaning |
-| --- | --- |
-| `healthy` | Verified against the expected checksum |
-| `missing` | The node reported the payload absent |
-| `corrupt` | Stored bytes failed verification |
-
-Both `missing` and `corrupt` stop counting toward durability and trigger repair.
 
 ## A verification routine
 
@@ -143,11 +120,9 @@ fi
 2. **Establish the scope** with `storage inspect` and `verify bucket`.
 3. **Check the hardware.** Checksum mismatches usually mean a failing disk or bad
    memory — look at SMART data and the kernel log.
-4. **In a cluster**, check whether other replicas are healthy; repair restores from
-   them.
-5. **Standalone**, restore the affected objects from backup — see
+4. **Restore the affected objects from backup** — see
    [Backup and Restore](backup-and-restore.md).
-6. **Then** consider `storage repair --apply` to clean up orphans.
+5. **Then** consider `storage repair --apply` to clean up orphans.
 
 A checksum mismatch is a hardware signal before it is a Record Store problem. Find out
 why the bytes changed before deciding what to do about them.

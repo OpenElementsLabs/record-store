@@ -18,10 +18,9 @@ Keeping a deployment healthy and knowing when it is not.
 ```bash
 record-store status --endpoint https://management.example.com
 record-store storage inspect --endpoint https://management.example.com
-record-store cluster status --endpoint https://management.example.com   # cluster only
 ```
 
-If those three look right, the deployment is fine. If they do not, the rest of this
+If those two look right, the deployment is fine. If they do not, the rest of this
 section says what to do.
 
 ## Signals worth watching
@@ -29,11 +28,10 @@ section says what to do.
 | Signal | Where | Concerning when |
 | --- | --- | --- |
 | Readiness | `/ready` | Anything but 200 |
-| Disk headroom | `record_store_node_available_bytes` | Below 20% |
+| Disk headroom | A host exporter on the data directory's filesystem | Below 20% |
 | Error rate | `record_store_errors_total` / `record_store_requests_total` | Above a few percent |
-| Metadata quorum | `record_store_metadata_quorum_health` | `0` |
-| Under-replication | `record_store_under_replicated_objects` | Above 0 for more than a few minutes |
-| Parked repair tasks | `record-store repair status` | Above 0 |
+| Missing payloads | `metadata_without_data` in `storage inspect` | Above 0 |
+| Storage growth | `record_store_storage_physical_bytes` | Outpacing the disk you have |
 | Audit denials | `record-store audit --limit 100` | A burst from one principal |
 
 ## Nothing is pruned for you

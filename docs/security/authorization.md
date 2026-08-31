@@ -34,7 +34,7 @@ Everything. Required if either other role token is configured.
 For someone who operates the storage without controlling who may access it.
 
 **Can:** buckets, objects, versions, lifecycle rules, quotas, storage inspection and
-repair, integrity verification, share and embed links, cluster and node **reads**.
+repair, integrity verification, and share and embed links.
 
 **Cannot:**
 
@@ -44,10 +44,6 @@ repair, integrity verification, share and embed links, cluster and node **reads*
 | `/api/v1/policies` | Changing a policy is changing who can do what |
 | `/api/v1/audit` | Reading the trail is a separate duty |
 | `/api/v1/webhooks`, `/api/v1/webhook-deliveries` | A webhook target is a server-side fetch |
-| Non-`GET` on `/api/v1/cluster`, `/api/v1/nodes`, `/api/v1/rebalance`, `/api/v1/repair` | Membership changes are system administration |
-
-The cluster restriction is method-based: reads are allowed, mutations are not. A
-storage administrator can see cluster state and cannot drain or decommission a node.
 
 ### Auditor
 
@@ -61,7 +57,6 @@ Read-only. `GET` requests only, to a fixed list of routes:
 | Trails | `/api/v1/audit/events`, `/api/v1/events` |
 | Storage | `/api/v1/storage/status`, `/api/v1/storage/usage`, `/api/v1/storage/inspect`, `/api/v1/buckets` |
 | Webhooks | `/api/v1/webhooks`, `/api/v1/webhook-deliveries` |
-| Cluster | `/api/v1/cluster*`, `/api/v1/nodes*`, `/api/v1/repair*`, `/api/v1/rebalance*` |
 | Capabilities | Share and embed **metadata**, and `/api/v1/sharing/settings` |
 
 !!! note "An auditor may not read a capability's URL"
@@ -84,8 +79,6 @@ An auditor cannot list objects in a bucket or read object content.
 | Policies | ✅ | ❌ | ❌ |
 | Webhooks | ✅ | ❌ | read only |
 | Audit log | ✅ | ❌ | ✅ |
-| Cluster mutation | ✅ | ❌ | ❌ |
-| Cluster read | ✅ | ✅ | ✅ |
 | Capability metadata | ✅ | ✅ | ✅ |
 | Capability URLs | ✅ | ✅ | ❌ |
 

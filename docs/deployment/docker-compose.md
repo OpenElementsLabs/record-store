@@ -1,15 +1,14 @@
 # Docker Compose
 
-Four Compose files ship in `deploy/docker/`:
+Three Compose files ship in `deploy/docker/`:
 
 | File | What it runs | Image |
 | --- | --- | --- |
-| `compose.ghcr.yml` | Standalone plus the web console | Published |
-| `compose.yml` | Standalone Record Store | Built from source |
-| `compose.console.yml` | Standalone plus the web console | Built from source |
-| `compose.cluster.yml` | Three storage nodes, a control node, and the console | Built from source |
+| `compose.ghcr.yml` | Record Store plus the web console | Published |
+| `compose.yml` | Record Store on its own | Built from source |
+| `compose.console.yml` | Record Store plus the web console | Built from source |
 
-The three source-building files are development configurations. Every credential
+The two source-building files are development configurations. Every credential
 in them is a `change-me` placeholder that exists so `docker compose up` works with
 no setup. **Override every one before running anything real.**
 
@@ -22,7 +21,7 @@ RECORD_STORE_VERSION=0.1.1 \
   docker compose --env-file .env -f deploy/docker/compose.ghcr.yml up -d
 ```
 
-## Standalone
+## Server only
 
 ```bash
 cd deploy/docker
@@ -82,65 +81,6 @@ The console waits for the server's healthcheck before starting.
 
 Open <http://localhost:7602> and sign in with a management token.
 
-## Local cluster
-
-```bash
-docker compose -f compose.cluster.yml up -d
-```
-
-Five services: `storage-1`, `storage-2`, `storage-3`, `control`, and `console`, plus a
-one-shot `bootstrap` job.
-
-```mermaid
-flowchart TB
-    S1["storage-1<br/>cluster mode, no seeds"] --> B[bootstrap: issue join tokens]
-    B --> S2["storage-2<br/>seeds: storage-1:7603"]
-    B --> S3["storage-3<br/>seeds: storage-1:7603"]
-    B --> CT["control<br/>management only"]
-    CT --> CO["console :7602"]
-```
-
-How it works:
-
-1. `storage-1` starts in cluster mode with **no seeds**, so it initializes a new
-   cluster.
-2. `bootstrap` waits for it to become healthy, then issues one join token per
-   remaining node and writes them to a shared volume.
-3. Each other node reads its token into `RECORD_STORE_CLUSTER_JOIN_TOKEN` and starts.
-4. `control` joins in `control` mode: it serves the management API and holds no
-   replicas.
-5. `console` points at `control`, not at a storage node.
-
-Each node advertises a distinct `RECORD_STORE_CLUSTER_FAILURE_DOMAIN`
-(`region=local,zone=zN,rack=rN`), which is what lets placement spread replicas.
-
-Published: `7600` from `storage-1`, `7601` from `control`, `7602` from `console`.
-
-Check it:
-
-```bash
-docker compose -f compose.cluster.yml exec \
-  -e RECORD_STORE_MANAGEMENT_TOKEN=<your-system-token> \
-  storage-1 record-store cluster status --endpoint http://127.0.0.1:7601
-```
-
-!!! note "Reachability is only observable on the leader"
-    A member's `reachable` flag means *the leader currently has replication contact
-    with it*, and only the leader tracks that. Ask a follower — `control` is one — and
-    unobserved peers come back as `null`, with `healthy_members` also `null`, rather
-    than as failures.
-
-    That is not a gap in the answer. Raft cannot hold a leader without a majority, so a
-    member that can see a leader knows a quorum exists, and reports the cluster
-    writable on that basis.
-
-    Query whichever node `status.leader` names when you want the per-peer detail.
-
-!!! warning "This is not a production cluster"
-    Every node is on one machine sharing one disk and one kernel. It demonstrates the
-    topology and lets you exercise the operations; it provides no real fault
-    tolerance. See [Creating a Cluster](../cluster/creating-a-cluster.md).
-
 ## Running commands
 
 ```bash
@@ -165,7 +105,7 @@ docker compose -f compose.yml down
 ## Moving toward production
 
 - Override every credential.
-- Bind `7601` to loopback; never publish `7603`.
+- Bind `7601` to loopback.
 - Put a TLS terminator in front of `7600` and `7602` — see
   [Reverse Proxy and TLS](reverse-proxy.md).
 - Set `RECORD_STORE_CONSOLE_SECURE_COOKIES=true`.

@@ -83,12 +83,6 @@ docker compose -f compose.console.yml up -d
 The development Compose files carry placeholder credentials so `up` works with no
 setup. Override every one before using them for anything real.
 
-For a local cluster:
-
-```bash
-docker compose -f compose.cluster.yml up -d
-```
-
 See [Docker Compose](../deployment/docker-compose.md).
 
 ## Before committing

@@ -49,7 +49,7 @@ The request ID is also in the `x-request-id` response header, and an inbound
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/v1/system/info` | Version, mode, cluster ID, capabilities |
+| `GET` | `/api/v1/system/info` | Version and capabilities |
 | `GET` | `/api/v1/system/metrics` | The same values `/metrics` exposes, as JSON |
 | `GET` | `/api/v1/auth/session` | The role behind the presented credential |
 
@@ -58,7 +58,7 @@ The request ID is also in the `x-request-id` response header, and an inbound
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/v1/buckets` | List buckets |
-| `POST` | `/api/v1/buckets` | Create — `{"name":"...","storage_class":"..."}` |
+| `POST` | `/api/v1/buckets` | Create — `{"name":"..."}` |
 | `DELETE` | `/api/v1/buckets/{bucket}` | Delete an empty bucket |
 | `GET` | `/api/v1/buckets/{bucket}/versioning` | Versioning state |
 | `PUT` | `/api/v1/buckets/{bucket}/versioning` | Set versioning |
@@ -167,51 +167,6 @@ Parameters: `since`, `until`, `principal`, `operation`, `resource`, `result`,
 | --- | --- | --- |
 | `POST` | `/api/v1/verify/objects/{bucket}/{key}` | Verify one object |
 | `POST` | `/api/v1/verify/buckets/{bucket}` | Verify every object in a bucket |
-
-## Cluster
-
-Cluster routes return `409 CLUSTER_MODE_DISABLED` in standalone mode.
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/v1/cluster` | Full cluster status |
-| `POST` | `/api/v1/cluster/init` | Idempotent — reports the configured cluster |
-| `GET` | `/api/v1/cluster/health` | Health, reasons, quorum, data health |
-| `POST` | `/api/v1/cluster/join-tokens` | `{"lifetime_seconds":3600,"description":"..."}` |
-| `GET` | `/api/v1/nodes` | List nodes |
-| `GET` | `/api/v1/nodes/{id}` | Inspect a node |
-| `POST` | `/api/v1/nodes/{id}/drain` | Drain |
-| `POST` | `/api/v1/nodes/{id}/maintenance` | Maintenance |
-| `POST` | `/api/v1/nodes/{id}/resume` | Return to service |
-| `POST` | `/api/v1/nodes/{id}/decommission` | `{"force":false}` |
-| `GET` | `/api/v1/repair/status` | Repair queue depth |
-| `GET` | `/api/v1/placement/explain/{bucket}/{key}` | Why an object is placed where it is |
-| `POST` | `/api/v1/placement/simulate` | What a topology change would move; mutates nothing |
-| `GET` | `/api/v1/storage-classes` | Defined storage classes |
-| `GET` | `/api/v1/storage-classes/{class}` | Inspect a class |
-| `PUT` | `/api/v1/storage-classes/{class}` | Define or replace a class |
-| `DELETE` | `/api/v1/storage-classes/{class}` | Remove a class |
-| `GET` | `/api/v1/devices` | Every registered device in the cluster |
-| `GET` | `/api/v1/devices/discovered` | Storage this node could use; registers nothing |
-| `GET` | `/api/v1/nodes/{id}/devices` | Devices on one node |
-| `GET` | `/api/v1/nodes/{node}/devices/{device}` | Inspect a device |
-| `POST` | `/api/v1/nodes/{node}/devices/{device}/activate` | Bring into service |
-| `POST` | `/api/v1/nodes/{node}/devices/{device}/drain` | Stop placement, evacuate |
-| `POST` | `/api/v1/nodes/{node}/devices/{device}/maintenance` | Pause without evacuating |
-| `POST` | `/api/v1/nodes/{node}/devices/{device}/resume` | Return to service |
-| `POST` | `/api/v1/nodes/{node}/devices/{device}/release` | Mark safe to remove |
-| `POST` | `/api/v1/nodes/{node}/devices/{device}/retire` | Retire permanently |
-| `GET` | `/api/v1/rebalance/status` | Rebalance state |
-| `POST` | `/api/v1/rebalance` | Start a rebalance |
-| `POST` | `/api/v1/rebalance/pause` | Hold every active rebalance |
-| `POST` | `/api/v1/rebalance/resume` | Return paused rebalances to service |
-| `POST` | `/api/v1/rebalance/throttle` | `{"bytes_per_second":N}`; `0` disables |
-
-Device routes answer `404 DEVICE_NOT_FOUND` for an unregistered device and
-`409 INVALID_DEVICE_TRANSITION` for a lifecycle move the state machine forbids.
-`release` answers `409` while the device still owns replicas, so a success means
-evacuation completed rather than that it was requested. See
-[Replacing a Drive](../cluster/replacing-a-drive.md).
 
 ## Sharing
 

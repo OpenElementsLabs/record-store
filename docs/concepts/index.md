@@ -13,13 +13,9 @@ predictable rather than surprising.
 
     Version states, delete markers, historical reads, and restore semantics.
 
--   **[Deployment Modes](deployment-modes.md)**
-
-    Standalone, cluster, and control processes, and when each applies.
-
 -   **[Durability](durability.md)**
 
-    What a successful write guarantees, in each mode.
+    What a successful write guarantees, and what it does not.
 
 -   **[Architecture](architecture.md)**
 

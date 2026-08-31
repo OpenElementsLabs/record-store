@@ -14,7 +14,10 @@ record-store server backup-metadata --output /backups/pre-upgrade-2026-08-29
 
 3. **Rehearse on a non-production deployment** with a copy of real metadata.
 
-## Standalone
+An upgrade is a restart, and a restart is downtime for as long as the process is
+stopped. Plan a window rather than expecting a seamless swap.
+
+## The upgrade
 
 ```bash
 # 1. Back up
@@ -97,42 +100,6 @@ record-store server restore-metadata /backups/pre-upgrade
 Restore requires an empty `metadata/` directory. Object payloads under `objects/` are
 untouched by any of this.
 
-## Cluster
-
-Upgrade one node at a time. Never restart two at once — a three-node cluster loses
-quorum when two are down.
-
-```mermaid
-flowchart LR
-    A[Verify cluster healthy] --> B[Drain node 1]
-    B --> C[Stop, upgrade, start node 1]
-    C --> D[Wait for it to rejoin and become healthy]
-    D --> E[Next node]
-```
-
-```bash
-# 1. Confirm the cluster is healthy before touching anything
-record-store cluster status --endpoint https://management.example.com
-
-# 2. Drain the node
-record-store node drain <node-id> --endpoint https://management.example.com
-
-# 3. Stop, upgrade, and start it
-
-# 4. Wait for it to rejoin
-record-store node inspect <node-id> --endpoint https://management.example.com
-
-# 5. Only then move to the next node
-```
-
-Between nodes, wait for `record-store cluster status` to report the cluster healthy
-again. Under-replication during the window is expected; it should resolve on its own.
-
-Upgrade the control node last, so the management API stays available while the storage
-nodes move.
-
-See [Node Lifecycle](../cluster/node-lifecycle.md).
-
 ## Console
 
 The console is a separate image, `ghcr.io/openelementslabs/record-store-console`,
@@ -144,7 +111,6 @@ and upgrade the console after the server.
 
 ```bash
 record-store status --endpoint http://127.0.0.1:7601
-record-store cluster status --endpoint http://127.0.0.1:7601   # cluster only
 
 # Round-trip a real object
 aws --endpoint-url https://storage.example.com s3 cp /tmp/smoke.txt s3://smoke-test/

@@ -5,7 +5,6 @@
 | **7600** | S3 API, and embed links at `/e/<token>` | Yes, behind TLS | `server.s3_bind` |
 | **7601** | Management API, `/metrics`, share delivery at `/s/<token>` | **No** | `server.api_bind` |
 | **7602** | Web console, and share links at `/s/<token>` | Yes, behind TLS | Console `PORT` |
-| **7603** | Internal cluster RPC | **No** | `server.rpc_bind` |
 
 ## What to expose
 
@@ -21,7 +20,6 @@ flowchart TB
         S["7600 S3 API"]
         C["7602 Console"]
         M["7601 Management"]
-        R["7603 Internal RPC"]
     end
     U --> P
     P --> S
@@ -30,12 +28,8 @@ flowchart TB
 ```
 
 **7601 is unrestricted administrative access.** A management token on that port can
-create credentials, change policies, and decommission nodes. It must not be reachable
+create credentials, change policies, and read every bucket. It must not be reachable
 from the internet.
-
-**7603 is cluster traffic.** Publish it only where cluster peers need it, and prefer
-[internal TLS](../security/internal-tls.md) when it crosses a network you do not
-control.
 
 ## 7600 — S3 API
 
@@ -90,37 +84,19 @@ Share links resolve on the console because a share is a page a person opens.
 **7602 is reserved.** Configuration validation refuses to let any Record Store listener
 bind it.
 
-## 7603 — Internal RPC
-
-Node-to-node traffic: replica transfers, consensus, and cluster operations. Unused in
-standalone mode.
-
-```bash
-RECORD_STORE_RPC_BIND=0.0.0.0:7603
-RECORD_STORE_RPC_ADVERTISE=node-1.internal:7603
-```
-
-`rpc_advertise` is the address **peers** use. A bind address of `0.0.0.0` is reachable
-from nowhere, so behind Docker, Kubernetes, or NAT it must be set explicitly. Getting
-it wrong is the most common cause of a node that starts and never joins.
-
 ## Validation
 
 Enforced at startup:
 
-- All three server listeners must be different from each other.
+- The server listeners must be different from each other.
 - None may use port 7602.
 - No port may be zero.
-- `rpc_advertise`, if set, must be non-empty and under 253 bytes.
 
 ## Firewall
 
 ```bash
 # Public
 ufw allow 443/tcp
-
-# Cluster peers only
-ufw allow from 10.0.1.0/24 to any port 7603
 
 # Never
 # ufw allow 7601/tcp

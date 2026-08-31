@@ -20,7 +20,6 @@ this list with no recovery path.
 ## Network
 
 - [ ] 7601 is not reachable from the internet
-- [ ] 7603 is not published at all, or is restricted to cluster peers only
 - [ ] 7600 and 7602 are behind TLS
 - [ ] The proxy preserves the `Host` header
 - [ ] The proxy's request body limit is raised or removed
@@ -52,14 +51,17 @@ it from a machine that is not the server.
 - [ ] Quotas set on buckets that could starve the rest of the deployment
 - [ ] Backups run on a schedule, covering both `metadata/` and `objects/`
 - [ ] **A restore has been performed into a scratch environment**
+- [ ] The data directory sits on redundant storage — RAID, a mirrored pool, or a
+      replicated volume — so one failed disk is not an outage
 
-An untested backup is a belief, not a backup.
+An untested backup is a belief, not a backup. There is one copy of your data on one
+machine, so the redundancy under the data directory is the redundancy you have — see
+[Durability](../concepts/durability.md).
 
 ## Monitoring
 
 - [ ] Prometheus scrapes `/metrics` with the scrape token
-- [ ] Alerts on disk space, error rate, and — in a cluster — quorum health and
-      under-replication
+- [ ] Alerts on disk space and error rate
 - [ ] Logs are collected and searchable
 - [ ] Container healthchecks are wired to your orchestrator's restart policy
 
@@ -76,18 +78,6 @@ If share and embed links are enabled, decide the deployment-wide ceilings:
 
 These bound what your most careless administrator can create. See
 [Sharing Security](../security/sharing-security.md).
-
-## Cluster
-
-- [ ] At least three storage nodes
-- [ ] Distinct `RECORD_STORE_CLUSTER_FAILURE_DOMAIN` per node, reflecting real
-      physical separation
-- [ ] `RECORD_STORE_RPC_ADVERTISE` set to an address peers can actually reach
-- [ ] Internal TLS configured, if cluster traffic crosses a network you do not control
-- [ ] `record-store cluster status` reports every node healthy
-- [ ] A node failure has been rehearsed
-
-See [Creating a Cluster](../cluster/creating-a-cluster.md).
 
 ## Operational readiness
 

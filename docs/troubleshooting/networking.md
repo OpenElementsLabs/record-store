@@ -148,23 +148,6 @@ ssh -L 7601:127.0.0.1:7601 admin@your-server
 openssl s_client -connect storage.example.com:443 -servername storage.example.com </dev/null
 ```
 
-## Cluster nodes cannot reach each other
-
-Almost always `RECORD_STORE_RPC_ADVERTISE`. A bind address of `0.0.0.0` is reachable
-from nowhere.
-
-```bash
-RECORD_STORE_RPC_ADVERTISE=node-1.internal:7603
-```
-
-Check connectivity from another node:
-
-```bash
-nc -zv node-1.internal 7603
-```
-
-See [Cluster Problems](cluster.md).
-
 ## A reverse proxy configuration that works
 
 ```nginx

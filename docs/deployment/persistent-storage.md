@@ -14,12 +14,10 @@ container image that is `/var/lib/record-store`.
 │   ├── audit.redb           the audit trail
 │   ├── events.redb          storage events and webhook state
 │   ├── lifecycle.redb       lifecycle scan cursors
-│   ├── sharing.redb         share and embed capabilities
-│   └── consensus/           Raft log and snapshots — cluster mode
+│   └── sharing.redb         share and embed capabilities
 ├── objects/                 object payloads
 ├── system/                  internal storage bookkeeping
-├── tmp/                     incomplete payloads
-└── node-identity.json       this node's identity — cluster mode
+└── tmp/                     incomplete payloads
 ```
 
 Two things follow from this layout:

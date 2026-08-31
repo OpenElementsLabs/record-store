@@ -3,7 +3,7 @@
 Record Store is one Rust workspace. Protocol crates call shared application services;
 they never reach into storage internals directly.
 
-## Standalone request path
+## Request path
 
 ```mermaid
 flowchart TB
@@ -19,24 +19,6 @@ flowchart TB
 Both protocol surfaces go through the same service layer, so an object written over S3
 and an object written through the console are the same object under the same rules.
 
-## Cluster request path
-
-In cluster mode the service layer is backed by replicated storage and a strongly
-consistent metadata repository. The protocol crates are unchanged.
-
-```mermaid
-flowchart TB
-    Client[S3 client] --> Node[Any storage node]
-    Node --> Svc[Object services]
-    Svc --> Repl[Distributed object store]
-    Repl -->|bounded gRPC streams :7603| Peers[Peer replica stores]
-    Svc --> RMeta[Replicated metadata]
-    RMeta --> Raft[(Raft metadata group)]
-```
-
-Object bytes never enter the Raft log. Consensus carries metadata and placement
-decisions; payloads travel over authenticated gRPC streams directly between nodes.
-
 ## Console path
 
 ```mermaid
@@ -49,7 +31,7 @@ flowchart LR
 The browser only ever talks to the console's own origin. The console server attaches
 the management credential server-side, so it lives in an HTTP-only cookie the page
 cannot read, no CORS configuration is required, and the browser never reaches the
-management API, storage, metadata, or the internal RPC port.
+management API, the stored objects, or the metadata catalog.
 
 ## Crates
 
@@ -66,13 +48,8 @@ management API, storage, metadata, or the internal RPC port.
 | `record-store-sharing` | Share and embed capabilities |
 | `record-store-events` | Durable events and signed webhook delivery |
 | `record-store-lifecycle` | Incremental expiration worker |
-| `record-store-cluster` | Membership, placement, health, movement model |
-| `record-store-consensus` | Persistent Raft metadata state machine |
-| `record-store-replication` | Distributed reads/writes, repair, rebalance |
-| `record-store-rpc` | Authenticated gRPC consensus and replica transport |
 | `record-store-config` | Configuration loading and validation |
 | `record-store-observability` | Structured tracing initialization |
-| `record-store-protocol` | Versioned Protobuf internal contracts |
 | `record-store-erasure` | Reed-Solomon library, **not currently wired in** |
 
 See [Repository Structure](../contributing/repository-structure.md) for the layout
@@ -82,12 +59,7 @@ including applications and the console.
 
 ```text
 <data-directory>/
-├── node-identity.json                     # cluster mode
-├── node-credential.json                   # cluster mode, 0600 on Unix
-├── metadata/catalog.redb                  # standalone mode
-├── metadata/consensus/consensus-log.redb  # cluster mode
-├── metadata/consensus/consensus-state.redb
-├── metadata/consensus/snapshots/
+├── metadata/catalog.redb
 ├── metadata/credentials.redb
 ├── metadata/audit.redb
 ├── metadata/events.redb

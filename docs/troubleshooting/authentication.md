@@ -126,7 +126,6 @@ auditor token on a system-only route.
 | `/api/v1/policies` | system |
 | `/api/v1/webhooks` (write) | system |
 | `/api/v1/audit` | system or auditor |
-| Cluster mutations | system |
 | `/api/v1/shares/{id}/url` | system or storage — **never** auditor |
 
 See [Authorization](../security/authorization.md).

@@ -14,8 +14,8 @@ object bytes already live. That is what lets a deployment expose storage to the
 internet while the management plane and the console stay closed.
 
 Set `sharing.embed_base_url` when storage is published under its own hostname. If it
-is unset, Record Store falls back to the cluster S3 endpoint and then to the S3
-listener address — correct for a local install, wrong behind any proxy.
+is unset, Record Store falls back to the S3 listener address — correct for a local
+install, wrong behind any proxy.
 
 ## Using one
 

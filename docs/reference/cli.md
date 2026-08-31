@@ -63,7 +63,7 @@ server runs on defaults plus environment variables.
 ### `server check-config`
 
 ```bash
-record-store server check-config --config /etc/record-store/config.toml
+record-store server --config /etc/record-store/config.toml check-config
 ```
 
 Loads the file, applies the environment, validates, and exits. Binds nothing and writes
@@ -101,7 +101,7 @@ healthcheck with no credential at all.
 
 ```bash
 record-store bucket list --endpoint <endpoint>
-record-store bucket create <name> [--storage-class <class>] --endpoint <endpoint>
+record-store bucket create <name> --endpoint <endpoint>
 record-store bucket delete <name> --endpoint <endpoint>
 
 record-store bucket versioning get <name> --endpoint <endpoint>
@@ -198,139 +198,6 @@ record-store storage repair --apply --endpoint <endpoint>
 
 `repair` is **dry-run unless `--apply` is given**. It removes orphaned payloads and
 never removes files it does not recognise.
-
-## `cluster`
-
-```bash
-record-store cluster init --endpoint <endpoint>
-record-store cluster status --endpoint <endpoint>
-record-store cluster issue-join-token \
-  --lifetime-seconds 3600 \
-  --description "node-4" \
-  --endpoint <endpoint>
-```
-
-`init` is idempotent: a cluster-mode server forms its initial consensus group before
-accepting HTTP traffic, so this reports the cluster rather than creating a second one.
-
-Join tokens are single-use, 60–86400 seconds.
-
-## `node`
-
-```bash
-record-store node join --control <host:7603> --token <token> --config <file>
-record-store node list --endpoint <endpoint>
-record-store node inspect <id> --endpoint <endpoint>
-record-store node drain <id> --endpoint <endpoint>
-record-store node maintenance <id> --endpoint <endpoint>
-record-store node resume <id> --endpoint <endpoint>
-record-store node decommission <id> --force --endpoint <endpoint>
-```
-
-`join` takes an existing member's **RPC** address, not its management endpoint.
-`--config` may come from `RECORD_STORE_CONFIG_FILE`.
-
-`decommission` runs a durability safety check. `--force` bypasses the objection but
-still moves the data. See [Node Lifecycle](../cluster/node-lifecycle.md).
-
-## `placement`
-
-```bash
-record-store placement explain <bucket> <key> --endpoint <endpoint>
-
-record-store placement simulate add-node --device-bytes <n> [--device-bytes <n>]...
-    [--failure-domain <labels>] [--storage-class <class>] --endpoint <endpoint>
-record-store placement simulate add-device <node> --usable-bytes <n>
-    [--storage-class <class>] --endpoint <endpoint>
-record-store placement simulate remove-device <node> <device> --endpoint <endpoint>
-```
-
-`simulate` changes nothing. It runs the real placement engine against a
-hypothetical cluster map over a sample of committed placements, and reports what
-would move.
-
-The movement figure is **measured over that sample**, not extrapolated to a
-duration: how long a migration takes depends on bandwidth Record Store has not
-been told about. `placements_sampled` against `placements_total` says how much
-of the cluster the answer is based on.
-
-Runs the placement engine against committed state and changes nothing. Reports
-the storage class and policy, the placement epoch, the failure domain in force,
-every eligible device with its capacity weight and rendezvous score, the devices
-that were selected, and every device that was **not** eligible with the rule that
-ruled it out.
-
-An object that does not exist yet is explained as the write that would create
-it.
-
-## `storage-class`
-
-```bash
-record-store storage-class list --endpoint <endpoint>
-record-store storage-class show <class> --endpoint <endpoint>
-record-store storage-class set <class> [--replicas N] [--failure-domain <scope>]
-    [--strict] [--device-kind <kind>]... [--minimum-free-percent N]
-    [--description <text>] --endpoint <endpoint>
-record-store storage-class delete <class> --yes --endpoint <endpoint>
-```
-
-`--device-kind` is repeatable. Omitting it accepts any device kind.
-
-`delete` is refused while devices still carry the class. See
-[Storage Classes](../administration/storage-classes.md).
-
-## `drive`
-
-```bash
-record-store drive list --endpoint <endpoint>
-record-store drive discover --endpoint <endpoint>
-record-store drive show <node> <device> --endpoint <endpoint>
-record-store drive activate <node> <device> --endpoint <endpoint>
-record-store drive drain <node> <device> --endpoint <endpoint>
-record-store drive maintenance <node> <device> --endpoint <endpoint>
-record-store drive resume <node> <device> --endpoint <endpoint>
-record-store drive release <node> <device> --endpoint <endpoint>
-record-store drive retire <node> <device> --yes --endpoint <endpoint>
-```
-
-`<device>` is the stable device identifier from `drive list`, not a path.
-
-`discover` is read-only: it lists storage the node could use and registers
-nothing. Devices are declared in configuration — see
-[Storage Devices](../cluster/storage-devices.md).
-
-`release` marks a device safe to remove and **fails** while it still holds
-replicas, so success means evacuation finished rather than that it was
-requested.
-
-`retire` is permanent and prompts for confirmation. It refuses to run on a
-non-interactive terminal unless `--yes` is passed. See
-[Replacing a Drive](../cluster/replacing-a-drive.md).
-
-## `repair`
-
-```bash
-record-store repair status --endpoint <endpoint>
-```
-
-## `rebalance`
-
-```bash
-record-store rebalance status --endpoint <endpoint>
-record-store rebalance start --endpoint <endpoint>
-record-store rebalance pause --endpoint <endpoint>
-record-store rebalance resume --endpoint <endpoint>
-record-store rebalance throttle <bytes-per-second> --endpoint <endpoint>
-```
-
-`pause` holds every active rebalance without discarding its progress. It stops
-both the planning of new movement **and** the transfers already queued, so a
-paused rebalance moves nothing. A paused operation is still outstanding: resume
-or cancel it.
-
-`throttle` sets the byte-per-second ceiling for one transfer, and `0` disables
-throttling. It is cluster configuration rather than a property of the running
-operation, so it survives the current rebalance finishing.
 
 ## Scripting
 

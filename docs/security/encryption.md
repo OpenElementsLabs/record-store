@@ -5,9 +5,6 @@
 Record Store serves plain HTTP. TLS is terminated by a reverse proxy in front of it —
 see [Reverse Proxy and TLS](../deployment/reverse-proxy.md).
 
-Internal cluster traffic has its own TLS configuration — see
-[Internal TLS](internal-tls.md).
-
 ## At rest
 
 Object payloads can be encrypted on disk. It is off by default.
@@ -114,9 +111,6 @@ openssl rand -base64 48
 
 Storing the key alongside the data it protects defeats the purpose: one stolen backup
 would then be a complete compromise. Keep it in a secret manager.
-
-In a cluster, every node needs the byte-identical key. Nodes with different master keys
-cannot read each other's sealed state.
 
 ## What encryption at rest protects against
 

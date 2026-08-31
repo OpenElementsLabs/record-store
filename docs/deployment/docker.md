@@ -32,7 +32,7 @@ second image.
 | Base | `debian:bookworm-slim` |
 | User | non-root, uid/gid `10001` |
 | Data volume | `/var/lib/record-store` |
-| Exposed | `7600`, `7601`, `7603` |
+| Ports served | `7600`, `7601` |
 | Entrypoint | `record-store server` |
 | Stop signal | `SIGTERM` |
 | Healthcheck | `record-store status --endpoint http://127.0.0.1:7601` |
@@ -66,8 +66,6 @@ docker run -d \
 
 Note the asymmetry in the port publishing: `7600` is bound on all interfaces, `7601`
 only on loopback. That is deliberate — see [Ports](../reference/ports.md).
-
-Do not publish `7603` at all outside a cluster.
 
 ## Secrets
 
