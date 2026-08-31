@@ -333,6 +333,55 @@ mod tests {
         );
     }
 
+    /// Declared devices must survive the configuration file.
+    ///
+    /// The file is parsed through a separate partial type, so a field added to
+    /// the resolved config is not automatically readable from TOML. When that
+    /// was missed, `[[storage.devices]]` was rejected as an unknown key and the
+    /// whole multi-device feature was unreachable through the only mechanism
+    /// that can express it.
+    #[test]
+    fn declared_devices_survive_a_configuration_file() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let file = directory.path().join("record-store.toml");
+        std::fs::write(
+            &file,
+            r#"
+[storage]
+data_directory = "/var/lib/record-store"
+
+[[storage.devices]]
+name = "nvme0"
+path = "/mnt/nvme0"
+storage_class = "hot"
+weight = 2000
+movement_concurrency = 6
+
+[[storage.devices]]
+name = "hdd0"
+path = "/mnt/hdd0"
+"#,
+        )
+        .expect("write the configuration");
+
+        let config = Config::load_with_environment(Some(&file), credentials())
+            .expect("a file declaring devices must load");
+
+        assert_eq!(config.storage.devices.len(), 2);
+        let nvme = &config.storage.devices[0];
+        assert_eq!(nvme.name, "nvme0");
+        assert_eq!(nvme.path, PathBuf::from("/mnt/nvme0"));
+        assert_eq!(nvme.storage_class.as_deref(), Some("hot"));
+        assert_eq!(nvme.weight, Some(2_000));
+        assert_eq!(nvme.movement_concurrency, Some(6));
+
+        // Optional fields stay absent rather than being invented.
+        let hdd = &config.storage.devices[1];
+        assert_eq!(hdd.storage_class, None);
+        assert_eq!(hdd.weight, None);
+        assert_eq!(hdd.movement_concurrency, None);
+    }
+
     /// A node with no declared devices behaves exactly as it did before they
     /// existed, which is what keeps standalone and existing clusters unchanged.
     #[test]

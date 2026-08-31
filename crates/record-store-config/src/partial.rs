@@ -175,6 +175,12 @@ pub(crate) struct PartialStorageConfig {
     data_directory: Option<PathBuf>,
     temporary_directory: Option<PathBuf>,
     encryption_enabled: Option<bool>,
+    /// Additional drives this node serves.
+    ///
+    /// A list has no environment-variable form, so a file is the only way to
+    /// declare one. Without this field the whole section is rejected as an
+    /// unknown key, which is how it should fail if it is ever removed.
+    devices: Option<Vec<StorageDeviceConfig>>,
 }
 
 impl PartialStorageConfig {
@@ -187,6 +193,9 @@ impl PartialStorageConfig {
         }
         if let Some(value) = self.encryption_enabled {
             target.encryption_enabled = value;
+        }
+        if let Some(value) = self.devices {
+            target.devices = value;
         }
     }
 }
