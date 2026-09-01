@@ -13,9 +13,9 @@ The repository ships two Compose files for exactly this:
 
 Prefer the first. Nothing is compiled on the server, deployments take seconds
 rather than minutes, and the artifact you run is the one that was released and
-tested. Coolify needs GHCR registry credentials for it, because the packages are
-private until a maintainer makes them public. Set `RECORD_STORE_VERSION` to the
-release you intend to run.
+tested. Both packages are public, so Coolify pulls them with no registry
+credentials configured. Set `RECORD_STORE_VERSION` to the release you intend to
+run.
 
 Both differ from the `compose.*` development files in three ways: they use
 `expose` rather than `ports`, they declare Coolify magic environment variables so

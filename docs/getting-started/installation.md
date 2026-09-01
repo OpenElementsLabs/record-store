@@ -7,7 +7,7 @@ Registry, and as source you can build yourself.
 
 | Method | Requirements |
 | --- | --- |
-| Published images | Docker, and a GitHub token with `read:packages` |
+| Published images | Docker |
 | Docker Compose | Docker with the Compose plugin |
 | From source | Rust 1.97.1 (pinned by `rust-toolchain.toml`), a C toolchain |
 | Web console | Node.js 24, in addition to one of the above |
@@ -19,8 +19,6 @@ A system `protoc` is **not** required. The build vendors what it needs.
 The shortest path, and the one to use in production. Nothing is compiled.
 
 ```bash
-echo "$GITHUB_TOKEN" | docker login ghcr.io -u <your-github-username> --password-stdin
-
 docker pull ghcr.io/openelementslabs/record-store:0.1.1
 docker pull ghcr.io/openelementslabs/record-store-console:0.1.1
 ```
@@ -48,9 +46,9 @@ cd record-store
 docker compose --env-file .env -f deploy/docker/compose.ghcr.yml up -d
 ```
 
-The login requirement is not incidental: the repository is private, so its
-packages are too. See [Container Images](../deployment/container-images.md) for
-tags, digest pinning, and package visibility, and
+Both packages are public, so no `docker login` is needed. See
+[Container Images](../deployment/container-images.md) for tags and digest
+pinning, and
 [Verifying a Release](../deployment/verifying-releases.md) for checking where an
 image came from.
 

@@ -82,11 +82,11 @@ git tag -s vX.Y.Z -m "Record Store vX.Y.Z"
 `-s` signs the tag with GPG; `git tag -s` with `gpg.format=ssh` signs with an SSH
 key.
 
-**Sign the tag.** Images are published unsigned (see below), so the tag signature
-is the only cryptographic statement about who produced a release. It is not
-enforced by the workflow, because a release that fails at the last step for want
-of a key on the right machine helps nobody — but an unsigned release tag leaves
-consumers with nothing to check.
+**Sign the tag.** Image provenance is attested automatically (see below), but the
+tag signature is the only statement about who *cut* the release rather than what
+built it. It is not enforced by the workflow, because a release that fails at the
+last step for want of a key on the right machine helps nobody — but an unsigned
+release tag leaves consumers one check short.
 
 ### 5. Push
 
@@ -119,30 +119,38 @@ tag that has already been published. Anyone who pinned a digest is unaffected by
 repointed tag, but everyone else silently gets different software under a name
 they already trusted.
 
-## Images are published unsigned
+## Images are published with signed provenance
 
-The workflow does not attest image provenance. `actions/attest-build-provenance`
-requires GitHub's artifact attestation service, which is unavailable to a private
-repository outside an Enterprise plan — it fails the job outright with
-`Feature not available for the … organization`.
+The repository is public, which makes GitHub's artifact attestation service
+available to it. While it was private, `actions/attest-build-provenance` failed
+the job outright with `Feature not available for the … organization`; that is no
+longer the case, and the workflow attests every image it publishes.
 
-The alternatives were weighed and rejected for now:
+| Step | Subject | Job |
+| --- | --- | --- |
+| `actions/attest-build-provenance` | The merged multi-platform index digest | `merge` |
+| `actions/attest-sbom` | Each platform manifest digest, bound to its SBOM | `sbom` |
 
-| Option | Why not |
-| --- | --- |
-| BuildKit `provenance: mode=max` | Unsigned metadata. Anyone who can push to the registry can write the same blob, so it proves nothing while looking like it does. |
-| `cosign` keyless via OIDC | Works on a private repository and would give real signatures, but publishes the repository name, workflow path, and commit SHA to Sigstore's public Rekor transparency log. |
+Both need `id-token: write` and `attestations: write`. Those are declared twice
+on purpose: once on the jobs inside `container-image.yml`, and once on the
+`server-image` and `console-image` jobs in `release.yml` that call it. A called
+workflow cannot hold more permission than its caller grants, so dropping either
+copy breaks attestation with a missing OIDC token rather than a clear error.
 
-Two changes would each enable signed provenance with no change to the pipeline's
-shape: **making the repository public**, or **moving the organisation to a plan
-that includes attestations**. If either happens, restore the
-`actions/attest-build-provenance` step on the merged index digest and
-`actions/attest-sbom` on each platform digest, add back `id-token: write` and
-`attestations: write`, and update
-[Verifying a Release](../deployment/verifying-releases.md).
+The provenance attestation is pushed to the registry as an OCI referrer. The SBOM
+attestations are not, because that needs `packages: write` in a job that
+otherwise only reads; they are still recorded against the repository, which is
+what `gh attestation verify` reads.
 
-Until then, do not describe a Record Store image as signed, verified, or
-attested, and do not add a badge saying so.
+BuildKit's `provenance: mode=max` remains unused: it is unsigned metadata that
+anyone who can push to the registry could forge, so it proves nothing while
+looking like it does.
+
+!!! warning "Releases published before this was enabled stay unsigned"
+    Attestation covers artifacts built after it was turned on. Images released
+    earlier, `0.1.1` included, have no attestation and never will — there is
+    nothing to backfill, because the attestation is produced by the build. Do not
+    describe those as signed or verified.
 
 ## One-time GitHub configuration
 
@@ -152,7 +160,7 @@ GitHub UI by someone with admin rights.
 | Setting | Where | Why |
 | --- | --- | --- |
 | **Immutable releases** | Repository → Settings → General → Releases | Prevents a published release's assets and tag from being changed after the fact. The workflow treats versions as immutable, but only this setting enforces it. |
-| **Package visibility** | Each package → Package settings → Change visibility | Packages inherit private visibility from a private repository. Anonymous `docker pull` requires setting each package to public, explicitly. |
+| **Package visibility** | Each package → Package settings → Change visibility | Done for both packages. Visibility is per package and does not follow the repository, so a new package starts private and needs setting explicitly before anonymous `docker pull` works. |
 | **Package repository link** | Each package → Package settings | Usually automatic: the images carry `org.opencontainers.image.source`, which GitHub uses to attach the package to this repository. Link it by hand if it does not appear. |
 | **Actions permissions** | Repository → Settings → Actions → Workflow permissions | The release workflow needs `GITHUB_TOKEN` to be allowed to write packages. Organisation policy can override the workflow's own `permissions` block. |
 

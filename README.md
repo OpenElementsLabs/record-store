@@ -25,15 +25,16 @@ docker pull ghcr.io/openelementslabs/record-store:0.1.1
 docker pull ghcr.io/openelementslabs/record-store-console:0.1.1
 ```
 
-The packages are private while the repository is, so `docker login ghcr.io` with a
-token carrying `read:packages` first. To run both from the published images:
+Both packages are public, so no `docker login` is needed. To run both from the
+published images:
 
 ```bash
 docker compose --env-file .env -f deploy/docker/compose.ghcr.yml up -d
 ```
 
 Each release carries SPDX SBOMs and a `SHA256SUMS` file covering every asset.
-Images are published unsigned — see
+Images built since attestation was enabled also carry signed provenance,
+verifiable with `gh attestation verify`; `0.1.1` and earlier do not — see
 [Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/)
 for what can be checked and what that limitation means.
 

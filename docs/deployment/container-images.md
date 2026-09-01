@@ -100,18 +100,12 @@ the shape Coolify expects — see [Coolify](coolify.md).
 
 ## Authentication
 
-The Record Store repository is private, so its packages are too. Log in before
-pulling, with a GitHub token that has `read:packages`:
+None. Both packages are public, so `docker pull` works anonymously — no
+`docker login`, no token, nothing to configure in an orchestrator.
 
-```bash
-echo "$GITHUB_TOKEN" | docker login ghcr.io -u <your-github-username> --password-stdin
-```
-
-!!! note "Anonymous pulls"
-    Anonymous `docker pull` works only once a package's visibility has been set
-    to public in its GitHub package settings, which is a deliberate one-time
-    choice by the maintainers and independent of the repository's visibility.
-    Until then, every pull needs a token.
+A package's visibility is set per package in its GitHub package settings and is
+independent of the repository's. Making the repository public does not carry the
+packages with it; each was made public explicitly.
 
 ## What the release publishes
 
@@ -122,9 +116,11 @@ Alongside the images, each release carries:
   extracted from the published images so an archive and a container never hold
   different builds, and a `SHA256SUMS` file covering every asset.
 
-Images are published **unsigned**: there is no provenance attestation to verify.
-See [Verifying a Release](verifying-releases.md) for what can be checked, and
-what that limitation means.
+- **Signed build provenance** on the published index, and a signed SBOM
+  attestation per architecture, verifiable with `gh attestation verify`.
+
+Provenance exists only for releases built after attestation was enabled; `0.1.1`
+and earlier have none. See [Verifying a Release](verifying-releases.md).
 
 macOS binaries are not published. Build from source with `cargo build --release`
 — see [Installation](../getting-started/installation.md).

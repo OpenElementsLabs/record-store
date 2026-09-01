@@ -134,9 +134,14 @@ jobs:
   server-image:
     name: Server image
     needs: [validate, rust, console]
+    # A called workflow cannot hold more than its caller grants, so the two
+    # attestation permissions have to be repeated here or the attest steps
+    # inside container-image.yml fail with a missing OIDC token.
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/container-image.yml
     with:
       image: ${{ needs.validate.outputs.server-image }}
@@ -153,9 +158,14 @@ jobs:
   console-image:
     name: Console image
     needs: [validate, rust, console]
+    # A called workflow cannot hold more than its caller grants, so the two
+    # attestation permissions have to be repeated here or the attest steps
+    # inside container-image.yml fail with a missing OIDC token.
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/container-image.yml
     with:
       image: ${{ needs.validate.outputs.console-image }}
