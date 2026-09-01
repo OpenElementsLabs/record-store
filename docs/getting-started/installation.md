@@ -98,7 +98,7 @@ docker run --read-only \
 ```
 
 The image runs as a non-root user, supports a read-only root filesystem, and stores
-data in the `/var/lib/record-store` volume. See [Docker](../deployment/docker.md).
+data in the `/var/lib/record-store` volume. See [Running with Docker](../deployment/docker.md).
 
 ## From source
 

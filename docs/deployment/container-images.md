@@ -8,8 +8,8 @@ Record Store publishes two production images to the GitHub Container Registry.
 | `ghcr.io/openelementslabs/record-store-console` | The web console |
 
 They are separate on purpose: a headless deployment carries no frontend, and the
-console upgrades on its own schedule. See [Docker](docker.md) for what each image
-does at runtime.
+console upgrades on its own schedule. See [Running with Docker](docker.md) for
+what each image does at runtime and how to start one.
 
 ```bash
 docker pull ghcr.io/openelementslabs/record-store:0.1.1

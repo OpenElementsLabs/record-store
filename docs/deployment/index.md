@@ -5,7 +5,7 @@ Running Record Store somewhere real.
 <div class="grid cards" markdown>
 
 -   **[Container Images](container-images.md)** — the published images, tags, and digest pinning
--   **[Docker](docker.md)** — the image, its defaults, and running a container
+-   **[Running with Docker](docker.md)** — starting a container by hand, its defaults, and hardening
 -   **[Docker Compose](docker-compose.md)** — the server on its own, and with the console
 -   **[Coolify](coolify.md)** — end-to-end on a Coolify server
 -   **[Reverse Proxy and TLS](reverse-proxy.md)** — what to expose and what to keep private

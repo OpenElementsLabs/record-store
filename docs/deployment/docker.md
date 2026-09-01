@@ -1,20 +1,21 @@
-# Docker
+# Running with Docker
 
-Record Store publishes a production image to the GitHub Container Registry, built
-from the multi-stage Dockerfile at `deploy/docker/Dockerfile`.
+Starting Record Store as a container by hand: what the image expects, how to run it,
+and how to keep it healthy. [Container Images](container-images.md) covers the other
+half — *which* image to pull, its tags, and how to pin one; this chapter is about
+what happens once you have it.
 
-## Getting the image
+Everything here uses `docker run` directly. For anything longer-lived than a look
+around, use [Docker Compose](docker-compose.md) instead.
+
+## The image
 
 ```bash
 docker pull ghcr.io/openelementslabs/record-store:0.1.1
 ```
 
-See [Container Images](container-images.md) for the available tags, the
-`linux/amd64` and `linux/arm64` manifests, and how to pin a digest.
-
-## Building it yourself
-
-Only needed for development, or for a change you have not released:
+It is built from the multi-stage Dockerfile at `deploy/docker/Dockerfile`. Building
+it yourself is only needed for development, or for a change you have not released:
 
 ```bash
 docker build -t record-store:local -f deploy/docker/Dockerfile .
