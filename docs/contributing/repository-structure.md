@@ -104,9 +104,14 @@ carries no frontend.
 | `Dockerfile.console` | The console image |
 | `compose.yml` | The server alone, development |
 | `compose.console.yml` | The server plus console, development |
-| `docker-compose.yaml` | Coolify — `expose` plus Coolify magic variables |
+| `compose.ghcr.yml` | The server plus console from the published images, on a host you control |
+| `docker-compose.ghcr.yaml` | Coolify, from the published images |
+| `docker-compose.yaml` | Coolify, built from source |
 
-The last is the one Coolify uses. See [Coolify](../deployment/coolify.md).
+The two `docker-compose.*` files are the Coolify ones: they use `expose` rather
+than `ports` and declare Coolify magic variables for the domains and secrets. The
+`compose.*` files are for a plain `docker compose up` and are not deployable on
+Coolify. See [Coolify](../deployment/coolify.md).
 
 ## Workspace settings
 

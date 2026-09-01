@@ -4,26 +4,31 @@ An end-to-end deployment of Record Store and the web console on a
 [Coolify](https://coolify.io) server, with TLS on both public endpoints and the
 management API kept private.
 
-The repository ships `deploy/docker/docker-compose.yaml` for exactly this. It differs
-from the development Compose files in three ways: it uses `expose` rather than
-`ports`, it declares Coolify magic environment variables so Coolify generates and
-retains the secrets, and it publishes only the two endpoints that should be public.
+The repository ships two Compose files for exactly this:
 
-It builds from source. If you would rather have Coolify pull the
-[published images](container-images.md) — faster deployments, and the same
-artifact everywhere — replace each service's `build:` block with the pinned
-image, keeping the rest of the file as it is:
+| File | Images | Use it when |
+| --- | --- | --- |
+| `deploy/docker/docker-compose.ghcr.yaml` | [Published](container-images.md), pinned | Normal deployments |
+| `deploy/docker/docker-compose.yaml` | Built from source on the server | Deploying an unreleased change from a fork |
 
-```yaml
-services:
-  record-store:
-    image: ghcr.io/openelementslabs/record-store:0.1.1
-  console:
-    image: ghcr.io/openelementslabs/record-store-console:0.1.1
-```
+Prefer the first. Nothing is compiled on the server, deployments take seconds
+rather than minutes, and the artifact you run is the one that was released and
+tested. Coolify needs GHCR registry credentials for it, because the packages are
+private until a maintainer makes them public. Set `RECORD_STORE_VERSION` to the
+release you intend to run.
 
-Coolify needs registry credentials for that, because the packages are private
-until a maintainer makes them public.
+Both differ from the `compose.*` development files in three ways: they use
+`expose` rather than `ports`, they declare Coolify magic environment variables so
+Coolify generates and retains the secrets, and they publish only the two
+endpoints that should be public.
+
+!!! warning "`compose.ghcr.yml` is not the Coolify file"
+    Despite the name, `deploy/docker/compose.ghcr.yml` cannot be deployed here. It
+    publishes host ports straight past Coolify's proxy, declares no
+    `SERVICE_FQDN_*` variables — so Coolify has no domain to detect or show — and
+    its `:?` required variables fail the deploy before Coolify can generate any
+    secret. It is for a plain `docker compose up` on a host you control. The file
+    with the `docker-compose.` prefix is the Coolify one.
 
 ## What you need
 
@@ -39,11 +44,12 @@ In Coolify: **Project → New Resource → Docker Compose**, pointing at this re
 Set the Compose file path to:
 
 ```text
-deploy/docker/docker-compose.yaml
+deploy/docker/docker-compose.ghcr.yaml
 ```
 
-The build context is the repository root, so both images build from source in one
-pass.
+Coolify pulls both images; nothing is built. If you chose the build-from-source
+file instead, use `deploy/docker/docker-compose.yaml` — its build context is the
+repository root, so both images build in one pass.
 
 ## 2. Understand the generated secrets
 
@@ -96,10 +102,20 @@ They are different hosts on purpose: a share link is a page a person opens on th
 console, and an embed serves object bytes from the storage endpoint. Skipping these
 produces links that work on the server and nowhere else.
 
+Neither variable is declared in the Compose files, because the domains are not
+known until Coolify has assigned them. Set them once you know the two hostnames —
+before the first deploy if you set the domains yourself in step 3, otherwise
+afterwards, and redeploy.
+
+Set them to a real URL or leave them out entirely. An empty value is not the same
+as an unset one: the server treats `""` as a deliberate setting and builds links
+from it.
+
 ## 5. Deploy
 
-Press **Deploy**. Coolify builds both images and starts the two services. The console
-waits for the server's healthcheck.
+Press **Deploy**. Coolify pulls both images and starts the two services — or builds
+them first, if you chose the build-from-source file. The console waits for the
+server's healthcheck.
 
 The healthcheck allows a 45-second start period, which covers first-run initialization
 of the data directory.
@@ -181,12 +197,14 @@ proxy-generated `413`, raise the limit for the storage domain or have clients us
 
 ## Updating
 
-Push to the tracked branch and redeploy. Coolify rebuilds the images and recreates the
-containers; the data volume is untouched. Read [Upgrading](upgrading.md) first.
+Read [Upgrading](upgrading.md) first. The data volume is untouched either way.
 
-If you switched to the published images, updating means changing the version tag
-and redeploying — nothing is rebuilt, and the version you get is the version you
+With the published images, change `RECORD_STORE_VERSION` to the release you want
+and redeploy. Nothing is rebuilt, and the version you get is the version you
 named.
+
+With the build-from-source file, push to the tracked branch and redeploy. Coolify
+rebuilds the images and recreates the containers.
 
 ## Troubleshooting
 

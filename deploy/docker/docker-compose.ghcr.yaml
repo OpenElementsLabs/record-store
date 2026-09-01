@@ -1,0 +1,123 @@
+# Record Store and the web console on Coolify, from the published GitHub
+# Container Registry images.
+#
+# This is the Coolify shape of `compose.ghcr.yml`: `expose` rather than `ports`,
+# Coolify magic variables for the domains and the generated secrets, and no
+# build step. `compose.ghcr.yml` itself cannot be deployed on Coolify — it
+# publishes host ports straight past the proxy, declares no SERVICE_FQDN_*
+# variables so Coolify has no domain to detect, and its `:?` required variables
+# fail before Coolify has generated anything.
+#
+# It is the sibling of `docker-compose.yaml`, which is the same shape but builds
+# from source. Prefer this file: no Rust toolchain runs on the server, and the
+# artifact is the one that was released and tested.
+#
+# The packages are private until a maintainer makes them public, so give the
+# Coolify server GHCR registry credentials first.
+#
+# Set RECORD_STORE_VERSION to the release you intend to run. The default is
+# pinned rather than floating: `latest` moves under a running deployment.
+#
+# See docs/deployment/coolify.md.
+services:
+  record-store:
+    image: ghcr.io/openelementslabs/record-store:${RECORD_STORE_VERSION:-0.1.1}
+
+    read_only: true
+
+    tmpfs:
+      - /tmp
+      - /run
+
+    security_opt:
+      - no-new-privileges:true
+
+    restart: unless-stopped
+
+    # Internal container ports.
+    # 7600 gets an HTTPS domain through Coolify below.
+    # 7601 has no domain and remains private.
+    expose:
+      - "7600"
+      - "7601"
+
+    environment:
+      # Public S3 endpoint through Coolify/Traefik.
+      SERVICE_FQDN_RECORDSTORE_7600: /
+
+      # Generated once and retained by Coolify.
+      RECORD_STORE_ROOT_ACCESS_KEY: "${SERVICE_USER_ROOTACCESS}"
+      RECORD_STORE_ROOT_SECRET_KEY: "${SERVICE_PASSWORD_64_ROOTSECRET}"
+
+      # 64 base64 characters, which satisfies the 32-1024 visible-ASCII
+      # requirement. Copy it out of Coolify after the first deploy: it cannot be
+      # rotated, and recreating the resource generates a new one.
+      RECORD_STORE_CREDENTIAL_MASTER_KEY: "${SERVICE_BASE64_64_CREDENTIALMASTER}"
+
+      RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN: "${SERVICE_PASSWORD_64_SYSTEMTOKEN}"
+      RECORD_STORE_MANAGEMENT_STORAGE_TOKEN: "${SERVICE_PASSWORD_64_STORAGETOKEN}"
+      RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN: "${SERVICE_PASSWORD_64_AUDITORTOKEN}"
+      RECORD_STORE_METRICS_SCRAPE_TOKEN: "${SERVICE_PASSWORD_64_SCRAPETOKEN}"
+
+      RECORD_STORE_STORAGE_ENCRYPTION_ENABLED: "${RECORD_STORE_STORAGE_ENCRYPTION_ENABLED:-true}"
+      RECORD_STORE_ROOT_S3_ENABLED: "${RECORD_STORE_ROOT_S3_ENABLED:-true}"
+      RECORD_STORE_LOG_JSON: "${RECORD_STORE_LOG_JSON:-true}"
+
+      # RECORD_STORE_SHARING_SHARE_BASE_URL and
+      # RECORD_STORE_SHARING_EMBED_BASE_URL are deliberately not declared here.
+      # Share and embed links are absolute and the server cannot infer the
+      # public hostname from behind a proxy, so both must be set to the domains
+      # Coolify assigns — but those are not known until the first deploy, and a
+      # `:?` default would block that deploy. Add them in Coolify's environment
+      # editor afterwards and redeploy; see step 4 of docs/deployment/coolify.md.
+      # An empty value is not the same as an unset one: the server treats "" as
+      # a real setting, so leave them out rather than defaulting them to empty.
+
+    volumes:
+      - record-store-data:/var/lib/record-store
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "record-store",
+          "status",
+          "--endpoint",
+          "http://127.0.0.1:7601"
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+
+  console:
+    image: ghcr.io/openelementslabs/record-store-console:${RECORD_STORE_VERSION:-0.1.1}
+
+    read_only: true
+
+    tmpfs:
+      - /tmp
+      - /run
+
+    security_opt:
+      - no-new-privileges:true
+
+    restart: unless-stopped
+
+    depends_on:
+      record-store:
+        condition: service_healthy
+
+    expose:
+      - "7602"
+
+    environment:
+      SERVICE_FQDN_CONSOLE_7602: /
+
+      # Reached over the internal Docker network. The browser never calls 7601.
+      RECORD_STORE_API_URL: "http://record-store:7601"
+
+      RECORD_STORE_CONSOLE_SECURE_COOKIES: "${RECORD_STORE_CONSOLE_SECURE_COOKIES:-true}"
+
+volumes:
+  record-store-data:
