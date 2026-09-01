@@ -93,8 +93,10 @@ RECORD_STORE_VERSION=0.1.1 \
 The other Compose files under `deploy/docker/` build from source, which is what
 you want while developing. See [Docker Compose](docker-compose.md).
 
-For Coolify, point the resource at the published images the same way rather than
-having it build the repository — see [Coolify](coolify.md).
+Coolify needs a different file: `compose.ghcr.yml` publishes host ports and
+declares no Coolify magic variables, so Coolify finds no domain to assign. Use
+`deploy/docker/docker-compose.ghcr.yaml`, which runs the same published images in
+the shape Coolify expects — see [Coolify](coolify.md).
 
 ## Authentication
 
