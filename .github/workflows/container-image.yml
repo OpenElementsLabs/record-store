@@ -7,12 +7,12 @@
 # by digest and a merge job assembles the multi-platform index, which is the
 # artifact everything downstream scans and pulls.
 #
-# Images are published unsigned. GitHub's artifact attestation API is not
-# available to a private repository outside an Enterprise plan, and an unsigned
-# `provenance: mode=max` blob proves nothing that a registry writer could not
-# forge, so nothing here claims provenance it cannot back up. The signed release
-# tag and the SBOMs are what a consumer gets; see
-# docs/deployment/verifying-releases.md.
+# Images carry signed provenance. The merge job attests the multi-platform index
+# it publishes, and the SBOM job attests each platform's SBOM against the
+# manifest it describes, both through GitHub's artifact attestation service —
+# available here since the repository became public. BuildKit's
+# `provenance: mode=max` is still not used: it is unsigned metadata any registry
+# writer could forge. See docs/deployment/verifying-releases.md.
 #
 # Reused by release.yml for both the server and the console so the publishing
 # rules exist in one place.
@@ -152,6 +152,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Signing the provenance: id-token mints the Sigstore certificate,
+      # attestations records the result against the repository.
+      id-token: write
+      attestations: write
     outputs:
       digest: ${{ steps.index.outputs.digest }}
     steps:
@@ -239,6 +243,19 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "Published \`${IMAGE}@${digest}\`" >> "$GITHUB_STEP_SUMMARY"
 
+      # Binds the published index to this workflow, this repository and this
+      # commit. The subject is the index rather than a platform manifest, so a
+      # consumer verifies the same digest they pulled:
+      #   gh attestation verify oci://IMAGE@DIGEST --repo OWNER/REPO
+      # push-to-registry additionally stores it as an OCI referrer, so registry
+      # tooling and admission controllers can find it without calling GitHub.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ inputs.image }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+
   sbom:
     name: SBOM ${{ matrix.architecture }}
     needs: merge
@@ -246,6 +263,8 @@ jobs:
     permissions:
       contents: read
       packages: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: true
       matrix:
@@ -296,6 +315,20 @@ jobs:
           output-file: ${{ steps.asset.outputs.path }}
           upload-artifact: false
           upload-release-assets: false
+
+      # Binds this SBOM to the one platform manifest it actually describes, so a
+      # consumer cannot be handed an amd64 SBOM for an arm64 image:
+      #   gh attestation verify oci://IMAGE@PLATFORM_DIGEST --repo OWNER/REPO \
+      #     --predicate-type https://spdx.dev/Document
+      # Not pushed to the registry: that needs packages: write, and this job
+      # otherwise only reads. The attestation is recorded against the repository
+      # either way, which is what `gh attestation verify` reads.
+      - name: Attest the SBOM
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: ${{ inputs.image }}
+          subject-digest: ${{ steps.platform.outputs.digest }}
+          sbom-path: ${{ steps.asset.outputs.path }}
 
       - uses: actions/upload-artifact@v4
         with:

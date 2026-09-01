@@ -12,8 +12,7 @@
 # from source. Prefer this file: no Rust toolchain runs on the server, and the
 # artifact is the one that was released and tested.
 #
-# The packages are private until a maintainer makes them public, so give the
-# Coolify server GHCR registry credentials first.
+# Both packages are public, so no registry credentials are needed on the server.
 #
 # Set RECORD_STORE_VERSION to the release you intend to run. The default is
 # pinned rather than floating: `latest` moves under a running deployment.

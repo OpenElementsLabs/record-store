@@ -4,30 +4,53 @@ Every Record Store release is built by a GitHub Actions workflow from a signed
 tag in this repository. This page is what you can check for yourself before
 deploying one.
 
-## What you can and cannot verify
+## What you can verify
 
 | | |
 | --- | --- |
 | Binary archives | SHA-256 checksums covering every release asset |
-| Container images | An immutable digest, and an SPDX SBOM per architecture |
+| Container images | An immutable digest, an SPDX SBOM per architecture, and signed build provenance |
 | The release tag | A GPG or SSH signature, verifiable with `git` |
-| Container images | **No cryptographic signature or provenance attestation** |
 
-!!! warning "Images are published unsigned"
-    There is no `gh attestation verify` to run against a Record Store image, and
-    no `cosign` signature. GitHub's artifact attestation service is not available
-    to this repository under its current plan and visibility, and publishing an
-    unsigned provenance blob would suggest a guarantee that does not exist —
-    anyone who can write to the registry could produce the same thing.
+!!! warning "Only releases built after signing was enabled"
+    Provenance is produced by the build, so it exists only for images built once
+    attestation was turned on. **`0.1.1` and anything earlier has none**, and
+    none can be added after the fact. For those, the digest and the signed
+    release tag are what you have.
 
-    What that means in practice: a digest proves an image has not *changed*, but
-    nothing here proves it was *built by this repository*. Treat the registry
-    itself, and the accounts that can push to it, as part of your trust boundary.
+    Check before relying on it: `gh attestation verify` failing on an old image
+    is the expected answer, not a tampering signal.
 
-    If this matters for your deployment, say so on the issue tracker. Making the
-    repository public, or moving the organisation to a plan that includes
-    attestations, would enable signed provenance without any change to the
-    release pipeline's shape.
+## Provenance
+
+```bash
+gh attestation verify \
+  oci://ghcr.io/openelementslabs/record-store:0.1.2 \
+  --repo OpenElementsLabs/record-store
+```
+
+This answers the question a digest cannot: *was this image built by this
+repository?* It checks the image against a Sigstore-signed statement naming the
+workflow, the repository and the commit that produced it.
+
+The attestation covers the multi-platform index — the digest you pull — so the
+subject you verify is the subject you run.
+
+It is also pushed to the registry as an OCI referrer, so tooling that resolves
+attestations registry-side finds it without calling GitHub:
+
+```bash
+docker buildx imagetools inspect \
+  ghcr.io/openelementslabs/record-store:0.1.2 --format '{{ json .Provenance }}'
+```
+
+Verify the digest you are deploying rather than a floating tag:
+
+```bash
+gh attestation verify \
+  oci://ghcr.io/openelementslabs/record-store@sha256:<digest> \
+  --repo OpenElementsLabs/record-store
+```
 
 ## Checksums
 
