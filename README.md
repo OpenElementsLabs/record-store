@@ -1,8 +1,15 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-lockup-dark.svg">
-    <img src="docs/assets/logo-lockup.svg" alt="Record Store" width="200">
+    <img src="docs/assets/logo-lockup.svg" alt="Record Store" width="75%">
   </picture>
+</p>
+
+<p align="center">
+  <a href="https://github.com/OpenElementsLabs/record-store/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/OpenElementsLabs/record-store/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/OpenElementsLabs/record-store/actions/workflows/docs.yml?query=branch%3Amain"><img src="https://github.com/OpenElementsLabs/record-store/actions/workflows/docs.yml/badge.svg?branch=main" alt="Documentation"></a>
+  <a href="https://github.com/OpenElementsLabs/record-store/releases/latest"><img src="https://img.shields.io/github/v/release/OpenElementsLabs/record-store?sort=semver&display_name=tag&label=release&color=195477" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/OpenElementsLabs/record-store?label=license&color=195477" alt="Apache-2.0 license"></a>
 </p>
 
 Record Store is a self-hosted, S3-compatible object storage service written in Rust. It runs as a single process on one server, with no external database, message broker, or coordination service alongside it. Public S3 traffic uses port 7600, the native management API uses 7601, and the web console uses 7602. Every listener is configurable.
