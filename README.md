@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/OpenElementsLabs/record-store?label=license&color=195477" alt="Apache-2.0 license"></a>
 </p>
 
-Record Store is a self-hosted, S3-compatible object storage service written in Rust. It runs as a single process on one server, with no external database, message broker, or coordination service alongside it. Public S3 traffic uses port 7600, the native management API uses 7601, and the web console uses 7602. Every listener is configurable.
+[Record Store](https://record-store.io) is a self-hosted, S3-compatible object storage service written in Rust. It runs as a single process on one server, with no external database, message broker, or coordination service alongside it. Public S3 traffic uses port 7600, the native management API uses 7601, and the web console uses 7602. Every listener is configurable. Record Store is provided and maintained by [Open Elements®](https://open-elements.com).
 
 ## Documentation
 
