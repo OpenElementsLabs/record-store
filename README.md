@@ -1,8 +1,9 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="Record Store" width="80">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-lockup-dark.svg">
+    <img src="docs/assets/logo-lockup.svg" alt="Record Store" width="200">
+  </picture>
 </p>
-
-# Record Store
 
 Record Store is a self-hosted, S3-compatible object storage service written in Rust. It runs as a single process on one server, with no external database, message broker, or coordination service alongside it. Public S3 traffic uses port 7600, the native management API uses 7601, and the web console uses 7602. Every listener is configurable.
 
