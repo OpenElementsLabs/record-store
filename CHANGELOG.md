@@ -9,6 +9,13 @@ publishes, so keep it factual and written for the people upgrading.
 
 ## [Unreleased]
 
+### Documentation
+
+- Added `SECURITY.md`: which versions receive security fixes, how to report a
+  vulnerability privately through GitHub private vulnerability reporting, what a
+  report should contain, and what is in and out of scope. The security and
+  contributing pages now link to it instead of naming an unspecified contact.
+
 ## [0.1.1] - 2026-08-29
 
 First release published as container images. Everything before this was built

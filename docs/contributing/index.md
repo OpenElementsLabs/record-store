@@ -50,4 +50,8 @@ merged behind a placeholder. Either it works or the code path does not exist.
 
 ## Reporting security issues
 
-Report privately through the repository's security contact, not in a public issue.
+Report privately through
+[GitHub private vulnerability reporting](https://github.com/OpenElementsLabs/record-store/security/advisories/new),
+not in a public issue. See
+[SECURITY.md](https://github.com/OpenElementsLabs/record-store/blob/main/SECURITY.md)
+for supported versions and what a report should contain.
