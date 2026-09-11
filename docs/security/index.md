@@ -52,5 +52,8 @@ durable and append-only. See [Audit Log](../administration/audit-log.md).
 
 ## Reporting a vulnerability
 
-Report security issues privately through the repository's security contact rather than
-in a public issue.
+Everything above is about configuring Record Store securely. If you have found a flaw
+*in* Record Store, report it privately through
+[GitHub private vulnerability reporting](https://github.com/OpenElementsLabs/record-store/security/advisories/new)
+rather than in a public issue. Supported versions, what to include, and what to expect
+are in [SECURITY.md](https://github.com/OpenElementsLabs/record-store/blob/main/SECURITY.md).
