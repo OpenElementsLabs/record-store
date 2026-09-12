@@ -15,7 +15,7 @@
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use record_store_core::ShareLinkId;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
