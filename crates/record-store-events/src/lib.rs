@@ -374,7 +374,7 @@ impl RedbEventRepository {
         let secret = self.decrypt_secret(&subscription.encrypted_secret)?;
         let payload = serde_json::to_vec(&event)?;
         let mut signer =
-            <Hmac<Sha256> as Mac>::new_from_slice(&secret).map_err(|_| EventError::Crypto)?;
+            <Hmac<Sha256> as KeyInit>::new_from_slice(&secret).map_err(|_| EventError::Crypto)?;
         signer.update(&payload);
         let signature = format!("sha256={}", hex::encode(signer.finalize().into_bytes()));
         let attempt = pending.attempts.saturating_add(1);

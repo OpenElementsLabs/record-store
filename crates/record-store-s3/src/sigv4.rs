@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use axum::http::{HeaderMap, Method, Uri, header::HeaderName};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use percent_encoding::percent_decode_str;
 use record_store_auth::{Principal, SigningSecret};
 use record_store_core::Checksum;
