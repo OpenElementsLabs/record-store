@@ -115,7 +115,7 @@ impl CredentialManager {
             "SA{}",
             Uuid::new_v4().simple().to_string()[..20].to_ascii_uppercase()
         );
-        let secret_bytes = Zeroizing::new(random_secret_bytes());
+        let secret_bytes = Zeroizing::new(random_secret_bytes()?);
         let secret_text = URL_SAFE_NO_PAD.encode(secret_bytes.as_ref());
         let credential = Credential {
             id: Uuid::new_v4(),
@@ -266,7 +266,7 @@ impl CredentialManager {
             "SA{}",
             Uuid::new_v4().simple().to_string()[..20].to_ascii_uppercase()
         );
-        let secret_bytes = Zeroizing::new(random_secret_bytes());
+        let secret_bytes = Zeroizing::new(random_secret_bytes()?);
         let secret_text = URL_SAFE_NO_PAD.encode(secret_bytes.as_ref());
         let credential = Credential {
             id: Uuid::new_v4(),

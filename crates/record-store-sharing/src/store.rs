@@ -848,7 +848,7 @@ impl CapabilityStore {
         getrandom::fill(&mut nonce).map_err(|_| SharingError::EntropyUnavailable)?;
         let ciphertext = cipher
             .encrypt(
-                Nonce::from_slice(&nonce),
+                &Nonce::from(nonce),
                 Payload {
                     msg: token.expose().as_bytes(),
                     aad: id.as_bytes(),
@@ -870,7 +870,7 @@ fn unseal(sealed: &SealedToken, id: Uuid, key: &[u8; 32]) -> Option<CapabilityTo
     let cipher = Aes256Gcm::new_from_slice(key).ok()?;
     let plaintext = cipher
         .decrypt(
-            Nonce::from_slice(&sealed.nonce),
+            &Nonce::from(sealed.nonce),
             Payload {
                 msg: &sealed.ciphertext,
                 aad: id.as_bytes(),
