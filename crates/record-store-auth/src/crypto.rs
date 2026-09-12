@@ -1,6 +1,6 @@
 use aes_gcm::{
     Aes256Gcm, Nonce,
-    aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
+    aead::{Aead, KeyInit, Payload},
 };
 use sha2::Sha256;
 use zeroize::Zeroizing;
@@ -17,10 +17,10 @@ pub(crate) fn derive_encryption_key(material: &[u8]) -> Result<[u8; 32], Credent
     Ok(key)
 }
 
-pub(crate) fn random_secret_bytes() -> [u8; 48] {
+pub(crate) fn random_secret_bytes() -> Result<[u8; 48], CredentialStoreError> {
     let mut bytes = [0_u8; 48];
-    OsRng.fill_bytes(&mut bytes);
-    bytes
+    getrandom::fill(&mut bytes).map_err(|_| CredentialStoreError::Cryptography)?;
+    Ok(bytes)
 }
 
 pub(crate) fn encrypt_record(
@@ -32,10 +32,10 @@ pub(crate) fn encrypt_record(
     // A full-entropy nonce: a UUIDv4 spends four of these bits on its version
     // nibble, and AES-GCM's birthday bound is tight enough not to donate them.
     let mut nonce = [0_u8; 12];
-    OsRng.fill_bytes(&mut nonce);
+    getrandom::fill(&mut nonce).map_err(|_| CredentialStoreError::Cryptography)?;
     let ciphertext = cipher
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: secret,
                 aad: info.credential.key_id.as_bytes(),
@@ -60,7 +60,7 @@ pub(crate) fn decrypt_record(
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| CredentialStoreError::Cryptography)?;
     let plaintext = cipher
         .decrypt(
-            Nonce::from_slice(&record.nonce),
+            &Nonce::from(record.nonce),
             Payload {
                 msg: &record.ciphertext,
                 aad: record.info.credential.key_id.as_bytes(),

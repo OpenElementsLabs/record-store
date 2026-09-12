@@ -13,6 +13,7 @@ chrono.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
 fs2.workspace = true
+getrandom.workspace = true
 hex.workspace = true
 hkdf.workspace = true
 md-5.workspace = true

@@ -4,7 +4,7 @@ use std::{io, sync::Arc};
 
 use aes_gcm::{
     Aes256Gcm, Nonce,
-    aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
+    aead::{Aead, KeyInit, Payload},
 };
 use bytes::Bytes;
 use futures_util::{StreamExt, stream};
@@ -68,8 +68,8 @@ pub(crate) async fn write_encrypted_payload(
     file.write_all(&[0_u8; ENCRYPTED_PAYLOAD_HEADER_LEN])
         .await
         .map_err(|source| filesystem("write encrypted payload header", source))?;
-    let data_key = Zeroizing::new(random_array_32());
-    let content_nonce = random_array_8();
+    let data_key = Zeroizing::new(random_array_32()?);
+    let content_nonce = random_array_8()?;
     let mut strong = Sha256::new();
     let mut md5 = Md5::new();
     let mut size = 0_u64;
@@ -149,7 +149,7 @@ pub(crate) async fn write_encrypted_chunk(
     let aad = content_chunk_aad(object_id, index, plaintext.len());
     let ciphertext = cipher
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: plaintext,
                 aad: &aad,
@@ -176,14 +176,14 @@ pub(crate) fn encode_encrypted_header(
     header[16..24].copy_from_slice(&size.to_be_bytes());
     header[24..40].copy_from_slice(object_id.as_uuid().as_bytes());
     header[40..56].copy_from_slice(&encryption.key_reference);
-    let wrap_nonce = random_array_12();
+    let wrap_nonce = random_array_12()?;
     header[56..68].copy_from_slice(&wrap_nonce);
     header[68..76].copy_from_slice(&content_nonce);
     let cipher = Aes256Gcm::new_from_slice(&encryption.key_encryption_key[..])
         .map_err(|_| StorageError::Cryptography)?;
     let wrapped_key = cipher
         .encrypt(
-            Nonce::from_slice(&wrap_nonce),
+            &Nonce::from(wrap_nonce),
             Payload {
                 msg: data_key,
                 aad: &header[..76],
@@ -291,7 +291,7 @@ pub(crate) async fn open_encrypted_payload(
             let aad = content_chunk_aad(state.object_id, index, plaintext_len);
             let plaintext = cipher
                 .decrypt(
-                    Nonce::from_slice(&nonce),
+                    &Nonce::from(nonce),
                     Payload {
                         msg: &ciphertext,
                         aad: &aad,
@@ -348,7 +348,7 @@ pub(crate) fn decode_encrypted_header(
     let unwrapped = Zeroizing::new(
         cipher
             .decrypt(
-                Nonce::from_slice(&wrap_nonce),
+                &Nonce::from(wrap_nonce),
                 Payload {
                     msg: &header[76..],
                     aad: &header[..76],
@@ -389,22 +389,22 @@ pub(crate) fn content_chunk_aad(object_id: ObjectId, index: u32, plaintext_len: 
     aad
 }
 
-pub(crate) fn random_array_32() -> [u8; 32] {
+pub(crate) fn random_array_32() -> Result<[u8; 32], StorageError> {
     let mut value = [0_u8; 32];
-    OsRng.fill_bytes(&mut value);
-    value
+    getrandom::fill(&mut value).map_err(|_| StorageError::Cryptography)?;
+    Ok(value)
 }
 
-pub(crate) fn random_array_12() -> [u8; 12] {
+pub(crate) fn random_array_12() -> Result<[u8; 12], StorageError> {
     let mut value = [0_u8; 12];
-    OsRng.fill_bytes(&mut value);
-    value
+    getrandom::fill(&mut value).map_err(|_| StorageError::Cryptography)?;
+    Ok(value)
 }
 
-pub(crate) fn random_array_8() -> [u8; 8] {
+pub(crate) fn random_array_8() -> Result<[u8; 8], StorageError> {
     let mut value = [0_u8; 8];
-    OsRng.fill_bytes(&mut value);
-    value
+    getrandom::fill(&mut value).map_err(|_| StorageError::Cryptography)?;
+    Ok(value)
 }
 
 pub(crate) async fn initialize_object_encryption(
