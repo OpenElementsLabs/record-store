@@ -1,0 +1,55 @@
+# Every third-party dependency in this repository is pinned to an immutable
+# identifier: actions to a commit SHA, base images to a manifest digest, crates
+# and packages to an exact version. Pinning is what keeps a compromised upstream
+# tag from silently entering a release, but a pin left alone is just an old
+# version with a security advisory attached. Dependabot is the other half of
+# that bargain — it proposes the bumps, review decides on them.
+#
+# Grouping is deliberate. A patch-level sweep across twenty actions is one
+# review; twenty pull requests is twenty chances to rubber-stamp.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /console
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docs:
+        patterns: ["*"]
+
+  # Both production Dockerfiles live here; this keeps the digest pins current.
+  - package-ecosystem: docker
+    directory: /deploy/docker
+    schedule:
+      interval: weekly
+    groups:
+      base-images:
+        patterns: ["*"]
