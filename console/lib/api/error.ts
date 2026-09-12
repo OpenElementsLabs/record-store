@@ -87,7 +87,8 @@ function isApiErrorBody(value: unknown): value is ApiErrorBody {
  * on the API's behalf.
  */
 export async function apiErrorFromResponse(response: Response): Promise<ApiError> {
-  let body: unknown = null;
+  // No initialiser: both branches below assign before anything reads it.
+  let body: unknown;
   try {
     body = await response.json();
   } catch {
