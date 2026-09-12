@@ -8,7 +8,7 @@
 
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash as PhcHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash as PhcHash},
 };
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -41,10 +41,11 @@ impl PasswordHash {
         validate(password)?;
         let mut salt_bytes = [0_u8; 16];
         getrandom::fill(&mut salt_bytes).map_err(|_| SharingError::EntropyUnavailable)?;
-        let salt =
-            SaltString::encode_b64(&salt_bytes).map_err(|_| SharingError::PasswordHashFailed)?;
+        // The salt is supplied rather than left to the hasher so that a failure
+        // to draw entropy stays distinguishable from a hashing failure; B64
+        // encoding into the PHC string is the hasher's business.
         let encoded = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password_with_salt(password.as_bytes(), &salt_bytes)
             .map_err(|_| SharingError::PasswordHashFailed)?
             .to_string();
         Ok(Self(encoded))
@@ -137,5 +138,19 @@ mod tests {
     fn a_corrupt_stored_verifier_fails_closed() {
         let hash = PasswordHash("not a phc string".to_owned());
         assert!(!hash.verify("not a phc string"));
+    }
+
+    #[test]
+    fn a_verifier_written_by_an_earlier_argon2_still_opens_its_share() {
+        // Produced by argon2 0.5.3 for "correct horse battery". Share passwords
+        // outlive the dependency that wrote them, so a hasher upgrade that
+        // cannot read the old PHC string locks every existing share out; the
+        // parameters come from the record, not from the running Argon2.
+        let stored = PasswordHash(
+            "$argon2id$v=19$m=19456,t=2,p=1$BwcHBwcHBwcHBwcHBwcHBw             $WLRGUa13/B3MXznFse33FId4O++DaYL6ulYUMEhpRqE"
+                .replace(' ', ""),
+        );
+        assert!(stored.verify("correct horse battery"));
+        assert!(!stored.verify("Correct horse battery"));
     }
 }
