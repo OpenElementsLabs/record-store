@@ -57,7 +57,7 @@ percent-encoding = "2.3.1"
 prost = "0.14.4"
 proptest = "1.9.0"
 protoc-bin-vendored = "3.2.0"
-redb = "2.6.3"
+redb = "4.2.0"
 reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls"] }
 quick-xml = { version = "0.42.0", features = ["serialize"] }
 reed-solomon-simd = "3.1.0"
