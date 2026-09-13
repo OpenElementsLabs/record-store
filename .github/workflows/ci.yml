@@ -171,3 +171,39 @@ jobs:
 
       - name: Audit Rust dependencies
         run: tests/rust-audit.sh
+
+  # Keeps the fuzz targets honest. Running them here is not the search -- that
+  # happens in longer campaigns against a kept corpus -- it is what stops a
+  # renamed parser from leaving behind a harness that compiles and reaches
+  # nothing.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # cargo-fuzz builds with sanitizers and a coverage instrumentation pass
+      # that only nightly accepts, so this job deliberately steps outside the
+      # toolchain the rest of the build is pinned to. Nothing it produces ships.
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            .
+            fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Smoke-run every fuzz target
+        run: tests/fuzz-smoke.sh
+
+      # A crash is reproducible only with the input that caused it, and libFuzzer
+      # writes that input to a file rather than to the log.
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore

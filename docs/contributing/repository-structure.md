@@ -9,9 +9,11 @@ record-store/
 ├── console/                    Next.js web console
 ├── deploy/docker/              Dockerfiles and Compose files
 ├── docs/                       this documentation
+├── fuzz/                       fuzz targets, a workspace of their own
 ├── tests/
 │   ├── compatibility/          real-SDK tests against a live server
-│   └── rust-audit.sh           dependency audit with its documented exception
+│   ├── fuzz-smoke.sh           builds and briefly runs every fuzz target
+│   └── rust-audit.sh           dependency audit
 └── Cargo.toml                  workspace manifest
 ```
 
@@ -68,6 +70,17 @@ either backend does not reach the protocol crates above it.
 Adding a configuration setting touches four files in `record-store-config`: the section
 struct and its default, the partial struct used for TOML, the environment overlay, and
 validation. Missing one produces a setting that silently does nothing.
+
+## Fuzz targets are outside the workspace
+
+`fuzz/` has its own `Cargo.toml` with its own `[workspace]`, so `cargo build` at the
+root never sees it. That is deliberate: `cargo fuzz` needs a nightly toolchain,
+builds with sanitizers, and generates an `unsafe` entry point, and the root workspace
+sets `unsafe_code = "forbid"`.
+
+The targets reach the S3 crate's private parsers through `record-store-s3`'s
+`fuzzing` feature, which no shipping build enables. See
+[Testing](testing.md#fuzzing).
 
 ## Tests live beside the code
 

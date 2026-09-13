@@ -12,6 +12,7 @@
 | End-to-end | `npm run test:e2e` |
 | Compatibility | `tests/compatibility/run.sh` |
 | Audit | `tests/rust-audit.sh` |
+| Fuzz | `tests/fuzz-smoke.sh` |
 
 Run the first three before pushing. Clippy uses `-D warnings` — a warning is a failure.
 
@@ -89,11 +90,74 @@ npm run test:e2e:install    # first run only
 tests/rust-audit.sh
 ```
 
-Wraps `cargo audit` with one documented exception. The script first verifies the
-exception is still safe — that the advisory's crate is genuinely not in the active
-feature graph — and fails loudly if that ever changes.
+Runs `cargo audit --deny warnings` over `Cargo.lock`. There are no exceptions, and
+adding one should be the last resort rather than the first: an `--ignore` is a claim
+that stops being checked the moment it is written.
 
-That check is the point. A blanket `--ignore` would quietly stop being true.
+`--deny warnings` is what makes a yanked crate a failure. A yank is not yet an
+advisory, but it is the crate's author saying the build should not be used, and it is
+far cheaper to move off one now than after it becomes an advisory.
+
+Note that a crate can appear in `Cargo.lock` without being compiled — an optional
+dependency of a dependency is recorded there whether or not the feature enabling it
+is on. `cargo audit` reads the lockfile, so it flags those too. `cargo tree -i
+<crate> --target all` printing nothing means the crate is not in the build, which
+tells you an upgrade is housekeeping rather than an exposure; it does not make the
+finding something to suppress.
+
+## Fuzzing
+
+```bash
+cargo install cargo-fuzz --locked
+rustup toolchain install nightly
+
+tests/fuzz-smoke.sh                 # every target, 20s each
+FUZZ_SECONDS=300 tests/fuzz-smoke.sh
+
+cd fuzz && cargo +nightly fuzz run s3_xml_documents
+```
+
+The targets live in [`fuzz/`](https://github.com/OpenElementsLabs/record-store/tree/main/fuzz),
+a workspace of their own. They have to be: `cargo fuzz` builds with sanitizers and a
+nightly-only instrumentation pass, and the generated entry point is `unsafe`, which
+the root workspace forbids.
+
+Each target covers a parser that runs **before a request is authenticated** — the XML
+request bodies, the `Authorization` header, the presigned-URL query, the `Range`
+header, the ListObjectsV2 query, and the bucket-name and object-key validators. Those
+are the places where the bytes are chosen entirely by an anonymous caller, which is
+what makes them worth the machine time.
+
+| Target | Covers |
+| --- | --- |
+| `s3_xml_documents` | `CORSConfiguration`, `VersioningConfiguration`, `CompleteMultipartUpload` bodies |
+| `sigv4_authorization` | `Authorization` and `X-Amz-Date` headers |
+| `sigv4_canonical_query` | Presigned-URL parameters and query canonicalisation |
+| `s3_range_header` | `Range` resolved against an object size |
+| `s3_list_query` | ListObjectsV2 parameters and percent-decoding |
+| `core_names` | Bucket-name and object-key validation |
+| `core_cors_patterns` | CORS origin and header pattern matching |
+
+The S3 parsers are private to their crate. `record-store-s3` exposes them through
+`src/fuzzing.rs` behind a `fuzzing` feature that no shipping build enables — a narrow
+window for the targets rather than a widening of the crate's API.
+
+**Assert an invariant, not just the absence of a panic.** A target that only calls a
+parser finds crashes; a target that says what must be true of an accepted input finds
+wrong answers, which is the larger category. `s3_range_header` asserts that an
+accepted range lies inside the object. `core_names` asserts that an accepted key
+contains no `..`, no empty segment, and no backslash — the property every layer below
+it is written to rely on. Put the assertion in the target, next to the call, so that
+changing the parser and changing what is claimed about it land in the same diff.
+
+**Be sure the invariant is actually the parser's job.** Part numbers are range-checked
+in the handler, not in the deserialiser, so a target that stopped at `quick_xml` and
+then asserted `1..=10000` would report a bug that is not one. Where validation is
+split like that, the wrapper in `src/fuzzing.rs` mirrors the handler.
+
+CI runs each target for twenty seconds. That is not a search — it is what stops a
+renamed parser from leaving behind a harness that still compiles and reaches nothing.
+Finding something new means running one for hours against a corpus kept between runs.
 
 ## Benchmarks
 

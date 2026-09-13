@@ -120,8 +120,11 @@ cargo test -p record-store-core -- --nocapture
 # Storage benchmarks
 cargo bench -p record-store-storage --bench storage
 
-# Dependency audit, with the documented exception
+# Dependency audit
 tests/rust-audit.sh
+
+# Fuzz targets, briefly (needs cargo-fuzz and a nightly toolchain)
+tests/fuzz-smoke.sh
 ```
 
 ## Debug logging
@@ -139,7 +142,7 @@ RECORD_STORE_LOG=record_store=info,record_store_s3=debug
 ## Documentation
 
 ```bash
-pip install -r requirements-docs.txt
+pip install --require-hashes -r requirements-docs.txt
 mkdocs serve
 ```
 

@@ -1,0 +1,78 @@
+# A separate workspace on purpose. Fuzz targets are built by `cargo fuzz` with a
+# nightly toolchain, sanitizers, and a generated `unsafe` entry point, none of
+# which should reach the workspace that produces a release binary -- and the
+# root workspace forbids `unsafe_code`.
+[package]
+name = "record-store-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+arbitrary = { version = "1.4.2", features = ["derive"] }
+libfuzzer-sys = "0.4.10"
+record-store-core = { path = "../crates/record-store-core" }
+record-store-s3 = { path = "../crates/record-store-s3", features = ["fuzzing"] }
+
+# Fuzzing spends its time inside the parser, so the parser is built optimised.
+# `debug-assertions` and `overflow-checks` stay on: an arithmetic overflow that
+# wraps silently in release is exactly the kind of bug a fuzzer is here to find,
+# and without them it would produce a wrong answer rather than a crash.
+[profile.release]
+debug = 1
+debug-assertions = true
+overflow-checks = true
+
+[[bin]]
+name = "s3_xml_documents"
+path = "fuzz_targets/s3_xml_documents.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sigv4_authorization"
+path = "fuzz_targets/sigv4_authorization.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sigv4_canonical_query"
+path = "fuzz_targets/sigv4_canonical_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "s3_range_header"
+path = "fuzz_targets/s3_range_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "s3_list_query"
+path = "fuzz_targets/s3_list_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "core_names"
+path = "fuzz_targets/core_names.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "core_cors_patterns"
+path = "fuzz_targets/core_cors_patterns.rs"
+test = false
+doc = false
+bench = false

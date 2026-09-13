@@ -20,6 +20,8 @@ mod auth;
 mod capabilities;
 mod cors;
 mod error;
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;
 mod handlers;
 mod response;
 mod sigv4;

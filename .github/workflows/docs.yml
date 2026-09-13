@@ -38,8 +38,12 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-docs.txt
 
+      # --require-hashes makes pip verify every downloaded artifact against the
+      # SHA-256 recorded in the requirements file, and refuse to install
+      # anything not pinned there. A tampered or re-uploaded package fails the
+      # build rather than reaching the published site.
       - name: Install documentation dependencies
-        run: pip install -r requirements-docs.txt
+        run: pip install --require-hashes -r requirements-docs.txt
 
       # --strict turns broken internal links, unrecognised configuration, and
       # pages missing from the navigation into failures.

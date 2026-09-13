@@ -29,6 +29,12 @@ tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+# Opens `src/fuzzing.rs`, which hands the fuzz targets in `fuzz/` the request
+# parsers that run before authentication. Off by default and never enabled by a
+# shipping build; `cargo fuzz` turns it on for its own compilation only.
+[features]
+fuzzing = []
+
 [dev-dependencies]
 http-body-util.workspace = true
 record-store-metadata = { path = "../record-store-metadata" }

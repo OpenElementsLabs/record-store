@@ -28,6 +28,17 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
+  # The fuzz targets are their own workspace with their own lockfile, so the
+  # root cargo entry above does not see them.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    groups:
+      fuzz-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
   - package-ecosystem: npm
     directory: /console
     schedule:

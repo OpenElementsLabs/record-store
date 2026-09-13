@@ -8,6 +8,7 @@
 <p align="center">
   <a href="https://github.com/OpenElementsLabs/record-store/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/OpenElementsLabs/record-store/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/OpenElementsLabs/record-store/actions/workflows/docs.yml?query=branch%3Amain"><img src="https://github.com/OpenElementsLabs/record-store/actions/workflows/docs.yml/badge.svg?branch=main" alt="Documentation"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/OpenElementsLabs/record-store"><img src="https://api.scorecard.dev/projects/github.com/OpenElementsLabs/record-store/badge" alt="OpenSSF Scorecard"></a>
   <a href="https://github.com/OpenElementsLabs/record-store/releases/latest"><img src="https://img.shields.io/github/v/release/OpenElementsLabs/record-store?sort=semver&display_name=tag&label=release&color=195477" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/OpenElementsLabs/record-store?label=license&color=195477" alt="Apache-2.0 license"></a>
 </p>
@@ -23,7 +24,7 @@ reference — is published at
 To build it locally:
 
 ```bash
-pip install -r requirements-docs.txt
+pip install --require-hashes -r requirements-docs.txt
 mkdocs serve
 ```
 
@@ -119,16 +120,23 @@ cargo test --workspace --all-features --locked
 cargo build --workspace --release --locked
 ```
 
-Dependency security is checked with `tests/rust-audit.sh`. The 2026-08-22
-review upgraded `quick-xml` to 0.41.0 for RUSTSEC-2026-0194 and
-RUSTSEC-2026-0195. One unscored RustSec advisory, RUSTSEC-2026-0235, is
-narrowly excepted: `rkyv` 0.7.46 appears in `Cargo.lock` only as an inactive
-optional serialization backend of `rust_decimal` through
-`openraft -> byte-unit`. Record Store does not compile or process rkyv archives. The
-audit script first proves that `cargo tree -e features -i rkyv@0.7.46` is empty
-and fails if it becomes reachable; all other advisories remain fatal. Remove
-the exception when the upstream dependency chain moves to rkyv 0.8.17 or
-removes the optional backend.
+Dependency security is checked with `tests/rust-audit.sh`, which runs
+`cargo audit --deny warnings` with no exceptions. The 2026-08-22 review upgraded
+`quick-xml` to 0.41.0 for RUSTSEC-2026-0194 and RUSTSEC-2026-0195. RUSTSEC-2026-0235
+was carried for a while as a narrow exception — `rkyv` 0.7.46 reached `Cargo.lock`
+only as an inactive optional serialization backend of `rust_decimal` through
+`openraft -> byte-unit`, and was never compiled — and is now simply gone:
+`rust_decimal` 1.43.0 dropped that optional backend. `--deny warnings` additionally
+makes a yanked crate a failure rather than a note.
+
+The parsers that run before a request is authenticated are fuzzed. Targets live in
+[`fuzz/`](fuzz/) and cover the S3 XML request bodies, the `Authorization` header, the
+presigned-URL query, the `Range` header, the ListObjectsV2 query, and bucket-name and
+object-key validation. Each asserts an invariant rather than only the absence of a
+panic — that an accepted range lies inside the object, that an accepted object key
+holds no `..` or empty segment. CI builds and briefly runs every target; a real
+campaign is `FUZZ_SECONDS=3600 tests/fuzz-smoke.sh`. See
+[Testing](https://openelementslabs.github.io/record-store/contributing/testing/#fuzzing).
 
 Storage microbenchmarks are reproducible with `cargo bench -p record-store-storage --bench storage`.
 
