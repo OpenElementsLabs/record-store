@@ -1,0 +1,70 @@
+{{- if .Values.ingress.s3.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "record-store.fullname" . }}-s3
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "record-store.labels" . | nindent 4 }}
+  annotations:
+    # Objects are not small. Whatever ingress controller you run, its default
+    # body limit is almost certainly lower than the uploads you intend to allow.
+    {{- with .Values.ingress.s3.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.ingress.s3.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.s3.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.s3.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "record-store.fullname" . }}
+                port:
+                  number: {{ .Values.service.ports.s3 }}
+{{- end }}
+{{- if and .Values.ingress.console.enabled .Values.console.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "record-store.fullname" . }}-console
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "record-store.labels" . | nindent 4 }}
+  {{- with .Values.ingress.console.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.console.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.console.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.console.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "record-store.fullname" . }}-console
+                port:
+                  number: {{ .Values.console.service.port }}
+{{- end }}
+{{- if and .Values.ingress.console.enabled (not .Values.console.enabled) }}
+{{- fail "ingress.console.enabled requires console.enabled" }}
+{{- end }}

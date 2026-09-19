@@ -7,3 +7,6 @@ node_modules/
 
 # MkDocs build output
 /site/
+
+# Release artifacts built by deploy/linux/build-packages.sh
+/dist/

@@ -9,6 +9,33 @@ publishes, so keep it factual and written for the people upgrading.
 
 ## [Unreleased]
 
+### Added
+
+- Debian and RPM packages for `amd64` and `arm64`, published with every release.
+  They install the server and CLI, a hardened systemd unit, a configuration file
+  that upgrades never overwrite, and generate credentials unique to the machine
+  on first install. Nothing starts until an operator enables it. The binaries
+  inside are statically linked, so the packages declare no libc dependency and
+  install on Debian 11 and RHEL 8 onwards.
+
+- Statically linked Linux binary archives (`…-musl.tar.gz`) beside the existing
+  glibc ones. The glibc archives come from the container image and need a
+  distribution at least as new as Debian 12; these run anywhere.
+
+- A Helm chart, published to `ghcr.io/openelementslabs/charts/record-store` and
+  attached to each release for air-gapped installs. It runs the server as a
+  StatefulSet with per-node volumes and stable peer addresses, the console as a
+  Deployment, and keeps the management API `ClusterIP`-only — a rule CI asserts.
+  Standalone and multi-node clusters are both supported: a joining node obtains
+  a short-lived join token from node 0 through an init container, because a join
+  token is issued by the running cluster and cannot be created in advance.
+
+### Changed
+
+- The release workflow builds, installs and runs the Linux packages before it
+  publishes anything, and CI lints the Helm chart, validates every render shape
+  against the Kubernetes schemas, and installs it on a throwaway cluster.
+
 ## [0.1.3] - 2026-09-16
 
 A patch release that prepares every database for the next one. It changes no

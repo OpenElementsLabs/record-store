@@ -1,7 +1,15 @@
 # Installation
 
-Record Store ships as container images published to the GitHub Container
-Registry, and as source you can build yourself.
+Record Store ships as container images, as Linux packages, as a Helm chart, as
+standalone binaries, and as source you can build yourself.
+
+| You want to | Use |
+| --- | --- |
+| Try it out in one command | [Published images](#published-images) |
+| Run it as a service on a Linux host | [Linux packages](../deployment/linux-packages.md) |
+| Run it on Kubernetes | [The Helm chart](../deployment/kubernetes.md) |
+| Run it without a package manager | [Binary archives](#binary-archives) |
+| Change it | [From source](#from-source) |
 
 ## Prerequisites
 
@@ -9,6 +17,9 @@ Registry, and as source you can build yourself.
 | --- | --- |
 | Published images | Docker |
 | Docker Compose | Docker with the Compose plugin |
+| Linux packages | A distribution with systemd; Debian 11 or RHEL 8 onwards |
+| Helm chart | Kubernetes 1.25 or newer, Helm 3 |
+| Binary archives | Linux on `amd64` or `arm64` |
 | From source | Rust 1.97.1 (pinned by `rust-toolchain.toml`), a C toolchain |
 | Web console | Node.js 24, in addition to one of the above |
 
@@ -92,6 +103,59 @@ The three source-building files carry development defaults for every secret. The
 are marked `change-me` and must not be used anywhere real. `compose.ghcr.yml`
 deliberately carries none: it refuses to start until every secret is set. See
 [Docker Compose](../deployment/docker-compose.md).
+
+## Linux packages
+
+A `.deb` and an `.rpm` for `amd64` and `arm64`, installing the server, the CLI, a
+systemd service and a configuration file, and generating credentials unique to
+the machine.
+
+```bash
+sudo apt-get install ./record-store_0.1.3_amd64.deb    # Debian, Ubuntu
+sudo dnf install ./record-store-0.1.3-1.x86_64.rpm     # RHEL, Rocky, Fedora
+```
+
+The binaries are statically linked, so the packages depend on nothing and
+install on Debian 11 and RHEL 8 onwards. Nothing starts until you enable it.
+See [Linux Packages](../deployment/linux-packages.md).
+
+## Kubernetes
+
+```bash
+helm install record-store \
+  oci://ghcr.io/openelementslabs/charts/record-store --version 0.1.3 \
+  --namespace record-store --create-namespace \
+  --set auth.rootAccessKey=admin \
+  --set auth.rootSecretKey="$(openssl rand -hex 24)" \
+  --set auth.credentialMasterKey="$(openssl rand -hex 32)" \
+  --set auth.managementSystemToken="$(openssl rand -hex 32)"
+```
+
+See [Kubernetes](../deployment/kubernetes.md) for clustering, storage, ingress
+and where credentials really belong.
+
+## Binary archives
+
+For running Record Store without a package manager or a container. Each release
+attaches two archives per architecture:
+
+| Archive | Use it when |
+| --- | --- |
+| `record-store-0.1.3-linux-amd64-musl.tar.gz` | Anywhere. Statically linked, no libc dependency. |
+| `record-store-0.1.3-linux-amd64.tar.gz` | You want exactly what is inside the container image. |
+
+```bash
+tar xzf record-store-0.1.3-linux-amd64-musl.tar.gz
+sudo install -m 0755 record-store record-store-server /usr/local/bin/
+record-store --version
+```
+
+Both contain `record-store` and `record-store-server`. Check them against
+`SHA256SUMS` from the same release first — see
+[Verifying a Release](../deployment/verifying-releases.md).
+
+Nothing is installed around them: no service, no configuration, no account. For
+a managed service on a Linux host, use the packages above.
 
 ## Building the image yourself
 

@@ -1,0 +1,68 @@
+# Record Store server configuration, installed to /etc/record-store/record-store.toml.
+#
+# This file is marked as a configuration file in both the deb and the rpm, so an
+# upgrade never overwrites your edits. Package upgrades leave a .dpkg-dist or
+# .rpmnew alongside it when the shipped default changes.
+#
+# Secrets do NOT belong here. This file is readable by the record-store group;
+# credentials live in record-store.env, which is 0600 and owned by root. See
+# `record-store server --config /etc/record-store/record-store.toml check-config`
+# to validate changes before restarting.
+
+[server]
+s3_bind = "0.0.0.0:7600"
+# The management API is the control plane. It is bound to loopback here so that
+# installing the package does not publish it; put it behind a reverse proxy, or
+# change this to an interface your operators reach over a private network.
+api_bind = "127.0.0.1:7601"
+shutdown_grace_period_seconds = 30
+
+[storage]
+# Created and owned by systemd through StateDirectory=record-store.
+data_directory = "/var/lib/record-store"
+encryption_enabled = true
+
+[auth]
+# root_access_key, root_secret_key, the credential master key and the management
+# tokens all come from record-store.env. Disable this after you have attached
+# policies to service accounts.
+root_s3_enabled = true
+
+[limits]
+maximum_concurrent_operations = 256
+maximum_custom_metadata_entries = 64
+maximum_custom_metadata_bytes = 16384
+maximum_header_bytes = 65536
+
+[webhooks]
+allow_http = false
+allow_private_networks = false
+request_timeout_seconds = 10
+maximum_attempts = 6
+poll_interval_seconds = 2
+
+[lifecycle]
+interval_seconds = 3600
+batch_size = 100
+
+[sharing]
+shares_enabled = true
+embeds_enabled = true
+maximum_lifetime_days = 365
+require_expiration = false
+require_share_password = false
+maximum_access_count = 10000
+password_attempts_per_minute = 10
+token_probes_per_minute = 60
+unlock_lifetime_hours = 12
+preview_text_limit_bytes = 1048576
+# Set these once you know the hostnames this installation answers on. An embed
+# link is served by the S3 listener, a share link by the console.
+# share_base_url = "https://record-store.example.com"
+# embed_base_url = "https://storage.example.com"
+
+[observability]
+log_filter = "record_store=info,tower_http=info"
+# Left off so `journalctl -u record-store` stays readable. Turn it on when you
+# ship the journal to a log aggregator.
+json = false

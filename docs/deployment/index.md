@@ -6,6 +6,8 @@ Running Record Store somewhere real.
 
 -   **[Container Images](container-images.md)** — the published images, tags, and digest pinning
 -   **[Docker Compose](docker-compose.md)** — the server on its own, and with the console
+-   **[Linux Packages](linux-packages.md)** — the deb and rpm, systemd, and where everything lands
+-   **[Kubernetes](kubernetes.md)** — the Helm chart, standalone and clustered
 -   **[Coolify](coolify.md)** — end-to-end on a Coolify server
 -   **[Reverse Proxy and TLS](reverse-proxy.md)** — what to expose and what to keep private
 -   **[Persistent Storage](persistent-storage.md)** — the data directory and its requirements

@@ -131,6 +131,8 @@ nav:
       - deployment/index.md
       - Container Images: deployment/container-images.md
       - Docker Compose: deployment/docker-compose.md
+      - Linux Packages: deployment/linux-packages.md
+      - Kubernetes: deployment/kubernetes.md
       - Coolify: deployment/coolify.md
       - Reverse Proxy and TLS: deployment/reverse-proxy.md
       - Persistent Storage: deployment/persistent-storage.md

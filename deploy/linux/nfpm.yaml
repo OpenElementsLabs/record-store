@@ -1,0 +1,89 @@
+# nfpm builds the Record Store .deb and .rpm from one description, so the two
+# packages can never drift apart in contents, paths or maintainer scripts.
+#
+#   PKG_ARCH=amd64 PKG_VERSION=0.1.3 \
+#     nfpm package --config deploy/linux/nfpm.yaml --packager deb --target dist
+#
+# The binaries this consumes are the statically linked musl builds. That is the
+# reason both packages declare no libc dependency at all: a package built
+# against the runner's glibc 2.39 would refuse to install on Debian 12
+# (glibc 2.36) or RHEL 9 (glibc 2.34), which are precisely the systems these
+# packages exist for.
+name: record-store
+arch: ${PKG_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+version_schema: semver
+section: net
+priority: optional
+maintainer: Open Elements <info@open-elements.com>
+vendor: Open Elements
+homepage: https://github.com/OpenElementsLabs/record-store
+license: Apache-2.0
+description: |
+  Self-hosted, S3-compatible object storage written in Rust.
+  Record Store serves the S3 API on port 7600 and a native management API on
+  port 7601, stores objects and metadata under /var/lib/record-store, and runs
+  as the unprivileged record-store service account. It ships no default
+  credentials: the package generates a set unique to this machine on first
+  install.
+
+# Statically linked, so there is nothing to depend on. systemd is only a
+# recommendation because the binaries run perfectly well under another init.
+depends: []
+recommends:
+  - systemd
+
+# The binaries are read from a fixed staging path rather than an
+# architecture-specific one: nfpm expands ${VAR} in `arch` and `version` but not
+# in a content `src`, where the glob is resolved literally. build-packages.sh
+# stages the architecture being built into dist/staging before calling nfpm.
+contents:
+  - src: dist/staging/record-store
+    dst: /usr/bin/record-store
+    file_info:
+      mode: 0755
+
+  - src: dist/staging/record-store-server
+    dst: /usr/bin/record-store-server
+    file_info:
+      mode: 0755
+
+  - src: deploy/linux/record-store.service
+    dst: /usr/lib/systemd/system/record-store.service
+    file_info:
+      mode: 0644
+
+  # noreplace: an upgrade must never overwrite an edited configuration. dpkg
+  # leaves a .dpkg-dist beside it and rpm an .rpmnew when the default changes.
+  - src: deploy/linux/record-store.toml
+    dst: /etc/record-store/record-store.toml
+    type: config|noreplace
+    file_info:
+      mode: 0640
+
+  - src: LICENSE
+    dst: /usr/share/doc/record-store/LICENSE
+    file_info:
+      mode: 0644
+
+  - src: record-store.example.toml
+    dst: /usr/share/doc/record-store/record-store.example.toml
+    file_info:
+      mode: 0644
+
+# /var/lib/record-store is created by the postinstall script rather than shipped
+# as a packaged directory: at unpack time the record-store account does not
+# exist yet, so the package manager could not apply the right ownership.
+scripts:
+  postinstall: deploy/linux/scripts/postinstall.sh
+  preremove: deploy/linux/scripts/preremove.sh
+  postremove: deploy/linux/scripts/postremove.sh
+
+deb:
+  fields:
+    Bugs: https://github.com/OpenElementsLabs/record-store/issues
+
+rpm:
+  group: Applications/System
+  summary: Self-hosted, S3-compatible object storage written in Rust

@@ -1,0 +1,21 @@
+apiVersion: v2
+name: record-store
+description: Self-hosted, S3-compatible object storage written in Rust
+type: application
+# Both are stamped by the release workflow from the Git tag, so a chart version
+# always names the Record Store release it deploys.
+version: 0.1.3
+appVersion: "0.1.3"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/OpenElementsLabs/record-store
+sources:
+  - https://github.com/OpenElementsLabs/record-store
+keywords:
+  - object-storage
+  - s3
+  - storage
+maintainers:
+  - name: Open Elements
+    url: https://open-elements.com
+annotations:
+  artifacthub.io/license: Apache-2.0
