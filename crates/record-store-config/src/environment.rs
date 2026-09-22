@@ -243,6 +243,11 @@ impl Config {
             self.cluster.s3_endpoint = Some(value.to_owned());
         }
         if let Some(value) =
+            environment_value(environment, "RECORD_STORE_CLUSTER_MANAGEMENT_ENDPOINT")?
+        {
+            self.cluster.management_endpoint = Some(value.to_owned());
+        }
+        if let Some(value) =
             environment_value(environment, "RECORD_STORE_CLUSTER_REPLICATION_FACTOR")?
         {
             self.cluster.replication_factor =
@@ -530,6 +535,10 @@ mod exhaustive_tests {
             (
                 "RECORD_STORE_CLUSTER_S3_ENDPOINT",
                 "https://s3.example".into(),
+            ),
+            (
+                "RECORD_STORE_CLUSTER_MANAGEMENT_ENDPOINT",
+                "https://manage.example".into(),
             ),
             ("RECORD_STORE_CLUSTER_REPLICATION_FACTOR", "3".into()),
             (

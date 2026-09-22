@@ -16,6 +16,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{EventId, VersionId};
 
@@ -84,6 +85,15 @@ pub enum WriteOrigin {
     Restore,
 }
 
+/// Namespace for deriving storage-event identifiers.
+///
+/// A fixed, arbitrary UUID. Its only job is to keep derived event identifiers
+/// out of any other UUIDv5 namespace; it is not a secret and never changes,
+/// because changing it would renumber every event a subscriber has already seen.
+const EVENT_NAMESPACE: Uuid = Uuid::from_bytes([
+    0x1f, 0x4a, 0x9c, 0x2e, 0x7b, 0x63, 0x4d, 0x18, 0x9a, 0x05, 0xc7, 0x3e, 0x51, 0x88, 0x2d, 0x60,
+]);
+
 /// One storage event a committed mutation owes, as recorded in the catalog.
 ///
 /// The `sequence` is allocated inside the committing transaction, so the order
@@ -93,11 +103,17 @@ pub enum WriteOrigin {
 pub struct MutationEvent {
     /// Position in commit order.
     pub sequence: u64,
-    /// The identifier the event will carry, fixed at commit time.
+    /// The identifier the event will carry, derived at commit time.
     ///
-    /// Allocated here rather than at publish time so that a drain interrupted
-    /// and resumed republishes the same event instead of inventing a second
-    /// one with the same content.
+    /// Derived rather than allocated at publish time so that a drain interrupted
+    /// and resumed republishes the same event instead of inventing a second one
+    /// with the same content — and *derived* rather than random so that every
+    /// member of a cluster computes the same identifier for the same committed
+    /// mutation. A random identifier here would make the journal differ between
+    /// members applying one log entry, and a subscriber would see the same event
+    /// twice under two identities after a failover or a snapshot install.
+    ///
+    /// See [`MutationEvent::derive_id`].
     pub event_id: EventId,
     /// What happened.
     pub event_type: StorageEventType,
@@ -113,9 +129,128 @@ pub struct MutationEvent {
     pub size: Option<u64>,
 }
 
+impl MutationEvent {
+    /// Derives the identifier for an event from the content that defines it.
+    ///
+    /// Every input is already deterministic at the point a command is applied:
+    /// the sequence comes from a counter inside the same transaction, and the
+    /// rest is the command's own data. Two members applying one log entry
+    /// therefore produce byte-identical journal rows.
+    #[must_use]
+    pub fn derive_id(
+        sequence: u64,
+        event_type: StorageEventType,
+        occurred_at: DateTime<Utc>,
+        bucket: &str,
+        key: Option<&str>,
+        version_id: Option<VersionId>,
+    ) -> EventId {
+        let mut material = Vec::with_capacity(96 + bucket.len());
+        material.extend_from_slice(&sequence.to_be_bytes());
+        material.extend_from_slice(event_type.as_str().as_bytes());
+        material.push(0);
+        material.extend_from_slice(&occurred_at.timestamp_micros().to_be_bytes());
+        material.extend_from_slice(bucket.as_bytes());
+        material.push(0);
+        if let Some(key) = key {
+            material.extend_from_slice(key.as_bytes());
+        }
+        material.push(0);
+        if let Some(version_id) = version_id {
+            material.extend_from_slice(version_id.as_uuid().as_bytes());
+        }
+        EventId::from_uuid(Uuid::new_v5(&EVENT_NAMESPACE, &material))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two members applying the same log entry must journal the same event, or
+    /// the replicated state machine is not deterministic and a snapshot taken on
+    /// one member disagrees with another member's replayed state.
+    #[test]
+    fn a_derived_event_identifier_depends_only_on_the_event() {
+        let at = DateTime::from_timestamp(1_700_000_000, 0).expect("timestamp");
+        let version = VersionId::new();
+        let first = MutationEvent::derive_id(
+            7,
+            StorageEventType::ObjectCreated,
+            at,
+            "bucket",
+            Some("key"),
+            Some(version),
+        );
+        let second = MutationEvent::derive_id(
+            7,
+            StorageEventType::ObjectCreated,
+            at,
+            "bucket",
+            Some("key"),
+            Some(version),
+        );
+        assert_eq!(
+            first, second,
+            "the same event must derive the same identifier"
+        );
+    }
+
+    /// Distinct events must not collide, or a subscriber deduplicating on the
+    /// identifier would drop one of them.
+    #[test]
+    fn different_events_derive_different_identifiers() {
+        let at = DateTime::from_timestamp(1_700_000_000, 0).expect("timestamp");
+        let base = MutationEvent::derive_id(
+            7,
+            StorageEventType::ObjectCreated,
+            at,
+            "bucket",
+            Some("key"),
+            None,
+        );
+        let cases = [
+            MutationEvent::derive_id(
+                8,
+                StorageEventType::ObjectCreated,
+                at,
+                "bucket",
+                Some("key"),
+                None,
+            ),
+            MutationEvent::derive_id(
+                7,
+                StorageEventType::ObjectDeleted,
+                at,
+                "bucket",
+                Some("key"),
+                None,
+            ),
+            MutationEvent::derive_id(
+                7,
+                StorageEventType::ObjectCreated,
+                at,
+                "other",
+                Some("key"),
+                None,
+            ),
+            MutationEvent::derive_id(
+                7,
+                StorageEventType::ObjectCreated,
+                at,
+                "bucket",
+                Some("other"),
+                None,
+            ),
+            MutationEvent::derive_id(7, StorageEventType::ObjectCreated, at, "bucket", None, None),
+        ];
+        for case in cases {
+            assert_ne!(
+                base, case,
+                "distinct events must derive distinct identifiers"
+            );
+        }
+    }
 
     /// The wire names are the webhook contract; a rename would silently break
     /// every subscriber filtering on them.

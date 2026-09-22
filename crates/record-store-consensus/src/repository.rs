@@ -155,9 +155,12 @@ impl MetadataRepository for ReplicatedMetadataRepository {
     }
 
     async fn delete_bucket(&self, name: &BucketName) -> Result<Bucket, MetadataError> {
-        self.propose(MetadataCommand::DeleteBucket { name: name.clone() })
-            .await?
-            .into_bucket()
+        self.propose(MetadataCommand::DeleteBucket {
+            name: name.clone(),
+            at: Utc::now(),
+        })
+        .await?
+        .into_bucket()
     }
 
     async fn put_object(
@@ -386,9 +389,12 @@ impl MetadataRepository for ReplicatedMetadataRepository {
         &self,
         id: UploadId,
     ) -> Result<MultipartCleanupResult, MetadataError> {
-        self.propose(MetadataCommand::AbortMultipartUpload { upload_id: id })
-            .await?
-            .into_multipart_cleanup()
+        self.propose(MetadataCommand::AbortMultipartUpload {
+            upload_id: id,
+            at: Utc::now(),
+        })
+        .await?
+        .into_multipart_cleanup()
     }
 
     async fn recover_multipart_completions(&self) -> Result<MultipartCleanupResult, MetadataError> {
@@ -1116,6 +1122,9 @@ mod tests {
                     cluster_id: ClusterId::new(),
                     cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
                     created_at: Utc::now(),
+                    recovery_generation: 0,
+                    recovery_id: None,
+                    recovered_at: None,
                 },
                 config: Box::new(ClusterConfig::default()),
             })
@@ -1130,6 +1139,7 @@ mod tests {
                     versions: NodeVersions::current("test"),
                     rpc_address: "127.0.0.1:17604".to_owned(),
                     s3_endpoint: None,
+                    management_endpoint: None,
                     storage_class: StorageClass::new("standard").expect("class"),
                     failure_domain: FailureDomain::default(),
                     capacity: NodeCapacity::default(),
@@ -1214,6 +1224,9 @@ mod tests {
                     cluster_id: ClusterId::new(),
                     cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
                     created_at: Utc::now(),
+                    recovery_generation: 0,
+                    recovery_id: None,
+                    recovered_at: None,
                 },
                 config: Box::new(ClusterConfig::default()),
             })

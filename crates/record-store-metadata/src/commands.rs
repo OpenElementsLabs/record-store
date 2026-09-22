@@ -88,6 +88,16 @@ pub enum MetadataCommand {
     DeleteBucket {
         /// Bucket name.
         name: BucketName,
+        /// Time the deletion event is recorded at.
+        ///
+        /// Carried in the command rather than read from the clock at apply time:
+        /// the event journal is replicated state, so a member that reads its own
+        /// clock would write a different journal than its peers for the same log
+        /// entry, and a snapshot taken on one member would not match another's
+        /// replayed state. Entries written before this field existed decode as
+        /// the epoch, which is visibly wrong rather than quietly divergent.
+        #[serde(default)]
+        at: DateTime<Utc>,
     },
     /// Replace or remove a bucket's Object Lock default retention.
     SetBucketObjectLock {
@@ -180,6 +190,9 @@ pub enum MetadataCommand {
     AbortMultipartUpload {
         /// Upload identifier.
         upload_id: UploadId,
+        /// Time the abort event is recorded at. See [`MetadataCommand::DeleteBucket`].
+        #[serde(default)]
+        at: DateTime<Utc>,
     },
     /// Reconcile multipart uploads interrupted mid-completion.
     RecoverMultipartCompletions,
@@ -416,8 +429,8 @@ pub fn apply_command_tx(
             })?;
             Ok(MetadataOutcome::Bucket(Box::new(bucket)))
         }
-        MetadataCommand::DeleteBucket { name } => {
-            let bucket = delete_bucket_tx(write, &name)?;
+        MetadataCommand::DeleteBucket { name, at } => {
+            let bucket = delete_bucket_tx(write, &name, at)?;
             Ok(MetadataOutcome::Bucket(Box::new(bucket)))
         }
         MetadataCommand::PutObject {
@@ -471,11 +484,16 @@ pub fn apply_command_tx(
         } => Ok(MetadataOutcome::MultipartUpload(Box::new(
             begin_multipart_completion_tx(write, upload_id, object_id)?,
         ))),
-        MetadataCommand::FinishMultipartUpload { upload_id } => Ok(
-            MetadataOutcome::MultipartCleanup(remove_multipart_tx(write, upload_id, true)?),
-        ),
-        MetadataCommand::AbortMultipartUpload { upload_id } => Ok(
-            MetadataOutcome::MultipartCleanup(remove_multipart_tx(write, upload_id, false)?),
+        MetadataCommand::FinishMultipartUpload { upload_id } => {
+            Ok(MetadataOutcome::MultipartCleanup(remove_multipart_tx(
+                write,
+                upload_id,
+                true,
+                DateTime::<Utc>::default(),
+            )?))
+        }
+        MetadataCommand::AbortMultipartUpload { upload_id, at } => Ok(
+            MetadataOutcome::MultipartCleanup(remove_multipart_tx(write, upload_id, false, at)?),
         ),
         MetadataCommand::RecoverMultipartCompletions => Ok(MetadataOutcome::MultipartCleanup(
             recover_multipart_completions_tx(write)?,
@@ -567,6 +585,7 @@ pub(crate) fn create_bucket_tx(
 pub(crate) fn delete_bucket_tx(
     write: &redb::WriteTransaction,
     name: &BucketName,
+    at: DateTime<Utc>,
 ) -> Result<Bucket, MetadataError> {
     let bucket: Bucket = {
         let table = write
@@ -635,7 +654,7 @@ pub(crate) fn delete_bucket_tx(
         None,
         None,
         None,
-        Utc::now(),
+        at,
     )?;
     Ok(bucket)
 }
@@ -1163,6 +1182,7 @@ pub(crate) fn remove_multipart_tx(
     write: &redb::WriteTransaction,
     id: UploadId,
     require_completing: bool,
+    at: DateTime<Utc>,
 ) -> Result<MultipartCleanupResult, MetadataError> {
     let upload: MultipartUpload = read_tx(
         write,
@@ -1225,7 +1245,7 @@ pub(crate) fn remove_multipart_tx(
             Some(&upload.key),
             None,
             None,
-            Utc::now(),
+            at,
         )?;
     }
     Ok(MultipartCleanupResult { parts })
@@ -1257,7 +1277,11 @@ pub(crate) fn recover_multipart_completions_tx(
         let committed = read_tx::<ObjectMetadata>(write, OBJECTS, &key, "read current object")?
             .is_some_and(|metadata| metadata.id == object_id);
         if committed {
-            cleaned.extend(remove_multipart_tx(write, upload.id, true)?.parts);
+            // A completing upload is finished, not aborted, so this path
+            // journals nothing and needs no timestamp of its own.
+            cleaned.extend(
+                remove_multipart_tx(write, upload.id, true, DateTime::<Utc>::default())?.parts,
+            );
         } else {
             let mut reset = upload;
             reset.state = MultipartUploadState::Active;
@@ -1406,6 +1430,66 @@ mod tests {
         );
     }
 
+    /// The commands that write to the event journal are the ones that used to
+    /// read the wall clock while applying, which made two members produce
+    /// different durable state for the same log entry. The determinism test
+    /// above never reached them, which is precisely why it went unnoticed, so
+    /// they get their own coverage here.
+    ///
+    /// Divergence here is not cosmetic: the journal is exported in snapshots, so
+    /// a member that installs a snapshot would hold different bytes than a member
+    /// that replayed the log, and the two would disagree about what happened.
+    #[tokio::test]
+    async fn journalling_commands_are_deterministic_across_members() {
+        let bucket_record = bucket("journalled");
+        let upload_record = upload(bucket_record.id, "interrupted");
+        // One fixed instant, decided by the proposer and carried in the command,
+        // stands in for the leader's clock at proposal time.
+        let at = DateTime::from_timestamp(1_700_000_000, 0).expect("timestamp");
+        let commands = vec![
+            MetadataCommand::CreateBucket {
+                bucket: Box::new(bucket_record.clone()),
+            },
+            MetadataCommand::CreateMultipartUpload {
+                upload: Box::new(upload_record.clone()),
+            },
+            MetadataCommand::AbortMultipartUpload {
+                upload_id: upload_record.id,
+                at,
+            },
+            MetadataCommand::DeleteBucket {
+                name: bucket_record.name.clone(),
+                at,
+            },
+        ];
+
+        let mut snapshots = Vec::new();
+        for _ in 0..2 {
+            let dir = tempdir().expect("temp");
+            let repo = RedbMetadataRepository::open(dir.path().join("catalog.redb"))
+                .await
+                .expect("repo");
+            for command in commands.clone() {
+                repo.command(command).await.expect("apply command");
+            }
+            let database = repo.database();
+            let entries = tokio::task::spawn_blocking(move || {
+                let read = database.begin_read().expect("begin");
+                export_tx(&read).expect("export")
+            })
+            .await
+            .expect("join");
+            snapshots.push(entries);
+            // A gap between the two replays is what a clock read would turn into
+            // a difference. Applying the same commands must not care.
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            snapshots[0], snapshots[1],
+            "a command that journals an event must record the timestamp it carries, not the              clock of whichever member is applying it"
+        );
+    }
+
     /// Applies a command sequence to a fresh database and returns the outcomes.
     fn apply_all(
         database: &redb::Database,
@@ -1445,6 +1529,7 @@ mod tests {
             (
                 MetadataCommand::DeleteBucket {
                     name: bucket_record.name.clone(),
+                    at: Utc::now(),
                 },
                 "delete_bucket",
             ),
@@ -1576,6 +1661,7 @@ mod tests {
                 &write,
                 MetadataCommand::DeleteBucket {
                     name: BucketName::new("never-created").expect("name"),
+                    at: Utc::now(),
                 },
             ),
             Err(MetadataError::BucketNotFound)
@@ -1704,6 +1790,7 @@ mod tests {
             &write,
             MetadataCommand::AbortMultipartUpload {
                 upload_id: upload_record.id,
+                at: Utc::now(),
             },
         )
         .expect("apply");

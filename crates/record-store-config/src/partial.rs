@@ -103,6 +103,7 @@ pub(crate) struct PartialClusterConfig {
     storage_class: Option<String>,
     failure_domain: Option<String>,
     s3_endpoint: Option<String>,
+    management_endpoint: Option<String>,
     replication_factor: Option<u8>,
     capacity_low_watermark_percent: Option<u32>,
     capacity_high_watermark_percent: Option<u32>,
@@ -131,6 +132,9 @@ impl PartialClusterConfig {
         }
         if let Some(value) = self.failure_domain {
             target.failure_domain = value;
+        }
+        if let Some(value) = self.management_endpoint {
+            target.management_endpoint = Some(value);
         }
         if let Some(value) = self.s3_endpoint {
             target.s3_endpoint = Some(value);

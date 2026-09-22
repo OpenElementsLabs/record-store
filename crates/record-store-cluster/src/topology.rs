@@ -518,6 +518,9 @@ pub struct NodeRegistration {
     pub rpc_address: String,
     /// Address S3 clients may use, when the node is reachable from clients.
     pub s3_endpoint: Option<String>,
+    /// Address the management API is reachable at, when the node exposes one.
+    #[serde(default)]
+    pub management_endpoint: Option<String>,
     /// Operator-assigned storage class.
     pub storage_class: StorageClass,
     /// Operator-assigned topology labels.
@@ -548,6 +551,9 @@ pub struct NodeRecord {
     pub rpc_address: String,
     /// Optional client-facing S3 endpoint.
     pub s3_endpoint: Option<String>,
+    /// Optional management API endpoint, used to redirect leader-only calls.
+    #[serde(default)]
+    pub management_endpoint: Option<String>,
     /// Storage class.
     pub storage_class: StorageClass,
     /// Topology labels.
@@ -592,6 +598,7 @@ impl NodeRecord {
             storage_format_version: registration.versions.storage_format,
             rpc_address: registration.rpc_address,
             s3_endpoint: registration.s3_endpoint,
+            management_endpoint: registration.management_endpoint,
             storage_class: registration.storage_class,
             failure_domain: registration.failure_domain,
             state: NodeState::Joining,

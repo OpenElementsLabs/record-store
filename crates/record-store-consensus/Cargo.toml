@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+futures-util.workspace = true
 record-store-cluster = { path = "../record-store-cluster" }
 record-store-core = { path = "../record-store-core" }
 record-store-metadata = { path = "../record-store-metadata" }

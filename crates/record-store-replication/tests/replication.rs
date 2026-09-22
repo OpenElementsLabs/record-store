@@ -435,6 +435,9 @@ impl Harness {
                     cluster_id: ClusterId::new(),
                     cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
                     created_at: Utc::now(),
+                    recovery_generation: 0,
+                    recovery_id: None,
+                    recovered_at: None,
                 },
                 config: Box::new(config),
             }))
@@ -615,6 +618,7 @@ async fn register(consensus: &MetadataConsensus, node_id: NodeId, index: usize) 
                 versions: NodeVersions::current("test"),
                 rpc_address: format!("10.0.0.{}:7603", index + 1),
                 s3_endpoint: None,
+                management_endpoint: None,
                 storage_class: StorageClass::default(),
                 failure_domain: FailureDomain::parse(&format!("rack={index}")).expect("labels"),
                 capacity: NodeCapacity {
@@ -1218,6 +1222,18 @@ impl Harness {
             Arc::clone(&self.consensus),
         )
     }
+
+    /// The operator-facing status document, assembled exactly as the management
+    /// API assembles it.
+    async fn cluster_status(&self) -> record_store_replication::ClusterStatus {
+        record_store_replication::ClusterStatus::collect(
+            &self.context,
+            &self.consensus,
+            std::collections::BTreeMap::new(),
+        )
+        .await
+        .expect("collect cluster status")
+    }
 }
 
 /// A coordination pass on a healthy cluster has nothing to do, and must say so
@@ -1660,6 +1676,81 @@ async fn a_clustered_store_reports_status_and_readiness() {
     harness.store.check_ready().await.expect("ready");
 }
 
+/// Repair depth alone does not tell an operator whether repair is healthy.
+///
+/// A queue of ten that has not moved in hours is a stalled cluster; a queue of a
+/// thousand that turns over in seconds is a busy one. So the status document has
+/// to carry the backlog's age and the reason work is failing, or diagnosing a
+/// stuck repair means reading logs on every node.
+#[tokio::test]
+async fn repair_status_reports_backlog_age_and_why_work_is_failing() {
+    let harness = Harness::new(2, 3, WriteAcknowledgement::All).await;
+    let object_id = harness
+        .put("stuck.txt", b"bytes")
+        .await
+        .expect("write")
+        .metadata
+        .id;
+
+    // A queued task that has already failed once, as a repair with an
+    // unreachable destination would be.
+    let task = ReplicaTask::queued(
+        object_id,
+        ReplicaTaskKind::Repair,
+        record_store_cluster::ReplicaTaskPriority::High,
+        1_024,
+        Utc::now() - chrono::Duration::seconds(90),
+    )
+    .with_target(Some(harness.peers[0]));
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::EnqueueTask {
+            task: Box::new(task.clone()),
+        })
+        .await
+        .expect("enqueue");
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::FailTask {
+            task_id: task.id,
+            node_id: None,
+            fence: 0,
+            reason: "destination refused the transfer".into(),
+            maximum_attempts: 8,
+            at: Utc::now(),
+        })
+        .await
+        .expect("record the failure");
+
+    let status = harness.cluster_status().await;
+
+    let age = status
+        .repair
+        .oldest_task_age_seconds
+        .expect("an outstanding task must report its age");
+    assert!(
+        age >= 60,
+        "the backlog age must reflect when the work was created, not when it was read: {age}"
+    );
+    let failure = status
+        .repair
+        .failure_reasons
+        .iter()
+        .find(|failure| failure.task_id == task.id)
+        .expect("the failing task must be named in the status document");
+    assert!(
+        failure.reason.contains("destination refused"),
+        "the operator needs the reason, not just a count: {failure:?}"
+    );
+    assert_eq!(failure.attempts, 1, "{failure:?}");
+    assert_eq!(
+        status.repair.unrepairable_payloads, 0,
+        "nothing here is unrepairable; a payload with a healthy replica is backlog, not loss"
+    );
+}
+
 /// Inspection and repair are the operator's tools for reclaiming storage. On a
 /// consistent cluster they must find nothing rather than proposing deletions.
 #[tokio::test]
@@ -1896,6 +1987,7 @@ async fn an_expired_movement_lease_returns_its_task_to_the_queue() {
         target_device: Some(DeviceRecord::legacy_id(node_id)),
         operation_id: None,
         size: 1_024,
+        fence: 0,
         state: record_store_cluster::ReplicaTaskState::Queued,
         attempts: 0,
         last_error: None,
@@ -2147,6 +2239,18 @@ struct PeerSurface {
 
 impl Harness {
     /// Starts this node's internal RPC listener and a client pointed at it.
+    /// The admission surface as the node itself exposes it, for the calls a
+    /// restarting node makes directly rather than over the wire.
+    fn admission(&self) -> record_store_replication::JoinCoordinator {
+        record_store_replication::JoinCoordinator::new(
+            Arc::clone(&self.context),
+            Arc::clone(&self.consensus),
+            record_store_cluster::NodeVersions::current("test"),
+            true,
+            "127.0.0.1:17603".to_owned(),
+        )
+    }
+
     async fn peer_surface(&self) -> PeerSurface {
         let versions = record_store_cluster::NodeVersions::current("test");
         let verifier = Arc::new(PeerVerifier::new(
@@ -2354,6 +2458,87 @@ async fn a_join_token_cannot_be_replayed() {
     assert!(
         replayed.is_err(),
         "a used token must not admit a second node"
+    );
+
+    surface.shutdown.cancel();
+}
+
+/// Removal is only removal if coming back requires a fresh admission decision.
+///
+/// A decommissioned node keeps its credential, its member identifier, and its
+/// local state on disk. If restarting it were enough to re-enter the cluster, it
+/// would rejoin carrying placement the cluster has already released and
+/// replicas it was assumed to have lost — and it would do so without any
+/// operator deciding that should happen.
+#[tokio::test]
+async fn a_decommissioned_node_cannot_rejoin_on_its_old_identity() {
+    let harness = Harness::new(1, 2, WriteAcknowledgement::All).await;
+    let surface = harness.peer_surface().await;
+
+    let issued = harness
+        .operations()
+        .issue_join_token(600, "a new node".to_owned())
+        .await
+        .expect("issue token");
+    let node_id = NodeId::new();
+    let outcome = surface
+        .pool
+        .join_cluster(
+            &surface.address,
+            issued.token.expose(),
+            descriptor(node_id, None),
+            profile(),
+        )
+        .await
+        .expect("join the cluster");
+
+    // The node is retired. It holds no replicas, so this is the clean path.
+    harness
+        .context
+        .cluster
+        .apply(ClusterCommand::SetNodeState {
+            node_id,
+            state: NodeState::Decommissioned,
+            reason: Some("decommissioned in a test".into()),
+            at: Utc::now(),
+        })
+        .await
+        .expect("decommission the node");
+
+    // Restarting it is what actually happens in the field: the node still has
+    // its member identifier and calls activate on boot.
+    let admission = harness.admission();
+    let reactivated = record_store_rpc::ClusterAdmission::activate(
+        &admission,
+        node_id,
+        outcome.member_id,
+        "127.0.0.1:7699".to_owned(),
+        false,
+    )
+    .await;
+    assert!(
+        reactivated.is_err(),
+        "a decommissioned node must not walk back into the consensus group by restarting"
+    );
+
+    // Nor by presenting a fresh, perfectly valid token under the same identity.
+    let second = harness
+        .operations()
+        .issue_join_token(600, "readmission attempt".to_owned())
+        .await
+        .expect("issue token");
+    let rejoined = surface
+        .pool
+        .join_cluster(
+            &surface.address,
+            second.token.expose(),
+            descriptor(node_id, None),
+            profile(),
+        )
+        .await;
+    assert!(
+        rejoined.is_err(),
+        "a decommissioned node must arrive as a new node, not reclaim its old record"
     );
 
     surface.shutdown.cancel();

@@ -168,7 +168,7 @@ impl ReplicatedState {
     }
 }
 
-fn read_applied_state(
+pub(crate) fn read_applied_state(
     read: &redb::ReadTransaction,
 ) -> Result<(Option<LogId<MemberId>>, ConsensusMembership), std::io::Error> {
     let table = read.open_table(APPLIED).map_err(io)?;
@@ -196,7 +196,7 @@ fn record_applied(write: &WriteTransaction, log_id: LogId<MemberId>) -> Result<(
     Ok(())
 }
 
-fn record_membership(
+pub(crate) fn record_membership(
     write: &WriteTransaction,
     membership: &ConsensusMembership,
 ) -> Result<(), std::io::Error> {
@@ -368,6 +368,11 @@ impl RaftSnapshotBuilder<RecordStoreTypeConfig> for StateMachineStore {
     }
 }
 
+/// Makes a directory's entries durable, so a published rename survives a crash.
+fn sync_directory(directory: &Path) -> Result<(), std::io::Error> {
+    std::fs::File::open(directory)?.sync_all()
+}
+
 fn persist_snapshot(
     directory: &Path,
     path: &Path,
@@ -384,6 +389,12 @@ fn persist_snapshot(
     file.sync_all()?;
     drop(file);
     std::fs::rename(&temporary, path)?;
+    // A rename is only durable once the directory entry itself is synced.
+    // Without this the snapshot body survives a power loss while the name that
+    // reaches it does not, and the member restarts with a pointer to a file that
+    // is not there. The snapshot is synced before the pointer so the pointer can
+    // never name a snapshot that has yet to land.
+    sync_directory(directory)?;
 
     let encoded = serde_json::to_vec(pointer).map_err(io)?;
     let pointer_temporary = pointer_path.with_extension("json.tmp");
@@ -392,8 +403,11 @@ fn persist_snapshot(
     file.sync_all()?;
     drop(file);
     std::fs::rename(&pointer_temporary, pointer_path)?;
+    sync_directory(directory)?;
 
-    // Older snapshots are no longer referenced once the pointer is published.
+    // Older snapshots are no longer referenced once the pointer is durable.
+    // Pruning before the sync above could leave a crash with neither the old
+    // snapshot nor a durable pointer to the new one.
     if let Ok(entries) = std::fs::read_dir(directory) {
         for entry in entries.flatten() {
             let candidate = entry.path();
@@ -583,19 +597,54 @@ impl RaftStateMachine<RecordStoreTypeConfig> for StateMachineStore {
     ) -> Result<Option<Snapshot<RecordStoreTypeConfig>>, StorageError<MemberId>> {
         let pointer_path = self.current_snapshot_pointer();
         let directory = self.state.snapshot_directory.clone();
+        // A snapshot is an optimization, not the source of truth: this member
+        // restarts from its state machine, and a snapshot exists so a *peer* can
+        // catch up quickly. So a snapshot that was interrupted mid-publication or
+        // mid-transfer must not stop the member — it is reported and treated as
+        // absent, and openraft rebuilds one from the state machine when it next
+        // needs to ship one. Failing here instead would turn a recoverable
+        // half-written file into a node that cannot start at all, which is the
+        // opposite of what a snapshot is for.
         let loaded = tokio::task::spawn_blocking(
             move || -> Result<Option<(SnapshotPointer, Vec<u8>)>, std::io::Error> {
                 let encoded = match std::fs::read(&pointer_path) {
                     Ok(bytes) => bytes,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        warn!(%error, "the snapshot pointer could not be read; treating it as absent");
+                        return Ok(None);
+                    }
                 };
-                let pointer: SnapshotPointer = serde_json::from_slice(&encoded).map_err(io)?;
+                let pointer: SnapshotPointer = match serde_json::from_slice(&encoded) {
+                    Ok(pointer) => pointer,
+                    Err(error) => {
+                        warn!(
+                            %error,
+                            "the snapshot pointer is unreadable, which means a publication was \
+                             interrupted; it is ignored and a new snapshot will be built"
+                        );
+                        return Ok(None);
+                    }
+                };
                 let path = directory.join(format!("{}.snapshot", pointer.snapshot_id));
                 match std::fs::read(path) {
                     Ok(payload) => Ok(Some((pointer, payload))),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                    Err(error) => Err(error),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        warn!(
+                            snapshot = %pointer.snapshot_id,
+                            "the snapshot pointer names a file that is not on disk; a transfer or \
+                             publication was interrupted and the snapshot is ignored"
+                        );
+                        Ok(None)
+                    }
+                    Err(error) => {
+                        warn!(
+                            snapshot = %pointer.snapshot_id,
+                            %error,
+                            "the published snapshot could not be read; it is ignored"
+                        );
+                        Ok(None)
+                    }
                 }
             },
         )
