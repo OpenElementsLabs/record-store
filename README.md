@@ -6,6 +6,10 @@
 </p>
 
 <p align="center">
+  Self-hosted, S3-compatible storage for records that need version history, retention controls, and verifiable integrity.
+</p>
+
+<p align="center">
   <a href="https://github.com/OpenElementsLabs/record-store/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/OpenElementsLabs/record-store/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/OpenElementsLabs/record-store/actions/workflows/docs.yml?query=branch%3Amain"><img src="https://github.com/OpenElementsLabs/record-store/actions/workflows/docs.yml/badge.svg?branch=main" alt="Documentation"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/OpenElementsLabs/record-store"><img src="https://api.scorecard.dev/projects/github.com/OpenElementsLabs/record-store/badge" alt="OpenSSF Scorecard"></a>
@@ -13,156 +17,230 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/OpenElementsLabs/record-store?label=license&color=195477" alt="Apache-2.0 license"></a>
 </p>
 
-[Record Store](https://record-store.io) is a self-hosted, S3-compatible **records
-store**: one authoritative copy of an object, integrity you can prove to somebody
-else, history you can hold a deployment to, and share and embed links that make a
-stored object usable without copying it somewhere else.
+# Overview
+[Record Store](https://record-store.io) is a self-hosted, S3-compatible storage
+service for files that need version history, retention controls, and verifiable
+integrity. Upload and retrieve files with S3 clients, manage them through a CLI or
+web console, and give people or applications read access through share and embed
+links.
 
-That is a different job from a general object store. A records store is what you
-reach for when the question is not "where did we put the file" but "can we show
-this is the file, unchanged, and show who touched it". Record Store is built for
-the second question:
+**Deployment today: one machine, one copy of your data, no external database.**
+Replication and erasure coding are not implemented. Durability depends on the
+underlying storage and your backups.
 
-- **One authoritative copy.** Payloads are immutable and addressed by generated
-  identifiers, versioning keeps history rather than overwriting it, and an object
-  written over S3 and one written through the console are the same object under the
-  same rules. There is no second copy to drift.
-- **Provable integrity.** Every payload is checksummed on write and verified on
-  read. [Object Lock](https://openelementslabs.github.io/record-store/administration/object-lock/)
-  enforces `GOVERNANCE` and `COMPLIANCE` retention and legal holds, so a retained
-  version refuses deletion by anyone — including the root credential.
-  [Proof bundles](https://openelementslabs.github.io/record-store/reference/proof-bundle/)
-  are signed documents a third party can check **offline**, against the file and
-  nothing else: no server, no network, no credential.
-- **Provable history.** A durable audit trail records who did what, separately from
-  the storage-event feed. Making that trail *tamper-evident* — a hash chain,
-  checkpoints, and external anchoring, so a past state is provable against someone
-  with disk access — is in progress and not yet shipped. Proof bundles already carry
-  the section and report it as unavailable rather than implying it is covered.
-- **Usable links.** A [share link](https://openelementslabs.github.io/record-store/guides/share-links/)
-  gives a person read access to one object; an
-  [embed link](https://openelementslabs.github.io/record-store/guides/embed-links/)
-  gives a site or an application read-only bytes. Both are capabilities, not
-  credentials, and both resolve through the same authoritative object.
+[Product page](https://record-store.io) ·
+[Documentation](https://openelementslabs.github.io/record-store/) ·
+[Installation](https://openelementslabs.github.io/record-store/getting-started/installation/) ·
+[Changelog](CHANGELOG.md)
 
-**A deployment is one process on one machine, with one copy of your data.** No
-external database, message broker, or coordination service runs alongside it.
-Durability is whatever the storage underneath it gives you, so use redundant disks
-and take [backups](https://openelementslabs.github.io/record-store/operations/backup-and-restore/);
-if the machine is gone, the service is down until you restore it. Replication and
-erasure coding are not implemented, and the honest reason is that they are
-substantial work we intend to fund with adoption rather than ship ahead of it.
-Single-node is the supported shape today, and we would rather say so than imply a
-cluster story we cannot stand behind.
+- [Is Record Store right for you?](#is-record-store-right-for-you)
+- [Quickstart](#quickstart)
+- [Install with Docker](#install-with-docker)
+- [S3 compatibility](#s3-compatibility)
+- [Share and embed links](#share-and-embed-links)
+- [Architecture](#architecture)
+- [Operations and documentation](#operations-and-documentation)
+- [Development](#development)
+- [License](#license)
 
-Public S3 traffic uses port 7600, the native management API uses 7601, and the web
-console uses 7602. Every listener is configurable. Record Store is provided and
-maintained by [Open Elements®](https://open-elements.com).
+## Is Record Store right for you?
 
-## Documentation
+| If you need… | What Record Store offers today |
+| --- | --- |
+| Self-hosted storage for records | Immutable payloads, optional bucket versioning, and retention controls |
+| Evidence of file integrity | Checksums on write and read, plus signed proof bundles for offline verification |
+| Access through S3 tools | Common S3 operations; [some features are unsupported](#s3-compatibility) |
+| File sharing | Revocable share pages and read-only embed URLs |
+| Encryption at rest | Optional AES-256-GCM payload encryption; you must preserve the deployment's master key |
+| Access control | Allow/deny policies for S3 service accounts and separate management roles |
+| Event notifications | Signed webhooks for storage events |
+| Automatic expiration | Lifecycle rules for current and non-current object versions |
+| A simple deployment | A single-machine server with embedded metadata databases and an optional web console |
+| Built-in replication or automatic failover | Not implemented; recovery requires restoring or recovering the machine |
+| Tamper-evident audit history | In development; durable audit logging is available today |
 
-Full documentation — installation, configuration, deployment, security, and
-reference — is published at
-**<https://openelementslabs.github.io/record-store/>** and lives in [`docs/`](docs/).
+## Quickstart
 
-To build it locally:
+This walkthrough runs the server and console locally from source. For published
+container images, see [Install with Docker](#install-with-docker).
+
+### Prerequisites
+
+| Tool | Requirement |
+| --- | --- |
+| Git | To clone the repository |
+| Rust | The version selected in [`rust-toolchain.toml`](rust-toolchain.toml) |
+| Node.js and npm | Node.js 24, for the web console |
+
+### 1. Clone the repository
 
 ```bash
-pip install --require-hashes -r requirements-docs.txt
-mkdocs serve
+git clone https://github.com/OpenElementsLabs/record-store.git
+cd record-store
 ```
 
-## Install
+### 2. Configure credentials and start the server
 
-Record Store publishes production container images for `linux/amd64` and
-`linux/arm64` to the GitHub Container Registry:
+Replace each placeholder below with your own value. Use distinct secrets and keep
+the credential master key stable across restarts.
+
+```bash
+export RECORD_STORE_ROOT_ACCESS_KEY='local-admin'
+export RECORD_STORE_ROOT_SECRET_KEY='<your-long-random-secret>'
+export RECORD_STORE_CREDENTIAL_MASTER_KEY='<your-stable-master-key-at-least-32-bytes>'
+export RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN='<your-distinct-token-at-least-32-bytes>'
+export RECORD_STORE_STORAGE_ENCRYPTION_ENABLED=true
+
+cargo run --bin record-store -- server
+```
+
+Record Store does not store the master key. Back it up securely alongside your
+configuration secrets; encrypted data requires it.
+
+### 3. Start the console
+
+In a second terminal, from the repository root:
+
+```bash
+cd console
+npm install
+RECORD_STORE_API_URL=http://127.0.0.1:7601 npm run dev
+```
+
+Open **http://localhost:7602** and sign in with the value of
+`RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN` from step 2. Create a bucket and upload a
+file to try the service.
+
+| Interface | Default local address | Purpose |
+| --- | --- | --- |
+| S3 API | `http://localhost:7600` | Object operations and embed URLs |
+| Management API | `http://localhost:7601` | Administration and health checks |
+| Web console | `http://localhost:7602` | Browser administration and share pages |
+
+To use an S3 client, follow the
+[AWS CLI guide](https://openelementslabs.github.io/record-store/guides/aws-cli/) or
+an [SDK guide](https://openelementslabs.github.io/record-store/sdk/).
+
+## Install with Docker
+
+Published images are available for `linux/amd64` and `linux/arm64`:
 
 ```bash
 docker pull ghcr.io/openelementslabs/record-store:latest
 docker pull ghcr.io/openelementslabs/record-store-console:latest
 ```
 
-`latest` tracks the newest stable release. Name a version instead — `0.1.3`,
-`0.1`, or a digest — for anything you intend to keep running.
+Pulling the images does not start the service. Follow the
+[container deployment guide](https://openelementslabs.github.io/record-store/deployment/container-images/)
+to prepare credentials, persistent storage, and the Compose environment file.
+For a deployment you intend to keep running, pin a release version or image
+digest; `latest` follows the newest stable release.
 
-Both packages are public, so no `docker login` is needed. To run both from the
-published images, with `RECORD_STORE_VERSION` selecting the tag:
+| Setup | Compose file |
+| --- | --- |
+| Published server and console images | [`deploy/docker/compose.ghcr.yml`](deploy/docker/compose.ghcr.yml) |
+| Build the server from source | [`deploy/docker/compose.yml`](deploy/docker/compose.yml) |
+| Build the server and console from source | [`deploy/docker/compose.console.yml`](deploy/docker/compose.console.yml) |
 
-```bash
-RECORD_STORE_VERSION=latest \
-  docker compose --env-file .env -f deploy/docker/compose.ghcr.yml up -d
-```
+For production, configure TLS and keep the management API private. See the
+[production checklist](https://openelementslabs.github.io/record-store/deployment/production-checklist/).
+Release checksums, SBOMs, and available provenance attestations are covered in
+[Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/).
 
-Each release carries SPDX SBOMs and a `SHA256SUMS` file covering every asset.
-Images built since attestation was enabled also carry signed provenance,
-verifiable with `gh attestation verify`; `0.1.1` and earlier do not — see
-[Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/)
-for what can be checked and what that limitation means.
+## S3 compatibility
 
-See [Installation](https://openelementslabs.github.io/record-store/getting-started/installation/),
-[Container Images](https://openelementslabs.github.io/record-store/deployment/container-images/),
-and [Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/).
-Released versions are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+Record Store implements a subset of the S3 API. Clients need the deployment's S3
+endpoint and path-style addressing.
 
-## Supported S3 surface
+| Area | Supported operations |
+| --- | --- |
+| Authentication | Signature Version 4 and presigned `GET/PUT` URLs |
+| Buckets | Create, list, inspect, and delete empty buckets |
+| Objects | Streaming upload and download, metadata inspection, copy, and deletion |
+| Listing | Pagination, prefixes, delimiters, and continuation tokens |
+| Multipart uploads | Create, upload parts, list, complete, and abort |
+| Versioning | Enable or suspend versioning, list versions, read historical versions, and delete markers |
+| Retention | Object Lock, legal holds, and bucket retention defaults |
+| HTTP behavior | Byte ranges, conditional requests, and per-bucket CORS |
 
-- AWS Signature Version 4 header authentication and presigned GET/PUT URLs
-- `ListBuckets`, `CreateBucket`, `HeadBucket`, and empty `DeleteBucket`
-- streaming `PutObject`, `GetObject`, `HeadObject`, and idempotent `DeleteObject`
-- `ListObjectsV2` with bounded pagination, prefix, delimiter, and continuation tokens
-- multipart create, streamed part upload, persisted part listing, completion, abort, and upload listing
-- bucket versioning (`Disabled`, `Enabled`, and `Suspended`), immutable version reads/deletes, delete markers, and `ListObjectVersions`
-- Object Lock with AWS semantics: `GOVERNANCE`/`COMPLIANCE` retention, legal holds, per-bucket defaults, and a governance bypass gated on its own policy permission
-- per-bucket CORS configuration, unsigned browser preflights, and CORS headers on matching S3 responses
-- streaming same-bucket and cross-bucket `CopyObject` with `COPY` and `REPLACE` metadata directives
-- bounded, open-ended, and suffix byte ranges
-- `If-Match`, `If-None-Match`, `If-Modified-Since`, and `If-Unmodified-Since`
-- content type, `x-amz-meta-*`, SHA-256 checksum validation, single-part ETags, and multipart ETags
+> **Unsupported:** ACLs, `UploadPartCopy`, S3 server-side encryption headers, and
+`aws-chunked` trailing-checksum encoding. Unsupported operations or semantic
+headers return an S3 XML `NotImplemented` error.
 
-Presigned multipart part uploads use the same canonical SigV4 verifier. ACLs, `UploadPartCopy`, server-side encryption headers, and AWS's `aws-chunked` trailing-checksum encoding are not implemented. Unsupported operations or semantic headers return S3 XML `NotImplemented`; they are never silently accepted.
+See the [S3 compatibility reference](https://openelementslabs.github.io/record-store/reference/s3-compatibility/)
+for exact behavior and client configuration requirements.
 
-Object Lock is enforced inside the metadata transaction that would remove a version, so a retention placed concurrently cannot be raced. A `COMPLIANCE` retention binds every caller including the root credential; a `GOVERNANCE` retention yields only to `x-amz-bypass-governance-retention: true` presented by a credential holding `s3:BypassGovernanceRetention`, and every bypass is audited. Object Lock is chosen when a bucket is created and cannot be enabled later, because doing so would claim protection over versions written without it. It is enforced by Record Store rather than by the filesystem: it stops deletions through the API, not someone with access to the data directory — see [Object Lock and Trust](https://openelementslabs.github.io/record-store/security/object-lock/).
+Object Lock supports compliance retention, governance retention, and legal holds.
+Compliance retention binds every API caller, including root; governance retention
+allows an explicitly authorized bypass. These controls do not prevent someone with
+access to the data directory from changing or deleting files. See
+[Object Lock and Trust](https://openelementslabs.github.io/record-store/security/object-lock/).
 
-## Architecture and durability
+## Share and embed links
 
-Protocol crates call shared application services; they do not access filesystem internals. Both protocol surfaces go through the same service layer, so an object written over S3 and an object written through the console are the same object under the same rules:
+Both link types grant access to one object and can be revoked. Neither grants
+permission to list, upload, or delete objects.
+
+| | Share link | Embed link |
+| --- | --- | --- |
+| Intended for | A person | A website or application |
+| Delivers | A page for viewing or downloading | Read-only object bytes |
+| Served by | Web console | S3 endpoint |
+| Optional controls | Password, expiry, access count limit | Origin allowlist, expiry |
+| Version selection | Current version or a pinned version | Current version or a pinned version |
+
+The console supports previews for selected media and document formats. HTML, SVG,
+XML, and scripts are available as downloads only. Browser uploads cannot resume;
+an interrupted upload must restart from the beginning.
+
+## Architecture
+
+The S3 and management APIs use a shared service layer. Object payloads live on the
+local filesystem under generated identifiers; bucket names and object keys never
+become filesystem paths. Metadata lives in embedded databases.
 
 ```text
-record-store-s3 ─────┐                         ┌── filesystem store
-            ├──> record-store-service ────────>├── checksum verification
-record-store-api ────┘          │              └── objects/
-                       ▼
-              metadata catalog
-              (buckets, objects, versions)
+S3 API ───────────┐
+                  ├──► Shared service layer ──► Filesystem storage
+Management API ───┘             │               (object payloads and
+                               │                checksum verification)
+                               ▼
+                        Metadata catalog
+                   (buckets, objects, versions)
 ```
 
-A deployment is one process with one copy of your data. A successful write means the payload was streamed to a temporary file, checksummed, fsynced, and atomically renamed into place, with metadata published afterwards — so it survives process crash and power loss to the extent the filesystem honours fsync, and does not survive losing the disk. Redundancy under the data directory is the redundancy you have: use RAID, a mirrored pool, or a replicated volume, and take backups. Erasure coding is not implemented; the unused `record-store-erasure` crate is not wired into any code path.
+Writes stream to temporary files, compute checksums, synchronize to disk, and
+rename payloads into place before publishing metadata. Recovery journals reconcile
+interrupted operations at startup. Crash durability depends on the filesystem
+honoring synchronization requests; it does not protect against losing the disk.
 
-Payloads are immutable and addressed by generated UUIDs. Logical bucket names and object keys never become filesystem paths. Uploads stream through bounded chunks into create-only temporary files while SHA-256 and MD5 are calculated, then use fsync and atomic rename before metadata publication.
+The optional web console runs separately and communicates with the management API.
+The server remains operable through the CLI and APIs without it.
 
-Optional encryption at rest uses a random per-object or per-part data key, chunked AES-256-GCM authenticated encryption, and a master-key-wrapped data key. The payload header persists the algorithm/format version, nonces, logical size, object binding, and a non-secret key reference. Reads and byte ranges remain streaming and authenticate every accessed chunk. Enable it with `RECORD_STORE_STORAGE_ENCRYPTION_ENABLED=true`; the stable `RECORD_STORE_CREDENTIAL_MASTER_KEY` is then mandatory. Existing plaintext objects remain readable when encryption is first enabled, while all new object and multipart payloads are encrypted. Once an encrypted-store marker exists, startup refuses a missing, mismatched, or disabled key configuration rather than making data unreadable silently.
+Read more about [architecture](https://openelementslabs.github.io/record-store/concepts/architecture/)
+and [durability](https://openelementslabs.github.io/record-store/concepts/durability/).
 
-A durable publication journal resolves the payload/metadata crash window on startup. Replaced and deleted payloads use a durable cleanup queue. Multipart completion has durable completing state and startup reconciliation. Metadata schema version 5 uses ordered, non-destructive migrations.
+## Operations and documentation
 
-Local state uses this layout:
+| Task | Guide |
+| --- | --- |
+| Configure the deployment | [Configuration](https://openelementslabs.github.io/record-store/reference/configuration/) and [environment variables](https://openelementslabs.github.io/record-store/reference/environment-variables/) |
+| Set up credentials and policies | [Service accounts](https://openelementslabs.github.io/record-store/administration/service-accounts/) and [policies](https://openelementslabs.github.io/record-store/administration/policies/) |
+| Retain records | [Object Lock](https://openelementslabs.github.io/record-store/administration/object-lock/) |
+| Back up or recover data | [Backup and restore](https://openelementslabs.github.io/record-store/operations/backup-and-restore/) |
+| Verify stored data | [Integrity verification](https://openelementslabs.github.io/record-store/operations/integrity-verification/) and [proof bundles](https://openelementslabs.github.io/record-store/reference/proof-bundle/) |
+| Share or embed files | [Share links](https://openelementslabs.github.io/record-store/guides/share-links/) and [embed links](https://openelementslabs.github.io/record-store/guides/embed-links/) |
+| Diagnose a deployment | [Health and readiness](https://openelementslabs.github.io/record-store/operations/health-and-readiness/) and [troubleshooting](https://openelementslabs.github.io/record-store/troubleshooting/) |
 
-```text
-<data-directory>/
-├── metadata/catalog.redb
-├── metadata/credentials.redb
-├── metadata/audit.redb
-├── metadata/events.redb
-├── metadata/lifecycle.redb
-├── objects/<2 hex>/<2 hex>/<object UUID>
-├── system/
-└── tmp/
-```
+**Backups require the server to be stopped.** They exclude configuration secrets
+and the credential master key; preserve those separately.
 
-Keep the temporary directory on the same filesystem as the data directory so publication by rename remains atomic.
+Full documentation is published at
+**https://openelementslabs.github.io/record-store/** and maintained in [`docs/`](docs/).
 
-## Build and test
+## Development
 
-Rust 1.97.1 is selected by `rust-toolchain.toml`. A system `protoc` is not required.
+Run the Rust checks and release build from the repository root:
 
 ```bash
 cargo fmt --all --check
@@ -171,322 +249,7 @@ cargo test --workspace --all-features --locked
 cargo build --workspace --release --locked
 ```
 
-Dependency security is checked with `tests/rust-audit.sh`, which runs
-`cargo audit --deny warnings` with no exceptions. The 2026-08-22 review upgraded
-`quick-xml` to 0.41.0 for RUSTSEC-2026-0194 and RUSTSEC-2026-0195. RUSTSEC-2026-0235
-was carried for a while as a narrow exception — `rkyv` 0.7.46 reached `Cargo.lock`
-only as an inactive optional serialization backend of `rust_decimal` through
-`openraft -> byte-unit`, and was never compiled — and is now simply gone:
-`rust_decimal` 1.43.0 dropped that optional backend. `--deny warnings` additionally
-makes a yanked crate a failure rather than a note.
-
-One dependency decision is settled ahead of the code that needs it, with the
-condition that ends it. On 2026-09-19, RFC 3161 anchoring was decided on `der`
-0.7 and `cms` 0.2, because `cms` 0.3 exists only as `0.3.0-pre.2`, and a
-pre-release — which promises no compatibility and can be yanked or re-cut under
-the same version — is not acceptable in a project built with `--deny warnings`.
-**Revisit when `cms` 0.3 reaches a stable release.** Neither crate is in
-`Cargo.lock` yet; they arrive with the anchoring work, and they will bring a
-duplicate `const-oid` with them — 0.9.6 through `der` 0.7 alongside the 0.10.2
-already present through `digest` 0.11. That was weighed and accepted: there is no
-advisory against either, and `rsa`, the crate that would make an ASN.1 stack an
-audit problem, stays out of the tree. Because the two versions give unrelated
-`ObjectIdentifier` types, SHA-256's identifier is defined locally in
-`crates/record-store-proof/src/anchor.rs` and checked against the X.690 encoding
-rules, so the duplication cannot surface as a confusing comparison failure while
-parsing a `TSTInfo`. The decision and its removal condition are recorded in
-[Audit Chain and Checkpoints](https://openelementslabs.github.io/record-store/reference/audit-chain/).
-
-The parsers that run before a request is authenticated are fuzzed. Targets live in
-[`fuzz/`](fuzz/) and cover the S3 XML request bodies, the `Authorization` header, the
-presigned-URL query, the `Range` header, the ListObjectsV2 query, and bucket-name and
-object-key validation. Each asserts an invariant rather than only the absence of a
-panic — that an accepted range lies inside the object, that an accepted object key
-holds no `..` or empty segment. CI builds and briefly runs every target; a real
-campaign is `FUZZ_SECONDS=3600 tests/fuzz-smoke.sh`. See
-[Testing](https://openelementslabs.github.io/record-store/contributing/testing/#fuzzing).
-
-Storage microbenchmarks are reproducible with `cargo bench -p record-store-storage --bench storage`.
-
-Real-client compatibility checks exercise boto3, AWS SDK for JavaScript v3, AWS SDK for Go, and AWS SDK for Java v2 against an ephemeral encrypted Record Store data directory on the fixed listeners. They cover bucket/object I/O, listing, multipart completion, presigned requests, browser CORS, ranges, versioning, historical reads, and copy behavior:
-
-```bash
-bash tests/compatibility/run.sh
-```
-
-The runner installs pinned client dependencies into a temporary directory and removes all test state when it exits.
-
-## Run
-
-Record Store intentionally has no built-in credentials. Use distinct, stable secrets:
-
-```bash
-export RECORD_STORE_ROOT_ACCESS_KEY='local-admin'
-export RECORD_STORE_ROOT_SECRET_KEY='replace-with-a-long-random-secret'
-export RECORD_STORE_CREDENTIAL_MASTER_KEY='replace-with-a-stable-32-byte-or-longer-master-key'
-export RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN='replace-with-a-distinct-32-byte-or-longer-token'
-export RECORD_STORE_STORAGE_ENCRYPTION_ENABLED=true
-cargo run --bin record-store -- server
-```
-
-The equivalent daemon entry point is `cargo run --bin record-store-server`. Defaults remain:
-
-```text
-S3 API          http://localhost:7600 (also serves /e/<token> embeds)
-Management API  http://localhost:7601
-Web console     http://localhost:7602 (also serves /s/<token> share pages)
-```
-
-Load the example file with `cargo run --bin record-store -- server --config record-store.example.toml`; secrets should still come from the environment.
-
-### AWS CLI
-
-Configure path-style access and a root or policy-authorized service-account credential:
-
-```bash
-export AWS_ACCESS_KEY_ID="$RECORD_STORE_ROOT_ACCESS_KEY"
-export AWS_SECRET_ACCESS_KEY="$RECORD_STORE_ROOT_SECRET_KEY"
-export AWS_DEFAULT_REGION=us-east-1
-export AWS_EC2_METADATA_DISABLED=true
-export AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED
-export AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED
-aws configure set s3.addressing_style path
-
-aws --endpoint-url http://localhost:7600 s3api list-buckets
-aws --endpoint-url http://localhost:7600 s3api create-bucket --bucket demo
-aws --endpoint-url http://localhost:7600 s3api put-bucket-versioning \
-  --bucket demo --versioning-configuration Status=Enabled
-aws --endpoint-url http://localhost:7600 s3api put-bucket-cors --bucket demo \
-  --cors-configuration '{"CORSRules":[{"AllowedOrigins":["https://app.example.com"],"AllowedMethods":["PUT","GET","HEAD"],"AllowedHeaders":["content-type","x-amz-*"],"ExposeHeaders":["ETag","x-amz-version-id"],"MaxAgeSeconds":3600}]}'
-aws --endpoint-url http://localhost:7600 s3 cp ./example.pdf s3://demo/example.pdf
-aws --endpoint-url http://localhost:7600 s3 cp s3://demo/example.pdf ./downloaded.pdf
-aws --endpoint-url http://localhost:7600 s3api list-object-versions --bucket demo
-```
-
-When using a named profile, apply path-style addressing to that profile as
-well: `aws configure set s3.addressing_style path --profile PROFILE`. Keep the
-endpoint as a plain URL; shell commands must not contain Markdown link syntax.
-The checksum environment settings avoid the `aws-chunked` trailer encoding
-that Record Store intentionally reports as unsupported.
-
-Set `RECORD_STORE_ROOT_S3_ENABLED=false` after service-account policies are established to keep root credentials off the application data plane.
-
-Browser access is denied by default. Configure CORS on each bucket that a web
-origin may reach; Record Store does not apply a deployment-wide wildcard. A successful
-preflight is unauthenticated but grants only the origins, methods, and request
-headers stored on that bucket. The following signed request still needs its
-ordinary S3 permission or valid presigned URL. Record Store never emits
-`Access-Control-Allow-Credentials` because S3 browser authorization belongs in
-the signature rather than ambient cookies.
-
-### Management API and CLI
-
-Only `GET /health` and `GET /ready` are public. System information is part of
-the authenticated management plane, and `GET /metrics` accepts only the
-dedicated `RECORD_STORE_METRICS_SCRAPE_TOKEN`. Set `RECORD_STORE_MANAGEMENT_TOKEN` in the CLI
-environment to the configured system, storage, or auditor token.
-
-If no system token is configured, legacy root Basic authentication remains available for development compatibility and Record Store emits a warning. Management roles are separate from S3 policies: system administrators have full access, storage administrators manage storage/buckets/integrity/lifecycle, and auditors have read-only access to audit and operational metadata.
-
-```bash
-export RECORD_STORE_MANAGEMENT_TOKEN="$RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN"
-cargo run --bin record-store -- status
-cargo run --bin record-store -- bucket list
-cargo run --bin record-store -- bucket create demo
-cargo run --bin record-store -- bucket versioning enable demo
-cargo run --bin record-store -- bucket object-lock show demo
-cargo run --bin record-store -- service-account create my-app
-cargo run --bin record-store -- credential rotate <account-id>
-cargo run --bin record-store -- policy create ./policy.json
-cargo run --bin record-store -- policy attach <policy-id> <account-id>
-cargo run --bin record-store -- webhook list
-cargo run --bin record-store -- audit --limit 100
-cargo run --bin record-store -- verify object demo path/to/object
-cargo run --bin record-store -- storage inspect
-cargo run --bin record-store -- storage repair              # dry run
-cargo run --bin record-store -- storage repair --apply      # explicit orphan deletion
-```
-
-Service-account and webhook signing secrets are returned only when created or rotated. Stored signing material is encrypted with AES-256-GCM under the injected `RECORD_STORE_CREDENTIAL_MASTER_KEY`. The same injected master material derives a domain-separated object key-encryption key when payload encryption is enabled. Record Store refuses to create encrypted credentials without it and refuses startup if encrypted records or payload state exist but the key is unavailable. The master key is never stored by Record Store.
-
-S3 service accounts use attached allow/deny policies. Explicit deny overrides allow; no matching allow is an implicit deny. Policy resources use canonical decoded logical keys and support only a trailing wildcard, avoiding filesystem or ambiguous wildcard semantics.
-
-### Webhooks and lifecycle
-
-Storage events are persisted separately from audit events. Matching webhook deliveries run outside the object upload response path, use HMAC-SHA256 signatures, persist state across restart, and stop after bounded exponential retries. HTTPS and public network targets are the safe defaults; HTTP and private targets require explicit configuration. Redirects are disabled and attempts have a fixed timeout.
-
-Lifecycle rules support prefix-scoped current-object expiration and non-current-version expiration. The supervised worker scans indexed metadata in bounded pages, persists a cursor per rule, and writes an audit event for each successful deletion.
-
-### Offline backup and restore
-
-Stop Record Store before backup or restore. The command obtains an exclusive data-directory lock, so it refuses to race a running server; that lock is what makes the copy a single point in time rather than a catalog caught mid-write. One destination holds object payloads, metadata databases, and the system records that say which storage format and which master key the payloads use, with a manifest carrying format versions, a component inventory, sizes, and a SHA-256 per file. Configuration secrets and the credential master key are deliberately never included.
-
-```bash
-cargo run --bin record-store -- server backup ./backup-2026-09-22
-cargo run --bin record-store -- server verify-backup ./backup-2026-09-22 --level full
-cargo run --bin record-store -- server restore ./backup-2026-09-22 --level full
-```
-
-A backup in progress carries an `INCOMPLETE` marker removed only once the manifest is durable, so an interrupted run cannot be mistaken for a finished one. Verification levels are named separately — `manifest` reads no file contents, `checksums` recomputes every file, `full` also cross-checks the catalog against the payloads — so a structural check is never reported as a full verification. Restore verifies before writing, stages into the data directory and renames components into place, refuses a data directory that already holds one, and leaves a marker that stops the server starting on a half-restored deployment.
-
-`server backup-metadata` and `server restore-metadata` remain for existing runbooks. They copy metadata only and warn on use.
-
-### Start-up diagnostics
-
-```bash
-cargo run --bin record-store -- server --config ./record-store.toml doctor
-```
-
-Reports whether the machine can run the configured deployment — data-directory permissions, whether the temporary directory allows atomic publication by rename, the on-disk storage format, free space, address availability, and which key material is present — without starting anything, opening any database, or printing any secret value. Exits 0 when nothing failed and 7 when something did. The subset that would otherwise surface after the databases are open also runs at start-up, and the listeners are bound before initialization so an occupied address fails immediately.
-
-### Configuration
-
-Configuration file values overlay defaults, then environment variables take precedence. Unknown fields and invalid values fail startup.
-
-| Environment variable | Configuration field |
-| --- | --- |
-| `RECORD_STORE_S3_BIND` | `server.s3_bind` |
-| `RECORD_STORE_API_BIND` | `server.api_bind` |
-| `RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS` | `server.shutdown_grace_period_seconds` |
-| `RECORD_STORE_STORAGE_DATA_DIRECTORY` | `storage.data_directory` |
-| `RECORD_STORE_STORAGE_TEMPORARY_DIRECTORY` | `storage.temporary_directory` |
-| `RECORD_STORE_STORAGE_ENCRYPTION_ENABLED` | `storage.encryption_enabled` |
-| `RECORD_STORE_ROOT_ACCESS_KEY` | `auth.root_access_key` |
-| `RECORD_STORE_ROOT_SECRET_KEY` | `auth.root_secret_key` |
-| `RECORD_STORE_CREDENTIAL_MASTER_KEY` | `auth.credential_master_key` |
-| `RECORD_STORE_ROOT_S3_ENABLED` | `auth.root_s3_enabled` |
-| `RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN` | `auth.management_system_token` |
-| `RECORD_STORE_MANAGEMENT_STORAGE_TOKEN` | `auth.management_storage_token` |
-| `RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN` | `auth.management_auditor_token` |
-| `RECORD_STORE_METRICS_SCRAPE_TOKEN` | `auth.metrics_scrape_token` |
-| `RECORD_STORE_MAX_CONCURRENT_OPERATIONS` | `limits.maximum_concurrent_operations` |
-| `RECORD_STORE_ADMISSION_WAIT_LIMIT_SECONDS` | `limits.admission_wait_limit_seconds` |
-| `RECORD_STORE_MAX_HEADER_BYTES` | `limits.maximum_header_bytes` |
-| `RECORD_STORE_WEBHOOK_ALLOW_HTTP` | `webhooks.allow_http` |
-| `RECORD_STORE_WEBHOOK_ALLOW_PRIVATE_NETWORKS` | `webhooks.allow_private_networks` |
-| `RECORD_STORE_WEBHOOK_TIMEOUT_SECONDS` | `webhooks.request_timeout_seconds` |
-| `RECORD_STORE_WEBHOOK_MAXIMUM_ATTEMPTS` | `webhooks.maximum_attempts` |
-| `RECORD_STORE_WEBHOOK_POLL_INTERVAL_SECONDS` | `webhooks.poll_interval_seconds` |
-| `RECORD_STORE_LIFECYCLE_INTERVAL_SECONDS` | `lifecycle.interval_seconds` |
-| `RECORD_STORE_LIFECYCLE_BATCH_SIZE` | `lifecycle.batch_size` |
-| `RECORD_STORE_OBJECT_LOCK_CLOCK_WATERMARK_INTERVAL_SECONDS` | `object_lock.clock_watermark_interval_seconds` |
-| `RECORD_STORE_OBJECT_LOCK_CLOCK_BACKWARDS_TOLERANCE_SECONDS` | `object_lock.clock_backwards_tolerance_seconds` |
-| `RECORD_STORE_SHARING_SHARES_ENABLED` | `sharing.shares_enabled` |
-| `RECORD_STORE_SHARING_EMBEDS_ENABLED` | `sharing.embeds_enabled` |
-| `RECORD_STORE_SHARING_MAXIMUM_LIFETIME_DAYS` | `sharing.maximum_lifetime_days` |
-| `RECORD_STORE_SHARING_REQUIRE_EXPIRATION` | `sharing.require_expiration` |
-| `RECORD_STORE_SHARING_REQUIRE_PASSWORD` | `sharing.require_share_password` |
-| `RECORD_STORE_SHARING_MAXIMUM_ACCESS_COUNT` | `sharing.maximum_access_count` |
-| `RECORD_STORE_SHARING_PASSWORD_ATTEMPTS_PER_MINUTE` | `sharing.password_attempts_per_minute` |
-| `RECORD_STORE_SHARING_TOKEN_PROBES_PER_MINUTE` | `sharing.token_probes_per_minute` |
-| `RECORD_STORE_SHARING_UNLOCK_LIFETIME_HOURS` | `sharing.unlock_lifetime_hours` |
-| `RECORD_STORE_SHARING_PREVIEW_TEXT_LIMIT_BYTES` | `sharing.preview_text_limit_bytes` |
-| `RECORD_STORE_SHARING_SHARE_BASE_URL` | `sharing.share_base_url` |
-| `RECORD_STORE_SHARING_EMBED_BASE_URL` | `sharing.embed_base_url` |
-| `RECORD_STORE_LOG` | `observability.log_filter` |
-| `RECORD_STORE_LOG_JSON` | `observability.json` |
-| `RECORD_STORE_CONFIG_FILE` | server/CLI configuration selection |
-
-## Preview, share links, and embeds
-
-Stored objects are usable directly rather than only administrable. The console
-previews an object; a *share link* gives a person read access to one object
-through a Record Store page; an *embed link* gives a website or application a read-only
-URL for the bytes. All three resolve through the same authoritative object
-service, so there is no second copy of anything.
-
-```text
-                          Record Store object
-                               │
-            ┌──────────────────┼──────────────────┐
-            ▼                  ▼                  ▼
-         Preview            Share              Embed
-      authenticated       a person        a site or an app
-      console :7602      /s/<token>          /e/<token>
-                        console :7602       S3 API :7600
-```
-
-A share link and an embed link are different capabilities, and they are
-published in different places. A share is a page Record Store renders, so it lives on the
-console alongside the viewer that shows it. An embed serves object bytes into
-somebody else's page, so it lives on the S3-compatible endpoint that already
-publishes object bytes — which is what lets a deployment expose storage to the
-internet while the management plane and the console stay closed. Set
-`sharing.embed_base_url` when storage is published under its own hostname.
-
-Both are capabilities rather than credentials. The opaque token in the path is
-the entire authorization; it names one object and one version policy and can
-express nothing else. Neither can list, write, delete, or reach any other
-object, and neither is ever an S3 credential. Every request re-resolves the
-token against durable state, so a revocation takes effect on the next one.
-
-| | Share link | Embed link |
-| --- | --- | --- |
-| Intended for | A person | A website or application |
-| Delivered by | Console `:7602` | S3 API `:7600` |
-| Version | Current, or a pinned `VersionId` | Current, or a pinned `VersionId` |
-| Access | View, download, or both | Read-only bytes |
-| Optional controls | Password, expiry, strict access budget | Origin allowlist, expiry |
-| Caching | `no-store`, so revocation is immediate | Short, bounded revalidation |
-
-Only media types Record Store is prepared to be responsible for are served inline:
-JPEG, PNG, WebP, GIF, MP4, WebM, MP3, Ogg, WAV, PDF, plain text, Markdown, CSV,
-and JSON. A declared type is corroborated against the object's leading bytes
-before anything is rendered, so an upload labelled `image/png` that begins with
-`<html>` is refused. HTML, SVG, XML, and script are never rendered inline and
-never embeddable inline; they remain downloadable as attachments. Downloads are
-unchanged: always `Content-Disposition: attachment`, always `nosniff`, whatever
-the object turns out to be.
-
-Capability tokens carry 256 bits of entropy from the operating system's
-cryptographic generator. They are stored as a lookup digest plus an
-AES-256-GCM-sealed copy under the deployment's master key, so an administrator
-can copy a link again without Record Store holding it in the clear. Share passwords are
-stored as salted Argon2 hashes, never a digest, and repeated attempts are
-throttled per link and per client so a public link cannot be locked for
-everyone. Capability tokens are redacted from request logs and audit records;
-audit entries name a share or embed by its stable non-secret identifier instead.
-
-## Web console
-
-The console is an administrative interface for Record Store. It is a client of the
-management API on 7601 and is never required: Record Store stays fully operable through
-the CLI and the API alone.
-
-```text
-Applications ──────► S3 API        :7600
-Embedding sites ───► S3 API        :7600  /e/<token>
-Share recipients ──► Web console   :7602  /s/<token>
-Administrators ────► Web console   :7602 ──► Management API :7601
-```
-
-The browser talks only to the console's own origin. The console server attaches
-the management credential and forwards the request to 7601, so the credential
-lives in an HTTP-only cookie the page cannot read, no CORS configuration is
-needed, and the browser never reaches the management API, the stored objects, or
-the metadata catalog.
-
-Public share pages are served by the same application but authorize differently:
-that boundary attaches no credential at all, because the token in the path is the
-authorization. Embed bytes do not pass through the console.
-
-After sign-in, the console reads `GET /api/v1/system/info` for the deployment's
-capability set and renders only the screens that capability set supports.
-
-### Develop
-
-Requires Node 24 and a running Record Store server.
-
-```bash
-cd console
-npm install
-RECORD_STORE_API_URL=http://127.0.0.1:7601 npm run dev   # http://localhost:7602
-```
-
-Sign in with a management role token, for example the value of
-`RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN`. An auditor token signs in to a read-only console.
-
-### Validate
+After installing the console dependencies, run its checks:
 
 ```bash
 cd console
@@ -496,103 +259,30 @@ npm run test
 npm run build
 ```
 
-End-to-end tests drive a real Record Store server rather than a mock, so
-console and API drift is caught rather than papered over:
+See [development setup](https://openelementslabs.github.io/record-store/contributing/development-setup/)
+and [testing](https://openelementslabs.github.io/record-store/contributing/testing/)
+for client compatibility tests, security checks, fuzzing, and end-to-end tests.
 
-```bash
-cd console
-npm run test:e2e:install   # once, downloads Chromium
-npm run test:e2e
-```
+### Repository layout
 
-### Configuration
-
-| Variable | Purpose |
+| Directory | Contents |
 | --- | --- |
-| `RECORD_STORE_API_URL` | management API base URL, default `http://127.0.0.1:7601` |
-| `RECORD_STORE_CONSOLE_SECURE_COOKIES` | force the session cookie's `Secure` flag; defaults to on in production |
-| `PORT` | console listener, default `7602` |
+| `apps/` | Server and command-line applications |
+| `crates/` | Shared services, protocols, storage, and supporting libraries |
+| `console/` | Web console built with Next.js and React |
+| `deploy/docker/` | Docker images and Compose configurations |
+| `docs/` | MkDocs documentation source |
+| `tests/` | Integration, compatibility, and operational checks |
+| `.github/workflows/` | CI, documentation, and release pipelines |
 
-`RECORD_STORE_API_URL` is read on the server at runtime, so one image works in any
-deployment and no localhost assumption is compiled into the bundle.
-
-### Object uploads
-
-The browser sends an object as one streaming `PUT`. The `File` handle itself is
-the request body, so bytes travel from disk to the network without passing
-through the page's heap; object size is not bounded by browser memory.
-
-There is no resume. An interrupted upload fails and has to be sent again from
-the first byte, and the console states that rather than implying otherwise.
-Resumable browser uploads need multipart operations the management API does not
-expose yet: presigned part URLs, so control requests go to 7601 while part
-bodies go straight to the S3 API on 7600 and no long-lived secret reaches the
-page. The transport is one injected function in
-`console/features/objects/upload-transport.ts`, so such a strategy can replace
-it without touching the queue, progress, retry, or cancellation UI above it.
-
-## Docker
-
-The Compose files below build from source, which is what you want while
-developing. For a real deployment, use the published images through
-`deploy/docker/compose.ghcr.yml` — see [Install](#install).
-
-Compose variables may be kept in a repo-root `.env` file (which Git ignores) and loaded explicitly with `--env-file .env`. Use `deploy/docker/compose.console.yml` for Record Store plus the console, or `deploy/docker/compose.yml` for the server on its own.
+### Build the documentation
 
 ```bash
-docker build -f deploy/docker/Dockerfile -t record-store .
-docker run --read-only \
-  -e RECORD_STORE_ROOT_ACCESS_KEY \
-  -e RECORD_STORE_ROOT_SECRET_KEY \
-  -e RECORD_STORE_CREDENTIAL_MASTER_KEY \
-  -e RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN \
-  -e RECORD_STORE_STORAGE_ENCRYPTION_ENABLED=true \
-  -p 7600:7600 -p 7601:7601 \
-  -v record-store-data:/var/lib/record-store record-store
-```
-
-The default Compose file (`deploy/docker/compose.yml`) runs the server on its own. It publishes only S3 on localhost:7600 and management on localhost:7601. Development secrets have explicit local defaults and must not be copied into production:
-
-```bash
-docker compose -f deploy/docker/compose.yml up --build -d
-docker compose -f deploy/docker/compose.yml ps
-```
-
-A second Compose file (`deploy/docker/compose.console.yml`) runs the server together with the web console. It publishes S3 on 7600, management on 7601, and the console on 7602:
-
-```bash
-docker compose --env-file .env -f deploy/docker/compose.console.yml up --build -d
-# open http://localhost:7602 and sign in with RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN
-```
-
-The Compose network carries plaintext traffic and is intended for local development. Terminate TLS in a reverse proxy in front of 7600 and 7602 for any real deployment, and keep 7601 private.
-
-The runtime image is non-root, supports a read-only root filesystem, publishes only ports selected by the operator, uses the management health endpoint, and performs SIGTERM-aware graceful shutdown across the HTTP listeners and background workers.
-
-## Repository structure
-
-```text
-apps/record-store-server       startup, listeners, backup, and worker supervision
-apps/record-store-cli          server and management command-line interface
-crates/record-store-core       validated domain model
-crates/record-store-service    shared bucket/object application services
-crates/record-store-s3         S3 protocol, SigV4, XML, multipart, and versioning
-crates/record-store-api        native management HTTP API and management roles
-crates/record-store-storage    streaming filesystem backend and recovery journal
-crates/record-store-metadata   durable indexed catalog and ordered migrations
-crates/record-store-auth       encrypted credentials and authorization policies
-crates/record-store-audit      durable bounded security audit trail
-crates/record-store-sharing    share and embed capabilities
-crates/record-store-events     durable events and signed webhook delivery
-crates/record-store-lifecycle  incremental lifecycle expiration worker
-crates/record-store-config     configuration loading and validation
-crates/record-store-observability structured tracing initialization
-console/              web console: Next.js, React, Tailwind, TanStack
-deploy/docker/        container and Compose definitions
-docs/                 MkDocs documentation site
-.github/workflows/    CI, documentation, and the release pipeline
+pip install --require-hashes -r requirements-docs.txt
+mkdocs serve
 ```
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Record Store is maintained by [Open Elements](https://open-elements.com) and
+distributed under the [Apache License 2.0](LICENSE).
