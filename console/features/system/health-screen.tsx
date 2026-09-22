@@ -13,10 +13,16 @@ import {
   useClusterEnabled,
   useDeployment,
 } from '@/features/system/deployment';
-import { queryKeys, useStorageStatus, useStorageUsage } from '@/hooks/use-system';
+import { queryKeys, useReadiness, useStorageStatus, useStorageUsage } from '@/hooks/use-system';
 import { fetchClusterHealth } from '@/lib/api/cluster';
 import { fetchClusterStatus } from '@/lib/api/cluster';
-import { formatBytes, formatBytesOf, formatCount, formatRelativeTime } from '@/lib/format';
+import {
+  formatBytes,
+  formatBytesOf,
+  formatCount,
+  formatDateTime,
+  formatRelativeTime,
+} from '@/lib/format';
 import type { BackgroundTaskStatus } from '@/types/cluster';
 
 /**
@@ -40,14 +46,8 @@ export function HealthScreen() {
 
       <Card>
         <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Detail label="Status">
-            {status.isPending ? (
-              <StatusPending />
-            ) : status.isError ? (
-              <StatusBadge level="critical" label="Unavailable" />
-            ) : (
-              <StatusBadge level="healthy" label="Ready" />
-            )}
+          <Detail label="Service readiness">
+            <ReadinessBadge />
           </Detail>
           <Detail label="Mode">
             <span className="type-body">{deploymentModeLabel(info.mode)}</span>
@@ -56,8 +56,10 @@ export function HealthScreen() {
             <span className="font-mono type-body">{info.version}</span>
           </Detail>
           <Detail label="Metadata">
-            {status.isError ? (
-              <StatusBadge level="critical" label="Unreachable" />
+            {usage.isPending ? (
+              <StatusPending />
+            ) : usage.isError ? (
+              <StatusBadge level="unknown" label="Unavailable" />
             ) : (
               <StatusBadge level="healthy" label="Responding" />
             )}
@@ -114,7 +116,13 @@ export function HealthScreen() {
           <MetricCard
             label="Stored objects"
             value={
-              usage.data ? formatCount(usage.data.object_count) : <Skeleton className="h-7 w-16" />
+              usage.isError ? (
+                'Unavailable'
+              ) : usage.data ? (
+                formatCount(usage.data.object_count)
+              ) : (
+                <Skeleton className="h-7 w-16" />
+              )
             }
             detail={
               usage.data
@@ -125,12 +133,100 @@ export function HealthScreen() {
         </div>
       )}
 
+      {usage.isError ? (
+        <Card>
+          <ErrorState error={usage.error} onRetry={() => void usage.refetch()} />
+        </Card>
+      ) : null}
+      <ReadinessExplanation />
+      <p className="type-meta-subtle">
+        {status.dataUpdatedAt
+          ? `Storage last observed ${formatDateTime(new Date(status.dataUpdatedAt).toISOString())}. `
+          : ''}
+        Capacity observations do not establish object integrity.
+      </p>
+
       {/* Subsystems renders in every mode: reporting what is not enabled is
           the point, not an omission. */}
       <Subsystems />
 
       {clusterEnabled ? <BackgroundWorkers /> : null}
     </>
+  );
+}
+
+/**
+ * Whether the server can actually serve, as opposed to merely answering.
+ *
+ * Liveness and readiness are different questions and an operator needs them
+ * apart: a process that responds to every request while its storage is
+ * read-only is live and not ready, and one generic "Responding" badge would
+ * describe both as healthy.
+ */
+function ReadinessBadge() {
+  const readiness = useReadiness();
+  if (readiness.isPending) return <StatusPending />;
+  const result = readiness.data;
+  if (!result) return <StatusBadge level="unknown" label="Unknown" />;
+  if (result.state === 'ready') return <StatusBadge level="healthy" label="Ready" />;
+  if (result.state === 'not-ready') return <StatusBadge level="critical" label="Not ready" />;
+  return <StatusBadge level="unknown" label="Unreachable" />;
+}
+
+/**
+ * Says what readiness established, and what to do when it did not.
+ *
+ * A badge alone leaves an operator guessing which of two very different
+ * incidents they have, so the failure states carry their reason and the
+ * request identifier that correlates with the server's own log line.
+ */
+function ReadinessExplanation() {
+  const readiness = useReadiness();
+  const result = readiness.data;
+  const observed = readiness.dataUpdatedAt
+    ? formatDateTime(new Date(readiness.dataUpdatedAt).toISOString())
+    : null;
+
+  if (!result) return null;
+  if (result.state === 'ready') {
+    return (
+      <p className="type-meta-subtle">
+        {observed ? `Readiness last confirmed ${observed}. ` : ''}
+        The server completed a write, synchronise, and delete probe against its storage path, so it
+        can accept writes. This says nothing about the integrity of objects already stored.
+      </p>
+    );
+  }
+  if (result.state === 'not-ready') {
+    return (
+      <Card>
+        <CardContent className="space-y-2">
+          <p className="type-body text-danger" role="alert">
+            The server is running but reports it cannot serve. It will refuse writes until this
+            clears.
+          </p>
+          <p className="type-meta">{result.reason}</p>
+          <p className="type-meta-subtle">
+            Check the storage path for a full or read-only filesystem, then check the server log.
+            {result.requestId ? ` Correlate with request ${result.requestId}.` : ''}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <Card>
+      <CardContent className="space-y-2">
+        <p className="type-body text-danger" role="alert">
+          The management API could not be reached, so readiness is unknown.
+        </p>
+        <p className="type-meta">{result.reason}</p>
+        <p className="type-meta-subtle">
+          This is a connectivity or process problem rather than a storage one. Nothing on this page
+          below is current.
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -172,7 +268,8 @@ function Subsystems() {
     refetchInterval: 30_000,
   });
 
-  const reachable = !status.isError;
+  const reachable = status.isSuccess;
+  const usage = useStorageUsage();
   const rows: readonly {
     readonly name: string;
     readonly detail: string;
@@ -182,20 +279,20 @@ function Subsystems() {
     {
       name: 'Management API',
       detail: 'Serves this console and the CLI.',
-      state: reachable ? 'healthy' : 'critical',
-      label: reachable ? 'Responding' : 'Unreachable',
+      state: status.isPending ? 'unknown' : reachable ? 'healthy' : 'critical',
+      label: status.isPending ? 'Checking' : reachable ? 'Responding' : 'Unavailable',
     },
     {
       name: 'Object storage',
       detail: 'Reads and writes object payloads.',
       state: status.isPending ? 'unknown' : reachable ? 'healthy' : 'critical',
-      label: status.isPending ? 'Checking' : reachable ? 'Ready' : 'Unavailable',
+      label: status.isPending ? 'Checking' : reachable ? 'Responding' : 'Unavailable',
     },
     {
       name: 'Metadata',
       detail: 'Holds buckets, objects, and versions.',
-      state: status.isPending ? 'unknown' : reachable ? 'healthy' : 'critical',
-      label: status.isPending ? 'Checking' : reachable ? 'Responding' : 'Unreachable',
+      state: usage.isPending ? 'unknown' : usage.isError ? 'critical' : 'healthy',
+      label: usage.isPending ? 'Checking' : usage.isError ? 'Unavailable' : 'Responding',
     },
     {
       name: 'Consensus',
@@ -203,18 +300,26 @@ function Subsystems() {
         ? 'Agrees metadata changes between members.'
         : 'Only used when running as a cluster.',
       state: clusterEnabled
-        ? cluster.data
-          ? cluster.data.metadata.status.writable
-            ? 'healthy'
-            : 'critical'
-          : 'unknown'
+        ? cluster.isError
+          ? 'critical'
+          : cluster.data
+            ? cluster.data.metadata.status.writable
+              ? 'healthy'
+              : 'critical'
+            : cluster.isError
+              ? 'critical'
+              : 'unknown'
         : 'disabled',
       label: clusterEnabled
-        ? cluster.data
-          ? cluster.data.metadata.status.writable
-            ? 'Writable'
-            : 'No quorum'
-          : 'Checking'
+        ? cluster.isError
+          ? 'Unavailable'
+          : cluster.data
+            ? cluster.data.metadata.status.writable
+              ? 'Writable'
+              : 'No quorum'
+            : cluster.isError
+              ? 'Unavailable'
+              : 'Checking'
         : 'Not enabled',
     },
     {
@@ -222,11 +327,21 @@ function Subsystems() {
       detail: clusterEnabled
         ? 'Keeps the configured number of copies.'
         : 'A standalone server keeps a single copy.',
-      state: clusterEnabled ? (cluster.data ? cluster.data.data.health : 'unknown') : 'disabled',
+      state: clusterEnabled
+        ? cluster.isError
+          ? 'critical'
+          : cluster.data
+            ? cluster.data.data.health
+            : 'unknown'
+        : 'disabled',
       label: clusterEnabled
-        ? cluster.data
-          ? capitalise(cluster.data.data.health)
-          : 'Checking'
+        ? cluster.isError
+          ? 'Unavailable'
+          : cluster.data
+            ? capitalise(cluster.data.data.health)
+            : cluster.isError
+              ? 'Unavailable'
+              : 'Checking'
         : 'Not enabled',
     },
   ];

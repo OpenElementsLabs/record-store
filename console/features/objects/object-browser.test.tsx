@@ -327,3 +327,196 @@ describe('ObjectBrowser', () => {
     expect(screen.queryByRole('menuitem', { name: /copy to/i })).toBeNull();
   });
 });
+
+describe('uploading over an existing key', () => {
+  /**
+   * Routes every call by URL so the bucket lookup answers with buckets. The
+   * versioning state is what decides whether an overwrite loses anything, so a
+   * test that cannot vary it cannot test the warning.
+   */
+  function respond(versioning: 'enabled' | 'disabled' | 'suspended') {
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/v1/buckets?') || String(url).endsWith('/v1/buckets')) {
+        return Promise.resolve(
+          jsonResponse([
+            {
+              id: 'b1',
+              organization_id: 'o1',
+              name: 'uploads',
+              created_at: '2026-08-01T10:00:00Z',
+              versioning,
+              quota: { bytes: { limit: null }, objects: { limit: null } },
+              object_count: 1,
+              logical_bytes: 1,
+              version_count: 1,
+              version_bytes: 1,
+              multipart_bytes: 0,
+            },
+          ]),
+        );
+      }
+      return Promise.resolve(jsonResponse(page({ objects: [existing()], prefixes: [] })));
+    });
+  }
+
+  function existing() {
+    return {
+      key: 'report.pdf',
+      size: 2_048,
+      content_type: 'application/pdf',
+      etag: 'abc',
+      checksum: 'sha256:deadbeef',
+      version_id: 'v1',
+      created_at: '2026-08-01T10:00:00Z',
+      modified_at: '2026-08-02T10:00:00Z',
+      custom_metadata: {},
+    };
+  }
+
+  async function choose(name: string) {
+    const input = screen.getByLabelText('Upload files') as HTMLInputElement;
+    await userEvent.upload(input, new File(['bytes'], name, { type: 'application/pdf' }));
+  }
+
+  it('states what this bucket does to an existing key, rather than telling the reader to check', async () => {
+    respond('enabled');
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+
+    expect(await screen.findByText(/Versioning is on/)).toBeTruthy();
+    expect(screen.queryByText(/Check bucket versioning/)).toBeNull();
+  });
+
+  it('pauses before overwriting and says the previous bytes cannot be recovered', async () => {
+    respond('disabled');
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByRole('link', { name: /report\.pdf/ });
+
+    await choose('report.pdf');
+
+    expect(await screen.findByText('report.pdf already exists here')).toBeTruthy();
+    expect(screen.getByText(/permanently replaces the stored content/)).toBeTruthy();
+  });
+
+  /**
+   * With versioning on, replacing a key keeps the previous content, so there is
+   * nothing to confirm. Asking anyway would be friction in front of a safe
+   * action — and would teach the reader to dismiss the dialog that does matter.
+   */
+  it('does not interrupt a re-upload that keeps the previous content', async () => {
+    respond('enabled');
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByRole('link', { name: /report\.pdf/ });
+
+    await choose('report.pdf');
+
+    expect(screen.queryByText('report.pdf already exists here')).toBeNull();
+    expect(await screen.findByRole('heading', { name: 'Uploads' })).toBeTruthy();
+  });
+
+  it('interrupts a re-upload that replaces a suspended bucket’s null version', async () => {
+    respond('suspended');
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByRole('link', { name: /report\.pdf/ });
+
+    await choose('report.pdf');
+
+    expect(await screen.findByText('report.pdf already exists here')).toBeTruthy();
+    expect(screen.getByText(/replaces the null version permanently/)).toBeTruthy();
+  });
+
+  /**
+   * The check can only see the loaded page, so it can prove a collision and
+   * never prove the absence of one. A file with no match here therefore uploads
+   * without any claim being made about the rest of the bucket.
+   */
+  it('uploads a non-colliding file without claiming the bucket has no such key', async () => {
+    respond('disabled');
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+    await screen.findByRole('link', { name: /report\.pdf/ });
+
+    await choose('different.pdf');
+
+    expect(screen.queryByText(/already exists here/)).toBeNull();
+    expect(screen.queryByText(/no conflicts/i)).toBeNull();
+    expect(await screen.findByRole('heading', { name: 'Uploads' })).toBeTruthy();
+  });
+});
+
+describe('finding objects by key', () => {
+  /**
+   * The storage layer holds keys in one ordered index, so a listing is a range
+   * scan and the only matching available is on the start of the key. The UI has
+   * to say that, because a control labelled "search" that silently fails to
+   * find `report.pdf` inside `documents/` is worse than no control.
+   */
+  it('describes its scope as the start of the key, never as a search of names or contents', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(page()));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+
+    const scope = await screen.findByText(/Searches every folder in uploads/);
+    expect(scope.textContent).toMatch(/start of the whole key/);
+    expect(scope.textContent).toMatch(
+      /does not match words inside a name, metadata, or file contents/,
+    );
+  });
+
+  /**
+   * A find spans the bucket, which means dropping the delimiter. With it the
+   * server collapses everything deeper into prefix rows, and a key two folders
+   * down would never appear.
+   */
+  it('drops the delimiter so results span every folder rather than one level', async () => {
+    searchParams = new URLSearchParams('find=documents/');
+    fetchMock.mockResolvedValue(jsonResponse(page({ prefixes: [] })));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('prefix=documents%2F');
+    expect(url).not.toContain('delimiter');
+  });
+
+  it('shows the whole key in results, because two folders can hold the same file name', async () => {
+    searchParams = new URLSearchParams('find=doc');
+    fetchMock.mockResolvedValue(jsonResponse(page({ prefixes: [] })));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+
+    expect(await screen.findByText('documents/report.pdf')).toBeTruthy();
+  });
+
+  it('explains the matching rule when a find returns nothing, instead of shrugging', async () => {
+    searchParams = new URLSearchParams('find=report.pdf');
+    fetchMock.mockResolvedValue(jsonResponse(page({ objects: [], prefixes: [] })));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+
+    expect(await screen.findByText(/No keys in uploads begin with/)).toBeTruthy();
+    expect(screen.getByText(/does not match “documents\/report\.pdf”/)).toBeTruthy();
+  });
+
+  /**
+   * Uploading needs a folder to land in and a find is not one, so the affordance
+   * goes rather than quietly writing into whatever prefix was last visited.
+   */
+  it('withdraws the upload control while finding, since results are not a folder', async () => {
+    searchParams = new URLSearchParams('find=doc');
+    fetchMock.mockResolvedValue(jsonResponse(page({ prefixes: [] })));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+
+    await screen.findByText('documents/report.pdf');
+    expect(screen.queryByLabelText('Upload files')).toBeNull();
+  });
+
+  it('keeps the find in the URL so the result set survives navigation', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(page()));
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+
+    await userEvent.type(
+      await screen.findByLabelText('Find keys beginning with'),
+      'documents/2026',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Find' }));
+
+    expect(push).toHaveBeenCalled();
+    expect(String(push.mock.calls.at(-1)?.[0])).toContain('find=documents%2F2026');
+  });
+});

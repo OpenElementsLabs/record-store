@@ -29,7 +29,8 @@ test.describe('storage workflows', () => {
       buffer: Buffer.from(contents),
     });
 
-    await expect(page.getByText('Uploads')).toBeVisible();
+    // The queue panel's heading, not any prose that happens to say "uploads".
+    await expect(page.getByRole('heading', { name: 'Uploads' })).toBeVisible();
     await expect(page.getByRole('link', { name: /greeting\.txt/ })).toBeVisible({
       timeout: 20_000,
     });
@@ -175,5 +176,122 @@ test.describe('storage workflows', () => {
     // The badge on the newest version, not the "Current state" label beside it.
     await expect(page.getByText('Current', { exact: true }).first()).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: 'doc.txt' })).toHaveCount(2);
+  });
+});
+
+test.describe('finding objects across folders', () => {
+  /**
+   * The real question this answers: an object two folders deep, whose location
+   * the reader does not remember. Folder navigation cannot answer it, and the
+   * storage layer offers no substring matching — so the find is a bucket-wide
+   * scan by the start of the key, against the real backend.
+   */
+  test('finds a nested object the folder view would hide, and states its scope', async ({
+    signedIn,
+  }) => {
+    const page = signedIn;
+    const bucket = uniqueBucket('find');
+
+    await page.goto('/buckets');
+    await page
+      .getByRole('button', { name: /create bucket/i })
+      .first()
+      .click();
+    await page.getByLabel('Bucket name').fill(bucket);
+    await page.getByRole('button', { name: 'Create bucket' }).click();
+    await page.getByRole('link', { name: bucket }).click();
+
+    await page.goto(`/buckets/${bucket}?prefix=reports%2F2026%2F`);
+    await expect(page.getByText('Nothing under this prefix')).toBeVisible({ timeout: 20_000 });
+    await page.setInputFiles('input[type="file"]', {
+      name: 'annual.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('buried two folders down'),
+    });
+    await expect(page.getByRole('link', { name: /annual\.txt/ })).toBeVisible({ timeout: 20_000 });
+
+    // From the bucket root the object is invisible: only the folder shows.
+    await page.goto(`/buckets/${bucket}`);
+    await expect(page.getByRole('button', { name: 'reports' })).toBeVisible();
+    await expect(page.getByRole('link', { name: /annual\.txt/ })).toHaveCount(0);
+
+    await page.getByLabel('Find keys beginning with').fill('reports/');
+    await page.getByRole('button', { name: 'Find' }).click();
+
+    // The whole key, because results span folders.
+    await expect(page.getByRole('link', { name: 'reports/2026/annual.txt' })).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.getByText(/Keys in/)).toBeVisible();
+    await expect(page).toHaveURL(/find=reports/);
+
+    // Prefix-only matching is stated, and demonstrably true: the bare file name
+    // does not match a key that begins with its folder.
+    await page.getByLabel('Find keys beginning with').fill('annual.txt');
+    await page.getByRole('button', { name: 'Find' }).click();
+    await expect(page.getByText(/No keys in .* begin with/)).toBeVisible({ timeout: 20_000 });
+    // The empty state's own explanation, not the persistent scope note above it.
+    await expect(page.getByText(/Matching is on the beginning of the whole key/)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Clear' }).click();
+    await expect(page.getByRole('button', { name: 'reports' })).toBeVisible();
+  });
+});
+
+test.describe('uploading over an existing object', () => {
+  /**
+   * The console knows the bucket's versioning state, so it can say what an
+   * overwrite costs before it happens rather than telling the reader to go and
+   * check. With versioning off, the previous bytes are genuinely unrecoverable.
+   */
+  test('warns before replacing a key and states the consequence for this bucket', async ({
+    signedIn,
+  }) => {
+    const page = signedIn;
+    const bucket = uniqueBucket('overwrite');
+
+    await page.goto('/buckets');
+    await page
+      .getByRole('button', { name: /create bucket/i })
+      .first()
+      .click();
+    await page.getByLabel('Bucket name').fill(bucket);
+    await page.getByRole('button', { name: 'Create bucket' }).click();
+    await page.getByRole('link', { name: bucket }).click();
+
+    // A new bucket does not version, and the screen says so rather than
+    // deferring the question.
+    await expect(page.getByText(/Versioning is off/)).toBeVisible();
+
+    await page.setInputFiles('input[type="file"]', {
+      name: 'contract.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('first'),
+    });
+    await expect(page.getByRole('link', { name: /contract\.txt/ })).toBeVisible({
+      timeout: 20_000,
+    });
+
+    await page.setInputFiles('input[type="file"]', {
+      name: 'contract.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('second'),
+    });
+
+    await expect(page.getByText('contract.txt already exists here')).toBeVisible();
+    await expect(page.getByText(/previous bytes cannot be recovered/)).toBeVisible();
+
+    // Dismissing must not upload: the file stays unsent.
+    await page.getByRole('button', { name: /cancel/i }).click();
+    await expect(page.getByText('contract.txt already exists here')).toHaveCount(0);
+
+    await page.setInputFiles('input[type="file"]', {
+      name: 'contract.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('second'),
+    });
+    await page.getByRole('button', { name: 'Upload anyway' }).click();
+    await expect(page.getByRole('heading', { name: 'Uploads' })).toBeVisible();
+    await expect(page.getByText('Stored successfully.')).toBeVisible({ timeout: 20_000 });
   });
 });
