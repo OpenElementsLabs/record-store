@@ -280,6 +280,7 @@ mod tests {
             storage_format_version: 1,
             rpc_address: "127.0.0.1:7603".into(),
             s3_endpoint: None,
+            management_endpoint: None,
             storage_class: StorageClass::default(),
             failure_domain: FailureDomain::parse(&format!("rack={rack}")).expect("labels"),
             state: NodeState::Healthy,

@@ -1158,6 +1158,9 @@ mod tests {
                             cluster_id: ClusterId::new(),
                             cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
                             created_at: Utc::now(),
+                            recovery_generation: 0,
+                            recovery_id: None,
+                            recovered_at: None,
                         },
                         config: Box::new(ClusterConfig::default()),
                     }))

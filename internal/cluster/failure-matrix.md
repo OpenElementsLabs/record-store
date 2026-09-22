@@ -42,6 +42,8 @@ cargo test -p record-store-cluster -p record-store-consensus \
 | **A write fenced to a superseded term is refused** | `a_write_fenced_to_a_stale_term_is_refused_by_the_current_leader` | same |
 | A read barrier makes a leader commit visible to a follower on the first read | `a_read_barrier_makes_a_leader_commit_visible_to_a_follower_immediately` | same |
 | **A forwarded write is never forwarded again, so redirects cannot cycle** | `a_forwarded_write_is_never_forwarded_a_second_time` | same |
+| **A leader-only operation redirects the caller to the leader** | `a_leader_only_operation_redirects_to_the_leader_it_names`, `a_configured_scheme_on_the_leader_endpoint_is_preserved` | `record-store-api/src/handlers/cluster.rs` |
+| **A leader with no management endpoint is named rather than redirected to** | `a_leader_without_a_management_endpoint_is_named_rather_than_redirected_to` | same |
 | Snapshots compact the log and transfer to a new member | `snapshots_compact_the_log_and_transfer_to_a_new_member` | same |
 | **A member restored from a snapshot still enforces retention** | `a_member_restored_from_a_snapshot_still_enforces_retention` | `record-store-metadata/tests/object_lock.rs` |
 | **A member restored from a snapshot inherits the clock high-water mark** | `a_member_restored_from_a_snapshot_inherits_the_clock_high_water_mark` | same |
@@ -100,6 +102,19 @@ cargo test -p record-store-cluster -p record-store-consensus \
 | A snapshot carries retention, events, and the clock mark | see §2 snapshot rows | `record-store-metadata/tests/object_lock.rs` |
 | Reconciliation of a consistent node changes nothing | `reconciliation_of_a_consistent_node_changes_nothing` | `record-store-replication/tests/replication.rs` |
 | An incompatible storage format is refused by name, and a v4 directory migrates and serves every object unchanged | `a_schema_four_directory_starts_migrates_and_serves_every_object_unchanged` | `record-store-metadata/tests/migration_v4.rs` |
+| A member recovers from durable local state across a restart | `a_single_member_group_commits_and_survives_restart` | `record-store-consensus/tests/consensus.rs` |
+| **An ordinary restart resumes the same cluster and is not a recovery** | `an_ordinary_restart_resumes_the_same_cluster` | `record-store-server/src/cluster.rs` |
+| **A survivor with data and no metadata refuses to form a second cluster** | `a_survivor_whose_metadata_state_is_gone_refuses_to_form_a_second_cluster` | same |
+| **A survivor with seeds rejoins instead of being refused** | `a_survivor_with_seeds_configured_is_allowed_to_rejoin_instead` | same |
+| **An identity and a state that disagree refuse to pick one** | `a_node_whose_identity_and_state_disagree_refuses_to_pick_one` | same |
+| **A node that lost its identity file refuses to adopt its own data** | `a_node_that_lost_its_identity_file_refuses_to_adopt_its_own_data` | same |
+| **Inspection reports a survivor's position without changing it** | `inspecting_a_survivor_reports_its_position_without_changing_it` | `record-store-consensus/tests/consensus.rs` |
+| **Recovery restores a working cluster with its history and identity** | `recovering_a_survivor_restores_a_working_cluster_with_its_history` | same |
+| **Two independent recoveries of one cluster are distinguishable** | `two_independent_recoveries_of_one_cluster_are_distinguishable` | same |
+| **Unsafe recovery attempts are refused with a specific reason, leaving state untouched** | `unsafe_recovery_attempts_are_refused_with_a_specific_reason` | same |
+| **A member that applied nothing cannot be recovered from** | `a_member_that_applied_nothing_cannot_be_recovered_from` | same |
+| **An interrupted snapshot is reported, and does not stop the member starting** | `an_interrupted_snapshot_is_reported_rather_than_hidden` | same |
+| **A recovered cluster serves verified object bytes, keeps its identity, and refuses writes it cannot make durable** | `a_cluster_recovered_from_one_survivor_still_serves_its_verified_objects` | `record-store-server/src/cluster.rs` |
 
 ## Not yet covered by a test
 

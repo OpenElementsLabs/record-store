@@ -22,21 +22,6 @@ system's scheduler. In-process tests are necessary and not sufficient.
 **Until fixed:** no claim about behaviour under real deployment conditions is
 supported by evidence.
 
-### L2. No tested recovery from loss of metadata quorum
-
-If a majority of metadata voters is permanently lost, there is no supported
-procedure to reconstruct authority. Payload bytes survive and are readable from
-disk; the catalog that says what they mean does not.
-
-Deliberately, the system does **not** try to recover automatically. It will not
-promote a surviving minority, and it will not pick the longest log as
-authoritative. Both would invent authority.
-
-**Mitigation today:** run an odd voter count across failure domains, and take
-regular catalog snapshots off-box. **Missing:** a documented, tested restore of a
-cluster catalog from an external backup, including how object history, retention,
-and cluster identity are preserved.
-
 ### L3. Asymmetric partitions are untested
 
 The consensus test harness models reachability symmetrically: if A cannot reach
@@ -60,6 +45,29 @@ unavailable, failed, and ambiguous outcomes.
 without one would not be caught by any existing test.
 
 ## Significant
+
+### L2. Recovery from lost quorum is supported but narrow
+
+There is now a tested procedure (`rs cluster recover`, runbook R6): an operator
+rebuilds consensus membership around one surviving member, offline, keeping the
+state machine intact. It is refused unless the operator names the cluster, names
+a member the group actually had, and explicitly accepts the loss.
+
+What it still does **not** cover:
+
+- **Two survivors recovered separately.** This produces two clusters holding one
+  identifier. It cannot be prevented from inside a node, only detected
+  afterwards through the recovery lineage. It remains the most damaging operator
+  mistake available.
+- **No surviving member with the metadata.** If every node that held consensus
+  state is gone, nothing can rebuild authority. The payloads may still exist;
+  reconstructing a catalog from them is not implemented and is not planned.
+- **Cluster-wide consistent backup.** Per-node offline backups exist and are
+  verified, but they are independent point-in-time copies. Restoring several and
+  starting them together is not supported and not tested.
+- **Choosing the survivor is still the operator's judgement.** `inspect-state`
+  reports each member's applied index so the choice can be made on evidence, but
+  nothing enforces that the highest one is chosen.
 
 ### L5. Storage fault injection is missing
 

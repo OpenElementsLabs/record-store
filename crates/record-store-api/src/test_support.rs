@@ -466,6 +466,9 @@ pub(crate) async fn clustered_api() -> (TempDir, Router) {
                 cluster_id: record_store_core::ClusterId::new(),
                 cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
                 created_at: chrono::Utc::now(),
+                recovery_generation: 0,
+                recovery_id: None,
+                recovered_at: None,
             },
             config: Box::new(record_store_cluster::ClusterConfig::default()),
         })
@@ -478,6 +481,7 @@ pub(crate) async fn clustered_api() -> (TempDir, Router) {
                 versions: record_store_cluster::NodeVersions::current("test"),
                 rpc_address: "127.0.0.1:17603".to_owned(),
                 s3_endpoint: None,
+                management_endpoint: None,
                 storage_class: record_store_cluster::StorageClass::new("standard")
                     .expect("storage class"),
                 failure_domain: record_store_cluster::FailureDomain::default(),

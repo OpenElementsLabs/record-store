@@ -37,6 +37,59 @@ pub struct ClusterIdentity {
     pub cluster_format_version: u32,
     /// Time the cluster was initialized.
     pub created_at: DateTime<Utc>,
+    /// How many times metadata authority has been rebuilt by an operator.
+    ///
+    /// Zero for a cluster that has never needed disaster recovery. Each
+    /// recovery increments it, so "this cluster" and "this cluster after
+    /// somebody rebuilt its authority" are distinguishable facts rather than the
+    /// same identifier.
+    #[serde(default)]
+    pub recovery_generation: u32,
+    /// Identifies the specific recovery this lineage descends from.
+    ///
+    /// The cluster identifier alone cannot tell two recoveries apart. If an
+    /// operator recovers two surviving members separately — the one mistake that
+    /// genuinely produces two clusters holding one identity — their lineages
+    /// differ here, so the split is detectable instead of silently permanent.
+    #[serde(default)]
+    pub recovery_id: Option<uuid::Uuid>,
+    /// When authority was last rebuilt.
+    #[serde(default)]
+    pub recovered_at: Option<DateTime<Utc>>,
+}
+
+impl ClusterIdentity {
+    /// Creates the identity of a cluster being formed for the first time.
+    ///
+    /// A founding cluster has no recovery lineage: generation zero, no recovery
+    /// identifier. Only the offline recovery procedure advances either.
+    #[must_use]
+    pub const fn founding(
+        cluster_id: ClusterId,
+        cluster_format_version: u32,
+        created_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            cluster_id,
+            cluster_format_version,
+            created_at,
+            recovery_generation: 0,
+            recovery_id: None,
+            recovered_at: None,
+        }
+    }
+
+    /// Returns whether two views describe the same cluster *and* the same lineage.
+    ///
+    /// Same identifier but different lineage means two independent recoveries of
+    /// one cluster. They can never be reconciled, so they must never be allowed
+    /// to treat each other as the same thing.
+    #[must_use]
+    pub fn same_lineage(&self, other: &Self) -> bool {
+        self.cluster_id == other.cluster_id
+            && self.recovery_generation == other.recovery_generation
+            && self.recovery_id == other.recovery_id
+    }
 }
 
 /// One deterministic mutation of replicated cluster state.
@@ -49,6 +102,19 @@ pub enum ClusterCommand {
         identity: ClusterIdentity,
         /// Initial cluster-wide configuration.
         config: Box<ClusterConfig>,
+    },
+    /// Record that an operator rebuilt metadata authority for this cluster.
+    ///
+    /// Applied by the offline recovery procedure, which is the only thing that
+    /// may issue it: it is a statement that a human decided a quorum was
+    /// unrecoverable, not something the cluster concludes for itself.
+    RecordRecovery {
+        /// Identifies this specific recovery.
+        recovery_id: uuid::Uuid,
+        /// Operator-supplied explanation, kept for the audit trail.
+        reason: String,
+        /// When the recovery was performed.
+        at: DateTime<Utc>,
     },
     /// Replace the cluster-wide configuration.
     UpdateConfig {
@@ -83,6 +149,9 @@ pub enum ClusterCommand {
         rpc_address: String,
         /// Optional client-facing S3 endpoint.
         s3_endpoint: Option<String>,
+        /// Optional management API endpoint.
+        #[serde(default)]
+        management_endpoint: Option<String>,
         /// Advertised versions.
         versions: Box<NodeVersions>,
         /// Storage class.
@@ -386,6 +455,7 @@ impl ClusterCommand {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::InitializeCluster { .. } => "initialize_cluster",
+            Self::RecordRecovery { .. } => "record_recovery",
             Self::UpdateConfig { .. } => "update_config",
             Self::RegisterNode { .. } => "register_node",
             Self::Heartbeat { .. } => "heartbeat",

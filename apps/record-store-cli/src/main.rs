@@ -676,6 +676,36 @@ enum ClusterCommand {
         #[command(flatten)]
         endpoint: EndpointArgs,
     },
+    /// Report what a stopped member's metadata state holds, changing nothing.
+    ///
+    /// Run this on every survivor before recovering: the member that has
+    /// applied the most is the one to rebuild from, and that cannot be known
+    /// without looking.
+    InspectState {
+        /// TOML configuration file for the stopped member.
+        #[arg(long, env = "RECORD_STORE_CONFIG_FILE")]
+        config: Option<PathBuf>,
+    },
+    /// Rebuild metadata authority around this stopped member. Disaster recovery.
+    ///
+    /// Only for a cluster whose voter majority is permanently lost. It discards
+    /// any metadata the lost quorum committed but never replicated here, and it
+    /// cannot be undone. Running it on two survivors separately produces two
+    /// clusters that can never be reconciled.
+    Recover {
+        /// Cluster this member belongs to, as `inspect-state` reports it.
+        #[arg(long)]
+        cluster_id: String,
+        /// Why this is being done. Kept in the cluster's own record.
+        #[arg(long)]
+        reason: String,
+        /// Acknowledge that unreplicated committed metadata is lost.
+        #[arg(long)]
+        accept_data_loss: bool,
+        /// TOML configuration file for the stopped member.
+        #[arg(long, env = "RECORD_STORE_CONFIG_FILE")]
+        config: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1620,7 +1650,146 @@ async fn storage(command: StorageCommand, json: bool) -> Result<()> {
     print_value(&value, json)
 }
 
+/// Returns the consensus directory of a stopped member.
+fn consensus_directory(config: Option<PathBuf>) -> Result<PathBuf> {
+    let config = Config::load(config.as_deref()).context("configuration is invalid")?;
+    Ok(config
+        .storage
+        .data_directory
+        .join("metadata")
+        .join("consensus"))
+}
+
+/// Reports what a stopped member holds, without touching it.
+async fn inspect_state(config: Option<PathBuf>, json: bool) -> Result<()> {
+    let directory = consensus_directory(config)?;
+    let assessment = record_store_consensus::recovery::inspect(&directory)
+        .await
+        .with_context(|| format!("inspect the consensus state in {}", directory.display()))?;
+    if json {
+        return print_json(&serde_json::to_value(&assessment)?);
+    }
+    println!("{}", assessment.summary);
+    if let Some(cluster) = &assessment.cluster {
+        println!("Cluster:            {}", cluster.cluster_id);
+        println!("Recovery generation: {}", cluster.recovery_generation);
+    }
+    match assessment.last_applied {
+        Some(index) => println!("Applied index:      {index}"),
+        None => println!("Applied index:      none"),
+    }
+    println!("Unapplied entries:  {}", assessment.log_entries);
+    println!(
+        "Recorded members:   {}",
+        assessment
+            .members
+            .iter()
+            .map(|(id, address)| format!("{id} ({address})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    match &assessment.snapshot {
+        record_store_consensus::SnapshotHealth::Absent => println!("Snapshot:           none"),
+        record_store_consensus::SnapshotHealth::Present { index } => println!(
+            "Snapshot:           present{}",
+            index.map_or_else(String::new, |index| format!(" at index {index}"))
+        ),
+        record_store_consensus::SnapshotHealth::Damaged { reason } => {
+            println!("Snapshot:           DAMAGED — {reason}");
+        }
+    }
+    if !assessment.recoverable {
+        println!("\nThis member cannot be recovered from.");
+    }
+    Ok(())
+}
+
+/// Rebuilds metadata authority around one stopped member.
+async fn recover_cluster(
+    config: Option<PathBuf>,
+    cluster_id: &str,
+    reason: String,
+    accept_data_loss: bool,
+    json: bool,
+) -> Result<()> {
+    let directory = consensus_directory(config.clone())?;
+    let cluster_id = record_store_core::ClusterId::from_uuid(
+        cluster_id
+            .parse()
+            .context("--cluster-id must be the identifier `cluster inspect-state` reports")?,
+    );
+    let loaded = Config::load(config.as_deref()).context("configuration is invalid")?;
+    let identity =
+        record_store_cluster::NodeIdentityStore::new(&loaded.storage.data_directory).load()?;
+    let member_id = identity
+        .and_then(|identity| identity.raft_id)
+        .context("this data directory has no consensus member identifier")?;
+    let address = loaded.server.effective_rpc_advertise();
+
+    let report = record_store_consensus::recovery::recover_single_member(
+        &directory,
+        record_store_consensus::RecoveryIntent {
+            cluster_id,
+            member_id,
+            address,
+            reason,
+            accept_data_loss,
+        },
+    )
+    .await
+    .context("rebuild metadata authority")?;
+
+    if json {
+        return print_json(&serde_json::to_value(&report)?);
+    }
+    println!(
+        "Rebuilt metadata authority for cluster {}",
+        report.cluster_id
+    );
+    println!("  member:               {}", report.member_id);
+    println!("  recovery generation:  {}", report.recovery_generation);
+    println!("  recovery id:          {}", report.recovery_id);
+    println!(
+        "  voters removed:       {}",
+        report
+            .removed_voters
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!("  log entries discarded: {}", report.discarded_log_entries);
+    println!(
+        "  payloads:             {} total, {} readable here, {} needing another holder",
+        report.payloads_total, report.payloads_held_here, report.payloads_elsewhere
+    );
+    if !report.fully_readable() {
+        println!(
+            "\n{} payload(s) have no replica on this member. They stay unreadable until one of \
+             their other holders returns, or must be restored from an external backup.",
+            report.payloads_elsewhere
+        );
+    }
+    println!(
+        "\nStart this member, confirm it elects, then re-admit the other nodes with fresh join \
+         tokens. Do not run this command on another survivor."
+    );
+    Ok(())
+}
+
 async fn cluster(command: ClusterCommand, json: bool) -> Result<()> {
+    match command {
+        ClusterCommand::InspectState { config } => return inspect_state(config, json).await,
+        ClusterCommand::Recover {
+            cluster_id,
+            reason,
+            accept_data_loss,
+            config,
+        } => {
+            return recover_cluster(config, &cluster_id, reason, accept_data_loss, json).await;
+        }
+        _ => {}
+    }
     let request = match command {
         ClusterCommand::Init(endpoint) => {
             client()?.post(api_url(&endpoint, "/api/v1/cluster/init"))
@@ -1636,6 +1805,9 @@ async fn cluster(command: ClusterCommand, json: bool) -> Result<()> {
                 "lifetime_seconds": lifetime_seconds,
                 "description": description,
             })),
+        ClusterCommand::InspectState { .. } | ClusterCommand::Recover { .. } => {
+            unreachable!("handled above; these never reach a management API")
+        }
     };
     let value = send_admin(request)
         .await?
@@ -2036,17 +2208,52 @@ fn print_action(action: &str, id: &str, json: bool) -> Result<()> {
 }
 
 async fn send_admin(builder: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    let retry = builder.try_clone();
     let response = admin_request(builder)?
         .send()
         .await
         .context("send management request")?;
     if response.status().is_success() {
-        Ok(response)
-    } else {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        bail!("management API returned HTTP {status}: {body}")
+        return Ok(response);
     }
+    // Some operations are planned by whichever member holds metadata
+    // leadership, and any other member answers with where to go. The redirect is
+    // followed here rather than by the HTTP client because credentials must be
+    // re-applied: a client library drops them across hosts, correctly.
+    //
+    // Exactly one hop. Leadership can move again while this is in flight, and a
+    // client that chased every redirect would turn an election into a loop.
+    if response.status() == reqwest::StatusCode::TEMPORARY_REDIRECT
+        && let Some(location) = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned)
+        && let Some(retry) = retry
+    {
+        let mut request = admin_request(retry)?
+            .build()
+            .context("rebuild the request for the metadata leader")?;
+        // Only the destination changes: the method, headers, and body are the
+        // ones the caller meant, which is what a 307 promises to preserve.
+        *request.url_mut() = location.parse().with_context(|| {
+            format!("the leader redirect named an unusable address: {location}")
+        })?;
+        let response = client()?
+            .execute(request)
+            .await
+            .with_context(|| format!("follow redirect to the metadata leader at {location}"))?;
+        return if response.status().is_success() {
+            Ok(response)
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            bail!("the metadata leader at {location} returned HTTP {status}: {body}")
+        };
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    bail!("management API returned HTTP {status}: {body}")
 }
 
 /// Fetches a signed proof bundle and writes it to a file.

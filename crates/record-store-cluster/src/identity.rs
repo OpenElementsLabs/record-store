@@ -184,6 +184,15 @@ impl NodeIdentityStore {
         &self.path
     }
 
+    /// Returns whether a durable identity has already been written.
+    ///
+    /// Separate from [`Self::load`] because a caller that must not create one
+    /// needs to ask before doing anything: `load_or_create` writes.
+    #[must_use]
+    pub fn exists(&self) -> bool {
+        self.path.exists()
+    }
+
     /// Loads the existing identity, or creates and persists a new one.
     ///
     /// A restart therefore reuses the same [`NodeId`] instead of generating a

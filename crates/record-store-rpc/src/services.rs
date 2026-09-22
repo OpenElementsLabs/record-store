@@ -805,6 +805,7 @@ fn registration_from(
         versions: versions_from(descriptor),
         rpc_address: descriptor.rpc_address.clone(),
         s3_endpoint: (!profile.s3_endpoint.is_empty()).then(|| profile.s3_endpoint.clone()),
+        management_endpoint: None,
         storage_class,
         failure_domain,
         capacity: NodeCapacity {

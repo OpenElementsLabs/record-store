@@ -74,6 +74,30 @@ pub enum OperationError {
     /// Cluster state could not be read or written.
     #[error("cluster operation failed: {0}")]
     Cluster(String),
+    /// The operation must run on the member that holds metadata leadership.
+    ///
+    /// Planning is not a request that can simply be forwarded: it reads the
+    /// whole placement table and then schedules movement for it, which is an
+    /// exercise of authority. A follower that planned and forwarded would be a
+    /// second scheduler. So the caller is sent to the leader instead, with
+    /// enough detail to get there.
+    #[error(
+        "this operation is planned by the member holding metadata leadership, which is node          {node}{}",
+        .management_endpoint
+            .as_ref()
+            .map_or_else(String::new, |endpoint| format!(" at {endpoint}"))
+    )]
+    NotLeader {
+        /// Node that currently leads.
+        node: NodeId,
+        /// Its management API endpoint, when it advertises one.
+        management_endpoint: Option<String>,
+    },
+    /// No member currently holds metadata leadership.
+    #[error(
+        "no member currently holds metadata leadership, so this operation cannot be planned;          retry once a leader is elected"
+    )]
+    NoLeader,
 }
 
 /// Administrative cluster operations for one node's management API.
@@ -602,7 +626,12 @@ impl ClusterOperations {
     }
 
     /// Starts a rebalance and returns its operation record.
+    ///
+    /// Planning belongs to the leader, so a follower reports where to go rather
+    /// than planning and forwarding. The caller is given the leader's node and
+    /// management endpoint so the redirect can be followed automatically.
     pub async fn rebalance(&self) -> Result<ClusterOperation, OperationError> {
+        self.require_leadership().await?;
         let operation =
             ClusterOperation::planning(ClusterOperationKind::Rebalance, None, Utc::now());
         self.apply(ClusterCommand::StartOperation {
@@ -684,6 +713,27 @@ impl ClusterOperations {
             .trigger_snapshot()
             .await
             .map_err(|error| OperationError::Cluster(error.to_string()))
+    }
+
+    /// Fails with a redirect unless this member holds metadata leadership.
+    async fn require_leadership(&self) -> Result<(), OperationError> {
+        if self.consensus.is_leader().await {
+            return Ok(());
+        }
+        let Some((member_id, _)) = self.consensus.current_leader().await else {
+            return Err(OperationError::NoLeader);
+        };
+        let leader = self
+            .context
+            .cluster
+            .node_by_member(member_id)
+            .await
+            .map_err(cluster)?
+            .ok_or(OperationError::NoLeader)?;
+        Err(OperationError::NotLeader {
+            node: leader.node_id,
+            management_endpoint: leader.management_endpoint,
+        })
     }
 
     async fn ensure_operation(

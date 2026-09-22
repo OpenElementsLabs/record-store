@@ -58,14 +58,35 @@ device, and there is no soak evidence
 ([L5](limitations.md#l5-storage-fault-injection-is-missing),
 [L6](limitations.md#l6-no-soak-or-long-outage-testing)).
 
-## G8. Recovery paths are tested against isolated clusters — **not met**
+## G8. Recovery paths are tested against isolated clusters — **met**
 
-Ordinary restart and single-node recovery from durable local state work and are
-tested. **Not met:** replacing a permanently lost node, recovering from
-interrupted snapshots and incomplete transfers, and above all recovery when
-payloads survive but metadata quorum is lost
-([L2](limitations.md#l2-no-tested-recovery-from-loss-of-metadata-quorum)). Until
-G8 is met, clustering must not be offered for data anyone would mind losing.
+Each supported failure class now has a procedure and a test against an isolated
+cluster:
+
+| Class | Procedure | Evidence |
+| --- | --- | --- |
+| Ordinary restart | restart the process | `an_ordinary_restart_resumes_the_same_cluster` |
+| Node recovers from durable local state | restart; reconcile against committed placement | `a_single_member_group_commits_and_survives_restart`, `reconciliation_of_a_consistent_node_changes_nothing` |
+| Permanently lost node replaced | drain/force-decommission, admit a clean node | R5; `a_decommissioned_node_cannot_rejoin_on_its_old_identity` |
+| Interrupted snapshot | ignored, reported, member still starts | `an_interrupted_snapshot_is_reported_rather_than_hidden` |
+| Lost metadata quorum, payloads survive | `rs cluster recover` against one survivor | `a_cluster_recovered_from_one_survivor_still_serves_its_verified_objects` |
+| Second cluster formed by accident | refused at startup | `a_survivor_whose_metadata_state_is_gone_refuses_to_form_a_second_cluster` |
+| Identity and state disagree | refused at startup | `a_node_whose_identity_and_state_disagree_refuses_to_pick_one` |
+| Identity lost | refused at startup | `a_node_that_lost_its_identity_file_refuses_to_adopt_its_own_data` |
+| Unsafe recovery attempted | refused with a specific reason | `unsafe_recovery_attempts_are_refused_with_a_specific_reason`, `a_member_that_applied_nothing_cannot_be_recovered_from` |
+
+The end-to-end case verifies **object bytes**, not a status code, and confirms
+the recovered cluster keeps its identity, advances its recovery lineage, and
+refuses writes it cannot make durable rather than silently weakening the policy.
+
+Recovery never selects "the newest-looking copy" on its own: `inspect-state`
+reports each survivor's applied index and the operator chooses, and the procedure
+refuses a cluster it does not belong to, a member the group never had, and an
+operator who has not acknowledged the loss.
+
+The residual gaps are in [`limitations.md`](limitations.md) L2 and are
+**significant rather than blocking**: two survivors recovered separately, no
+surviving member at all, and cluster-wide consistent backup.
 
 ## G9. Multi-process, multi-host evidence exists — **not met**
 
@@ -95,9 +116,10 @@ state plainly that there is no clustering, replication, or erasure coding.
 
 ## Summary
 
-**Met:** G1, G2, G3, G4, G5, G11, G12.
+**Met:** G1, G2, G3, G4, G5, G8, G11, G12.
 **Partly met:** G6, G7.
-**Not met:** G8, G9, G10.
+**Not met:** G9, G10.
 
-**G8, G9, and G10 are release blockers.** Clustering stays internal until they
-are met.
+**G9 and G10 are release blockers.** Clustering stays internal until they are
+met. G8 is met for the supported failure classes; the scenarios it does not
+cover are recorded as limitations rather than claimed.

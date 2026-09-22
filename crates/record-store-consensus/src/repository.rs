@@ -1122,6 +1122,9 @@ mod tests {
                     cluster_id: ClusterId::new(),
                     cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
                     created_at: Utc::now(),
+                    recovery_generation: 0,
+                    recovery_id: None,
+                    recovered_at: None,
                 },
                 config: Box::new(ClusterConfig::default()),
             })
@@ -1136,6 +1139,7 @@ mod tests {
                     versions: NodeVersions::current("test"),
                     rpc_address: "127.0.0.1:17604".to_owned(),
                     s3_endpoint: None,
+                    management_endpoint: None,
                     storage_class: StorageClass::new("standard").expect("class"),
                     failure_domain: FailureDomain::default(),
                     capacity: NodeCapacity::default(),
@@ -1220,6 +1224,9 @@ mod tests {
                     cluster_id: ClusterId::new(),
                     cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
                     created_at: Utc::now(),
+                    recovery_generation: 0,
+                    recovery_id: None,
+                    recovered_at: None,
                 },
                 config: Box::new(ClusterConfig::default()),
             })

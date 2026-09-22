@@ -435,6 +435,9 @@ impl Harness {
                     cluster_id: ClusterId::new(),
                     cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
                     created_at: Utc::now(),
+                    recovery_generation: 0,
+                    recovery_id: None,
+                    recovered_at: None,
                 },
                 config: Box::new(config),
             }))
@@ -615,6 +618,7 @@ async fn register(consensus: &MetadataConsensus, node_id: NodeId, index: usize) 
                 versions: NodeVersions::current("test"),
                 rpc_address: format!("10.0.0.{}:7603", index + 1),
                 s3_endpoint: None,
+                management_endpoint: None,
                 storage_class: StorageClass::default(),
                 failure_domain: FailureDomain::parse(&format!("rack={index}")).expect("labels"),
                 capacity: NodeCapacity {

@@ -159,45 +159,170 @@ member must be retired from consensus.
 
 ---
 
-## R6. Lost metadata quorum
+## R6. Lost metadata quorum — disaster recovery
 
-**This is disaster recovery, not a restart.** Read this whole section first.
+**This is not a restart.** Read the whole section before running anything.
 
 **Symptoms.** No leader elects. `rs cluster status` reports the group as
-unwritable. Fewer than a majority of voters survive.
+unwritable. Fewer than a majority of metadata voters survive.
 
-**What is and is not true.** Payload bytes on surviving nodes are unaffected —
-they are not in the consensus log. What is lost is the authority to say what
+**What is and is not lost.** Payload bytes on surviving nodes are unaffected —
+they were never in the consensus log. What is lost is the authority to say what
 those bytes *mean*. Metadata quorum and payload durability are separate; losing
 one does not imply losing the other.
 
-**Do not:**
+### R6.1 First, try the recovery that needs no judgement
 
-- Start surviving nodes as a fresh cluster. That creates a *second* cluster with
-  the same data and no shared history, and the two can never be reconciled.
-- Pick "the newest-looking copy" and promote it. Log length is not authority.
-- Delete cluster state to "get it starting again". Reconciliation on a node that
-  cannot confirm current cluster state is already prevented from deleting
-  payloads, but re-initialising discards the evidence needed to recover.
+Bring back any voter whose disk survives. A voter that restarts with its
+consensus state intact rejoins and counts toward the majority. If that restores a
+quorum, you are done — this was an outage, not a disaster.
 
-**Do:**
+A node that starts and refuses with *"would form a second cluster"* is telling
+you its consensus state is gone while its data is not. That node cannot be part
+of restoring a quorum by itself; go to R6.2.
 
-1. Stop trying. A cluster without quorum is *correctly* unavailable. Availability
-   is not worth inventing authority for.
-2. Try to restore a majority: bring back any voter whose disk survives. A voter
-   that restarts with its consensus log intact rejoins and counts. This is the
-   only recovery that needs no judgement.
-3. If a majority cannot be restored, this is an unsupported recovery at present.
-   See [`limitations.md`](limitations.md): there is **no tested procedure** for
-   reconstructing metadata authority from a minority. Payloads are intact and
-   readable from disk; metadata must come from an external backup of the cluster
-   catalog.
+### R6.2 Choose a survivor
 
-**Preventing it.** Run an odd number of metadata voters, spread across failure
-domains, and back up the cluster catalog. `rs cluster snapshot` triggers a
-metadata snapshot on demand.
+Run this on **every** survivor, with the server stopped:
 
----
+```
+rs cluster inspect-state --config /etc/record-store/config.toml
+```
+
+It changes nothing. Compare the **applied index** across survivors: the highest
+one has the most committed metadata and is the only correct choice. Choosing a
+lower one silently discards every commit between the two.
+
+Also read the snapshot line. `DAMAGED` means a snapshot publication or transfer
+was interrupted; it does not stop the member starting and it does not affect the
+choice, but it is worth knowing before you conclude a node is healthy.
+
+### R6.3 Understand what you are about to accept
+
+Recovery **discards any metadata the lost quorum committed but never replicated
+to this member**. That is data loss, it is not reversible, and the command will
+not run without an explicit acknowledgement of it.
+
+### R6.4 Never recover two survivors
+
+Running the recovery on two survivors separately produces **two clusters holding
+one identifier**. They can never be reconciled and neither is more correct than
+the other.
+
+Record Store cannot prevent this from inside a single node, so each recovery
+stamps a distinct lineage into the cluster identity, which makes the split
+detectable afterwards (`recovery_id` in `inspect-state`). Detectable is not
+repairable. Pick one survivor, write down which, and recover only that one.
+
+### R6.5 Recover
+
+With the server **stopped** on the chosen survivor:
+
+```
+rs cluster recover \
+  --config /etc/record-store/config.toml \
+  --cluster-id <the id inspect-state reported> \
+  --reason "two of three voters lost in the rack-b failure" \
+  --accept-data-loss
+```
+
+It rebuilds the consensus membership around this member alone, keeping the state
+machine untouched: object history, versions, retention and Object Lock,
+credentials, placement, and the cluster's own identity all survive. It discards
+the old log tail and any snapshot built under the old membership — a snapshot
+carrying the old voter set would re-add every member this just removed.
+
+Read the report. It states:
+
+- **voters removed** — the members that are no longer part of the group;
+- **log entries discarded** — the metadata that was lost;
+- **payloads needing another holder** — object versions with no replica on this
+  member. They are **unreadable** until one of their other holders returns, or
+  must be restored from an external backup. This is the availability deficit
+  recovery leaves behind;
+- **the write policy** — see R6.7.
+
+### R6.6 Start it and verify
+
+```
+rs cluster status --endpoint $MGMT
+```
+
+Confirm a leader, confirm the cluster id is unchanged, and confirm
+`recovery_generation` has advanced. Read back a known object and check its
+content, not just its status code.
+
+### R6.7 Retire the nodes that are not coming back
+
+Recovery rebuilt metadata **authority**. It did not change the cluster's view of
+**who exists**: the lost nodes are still recorded as members, still look healthy
+until failure detection catches up, and placement will keep choosing them. Until
+they are retired, a write can be planned onto a node that no longer exists and
+will fail for a reason that looks unrelated.
+
+For each node named in the recovery report's `other_nodes` that is genuinely
+gone:
+
+```
+rs node decommission <node-id> --force --endpoint $MGMT
+```
+
+`--force` is correct here and only here: the safety check will object because
+those nodes hold replicas, and that objection is true — the replicas are lost.
+Forcing accepts a deficit that has already happened rather than causing one.
+Record the reported deficit.
+
+A node you intend to reuse is not retired this way; give it an empty data
+directory and re-admit it as a replacement (R6.8).
+
+### R6.8 Expect it to be readable before it is writable
+
+A single surviving member usually **cannot accept writes**: a policy requiring
+two acknowledgements cannot be met by one node, and the cluster refuses rather
+than acknowledging below its policy. That refusal is the durability guarantee
+working.
+
+Two ways forward, and they are different decisions:
+
+- **Restore capacity.** Admit replacement nodes (R6.9). Writes resume on their
+  own once the policy can be met, and repair rebuilds the missing replicas.
+- **Lower the policy deliberately.** `rs cluster status` shows the current
+  factor; setting it lower is an explicit acceptance of weaker durability, and it
+  applies to every subsequent write. Do this only to restore service, and raise
+  it again once capacity returns.
+
+Never treat the refusal as a bug to work around.
+
+### R6.9 Re-admit the other nodes
+
+Every other node is now outside the consensus group. Bring each back as a
+**replacement**, not as its old self:
+
+1. Confirm the node is genuinely to be reused. A node whose data is stale is
+   fine — it will be overwritten by the cluster's committed state — but a node
+   whose disk is suspect should be replaced instead.
+2. Give it an empty data directory and a fresh node identity.
+3. Issue a join token on the recovered leader and start it with `cluster.seeds`
+   pointing there.
+4. Watch repair restore the configured durability level.
+
+A node that was decommissioned cannot rejoin on its old identity; this is
+deliberate and is refused with that reason.
+
+### What cannot be recovered
+
+- Metadata committed by the lost quorum that never reached the survivor. Gone.
+- Object versions whose every replica was on lost nodes. The metadata may survive
+  and the bytes do not; these are reported by the recovery report and read as
+  unavailable rather than being silently dropped.
+- Anything on a node with no surviving copy anywhere. Restore from an external
+  backup ([R9](#r9-external-backups)).
+
+### Preventing it
+
+Run an odd number of metadata voters across failure domains, keep the
+replication factor above one, and take regular off-box backups (R9).
+`rs cluster snapshot` triggers a metadata snapshot on demand.
 
 ## R7. Ordinary restart of one node
 
@@ -227,3 +352,31 @@ Distinct from everything above, and the common case.
    rejoins can disagree with the cluster about committed state.
 4. A member whose durable state is genuinely broken stops rather than continuing
    to apply commands. That is deliberate: the alternative is silent divergence.
+
+---
+
+## R9. External backups
+
+Recovery rebuilds authority from a survivor. It cannot conjure data that no
+survivor holds, so a backup taken off the cluster is the only answer to the total
+loss of a failure domain.
+
+`rs server backup` takes a coordinated offline backup of one node's whole data
+directory — catalog, payloads, and the system records that say which storage
+format and master key the payloads were written under — while holding the data
+directory's exclusive lock. It is a point-in-time copy of a **stopped**
+deployment, and the manifest records it as such.
+
+`rs server verify-backup` checks it before you need it. Do this on a schedule;
+an unverified backup is a hope.
+
+`rs server restore` restores into an empty data directory, and refuses a
+destination that is not empty.
+
+**What a per-node backup does and does not give you in a cluster.** It captures
+that node's view: its payloads, and the replicated metadata as of the moment it
+was stopped. It is a sound basis for rebuilding a single node. It is **not** a
+cluster-wide consistent snapshot — different nodes stopped at different moments
+hold different applied positions — so restoring several nodes from independently
+taken backups and starting them together is not a supported procedure and is not
+tested. Restore one, recover it (R6), and re-admit the rest as replacements.

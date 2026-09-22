@@ -29,12 +29,12 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use crate::types::{ConsensusEntry, MemberId, RecordStoreTypeConfig};
 
-const ENTRIES: TableDefinition<u64, &[u8]> = TableDefinition::new("raft.entries.v1");
-const STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("raft.state.v1");
+pub(crate) const ENTRIES: TableDefinition<u64, &[u8]> = TableDefinition::new("raft.entries.v1");
+pub(crate) const STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("raft.state.v1");
 
-const VOTE: &str = "vote";
-const COMMITTED: &str = "committed";
-const LAST_PURGED: &str = "last_purged";
+pub(crate) const VOTE: &str = "vote";
+pub(crate) const COMMITTED: &str = "committed";
+pub(crate) const LAST_PURGED: &str = "last_purged";
 
 /// Failures raised while opening the durable consensus log.
 #[derive(Debug, thiserror::Error)]

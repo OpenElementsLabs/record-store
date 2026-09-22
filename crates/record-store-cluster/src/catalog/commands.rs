@@ -42,6 +42,27 @@ pub fn apply_command_tx(
         ClusterCommand::InitializeCluster { identity, config } => {
             initialize_cluster(write, identity, *config)
         }
+        ClusterCommand::RecordRecovery {
+            recovery_id,
+            reason,
+            at,
+        } => {
+            let mut identity: ClusterIdentity =
+                get(write, IDENTITY, SINGLETON)?.ok_or(ClusterCatalogError::NotInitialized)?;
+            // The generation advances and the lineage is replaced. Both matter:
+            // the generation says authority was rebuilt, and the lineage says
+            // *which* rebuild this is, so two independent recoveries of one
+            // cluster can be told apart rather than quietly coexisting.
+            identity.recovery_generation = identity.recovery_generation.saturating_add(1);
+            identity.recovery_id = Some(recovery_id);
+            identity.recovered_at = Some(at);
+            put(write, IDENTITY, SINGLETON, &identity)?;
+            // Placement decisions made before authority was rebuilt must not be
+            // mistaken for current ones.
+            advance_cluster_map_epoch(write)?;
+            let _ = reason;
+            Ok(ClusterOutcome::Identity(Box::new(identity)))
+        }
         ClusterCommand::UpdateConfig { config, at: _ } => {
             config.validate()?;
             put(write, CONFIG, SINGLETON, &*config)?;
@@ -68,6 +89,7 @@ pub fn apply_command_tx(
             node_id,
             rpc_address,
             s3_endpoint,
+            management_endpoint,
             versions,
             storage_class,
             failure_domain,
@@ -77,6 +99,7 @@ pub fn apply_command_tx(
             let mut node = require_node(write, node_id)?;
             node.rpc_address = rpc_address;
             node.s3_endpoint = s3_endpoint;
+            node.management_endpoint = management_endpoint;
             node.protocol = versions.protocol;
             node.software_version = versions.software.clone();
             node.storage_format_version = versions.storage_format;

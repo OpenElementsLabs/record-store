@@ -45,6 +45,13 @@ pub struct ClusterConfig {
     pub failure_domain: String,
     /// Client-facing S3 endpoint this node advertises, when it has one.
     pub s3_endpoint: Option<String>,
+    /// Management API endpoint this node advertises, when it has one.
+    ///
+    /// Recorded in cluster metadata so a member that cannot serve a
+    /// leader-only operation can redirect the caller to the member that can,
+    /// rather than only naming it.
+    #[serde(default)]
+    pub management_endpoint: Option<String>,
     /// Replication factor used when this node initializes a new cluster.
     pub replication_factor: u8,
     /// Low-capacity watermark used when this node initializes a new cluster.
@@ -190,6 +197,7 @@ impl Default for ClusterConfig {
             storage_class: "standard".to_owned(),
             failure_domain: String::new(),
             s3_endpoint: None,
+            management_endpoint: None,
             replication_factor: 3,
             capacity_low_watermark_percent: 80,
             capacity_high_watermark_percent: 90,

@@ -43,7 +43,7 @@ Each class is distinct and is handled differently.
 | **Corrupted payload** | Bytes on disk no longer match the committed checksum. | Detected on read and on verification; the replica is marked `Corrupt` and rebuilt from a validated source. Corrupt bytes are never promoted. |
 | **Slow node** | Reachable but late. | Bounded per-chunk deadlines on writes; bounded leases on movement tasks. A slow node fails a write rather than stalling it. |
 | **Network partition** | Members cannot all reach each other; possibly asymmetric. | The majority side keeps metadata authority; the minority side refuses authoritative writes. |
-| **Loss of metadata quorum** | Fewer than a majority of voters survive. | The cluster is **unavailable for writes**, by design. Recovery is an explicit, operator-driven procedure — never automatic. |
+| **Loss of metadata quorum** | Fewer than a majority of voters survive. | The cluster is **unavailable for writes**, by design. Recovery is an explicit, operator-driven procedure — never automatic. See §7. |
 
 **Metadata quorum and payload durability are separate.** Metadata quorum is a
 majority of Raft voters and decides *what is true*. Payload durability is the
@@ -166,3 +166,65 @@ clocks and therefore only affect liveness.
 Standalone is unchanged and is not built on any of the above: one process, one
 disk, no consensus, no replication. Cluster work must not regress it, and every
 change to shared crates is validated against the standalone regression suite.
+
+## 7. Recovery
+
+Recovery is the only thing here a human starts, because the judgement it encodes
+— "a majority of the voters is never coming back" — cannot be made from inside a
+partition. A cluster that concluded that for itself would promote a minority
+every time a switch rebooted.
+
+### 7.1 What the cluster refuses to do on its own
+
+- It never promotes a minority to restore availability.
+- It never picks "the newest-looking copy" as authoritative. Log length is not
+  authority.
+- A node that belongs to a cluster, still holds its data, and has lost its
+  consensus state **refuses to start** rather than forming a second cluster
+  around that data. A node with `cluster.seeds` configured is exempt: it has
+  somewhere to learn the truth from, so rejoining is recovery, not invention.
+- A node whose identity file and replicated state name different clusters
+  refuses to start rather than serving one under the other's name.
+- A node with durable cluster state and no identity file refuses to mint one.
+
+### 7.2 What the supported procedure does
+
+`rs cluster recover` runs **offline, against one stopped survivor**. It rebuilds
+the consensus membership around that member and leaves the state machine
+untouched: object history, versions, retention and Object Lock, credentials,
+placement, and the cluster's own identity all survive. It never merges divergent
+state and never invents an entry that was not already committed on that member.
+
+It is refused unless the operator names the cluster the member actually belongs
+to, names a member the group actually had, and explicitly acknowledges the loss.
+A member that has applied nothing cannot be recovered from: that would produce an
+empty cluster wearing the old cluster's name, which is worse than failing because
+it looks like it worked.
+
+### 7.3 What it costs, stated rather than implied
+
+- Metadata the lost quorum committed but never replicated to this member is
+  **gone**. The report says how many log entries were discarded.
+- Object versions with no replica on the survivor are **unreadable** until one of
+  their other holders returns. The report counts them.
+- The cluster usually comes back **readable but not writable**: one member cannot
+  satisfy a policy requiring two acknowledgements, and it refuses rather than
+  acknowledging below the policy. Restoring capacity or lowering the policy are
+  both explicit operator decisions.
+- Recovery rebuilds authority, not the data plane's view of who exists. The lost
+  nodes remain recorded as members until an operator retires them.
+
+### 7.4 The mistake that cannot be undone
+
+Recovering two survivors separately produces two clusters holding one
+identifier. A single node cannot prevent this, so every recovery stamps a
+distinct lineage (`recovery_generation` and `recovery_id`) into the cluster
+identity. That makes the split **detectable**. It does not make it repairable.
+
+### 7.5 Interrupted snapshots
+
+A snapshot is an optimization for catching a peer up, not the source of truth: a
+member restarts from its state machine. A snapshot that was interrupted
+mid-publication or mid-transfer is therefore reported and ignored, and a new one
+is built — rather than stopping the member, which would turn a half-written file
+into a node that cannot start.

@@ -168,7 +168,7 @@ impl ReplicatedState {
     }
 }
 
-fn read_applied_state(
+pub(crate) fn read_applied_state(
     read: &redb::ReadTransaction,
 ) -> Result<(Option<LogId<MemberId>>, ConsensusMembership), std::io::Error> {
     let table = read.open_table(APPLIED).map_err(io)?;
@@ -196,7 +196,7 @@ fn record_applied(write: &WriteTransaction, log_id: LogId<MemberId>) -> Result<(
     Ok(())
 }
 
-fn record_membership(
+pub(crate) fn record_membership(
     write: &WriteTransaction,
     membership: &ConsensusMembership,
 ) -> Result<(), std::io::Error> {
@@ -597,19 +597,54 @@ impl RaftStateMachine<RecordStoreTypeConfig> for StateMachineStore {
     ) -> Result<Option<Snapshot<RecordStoreTypeConfig>>, StorageError<MemberId>> {
         let pointer_path = self.current_snapshot_pointer();
         let directory = self.state.snapshot_directory.clone();
+        // A snapshot is an optimization, not the source of truth: this member
+        // restarts from its state machine, and a snapshot exists so a *peer* can
+        // catch up quickly. So a snapshot that was interrupted mid-publication or
+        // mid-transfer must not stop the member — it is reported and treated as
+        // absent, and openraft rebuilds one from the state machine when it next
+        // needs to ship one. Failing here instead would turn a recoverable
+        // half-written file into a node that cannot start at all, which is the
+        // opposite of what a snapshot is for.
         let loaded = tokio::task::spawn_blocking(
             move || -> Result<Option<(SnapshotPointer, Vec<u8>)>, std::io::Error> {
                 let encoded = match std::fs::read(&pointer_path) {
                     Ok(bytes) => bytes,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        warn!(%error, "the snapshot pointer could not be read; treating it as absent");
+                        return Ok(None);
+                    }
                 };
-                let pointer: SnapshotPointer = serde_json::from_slice(&encoded).map_err(io)?;
+                let pointer: SnapshotPointer = match serde_json::from_slice(&encoded) {
+                    Ok(pointer) => pointer,
+                    Err(error) => {
+                        warn!(
+                            %error,
+                            "the snapshot pointer is unreadable, which means a publication was \
+                             interrupted; it is ignored and a new snapshot will be built"
+                        );
+                        return Ok(None);
+                    }
+                };
                 let path = directory.join(format!("{}.snapshot", pointer.snapshot_id));
                 match std::fs::read(path) {
                     Ok(payload) => Ok(Some((pointer, payload))),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                    Err(error) => Err(error),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        warn!(
+                            snapshot = %pointer.snapshot_id,
+                            "the snapshot pointer names a file that is not on disk; a transfer or \
+                             publication was interrupted and the snapshot is ignored"
+                        );
+                        Ok(None)
+                    }
+                    Err(error) => {
+                        warn!(
+                            snapshot = %pointer.snapshot_id,
+                            %error,
+                            "the published snapshot could not be read; it is ignored"
+                        );
+                        Ok(None)
+                    }
                 }
             },
         )

@@ -25,13 +25,13 @@ cargo test --workspace --no-fail-fast
 
 | | Before this work | After |
 | --- | --- | --- |
-| Tests passed | 1048 | **1070** |
+| Tests passed | 1048 | **1085** |
 | Tests failed | 0 | **0** |
 | Clippy warnings | 0 | 0 |
 | `cargo fmt --check` | clean | clean |
 | `mkdocs build --strict` | clean | clean |
 
-The 22 added tests are the evidence rows marked in bold in
+The 37 added tests are the evidence rows marked in bold in
 [`failure-matrix.md`](failure-matrix.md).
 
 ## Measurements
@@ -72,6 +72,20 @@ device** — see [`limitations.md`](limitations.md) L5 and L6.
 | --- | --- | --- |
 | Decommissioned node refused re-entry, by restart and by fresh token | `a_decommissioned_node_cannot_rejoin_on_its_old_identity` | 0.30 s |
 | Commit-outcome resolution and reconciliation safety (6 cases) | `store::tests::*` | 0.63 s |
+| Survivor inspected without being changed | `inspecting_a_survivor_reports_its_position_without_changing_it` | 0.72 s |
+| Three-member group reduced to one, recovered, re-elected, history intact | `recovering_a_survivor_restores_a_working_cluster_with_its_history` | 0.84 s |
+| Two independent recoveries produce distinguishable lineages | `two_independent_recoveries_of_one_cluster_are_distinguishable` | 0.90 s |
+| Ordinary restart resumes the same cluster | `an_ordinary_restart_resumes_the_same_cluster` | 0.59 s |
+| Survivor with data and no metadata refuses to form a second cluster | `a_survivor_whose_metadata_state_is_gone_refuses_to_form_a_second_cluster` | 0.41 s |
+| **Full disaster recovery: 3 nodes → 1 survivor → recovered → verified object bytes → writes restored** | `a_cluster_recovered_from_one_survivor_still_serves_its_verified_objects` | **2.88 s** |
+
+The last row is the end-to-end case. Within those 2.88 s it starts a real
+three-node cluster, writes an RF3 object, stops every node, destroys two of
+them, inspects and recovers the survivor offline, restarts it, reads the object
+back and compares the bytes, confirms the write policy is refused rather than
+weakened, retires the lost nodes, and confirms writes resume once the policy is
+satisfiable. The offline recovery step itself is a handful of redb transactions
+and is not the dominant cost; node startup and election are.
 
 ## What these numbers do not show
 
