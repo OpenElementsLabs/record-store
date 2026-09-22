@@ -266,9 +266,19 @@ pub enum ClusterCommand {
         at: DateTime<Utc>,
     },
     /// Mark a task completed.
+    ///
+    /// The reporting node and its fence token are both required: a worker whose
+    /// lease expired must not be able to complete a task another node has since
+    /// claimed and is still executing.
     CompleteTask {
         /// Task that finished.
         task_id: ReplicaTaskId,
+        /// Node reporting the outcome.
+        #[serde(default)]
+        node_id: Option<NodeId>,
+        /// Fence token the reporting node was granted when it claimed the task.
+        #[serde(default)]
+        fence: u64,
         /// Completion time.
         at: DateTime<Utc>,
     },
@@ -276,6 +286,12 @@ pub enum ClusterCommand {
     FailTask {
         /// Task that failed.
         task_id: ReplicaTaskId,
+        /// Node reporting the outcome.
+        #[serde(default)]
+        node_id: Option<NodeId>,
+        /// Fence token the reporting node was granted when it claimed the task.
+        #[serde(default)]
+        fence: u64,
         /// Failure message.
         reason: String,
         /// Attempts permitted before parking.
@@ -600,6 +616,7 @@ mod tests {
             target_device: None,
             operation_id: None,
             size: 0,
+            fence: 0,
             state: ReplicaTaskState::Queued,
             attempts: 0,
             last_error: None,

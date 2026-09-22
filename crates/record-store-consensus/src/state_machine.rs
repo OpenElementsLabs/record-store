@@ -368,6 +368,11 @@ impl RaftSnapshotBuilder<RecordStoreTypeConfig> for StateMachineStore {
     }
 }
 
+/// Makes a directory's entries durable, so a published rename survives a crash.
+fn sync_directory(directory: &Path) -> Result<(), std::io::Error> {
+    std::fs::File::open(directory)?.sync_all()
+}
+
 fn persist_snapshot(
     directory: &Path,
     path: &Path,
@@ -384,6 +389,12 @@ fn persist_snapshot(
     file.sync_all()?;
     drop(file);
     std::fs::rename(&temporary, path)?;
+    // A rename is only durable once the directory entry itself is synced.
+    // Without this the snapshot body survives a power loss while the name that
+    // reaches it does not, and the member restarts with a pointer to a file that
+    // is not there. The snapshot is synced before the pointer so the pointer can
+    // never name a snapshot that has yet to land.
+    sync_directory(directory)?;
 
     let encoded = serde_json::to_vec(pointer).map_err(io)?;
     let pointer_temporary = pointer_path.with_extension("json.tmp");
@@ -392,8 +403,11 @@ fn persist_snapshot(
     file.sync_all()?;
     drop(file);
     std::fs::rename(&pointer_temporary, pointer_path)?;
+    sync_directory(directory)?;
 
-    // Older snapshots are no longer referenced once the pointer is published.
+    // Older snapshots are no longer referenced once the pointer is durable.
+    // Pruning before the sync above could leave a crash with neither the old
+    // snapshot nor a durable pointer to the new one.
     if let Ok(entries) = std::fs::read_dir(directory) {
         for entry in entries.flatten() {
             let candidate = entry.path();

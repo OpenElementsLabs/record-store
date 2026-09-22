@@ -155,9 +155,12 @@ impl MetadataRepository for ReplicatedMetadataRepository {
     }
 
     async fn delete_bucket(&self, name: &BucketName) -> Result<Bucket, MetadataError> {
-        self.propose(MetadataCommand::DeleteBucket { name: name.clone() })
-            .await?
-            .into_bucket()
+        self.propose(MetadataCommand::DeleteBucket {
+            name: name.clone(),
+            at: Utc::now(),
+        })
+        .await?
+        .into_bucket()
     }
 
     async fn put_object(
@@ -386,9 +389,12 @@ impl MetadataRepository for ReplicatedMetadataRepository {
         &self,
         id: UploadId,
     ) -> Result<MultipartCleanupResult, MetadataError> {
-        self.propose(MetadataCommand::AbortMultipartUpload { upload_id: id })
-            .await?
-            .into_multipart_cleanup()
+        self.propose(MetadataCommand::AbortMultipartUpload {
+            upload_id: id,
+            at: Utc::now(),
+        })
+        .await?
+        .into_multipart_cleanup()
     }
 
     async fn recover_multipart_completions(&self) -> Result<MultipartCleanupResult, MetadataError> {

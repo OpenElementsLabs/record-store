@@ -174,9 +174,14 @@ impl ConsensusService for ConsensusRpcService {
         async move {
             let command: ClusterWrite = serde_json::from_slice(&request.into_inner().command)
                 .map_err(|error| Status::invalid_argument(error.to_string()))?;
+            // A forwarded write is never forwarded again. The sender already
+            // redirected once on the belief that this node leads; relaying it
+            // onward is what turns a redirect into a cycle. If this node no
+            // longer leads, the refusal names the leader it knows so the sender
+            // retries with better information instead of chasing the chain.
             let response = self
                 .consensus
-                .write(command)
+                .write_without_forwarding(command)
                 .await
                 .map_err(|error| consensus_status(&error))?;
             let encoded = serde_json::to_vec(&response)

@@ -462,6 +462,30 @@ pub async fn reconcile(
     if batch == 0 {
         return Ok(());
     }
+    // Reconciliation deletes local bytes on the strength of what committed
+    // metadata says, and background cluster reads are served from this member's
+    // applied state without a barrier. On a member that is partitioned, lagging,
+    // or still catching up after a restart, that state can be missing placements
+    // the cluster has already committed — and "no placement" is exactly the
+    // condition this pass treats as garbage.
+    //
+    // So the barrier decides whether deleting is allowed at all. Without it the
+    // pass still runs: reporting damage and missing replicas is useful and
+    // additive. It simply may not destroy anything, because a member that cannot
+    // confirm it is current is the worst possible judge of what is garbage. This
+    // is the case that matters most during recovery, where payloads survive and
+    // metadata does not.
+    let authoritative = match context.cluster.ensure_read_consistency().await {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(
+                %error,
+                "reconciliation cannot confirm it is reading current cluster state; it will \
+                 report damage but delete nothing this pass"
+            );
+            false
+        }
+    };
     let now = Utc::now();
     let payloads = context
         .local
@@ -478,6 +502,9 @@ pub async fn reconcile(
             .await
             .map_err(|error| error.to_string())?
         {
+            if !authoritative {
+                continue;
+            }
             // The cluster deleted this payload while the node was away.
             context
                 .local
@@ -511,7 +538,7 @@ pub async fn reconcile(
             let stale = located
                 .and_then(|(_, stat)| stat.modified_at)
                 .is_some_and(|modified| now.signed_duration_since(modified) > orphan_grace_period);
-            if stale {
+            if stale && authoritative {
                 context
                     .local
                     .delete_everywhere(object_id)

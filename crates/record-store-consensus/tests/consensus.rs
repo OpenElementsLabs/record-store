@@ -187,7 +187,10 @@ impl LeaderForwarder for Forwarder {
             .get(&leader)
             .map(Arc::clone)
             .ok_or_else(|| ConsensusError::Forward("leader is not running".into()))?;
-        peer.write(command.clone()).await
+        // The production RPC handler proposes locally and refuses rather than
+        // relaying onward, so the harness has to do the same or it would not be
+        // modelling the wire behaviour it exists to test.
+        peer.write_without_forwarding(command.clone()).await
     }
 
     async fn forward_read_barrier(
@@ -863,4 +866,126 @@ async fn cluster_and_object_metadata_commit_together() {
     assert_eq!(raft_id, 1);
     let usage = leader.state().cluster().usage().await.expect("usage");
     assert_eq!(usage.payloads, 0);
+}
+
+/// A leader-elected scheduler must lose its authority the moment it loses
+/// leadership, not merely fail to notice.
+///
+/// An ordinary write forwards: the client only wants the write to land
+/// somewhere. A coordination write must not, because the thing that changed is
+/// exactly this node's right to decide. Forwarding one would let a deposed
+/// coordinator keep committing decisions through the node that replaced it, and
+/// the cluster would be scheduled twice from two views of the world.
+#[tokio::test]
+async fn a_follower_cannot_commit_a_leader_fenced_write_by_forwarding_it() {
+    let mut harness = Harness::new();
+    let leader = bootstrap(&mut harness, &[1, 2, 3]).await;
+    let term = leader
+        .leadership_term()
+        .await
+        .expect("the bootstrapped member leads");
+
+    let follower = harness
+        .members
+        .lock()
+        .expect("member registry")
+        .get(&3)
+        .map(Arc::clone)
+        .expect("follower is running");
+    assert_eq!(
+        follower.leadership_term().await,
+        None,
+        "a follower holds no leadership term"
+    );
+
+    // The same write that an ordinary client path would happily forward.
+    let forwarded = follower.write(ClusterWrite::Noop).await;
+    assert!(
+        forwarded.is_ok(),
+        "an ordinary write is expected to forward: {forwarded:?}"
+    );
+
+    let fenced = follower.write_as_leader(term, ClusterWrite::Noop).await;
+    assert!(
+        matches!(fenced, Err(ConsensusError::NoLeader)),
+        "a fenced write from a non-leader must be refused, not forwarded: {fenced:?}"
+    );
+}
+
+/// The term is what makes the fence a fence. A node that still leads, but in a
+/// later term than the pass began in, has already been through an election; the
+/// work that pass was doing was planned against a world that no longer holds.
+#[tokio::test]
+async fn a_write_fenced_to_a_stale_term_is_refused_by_the_current_leader() {
+    let mut harness = Harness::new();
+    let leader = bootstrap(&mut harness, &[1, 2, 3]).await;
+    let term = leader
+        .leadership_term()
+        .await
+        .expect("the bootstrapped member leads");
+
+    leader
+        .write_as_leader(term, ClusterWrite::Noop)
+        .await
+        .expect("the current term commits");
+
+    let stale = leader.write_as_leader(term - 1, ClusterWrite::Noop).await;
+    assert!(
+        matches!(stale, Err(ConsensusError::NoLeader)),
+        "a write fenced to a superseded term must be refused: {stale:?}"
+    );
+}
+
+/// A redirect must cost one hop, not a chain.
+///
+/// The node receiving a forwarded write was told "you are the leader". If that
+/// is no longer true, relaying the write onward is how a redirect becomes a
+/// cycle: A forwards to B, B to C, C back to A, each hop spending another
+/// request timeout and multiplying load precisely during the leader churn that
+/// caused it. The receiver must refuse and name the leader it knows instead.
+#[tokio::test]
+async fn a_forwarded_write_is_never_forwarded_a_second_time() {
+    let mut harness = Harness::new();
+    let leader = bootstrap(&mut harness, &[1, 2, 3]).await;
+    assert!(
+        leader.leadership_term().await.is_some(),
+        "member 1 must lead for this to test anything"
+    );
+
+    let first_follower = harness
+        .members
+        .lock()
+        .expect("member registry")
+        .get(&2)
+        .map(Arc::clone)
+        .expect("follower is running");
+    let second_follower = harness
+        .members
+        .lock()
+        .expect("member registry")
+        .get(&3)
+        .map(Arc::clone)
+        .expect("follower is running");
+
+    // What one follower would receive if another had forwarded to it by
+    // mistake, or because leadership moved between the lookup and the call.
+    let relayed = second_follower
+        .write_without_forwarding(ClusterWrite::Noop)
+        .await;
+    let Err(error) = relayed else {
+        panic!("a follower must not commit a write that was forwarded to it");
+    };
+    match error {
+        ConsensusError::NotLeader { leader, .. } => {
+            assert_eq!(leader, 1, "the refusal must name the leader it knows");
+        }
+        ConsensusError::NoLeader => {}
+        other => panic!("expected a redirect, got {other:?}"),
+    }
+
+    // And the ordinary client path still works, in exactly one hop.
+    first_follower
+        .write(ClusterWrite::Noop)
+        .await
+        .expect("an ordinary write still reaches the leader");
 }

@@ -550,3 +550,127 @@ async fn a_bucket_default_materializes_onto_versions_written_under_it() {
         RetentionMode::Compliance
     );
 }
+
+/// A member that catches up by installing a consensus snapshot must inherit
+/// Object Lock state, not an empty lock table.
+///
+/// This is not a cosmetic gap. An absent lock record reads as "no lock", so a
+/// member restored from a snapshot that omitted them would answer every
+/// retention check with "deletable". The moment that member gained metadata
+/// authority — an ordinary failover, or simply being the node a delete is
+/// routed to — a compliance-retained version could be destroyed while the
+/// cluster still reported the object as protected.
+#[tokio::test]
+async fn a_member_restored_from_a_snapshot_still_enforces_retention() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let leader = RedbMetadataRepository::open(directory.path().join("leader.redb"))
+        .await
+        .expect("catalog");
+    let bucket = locked_bucket("compliance", None);
+    leader.create_bucket(&bucket).await.expect("bucket");
+    let metadata = object(bucket.id, "sealed");
+    let retention = Retention {
+        mode: RetentionMode::Compliance,
+        retain_until: Utc::now() + Duration::days(30),
+    };
+    leader
+        .put_object(
+            &metadata,
+            Some(ObjectLockState {
+                retention: Some(retention),
+                legal_hold: false,
+            }),
+            WriteOrigin::Direct,
+        )
+        .await
+        .expect("put a retained version");
+
+    // The leader builds a snapshot, exactly as it does for a follower that has
+    // fallen behind the retained log.
+    let source = leader.database();
+    let entries = tokio::task::spawn_blocking(move || {
+        use redb::ReadableDatabase as _;
+        let read = source.begin_read().expect("begin");
+        record_store_metadata::export_tx(&read).expect("export")
+    })
+    .await
+    .expect("join");
+
+    let follower = RedbMetadataRepository::open(directory.path().join("follower.redb"))
+        .await
+        .expect("catalog");
+    let destination = follower.database();
+    tokio::task::spawn_blocking(move || {
+        let write = destination.begin_write().expect("begin");
+        record_store_metadata::import_tx(&write, &entries).expect("import");
+        write.commit().expect("commit");
+    })
+    .await
+    .expect("join");
+
+    let restored = follower
+        .get_object_lock(metadata.version_id)
+        .await
+        .expect("read the restored lock");
+    assert!(
+        restored.retention.is_some(),
+        "a snapshot must carry Object Lock state, or the restored member reports every \
+         retained version as unlocked"
+    );
+
+    // The property that actually matters: the restored member refuses the delete.
+    let refusal = follower
+        .delete_object_version(bucket.id, &metadata.key, metadata.version_id, release())
+        .await
+        .expect_err("a compliance retention must still refuse the delete");
+    assert!(
+        matches!(refusal, MetadataError::VersionLocked(_)),
+        "expected the restored member to refuse on Object Lock, got {refusal:?}"
+    );
+}
+
+/// The clock high-water mark is what refuses a backwards clock. A snapshot that
+/// dropped it would let a restored member accept a time the cluster has already
+/// moved past, which is the window retention enforcement depends on being shut.
+#[tokio::test]
+async fn a_member_restored_from_a_snapshot_inherits_the_clock_high_water_mark() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let leader = RedbMetadataRepository::open(directory.path().join("leader.redb"))
+        .await
+        .expect("catalog");
+    let far_ahead = Utc::now() + Duration::days(365);
+    leader
+        .observe_clock(LockRelease::new(far_ahead, TOLERANCE_SECONDS))
+        .await
+        .expect("advance the mark");
+
+    let source = leader.database();
+    let entries = tokio::task::spawn_blocking(move || {
+        use redb::ReadableDatabase as _;
+        let read = source.begin_read().expect("begin");
+        record_store_metadata::export_tx(&read).expect("export")
+    })
+    .await
+    .expect("join");
+
+    let follower = RedbMetadataRepository::open(directory.path().join("follower.redb"))
+        .await
+        .expect("catalog");
+    let destination = follower.database();
+    tokio::task::spawn_blocking(move || {
+        let write = destination.begin_write().expect("begin");
+        record_store_metadata::import_tx(&write, &entries).expect("import");
+        write.commit().expect("commit");
+    })
+    .await
+    .expect("join");
+
+    let rolled_back = follower
+        .observe_clock(LockRelease::new(Utc::now(), TOLERANCE_SECONDS))
+        .await;
+    assert!(
+        matches!(rolled_back, Err(MetadataError::ClockWentBackwards)),
+        "the restored member must inherit the mark and refuse a clock behind it, got \
+         {rolled_back:?}"
+    );
+}

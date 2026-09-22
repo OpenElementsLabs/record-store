@@ -600,13 +600,24 @@ pub(crate) fn journal_event(
             .map_err(|e| backend("advance event sequence", e))?;
         next
     };
+    let key = key.map(ToString::to_string);
     let event = MutationEvent {
         sequence,
-        event_id: record_store_core::EventId::new(),
+        // Derived from the event itself, not minted randomly: this runs inside
+        // replicated command application, so a random identifier would make two
+        // members journal different rows for one committed mutation.
+        event_id: MutationEvent::derive_id(
+            sequence,
+            event_type,
+            occurred_at,
+            bucket,
+            key.as_deref(),
+            version_id,
+        ),
         event_type,
         occurred_at,
         bucket: bucket.to_owned(),
-        key: key.map(|key| key.to_string()),
+        key,
         version_id,
         size,
     };

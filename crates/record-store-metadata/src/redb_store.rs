@@ -200,9 +200,12 @@ impl MetadataRepository for RedbMetadataRepository {
     }
 
     async fn delete_bucket(&self, name: &BucketName) -> Result<Bucket, MetadataError> {
-        self.command(MetadataCommand::DeleteBucket { name: name.clone() })
-            .await?
-            .into_bucket()
+        self.command(MetadataCommand::DeleteBucket {
+            name: name.clone(),
+            at: chrono::Utc::now(),
+        })
+        .await?
+        .into_bucket()
     }
 
     async fn put_object(
@@ -703,9 +706,12 @@ impl MetadataRepository for RedbMetadataRepository {
         &self,
         id: UploadId,
     ) -> Result<MultipartCleanupResult, MetadataError> {
-        self.command(MetadataCommand::AbortMultipartUpload { upload_id: id })
-            .await?
-            .into_multipart_cleanup()
+        self.command(MetadataCommand::AbortMultipartUpload {
+            upload_id: id,
+            at: chrono::Utc::now(),
+        })
+        .await?
+        .into_multipart_cleanup()
     }
 
     /// Reconciles crash-interrupted completion state before readiness.
@@ -1371,8 +1377,8 @@ mod tests {
             enabled: true,
             expiration: Some(ExpirationDays::new(30).expect("days")),
             noncurrent_version_expiration: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
         };
         catalog.put_lifecycle_rule(&rule).await.expect("put rule");
 
@@ -1610,7 +1616,7 @@ mod tests {
                 bucket.id,
                 &key,
                 first.version_id,
-                LockRelease::new(chrono::Utc::now(), 5),
+                LockRelease::new(Utc::now(), 5),
             )
             .await
             .expect("delete version");
@@ -1637,7 +1643,7 @@ mod tests {
                     bucket.id,
                     &key,
                     VersionId::new(),
-                    LockRelease::new(chrono::Utc::now(), 5),
+                    LockRelease::new(Utc::now(), 5),
                 )
                 .await
                 .expect("delete version")
@@ -1772,7 +1778,7 @@ mod tests {
                 bucket.id,
                 &key,
                 first.version_id,
-                LockRelease::new(chrono::Utc::now(), 5),
+                LockRelease::new(Utc::now(), 5),
             )
             .await
             .expect("delete version");
@@ -2170,7 +2176,7 @@ mod tests {
                 bucket.id,
                 &key,
                 second.version_id,
-                LockRelease::new(chrono::Utc::now(), 5),
+                LockRelease::new(Utc::now(), 5),
             )
             .await
             .expect("delete current");
@@ -2218,7 +2224,7 @@ mod tests {
                 bucket.id,
                 &key,
                 first.version_id,
-                LockRelease::new(chrono::Utc::now(), 5),
+                LockRelease::new(Utc::now(), 5),
             )
             .await
             .expect("delete version");

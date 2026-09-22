@@ -83,6 +83,7 @@ pub(crate) fn task(
         target_device: Some(DeviceRecord::legacy_id(target)),
         operation_id: None,
         size: 1_024,
+        fence: 0,
         state: record_store_cluster::ReplicaTaskState::Queued,
         attempts: 0,
         last_error: None,

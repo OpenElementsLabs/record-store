@@ -150,6 +150,79 @@ impl ClusterContext {
         })
     }
 
+    /// Claims a movement task and returns the fence token the claim granted.
+    ///
+    /// `None` means the task was not claimable — another node holds it, or it is
+    /// no longer queued. The token is read back from the committed task record
+    /// rather than assumed, because the claim is applied by the state machine and
+    /// only the state machine knows which token it issued.
+    pub async fn claim_task(
+        &self,
+        task_id: record_store_core::ReplicaTaskId,
+        node_id: NodeId,
+        lease_seconds: u64,
+    ) -> Result<Option<u64>, StorageError> {
+        let outcome = self
+            .cluster
+            .apply(record_store_cluster::ClusterCommand::ClaimTask {
+                task_id,
+                node_id,
+                lease_seconds,
+                at: chrono::Utc::now(),
+            })
+            .await
+            .map_err(|error| StorageError::ClusterUnavailable(error.to_string()))?;
+        match outcome {
+            record_store_cluster::ClusterOutcome::Task(task) => {
+                Ok(task.holds_claim(node_id, task.fence).then_some(task.fence))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Returns a movement task as committed state currently sees it.
+    ///
+    /// The read barrier is the point: a worker checking whether it still owns a
+    /// task is precisely the caller whose local view may be behind.
+    pub async fn committed_task(
+        &self,
+        task_id: record_store_core::ReplicaTaskId,
+    ) -> Result<Option<record_store_cluster::ReplicaTask>, StorageError> {
+        self.cluster
+            .ensure_read_consistency()
+            .await
+            .map_err(|error| StorageError::ClusterUnavailable(error.to_string()))?;
+        self.cluster
+            .task(task_id)
+            .await
+            .map_err(|error| StorageError::ClusterUnavailable(error.to_string()))
+    }
+
+    /// Returns whether the batch that published this payload's placement committed.
+    ///
+    /// Every distributed write commits its object metadata and a `PutPlacement`
+    /// for a freshly generated payload identifier in one atomic batch, so the
+    /// presence of that placement proves the whole batch committed. The read is
+    /// taken behind a read barrier, which is what makes a negative answer worth
+    /// anything: an unbarriered local read on a lagging member would report
+    /// "absent" for a placement the cluster has already committed.
+    ///
+    /// This is how an ambiguous commit outcome becomes a definite one. Callers
+    /// must only use it with an identifier generated for this write attempt;
+    /// a reused identifier would report an older write's placement.
+    pub async fn placement_committed(&self, object_id: ObjectId) -> Result<bool, StorageError> {
+        self.cluster
+            .ensure_read_consistency()
+            .await
+            .map_err(|error| StorageError::ClusterUnavailable(error.to_string()))?;
+        Ok(self
+            .cluster
+            .placement(object_id)
+            .await
+            .map_err(|error| StorageError::ClusterUnavailable(error.to_string()))?
+            .is_some())
+    }
+
     /// Commits a replicated write, requiring a consensus group in cluster mode.
     pub async fn commit(&self, write: ClusterWrite) -> Result<(), StorageError> {
         let consensus = self.consensus.as_ref().ok_or_else(|| {
