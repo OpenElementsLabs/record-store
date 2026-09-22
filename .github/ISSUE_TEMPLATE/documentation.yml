@@ -1,39 +1,19 @@
-name: Documentation problem
-description: Something in the documentation is wrong, unclear, or overstated
+name: Documentation issue
+description: Report incorrect, unclear, or missing documentation
 labels: ["documentation"]
 body:
-  - type: markdown
-    attributes:
-      value: >-
-        A claim in the documentation that is stronger than what the code
-        guarantees is a bug in its own right, and one worth reporting here.
-
   - type: input
     id: page
     attributes:
-      label: Which page
-      placeholder: https://openelementslabs.github.io/record-store/security/object-lock/
+      label: Page URL or file path
+      description: If a page is missing, say where you expected to find it.
+      placeholder: docs/getting-started/installation.md
     validations:
       required: true
-
   - type: textarea
     id: problem
     attributes:
-      label: What is wrong
-      description: >-
-        Quote the passage if you can, and say what you expected it to mean.
-    validations:
-      required: true
-
-  - type: dropdown
-    id: kind
-    attributes:
-      label: Kind of problem
-      options:
-        - Factually wrong
-        - Overstates a guarantee
-        - Unclear or ambiguous
-        - Missing entirely
-        - Broken link or example
+      label: What needs to change?
+      description: Describe the problem and suggest a correction if you have one.
     validations:
       required: true

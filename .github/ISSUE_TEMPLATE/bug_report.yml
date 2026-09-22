@@ -1,101 +1,44 @@
 name: Bug report
-description: Something behaves differently from what the documentation says
+description: Report unexpected behavior or a failure
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: >-
-        **If this is a security problem, stop.** Do not file it here — use
-        [private vulnerability reporting](https://github.com/OpenElementsLabs/record-store/security/advisories/new).
-        A public issue tells everyone running Record Store about the flaw at the
-        same time as the people who can fix it.
-
+        For security vulnerabilities, use
+        [private reporting](https://github.com/OpenElementsLabs/record-store/security/advisories/new).
   - type: textarea
-    id: what-happened
+    id: problem
     attributes:
-      label: What happened
-      description: What you observed, and what you expected instead.
+      label: What happened?
+      description: Include steps to reproduce, what you expected, and what happened instead.
     validations:
       required: true
-
-  - type: textarea
-    id: reproduce
-    attributes:
-      label: How to reproduce
-      description: >-
-        The request sequence, CLI commands, or a short script. A report that can
-        be reproduced gets fixed considerably faster than one that cannot.
-      placeholder: |
-        1. record-store bucket create records
-        2. aws --endpoint-url http://localhost:7600 s3api put-object ...
-        3. ...
-    validations:
-      required: true
-
   - type: input
     id: version
     attributes:
-      label: Version
-      description: >-
-        Release, image digest, or commit. `record-store --version`, or the
-        digest you pulled.
-      placeholder: "0.1.3"
+      label: Version or image tag
+      description: A release version, container image tag or digest, or commit.
+      placeholder: "0.1.3 or ghcr.io/openelementslabs/record-store:0.1.3"
     validations:
       required: true
-
   - type: dropdown
-    id: surface
+    id: deployment
     attributes:
-      label: Which surface
-      description: Where the problem appears. The planes are deliberately separate.
-      multiple: true
+      label: How is it deployed?
       options:
-        - S3 API (port 7600)
-        - Management API (port 7601)
-        - Web console (port 7602)
-        - CLI
-        - Share or embed link
-        - Documentation
-        - Build, release, or container image
+        - Docker Compose
+        - Coolify
+        - Binary
+        - From source (cargo run)
+        - Other (describe above)
     validations:
       required: true
-
-  - type: input
-    id: client
-    attributes:
-      label: Client
-      description: >-
-        Which SDK or tool, and its version, if the problem involves one. Client
-        defaults differ, and that difference is often the bug.
-      placeholder: "boto3 1.35.0 / aws-cli 2.17 / AWS SDK for Java v2 2.54.12"
-
-  - type: textarea
-    id: configuration
-    attributes:
-      label: Relevant configuration
-      description: >-
-        Configuration or environment variables that matter, **with secrets
-        removed**. Never paste a master key, root secret, management token, or
-        share URL.
-      render: toml
-
   - type: textarea
     id: logs
     attributes:
-      label: Logs
-      description: >-
-        Server output around the failure. Include the request ID if you have
-        one — it appears in `x-amz-request-id` and `x-request-id`.
-      render: shell
-
-  - type: checkboxes
-    id: confirmations
-    attributes:
-      label: Before submitting
-      options:
-        - label: I am running a supported version, or have said which unsupported one.
-          required: true
-        - label: I have removed every secret from the text above.
-          required: true
-        - label: This is not a security vulnerability.
-          required: true
+      label: Relevant log output
+      description: Paste logs around the failure, including a request ID if available. Remove secrets and share URLs. If no logs are available, say so.
+      render: text
+    validations:
+      required: true
