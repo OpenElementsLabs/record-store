@@ -1,7 +1,7 @@
 use std::io;
 
 use axum::{
-    body::{Body, to_bytes},
+    body::Body,
     extract::{Extension, Path, RawQuery, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
@@ -23,6 +23,7 @@ use record_store_storage::upload_stream;
 use sha2::{Digest, Sha256};
 
 use crate::auth::principal_name;
+use crate::checksum::{Mismatch, RequestDigest, read_verified, request_digests, verify_streamed};
 use crate::error::{S3Error, S3ErrorKind, service_error};
 use crate::handlers::listing::{RequestedVersion, list_parts, query_map, requested_version};
 use crate::response::{
@@ -71,6 +72,9 @@ pub(crate) async fn put_object(
     }
     let expected_checksum = request_checksum(&headers, &payload_hash)
         .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}/{key}")))?;
+    let digests = request_digests(&headers)
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &format!("/{bucket}/{key}")))?;
+    let echoes: Vec<_> = digests.iter().filter_map(RequestDigest::echo).collect();
     if let (Some(upload_id), Some(part_number)) = (query.get("uploadId"), query.get("partNumber")) {
         let bucket_name = bucket_name(&bucket, &request_id)?;
         let object_key = object_key(&key, &request_id, &format!("/{bucket}/{key}"))?;
@@ -95,7 +99,7 @@ pub(crate) async fn put_object(
                 &format!("/{bucket}/{key}"),
             ));
         }
-        let stream = body.into_data_stream().map_err(io::Error::other);
+        let (body, mismatch) = verified_upload(body, digests);
         let part = state
             .services
             .objects
@@ -105,13 +109,14 @@ pub(crate) async fn put_object(
                 upload_id,
                 number,
                 expected_checksum: expected_checksum.clone(),
-                body: upload_stream(stream),
+                body,
             })
             .await
             .map_err(|error| {
-                service_error(error, request_id.clone(), &format!("/{bucket}/{key}"))
+                upload_error(error, &mismatch, &request_id, &format!("/{bucket}/{key}"))
             })?;
         let mut response = StatusCode::OK.into_response();
+        insert_echoes(&mut response, &echoes);
         if let Ok(value) = HeaderValue::from_str(&format!("\"{}\"", part.etag)) {
             response.headers_mut().insert(header::ETAG, value);
         }
@@ -140,7 +145,7 @@ pub(crate) async fn put_object(
         .map(str::to_owned);
     let custom_metadata = custom_metadata(&headers, &request_id, &format!("/{bucket}/{key}"))?;
     let object_lock = requested_object_lock(&headers, &request_id, &format!("/{bucket}/{key}"))?;
-    let stream = body.into_data_stream().map_err(io::Error::other);
+    let (body, mismatch) = verified_upload(body, digests);
     let result = state
         .services
         .objects
@@ -151,14 +156,53 @@ pub(crate) async fn put_object(
             custom_metadata,
             expected_checksum,
             object_lock,
-            body: upload_stream(stream),
+            body,
         })
         .await
-        .map_err(|error| service_error(error, request_id.clone(), &format!("/{bucket}/{key}")))?;
+        .map_err(|error| {
+            upload_error(error, &mismatch, &request_id, &format!("/{bucket}/{key}"))
+        })?;
     let mut response = StatusCode::OK.into_response();
+    insert_echoes(&mut response, &echoes);
     insert_etag(&mut response, &result.metadata);
     insert_version_id(&mut response, result.metadata.version_id);
     Ok(response)
+}
+
+/// An upload body verified while it streams against the digests the request
+/// carries (`Content-MD5`, `x-amz-checksum-*`; see `crate::checksum`).
+fn verified_upload(
+    body: Body,
+    digests: Vec<RequestDigest>,
+) -> (record_store_storage::UploadStream, Mismatch) {
+    let (stream, mismatch) =
+        verify_streamed(body.into_data_stream().map_err(io::Error::other), digests);
+    (upload_stream(stream), mismatch)
+}
+
+/// A failed upload whose body contradicted its own digest is a `BadDigest`,
+/// however the storage layer happened to report the aborted write.
+fn upload_error(
+    error: record_store_service::ServiceError,
+    mismatch: &Mismatch,
+    request_id: &S3RequestId,
+    resource: &str,
+) -> S3Error {
+    if mismatch.happened() {
+        S3Error::new(S3ErrorKind::BadDigest, request_id.clone(), resource)
+    } else {
+        service_error(error, request_id.clone(), resource)
+    }
+}
+
+fn insert_echoes(response: &mut Response, echoes: &[(&'static str, String)]) {
+    for (name, value) in echoes {
+        if let Ok(value) = HeaderValue::from_str(value) {
+            response
+                .headers_mut()
+                .insert(HeaderName::from_static(name), value);
+        }
+    }
 }
 
 pub(crate) async fn get_object(
@@ -449,9 +493,9 @@ pub(crate) async fn post_object(
         .ok_or_else(|| S3Error::new(S3ErrorKind::NotImplemented, request_id.clone(), &key))?
         .parse::<UploadId>()
         .map_err(|_| S3Error::new(S3ErrorKind::NoSuchUpload, request_id.clone(), &key))?;
-    let bytes = to_bytes(body, 1024 * 1024)
+    let bytes = read_verified(body, 1024 * 1024, &headers)
         .await
-        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &key))?;
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &key))?;
     if payload_hash
         .expected_checksum()
         .is_some_and(|expected| expected != Checksum::sha256(Sha256::digest(bytes.as_ref()).into()))
@@ -1154,6 +1198,101 @@ mod tests {
         );
     }
 
+    /// Every digest a client can send about its body is checked, not merely
+    /// SHA-256 (RSG-007): a wrong one refuses the write with BadDigest and stores
+    /// nothing, a right one stores the object and is echoed back, and an
+    /// algorithm this server cannot verify is refused rather than ignored.
+    #[tokio::test]
+    async fn every_supplied_body_digest_is_verified_or_refused() {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+
+        let md5_of_hello = encode(&md5::Md5::digest(b"hello"));
+        let crc32_of_hello = encode(&crc32fast::hash(b"hello").to_be_bytes());
+        let crc32c_of_hello = encode(&crc32c::crc32c(b"hello").to_be_bytes());
+        let sha1_of_hello = encode(&sha1::Sha1::digest(b"hello"));
+        let wrong_4 = encode(&[0_u8; 4]);
+        let wrong_16 = encode(&[0_u8; 16]);
+        let wrong_20 = encode(&[0_u8; 20]);
+        let cases: [(&str, &str, &str); 4] = [
+            ("content-md5", md5_of_hello.as_str(), wrong_16.as_str()),
+            (
+                "x-amz-checksum-crc32",
+                crc32_of_hello.as_str(),
+                wrong_4.as_str(),
+            ),
+            (
+                "x-amz-checksum-crc32c",
+                crc32c_of_hello.as_str(),
+                wrong_4.as_str(),
+            ),
+            (
+                "x-amz-checksum-sha1",
+                sha1_of_hello.as_str(),
+                wrong_20.as_str(),
+            ),
+        ];
+        for (index, (header, right, wrong)) in cases.into_iter().enumerate() {
+            let path = format!("/photos/wrong-{index}");
+            let refused = send(
+                &application,
+                Method::PUT,
+                &path,
+                b"hello",
+                &[(header, wrong)],
+            )
+            .await;
+            assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{header}");
+            let document = body_text(refused).await;
+            assert_eq!(
+                xml_value(&document, "Code"),
+                Some("BadDigest"),
+                "{header}: {document}"
+            );
+            let absent = send(&application, Method::HEAD, &path, b"", &[]).await;
+            assert_eq!(
+                absent.status(),
+                StatusCode::NOT_FOUND,
+                "{header}: a refused write stores nothing"
+            );
+
+            let path = format!("/photos/right-{index}");
+            let stored = send(
+                &application,
+                Method::PUT,
+                &path,
+                b"hello",
+                &[(header, right)],
+            )
+            .await;
+            assert_eq!(stored.status(), StatusCode::OK, "{header}");
+            if header.starts_with("x-amz-checksum-") {
+                assert_eq!(
+                    stored.headers().get(header).and_then(|v| v.to_str().ok()),
+                    Some(right),
+                    "{header} is echoed"
+                );
+            }
+            let read = send(&application, Method::GET, &path, b"", &[]).await;
+            assert_eq!(body_text(read).await, "hello");
+        }
+
+        let unverifiable = send(
+            &application,
+            Method::PUT,
+            "/photos/crc64",
+            b"hello",
+            &[("x-amz-checksum-crc64nvme", "AAAAAAAAAAA=")],
+        )
+        .await;
+        assert_eq!(unverifiable.status(), StatusCode::NOT_IMPLEMENTED);
+        let absent = send(&application, Method::HEAD, "/photos/crc64", b"", &[]).await;
+        assert_eq!(absent.status(), StatusCode::NOT_FOUND);
+    }
+
     /// Custom metadata travels on `x-amz-meta-` headers and has to come back on
     /// the read, or a client loses information it believes it stored.
     #[tokio::test]
@@ -1653,9 +1792,9 @@ pub(crate) async fn put_object_retention(
     let resource = format!("/{bucket}/{key}");
     let (bucket_name, object_key) = lock_key_parts(&bucket, &key, &request_id)?;
     let version_id = requested_lock_version(query, &request_id, &resource)?;
-    let bytes = to_bytes(body, 16 * 1024)
+    let bytes = read_verified(body, 16 * 1024, headers)
         .await
-        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &resource))?;
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &resource))?;
     let document: RetentionDocument = quick_xml::de::from_reader(bytes.as_ref())
         .map_err(|_| S3Error::new(S3ErrorKind::MalformedXml, request_id.clone(), &resource))?;
     let retention: Option<record_store_core::Retention> = document
@@ -1730,9 +1869,9 @@ pub(crate) async fn put_object_legal_hold(
     let resource = format!("/{bucket}/{key}");
     let (bucket_name, object_key) = lock_key_parts(&bucket, &key, &request_id)?;
     let version_id = requested_lock_version(query, &request_id, &resource)?;
-    let bytes = to_bytes(body, 16 * 1024)
+    let bytes = read_verified(body, 16 * 1024, headers)
         .await
-        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &resource))?;
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &resource))?;
     let document: LegalHoldDocument = quick_xml::de::from_reader(bytes.as_ref())
         .map_err(|_| S3Error::new(S3ErrorKind::MalformedXml, request_id.clone(), &resource))?;
     let legal_hold = parse_legal_hold(document.status.as_deref().unwrap_or_default())

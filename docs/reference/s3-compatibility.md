@@ -20,6 +20,7 @@ tests.
 | `CopyObject` | Server-side copy |
 | `RangeAndConditionalReads` | `Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since` |
 | `ClientSha256Checksums` | `x-amz-content-sha256` |
+| `ClientBodyDigests` | `Content-MD5` and `x-amz-checksum-crc32`, `-crc32c`, `-sha1`, `-sha256` are verified against the body; a mismatch is `400 BadDigest` and stores nothing. A verified `x-amz-checksum-*` is echoed in the response |
 | `ObjectLock` | Retention (`GOVERNANCE`/`COMPLIANCE`), legal holds, bucket defaults, governance bypass |
 
 ## Unsupported
@@ -30,6 +31,7 @@ tests.
 | `ServerSideEncryptionHeaders` | [Encryption](../security/encryption.md) is a deployment setting, not per request |
 | `AccessControlLists` | [Policies](../administration/policies.md) |
 | `AwsChunkedEncoding` | Configure the SDK to send unsigned or fully-signed payloads |
+| `Crc64NvmeChecksums` | Use CRC32, CRC32C, SHA-1 or SHA-256; an unverifiable checksum is refused rather than ignored |
 
 Requests for an unsupported operation return `501 NotImplemented`.
 
@@ -60,8 +62,15 @@ conventional choice.
 
 ### Checksums
 
-Newer AWS SDKs default to `aws-chunked` trailing checksums, which Record Store does
-not accept. If uploads fail with `NotImplemented`:
+A checksum sent as a header — `Content-MD5`, or `x-amz-checksum-crc32`, `-crc32c`,
+`-sha1` or `-sha256` — is verified against the body before the object is committed. A
+body that does not match is refused with `400 BadDigest` and nothing is stored.
+CRC64NVME is refused with `NotImplemented` rather than accepted unverified.
+
+Newer AWS SDKs default to calculating a checksum on every upload. Sent as a header, as
+they do over plain HTTP, it is verified. Sent as an `aws-chunked` trailer, as they
+typically do over HTTPS, it is refused with `NotImplemented`, because Record Store does
+not accept `aws-chunked` payloads. If uploads fail that way:
 
 ```bash
 export AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED

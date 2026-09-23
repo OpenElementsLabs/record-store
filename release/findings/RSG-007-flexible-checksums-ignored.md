@@ -2,9 +2,9 @@
 
 | | |
 | --- | --- |
-| Status | open |
+| Status | fixed |
 | Severity | high — clients believe an integrity check happened |
-| Blocks release | yes |
+| Blocks release | no — fixed |
 | Gate | CMP-UNSUPPORTED (`tests/gates/unsupported.py`) |
 | Known failing checks | `x-amz-checksum-crc32 contradicts its body is not stored`; `x-amz-checksum-crc32c contradicts its body is not stored`; `x-amz-checksum-sha1 contradicts its body is not stored` |
 | Found | 2026-09-23, candidate `0765aee` |
@@ -26,3 +26,16 @@ contradicts one does not.
 out/venv/bin/python tests/gates/unsupported.py --bin-dir out/candidate/bin
 # [FAIL] a PUT whose x-amz-checksum-crc32 contradicts its body is not stored -- {'status': 200, 'stored': True}
 ```
+
+## Fix
+
+`crates/record-store-s3/src/checksum.rs` verifies `Content-MD5` and
+`x-amz-checksum-crc32` / `-crc32c` / `-sha1` on streamed uploads (PutObject,
+UploadPart) while the body streams, and every digest including SHA-256 on the
+buffered XML bodies (versioning, Object Lock, CORS, retention, legal hold,
+CompleteMultipartUpload). A mismatch aborts the write before commit and answers
+`400 BadDigest`; CRC64NVME and any other algorithm is refused with
+`NotImplemented`. Content-MD5 turned out to be ignored as well, in 0.1.3 too.
+Regression tests: `checksum::tests::*` (known-answer vectors),
+`handlers::object::tests::every_supplied_body_digest_is_verified_or_refused`,
+the boto3 suite with the SDK's default checksum behaviour, and CMP-UNSUPPORTED.

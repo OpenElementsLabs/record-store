@@ -1,5 +1,5 @@
 use axum::{
-    body::{Body, to_bytes},
+    body::Body,
     extract::{Extension, Path, RawQuery, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
@@ -9,6 +9,7 @@ use axum::{
 };
 use record_store_core::{ObjectLockConfiguration, VersioningState};
 
+use crate::checksum::read_verified;
 use crate::error::{S3Error, S3ErrorKind, service_error};
 use crate::handlers::listing::has_query_flag;
 use crate::response::{bucket_name, reject_subresources, xml_response};
@@ -60,13 +61,13 @@ pub(crate) async fn create_bucket(
     body: Body,
 ) -> Result<Response, S3Error> {
     if has_query_flag(raw_query.as_deref(), "cors") {
-        return put_bucket_cors(state, bucket, request_id, body).await;
+        return put_bucket_cors(state, bucket, request_id, &headers, body).await;
     }
     if has_query_flag(raw_query.as_deref(), "versioning") {
-        return put_bucket_versioning(state, bucket, request_id, body).await;
+        return put_bucket_versioning(state, bucket, request_id, &headers, body).await;
     }
     if has_query_flag(raw_query.as_deref(), "object-lock") {
-        return put_bucket_object_lock(state, bucket, request_id, body).await;
+        return put_bucket_object_lock(state, bucket, request_id, &headers, body).await;
     }
     reject_subresources(raw_query.as_deref(), &request_id, &format!("/{bucket}"))?;
     let object_lock_enabled = match headers
@@ -141,11 +142,12 @@ pub(crate) async fn put_bucket_versioning(
     state: S3State,
     bucket: String,
     request_id: S3RequestId,
+    headers: &HeaderMap,
     body: Body,
 ) -> Result<Response, S3Error> {
-    let bytes = to_bytes(body, 16 * 1024)
+    let bytes = read_verified(body, 16 * 1024, headers)
         .await
-        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?;
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &bucket))?;
     let document: VersioningConfigurationDocument = quick_xml::de::from_reader(bytes.as_ref())
         .map_err(|_| S3Error::new(S3ErrorKind::MalformedXml, request_id.clone(), &bucket))?;
     let versioning = match document.status.as_deref() {
@@ -204,11 +206,12 @@ pub(crate) async fn put_bucket_object_lock(
     state: S3State,
     bucket: String,
     request_id: S3RequestId,
+    headers: &HeaderMap,
     body: Body,
 ) -> Result<Response, S3Error> {
-    let bytes = to_bytes(body, 16 * 1024)
+    let bytes = read_verified(body, 16 * 1024, headers)
         .await
-        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?;
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &bucket))?;
     let document: ObjectLockConfigurationDocument = quick_xml::de::from_reader(bytes.as_ref())
         .map_err(|_| S3Error::new(S3ErrorKind::MalformedXml, request_id.clone(), &bucket))?;
     let configuration: ObjectLockConfiguration = document
@@ -251,11 +254,12 @@ pub(crate) async fn put_bucket_cors(
     state: S3State,
     bucket: String,
     request_id: S3RequestId,
+    headers: &HeaderMap,
     body: Body,
 ) -> Result<Response, S3Error> {
-    let bytes = to_bytes(body, 256 * 1024)
+    let bytes = read_verified(body, 256 * 1024, headers)
         .await
-        .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?;
+        .map_err(|kind| S3Error::new(kind, request_id.clone(), &bucket))?;
     let document: CorsConfigurationDocument = quick_xml::de::from_reader(bytes.as_ref())
         .map_err(|_| S3Error::new(S3ErrorKind::MalformedXml, request_id.clone(), &bucket))?;
     let configuration = document

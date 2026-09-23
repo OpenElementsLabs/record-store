@@ -71,6 +71,17 @@ pub const S3_CAPABILITIES: &[S3Capability] = &[
         name: "ClientSha256Checksums",
         status: CapabilityStatus::Implemented,
     },
+    // Content-MD5 and x-amz-checksum-crc32 / -crc32c / -sha1 / -sha256 are
+    // verified against the body; a mismatch is BadDigest and stores nothing.
+    S3Capability {
+        name: "ClientBodyDigests",
+        status: CapabilityStatus::Implemented,
+    },
+    // Refused rather than stored unverified (see crate::checksum).
+    S3Capability {
+        name: "Crc64NvmeChecksums",
+        status: CapabilityStatus::Unsupported,
+    },
     S3Capability {
         name: "ServerSideEncryptionHeaders",
         status: CapabilityStatus::Unsupported,

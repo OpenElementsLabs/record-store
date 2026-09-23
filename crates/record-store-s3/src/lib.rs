@@ -19,6 +19,7 @@ use record_store_service::Services;
 
 mod auth;
 mod capabilities;
+mod checksum;
 mod cors;
 mod error;
 #[cfg(feature = "fuzzing")]
