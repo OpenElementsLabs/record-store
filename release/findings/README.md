@@ -30,3 +30,4 @@ proof.
 | [RSG-008](RSG-008-event-pagination-drops-one-per-page.md) | Storage-event pagination drops one event at every page boundary | open | yes |
 | [RSG-009](RSG-009-multipart-listing-no-next-key-marker.md) | A truncated ListMultipartUploads page carries no NextKeyMarker | open | no |
 | [RSG-010](RSG-010-torn-publication-record-blocks-startup.md) | A crash can leave a publication record that stops the server starting | open | yes |
+| [RSG-011](RSG-011-memory-growth-under-steady-load.md) | Resident memory grows steadily under a steady mixed workload | open (investigating) | no — decision needed |

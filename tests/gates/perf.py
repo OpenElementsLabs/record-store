@@ -76,8 +76,8 @@ def percentile(values: list[float], fraction: float) -> float:
 class Sampler:
     """Samples the server process every interval while a workload runs."""
 
-    def __init__(self, server: Server, interval: float = 0.1) -> None:
-        self.server, self.interval = server, interval
+    def __init__(self, server: Server, interval: float = 0.1, track_storage: bool = False) -> None:
+        self.server, self.interval, self.track_storage = server, interval, track_storage
         self.samples: list[dict] = []
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -85,7 +85,12 @@ class Sampler:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                self.samples.append({"t": time.monotonic(), **self.server.sample()})
+                sample = {"t": time.monotonic(), **self.server.sample()}
+                if self.track_storage:
+                    # Beside RSS, so a curve can show whether memory follows the
+                    # size of the database files (a page cache) or not (a leak).
+                    sample["redb_bytes"] = float(sum(p.stat().st_size for p in self.server.data_directory.rglob("*.redb")))
+                self.samples.append(sample)
             except Exception:  # noqa: BLE001
                 return
             self._stop.wait(self.interval)
@@ -191,7 +196,7 @@ def mixed(server: Server, rng: random.Random, seconds: float, concurrency: int) 
                 with lock:
                     errors += 1
 
-    with Sampler(server, interval=1.0) as sampler:
+    with Sampler(server, interval=1.0, track_storage=seconds > 120) as sampler:
         started = time.perf_counter()
         with concurrent.futures.ThreadPoolExecutor(concurrency) as pool:
             list(pool.map(worker, range(concurrency)))
@@ -331,9 +336,22 @@ def main(gate: Gate) -> None:
     gate.context["summary"] = summary
 
     if profile == "endurance":
+        t_start = endurance_samples[0]["t"] if endurance_samples else 0.0
+        (gate.evidence_directory / "endurance-samples.json").write_text(json.dumps(
+            [{**sample, "t": round(sample["t"] - t_start, 2)} for sample in endurance_samples]))
+        if endurance_samples:
+            first, last = endurance_samples[0], endurance_samples[-1]
+            gate.context["endurance_start_end"] = {
+                "rss_bytes": [first["rss_bytes"], last["rss_bytes"]],
+                "redb_bytes": [first.get("redb_bytes"), last.get("redb_bytes")],
+                "duration_seconds": round(last["t"] - first["t"], 1),
+            }
         half = endurance_samples[len(endurance_samples) // 2:]
-        if len(half) < 10:
-            raise InvalidMeasurement("endurance run too short to fit a trend")
+        # A slope fitted over minutes extrapolates noise into "growth per hour":
+        # a few descriptors opening late in a 150 s run read as 50 files/hour.
+        if len(half) < 10 or half[-1]["t"] - half[0]["t"] < 600:
+            raise InvalidMeasurement("the second half of the endurance run spans less than 10 minutes; "
+                                     "too short to fit a trend")
         t0 = half[0]["t"]
         xs = [(s["t"] - t0) / 3600 for s in half]
         for field, unit, limit in (("rss_bytes", "bytes/hour", 64 * MIB), ("open_files", "files/hour", 8.0)):
