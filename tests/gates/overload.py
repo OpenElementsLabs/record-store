@@ -57,6 +57,7 @@ WAIT_LIMIT_SECONDS = 1
 REJECTION_MARGIN_SECONDS = 1.0
 CLIENT_THREADS = 64
 SLOW_HEADER_SOCKETS = 48
+PROBES = 4
 
 
 def probe(url: str, stop_at: float, results) -> None:
@@ -206,13 +207,18 @@ def main(gate: Gate) -> None:
     probe_url = client.generate_presigned_url("get_object", Params={"Bucket": "overload", "Key": "committed/01"}, ExpiresIn=3600)
     probe_results = multiprocessing.Queue()
     time.sleep(2)  # let the load reach saturation before probing it
-    prober = multiprocessing.Process(target=probe, args=(probe_url, time.time() + duration - 3, probe_results))
-    prober.start()
+    # Four independent probes: one alone collects ~15 samples in the short
+    # profile, too few to rely on seeing enough refusals to judge them.
+    probers = [multiprocessing.Process(target=probe, args=(probe_url, time.time() + duration - 3, probe_results))
+               for _ in range(PROBES)]
+    for prober in probers:
+        prober.start()
     while time.monotonic() < deadline:
         samples.append(server.sample())
         time.sleep(0.5)
-    probe_samples = probe_results.get(timeout=120)
-    prober.join(timeout=30)
+    probe_samples = [sample for _ in probers for sample in probe_results.get(timeout=120)]
+    for prober in probers:
+        prober.join(timeout=30)
     stop.set()
     for future in futures:
         future.result(timeout=120)
@@ -242,6 +248,7 @@ def main(gate: Gate) -> None:
     admitted = sorted(latency for kind, latency in probe_samples if kind == "ok")
     gate.check("every probe during overload was admitted or refused with SlowDown",
                set(probe_kinds) <= {"ok", "slowdown"}, probe_kinds)
+    gate.metric("probe_samples", float(len(probe_samples)), "requests")
     if len(refusals) < 5:
         raise InvalidMeasurement(f"the probe saw too few refusals to measure them: {probe_kinds}")
     gate.metric("probe_slowdown_latency_max_seconds", refusals[-1], "s",
