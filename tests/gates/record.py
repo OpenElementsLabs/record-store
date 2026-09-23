@@ -119,8 +119,6 @@ def main() -> int:
         "SEED": str(arguments.seed),
         "GATE_COMMIT": git("rev-parse", "HEAD"),
     })
-    if gate["id"] == "PERF-BASELINE" and gate.get("baseline", {}).get("path"):
-        environment.setdefault("PERF_BASELINE", str(REPOSITORY_ROOT / gate["baseline"]["path"]))
     # The gate scripts import gatelib from their own directory.
     environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "tests/gates") + os.pathsep + environment.get("PYTHONPATH", "")
 
@@ -175,8 +173,15 @@ def main() -> int:
 
     final = attempts[-1]["outcome"]
     binding_problem = ""
+    # A harness gate (tests/gates/*.py built on gatelib) always writes a detail
+    # record with its checks. Exit 0 without one means the script ran nothing --
+    # a lost entry point, say -- and nothing is not a pass.
+    if final == "pass" and "tests/gates/" in gate["command"] and ".py" in gate["command"]:
+        if not detail or not detail.get("checks"):
+            binding_problem = "the gate exited 0 without recording any check"
+            final = "invalid_measurement"
     observed = detail.get("context", {}).get("artifact") if detail else None
-    if gate.get("binds_artifact") and final == "pass":
+    if gate.get("binds_artifact") and final == "pass" and not binding_problem:
         expected = candidate.get("binaries", {})
         # A gate reports the digests of the binaries it actually executed; the
         # server's is always required, the CLI's whenever the gate used it.

@@ -143,7 +143,8 @@ jobs:
   # The real previous release, built from its tag, cached by tag.
   previous:
     needs: plan
-    if: contains(needs.plan.outputs.gates, 'CMP-UPGRADE')
+    # CMP-UPGRADE upgrades from it; PERF-BASELINE measures against it.
+    if: contains(needs.plan.outputs.gates, 'CMP-UPGRADE') || contains(needs.plan.outputs.gates, 'PERF-BASELINE')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -390,8 +391,11 @@ jobs:
           retention-days: 90
 
   performance:
-    needs: [plan, candidate]
-    if: contains(needs.plan.outputs.gates, 'PERF-BASELINE') || contains(needs.plan.outputs.gates, 'PERF-ENDURANCE')
+    needs: [plan, candidate, previous]
+    if: >-
+      always() && needs.candidate.result == 'success' &&
+      (needs.previous.result == 'success' || needs.previous.result == 'skipped') &&
+      (contains(needs.plan.outputs.gates, 'PERF-BASELINE') || contains(needs.plan.outputs.gates, 'PERF-ENDURANCE'))
     # The reference environment named by release/baselines. Changing the runner
     # invalidates the baseline: the environment key will no longer match.
     runs-on: ubuntu-24.04
@@ -404,8 +408,10 @@ jobs:
         with:
           python-version: "3.13"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with: { name: "${{ env.PREFIX }}-candidate" }
-      - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
+        with: { pattern: "${{ env.PREFIX }}-{candidate,previous}", merge-multiple: true }
+      - run: |
+          mkdir -p out && tar -xzf candidate.tar.gz -C out
+          if [[ -f previous.tar.gz ]]; then tar -xzf previous.tar.gz; fi
       - name: Performance gates
         env:
           GATES: ${{ needs.plan.outputs.gates }}
@@ -415,7 +421,8 @@ jobs:
           for gate in PERF-BASELINE PERF-ENDURANCE; do
             [[ " $GATES " == *" $gate "* ]] && selected+=("$gate")
           done
-          GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out "${selected[@]}"
+          # The previous release is the reference PERF-BASELINE compares with.
+          PREVIOUS_BIN_DIR="$PWD/previous/bin" GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out "${selected[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -424,8 +431,27 @@ jobs:
           # Kept long enough to calibrate provisional thresholds and baselines.
           retention-days: 90
 
+  # The upgrade guide, followed with real images: the published previous
+  # release and one built here from this commit.
+  container:
+    needs: plan
+    if: needs.plan.outputs.stage != 'pr' && contains(needs.plan.outputs.gates, 'CMP-UPGRADE-CONTAINER')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: python3 tests/gates/record.py --gate CMP-UPGRADE-CONTAINER --stage "$STAGE" --results out/results
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-container
+          path: out/results
+          retention-days: 90
+
   report:
-    needs: [plan, candidate, previous, rust, binary, sdk, console, repository, fuzz, performance]
+    needs: [plan, candidate, previous, rust, binary, sdk, console, repository, fuzz, performance, container]
     if: always()
     runs-on: ubuntu-latest
     permissions:

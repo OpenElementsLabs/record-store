@@ -13,7 +13,8 @@
 # Environment:
 #   CANDIDATE_BIN_DIR       adopt these binaries instead of building (release.yml
 #                           passes the ones extracted from the published image)
-#   PREVIOUS_BIN_DIR        0.1.3 binaries; otherwise built once from tag v0.1.3
+#   PREVIOUS_BIN_DIR        0.1.3 binaries (CMP-UPGRADE, and the PERF-BASELINE
+#                           reference); otherwise built once from tag v0.1.3
 #   GATE_MATRIX             defaults to release/gates.toml
 #   GATE_EVALUATE=0         run the gates but skip the evaluation (CI runs gates in
 #                           several jobs and evaluates once, in its report job)
@@ -60,7 +61,7 @@ EOF
 fi
 
 needs_previous=false
-for gate in "${gates[@]}"; do [[ "$gate" == "CMP-UPGRADE" ]] && needs_previous=true; done
+for gate in "${gates[@]}"; do [[ "$gate" == "CMP-UPGRADE" || "$gate" == "PERF-BASELINE" ]] && needs_previous=true; done
 previous_args=()
 if $needs_previous; then
   previous="$out/previous"

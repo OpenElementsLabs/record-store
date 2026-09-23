@@ -10,7 +10,6 @@ maintainer's map.
 | `quarantine.toml` | Every skipped test, with owner, reason, issue, expiry, coverage risk | A reviewed pull request; entries expire |
 | `exceptions/` | Waivers for one gate on one release | A person, in a pull request; never the tooling |
 | `findings/` | Defects the gates found, with reproductions; open blockers block | Whoever fixes or triages the defect |
-| `baselines/` | Performance baselines per environment | A reviewed pull request after a scheduled run |
 | `public-docs-allowlist.txt` | Reviewed public-docs lines that mention clustering-related terms | A reviewed pull request |
 
 The implementation is in `tests/gates/`:
@@ -36,6 +35,12 @@ evaluated separately. It is excluded from the documentation build.
 | Stage decision (`report.json`, `report.md`), and the internal cluster report | `<prefix>-report` artifact; the public step summary shows the standalone report only | 400 days |
 | Candidate binaries and `candidate.json` | `<prefix>-candidate` artifact | 30 days |
 | The decision a release shipped under | Release assets `record-store-<version>-release-gates.{json,md}`, covered by `SHA256SUMS` | As long as the release |
+
+PERF-BASELINE compares the candidate with the previous release on the same
+runner rather than with a stored baseline: GitHub-hosted runners do not all have
+the same CPU, so a stored number would rarely describe the machine it is
+compared on. When a release ships, the workflows' previous-release reference
+(`v0.1.3` today) moves to it.
 
 Scheduled performance results are reused by a candidate only when the evaluator
 finds them within the gate's `max_age_days`, produced by the same gate

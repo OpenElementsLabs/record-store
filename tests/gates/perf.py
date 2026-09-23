@@ -12,18 +12,17 @@ gate does not invent one. It separates three kinds of threshold:
        * listing cost does not grow with position (ListObjectsV2 continues from
          a token): the slowest late page is within 3x the median early page;
        * zero errors in every workload that is not deliberately overloaded.
-  2. Regressions -- blocking once a baseline exists for the environment. Each
-     workload runs R times; the median is compared with the committed baseline
-     for the same environment key, and fails when worse by more than
-     max(15 %, 3 x the larger coefficient of variation). A metric whose own CV
-     exceeds 25 % is an invalid measurement, not a pass or a fail.
+  2. Regressions -- blocking. The candidate and the previous release (the real
+     binaries, --previous-bin-dir) run the same workload in alternating rounds
+     on the same host, and each compared metric's median must be no worse than
+     the previous release's by more than max(15 %, 3 x the larger coefficient
+     of variation). A metric whose CV exceeds 25 % is too noisy to judge, and a
+     run where most are is an invalid measurement, not a pass. Comparing on one
+     host is what makes this meaningful on GitHub-hosted runners, whose CPUs
+     differ from run to run.
   3. Absolute latency/throughput targets -- none. None is documented, so the
      medians are recorded for calibration rather than judged against a number
      chosen here.
-
-Baselines are written only by `--record-baseline`, to a new file, and take
-effect only when a reviewed change points tests/gates/gates.toml at it. Nothing
-updates a baseline as a side effect of a run.
 
 Endurance (`--profile endurance`) runs the mixed workload for a fixed duration
 and fits RSS and open files against time over the second half of the run.
@@ -42,7 +41,7 @@ import time
 from pathlib import Path
 
 from gatelib import (
-    REPOSITORY_ROOT,
+    Artifact,
     Gate,
     InvalidMeasurement,
     Secrets,
@@ -59,9 +58,14 @@ MIB = 1024 * 1024
 MAX_CV = 0.25
 MIN_TOLERANCE = 0.15
 
-# Measured once per mode rather than once per repeat: their spread is unknown,
-# so a regression in them is reported but cannot block on its own.
-SINGLE_SAMPLE = ("catalog_", "audit_", "startup_", "shutdown_")
+# Compared against the previous release, run in alternating rounds on the same
+# host. Tail percentiles of the small-object runs and memory deltas are too
+# noisy at these sample sizes to judge a regression on; they are recorded.
+COMPARED = (
+    "small_put_p50_seconds", "small_get_p50_seconds", "small_ops_per_second",
+    "large_32mib_put_mib_s", "large_32mib_get_mib_s", "large_256mib_put_mib_s", "large_256mib_get_mib_s",
+    "mixed_p50_seconds", "mixed_p99_seconds", "mixed_ops_per_second",
+)
 
 # Which direction is worse, per metric suffix.
 HIGHER_IS_WORSE = ("_seconds", "_ms", "_bytes", "_ratio_error")
@@ -272,10 +276,6 @@ def worse_by(name: str, candidate: float, baseline: float) -> float:
 
 
 def main(gate: Gate) -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--record-baseline", type=Path)
-    parser.add_argument("--baseline", type=Path)
-    known, _ = parser.parse_known_args()
     artifact, options = artifact_from_arguments()
     identify_artifact(gate, artifact)
     profile = options["profile"]
@@ -294,17 +294,25 @@ def main(gate: Gate) -> None:
                                   "warmup": "one discarded small-object pass per mode",
                                   "cache": "page cache warm; no drop between runs (not privileged)"})
 
+    # The reference is the previous release, measured on the same host in the
+    # same job: GitHub-hosted runners are not one machine, so a baseline recorded
+    # on one CPU would rarely match the next run's, and hardware drift would be
+    # read as regression. Rounds alternate which binary goes first.
+    reference = Artifact(Path(options["previous_bin_dir"]).resolve()) if options["previous_bin_dir"] else None
+    if reference is not None:
+        gate.context["reference_artifact"] = reference.describe()
     runs_by_mode: dict[str, list[dict[str, float]]] = {}
+    reference_by_mode: dict[str, list[dict[str, float]]] = {}
     endurance_samples: list[dict] = []
     for encrypted in (False, True):
         mode = "encrypted" if encrypted else "plaintext"
-        rng = random.Random(f"{options['seed']}-{mode}")
         data = gate.work_directory / mode / "data"
         server = Server(artifact, data, gate.evidence_directory / "logs", credentials=Secrets(),
                         encrypted=encrypted, name=f"perf-{mode}")
         cold_start = server.start()
         gate.context[f"{mode}_filesystem"] = filesystem_of(data)
         server.s3().create_bucket(Bucket="perf")
+        rng = random.Random(f"{options['seed']}-{mode}")
         small_objects(server, rng, 100, 8)  # warm-up, discarded
         if profile == "endurance":
             duration = float(os.environ.get("GATE_ENDURANCE_SECONDS", "1800"))
@@ -313,15 +321,31 @@ def main(gate: Gate) -> None:
             runs_by_mode[mode] = [result]
             server.stop()
             break
-        runs = []
-        for _ in range(repeats):
-            run: dict[str, float] = {}
-            run.update(small_objects(server, rng, small_count, 8))
-            for size, label in ((32 * MIB, "32mib"), (256 * MIB, "256mib")):
-                run.update(large_object(server, rng, size, label))
-            result, _ = mixed(server, rng, mixed_seconds, 16)
-            run.update(result)
-            runs.append(run)
+        server.stop()
+        contenders = [("candidate", server, rng, [])]
+        if reference is not None:
+            baseline = Server(reference, gate.work_directory / mode / "reference-data", gate.evidence_directory / "logs",
+                              credentials=Secrets(), encrypted=encrypted, name=f"perf-{mode}-reference")
+            baseline.start()
+            baseline.s3().create_bucket(Bucket="perf")
+            baseline_rng = random.Random(f"{options['seed']}-{mode}")
+            small_objects(baseline, baseline_rng, 100, 8)  # warm-up, discarded
+            baseline.stop()
+            contenders.append(("reference", baseline, baseline_rng, []))
+        for round_index in range(repeats):
+            order = contenders if round_index % 2 == 0 else list(reversed(contenders))
+            for _, contender, contender_rng, runs in order:
+                contender.start()
+                run: dict[str, float] = {}
+                run.update(small_objects(contender, contender_rng, small_count, 8))
+                for size, label in ((32 * MIB, "32mib"), (256 * MIB, "256mib")):
+                    run.update(large_object(contender, contender_rng, size, label))
+                result, _ = mixed(contender, contender_rng, mixed_seconds, 16)
+                run.update(result)
+                runs.append(run)
+                contender.stop()
+        runs = contenders[0][3]
+        server.start()
         catalog_result = catalog(server, catalog_count)
         stop_seconds = server.stop()
         warm_start = server.start()
@@ -331,6 +355,8 @@ def main(gate: Gate) -> None:
             run.update({"startup_empty_seconds": cold_start, "startup_with_catalog_seconds": warm_start,
                         "shutdown_seconds": stop_seconds})
         runs_by_mode[mode] = runs
+        if reference is not None:
+            reference_by_mode[mode] = contenders[1][3]
 
     summary = {mode: summarize(runs) for mode, runs in runs_by_mode.items()}
     gate.context["summary"] = summary
@@ -387,49 +413,24 @@ def main(gate: Gate) -> None:
             gate.metric(f"{mode}_{name}", metrics[name]["median"], "MiB/s" if name.endswith("_mib_s") else
                         ("ops/s" if name.endswith("_per_second") else "s"))
 
-    record_path = known.record_baseline
-    if record_path:
-        if record_path.exists():
-            raise InvalidMeasurement(f"{record_path} exists; baselines are never overwritten")
-        record_path.parent.mkdir(parents=True, exist_ok=True)
-        record_path.write_text(json.dumps({
-            "schema": 1, "environment_key": key, "fingerprint": fingerprint,
-            "commit": os.environ.get("GATE_COMMIT", ""), "artifact": gate.context.get("artifact"),
-            "profile": profile, "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "summary": summary}, indent=2))
-        gate.note(f"baseline written to {record_path}; it takes effect only when gates.toml names it")
-        gate.check("baseline recorded", True)
-        return
-
-    baseline_path = known.baseline
-    comparisons = {}
-    if not baseline_path or not baseline_path.exists():
-        gate.context["regression"] = "not evaluated: no baseline"
-        raise InvalidMeasurement("no committed baseline for this environment; regression cannot be judged")
-    baseline = json.loads(baseline_path.read_text())
-    if baseline["environment_key"] != key:
-        gate.context["regression"] = f"not evaluated: baseline is for {baseline['environment_key']}"
-        raise InvalidMeasurement(f"baseline environment {baseline['environment_key']} is not {key}")
+    if reference is None:
+        gate.context["regression"] = "not evaluated: no reference release"
+        raise InvalidMeasurement("no reference release binaries (--previous-bin-dir); regression cannot be judged")
+    reference_summary = {mode: summarize(runs) for mode, runs in reference_by_mode.items()}
+    gate.context["reference_summary"] = reference_summary
+    comparisons: dict[str, object] = {}
     for mode, metrics in summary.items():
-        for name, value in metrics.items():
-            reference = baseline["summary"].get(mode, {}).get(name)
-            if reference is None or name.endswith(("_errors", "_objects")) or not name.endswith(HIGHER_IS_WORSE + LOWER_IS_WORSE):
-                continue
-            if value["cv"] > MAX_CV:
+        for name in COMPARED:
+            value, reference_value = metrics[name], reference_summary[mode][name]
+            if value["cv"] > MAX_CV or reference_value["cv"] > MAX_CV:
                 comparisons[f"{mode}_{name}"] = "invalid: too noisy"
                 continue
-            tolerance = max(MIN_TOLERANCE, 3 * max(value["cv"], reference["cv"]))
-            regression = worse_by(name, value["median"], reference["median"])
-            single = name.startswith(SINGLE_SAMPLE)
-            comparisons[f"{mode}_{name}"] = {"candidate": value["median"], "baseline": reference["median"],
-                                              "worse_by": regression, "tolerance": tolerance,
-                                              "single_sample": single}
-            label = f"no regression: {mode} {name} ({regression:+.1%} vs tolerance {tolerance:.0%})"
-            if single:
-                if regression > tolerance:
-                    gate.note(f"single-sample metric regressed, not blocking: {label}")
-            else:
-                gate.check(label, regression <= tolerance)
+            tolerance = max(MIN_TOLERANCE, 3 * max(value["cv"], reference_value["cv"]))
+            regression = worse_by(name, value["median"], reference_value["median"])
+            comparisons[f"{mode}_{name}"] = {"candidate": value["median"], "reference": reference_value["median"],
+                                              "worse_by": regression, "tolerance": tolerance}
+            gate.check(f"no regression against the previous release: {mode} {name} "
+                       f"({regression:+.1%} vs tolerance {tolerance:.0%})", regression <= tolerance)
     gate.context["regression"] = comparisons
     invalid = [name for name, result in comparisons.items() if result == "invalid: too noisy"]
     if invalid and len(invalid) * 2 > len(comparisons):
@@ -437,4 +438,4 @@ def main(gate: Gate) -> None:
 
 
 if __name__ == "__main__":
-    Gate(os.environ.get("GATE_ID", "PERF-BASELINE"), "operating measurements against structural and baseline limits").run(main)
+    Gate(os.environ.get("GATE_ID", "PERF-BASELINE"), "operating measurements against structural limits and the previous release").run(main)

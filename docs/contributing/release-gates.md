@@ -87,6 +87,7 @@ period, the admission wait limit, the shutdown grace period), follows from the
 design (memory must not grow with object size), or is labelled provisional.
 Provisional limits are reported but do not block until they have been
 calibrated. No latency or throughput target is set, because none is
-documented. Performance is compared against a committed baseline for the same
-environment, using repeated runs and a noise-aware tolerance, and a baseline
-changes only in a reviewed pull request.
+documented. Performance is compared with the previous release, run on the same
+machine in alternating rounds, using a noise-aware tolerance: hosted runners
+differ from run to run, so a stored baseline would rarely describe the machine it
+is compared on.
