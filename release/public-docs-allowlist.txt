@@ -1,0 +1,32 @@
+# Reviewed public-documentation lines that mention clustering-related terms.
+#
+# DOC-BOUNDARY fails on any line in docs/ or mkdocs.yml matching those terms
+# that is not listed here verbatim ("<path>: <trimmed line>"). Every line below
+# was reviewed on 2026-09-23 and states that a capability does NOT exist, or
+# refers to redundancy provided by the storage underneath Record Store (RAID, a
+# replicated volume) rather than by Record Store itself.
+#
+# Add a line only after confirming it makes no cluster claim. The port-table
+# line naming 7603 as "Internal cluster RPC" is existing and neutral; a
+# reviewer may prefer to drop it from public docs entirely.
+docs/concepts/architecture.md: | `record-store-erasure` | Reed-Solomon library, **not currently wired in** |
+docs/concepts/durability.md: replicated volume from your hypervisor or cloud provider.
+docs/concepts/durability.md: RAID and replicated volumes faithfully reproduce whatever you asked for, including
+docs/concepts/durability.md: !!! info "Erasure coding is not implemented"
+docs/concepts/durability.md: The domain model reserves an erasure-coded profile and the repository contains an
+docs/concepts/durability.md: unused `record-store-erasure` crate, but no code path produces or reads erasure
+docs/concepts/durability.md: stripes. Do not plan capacity around erasure coding.
+docs/contributing/repository-structure.md: | `record-store-erasure` | **Not wired in.** Nothing depends on it |
+docs/deployment/production-checklist.md: replicated volume — so one failed disk is not an outage
+docs/getting-started/migrating-from-minio.md: deployment depends on multi-node replication or erasure coding, Record Store will
+docs/getting-started/migrating-from-minio.md: | Internal cluster RPC | — | 7603 |
+docs/getting-started/migrating-from-minio.md: - **No clustering, replication, or erasure coding.** One process, one machine, one
+docs/getting-started/migrating-from-minio.md: use RAID, a mirrored pool, or a replicated volume, and take backups. If this is the
+docs/getting-started/migrating-from-minio.md: blocker, it is the blocker — replication is substantial work this project intends
+docs/getting-started/migrating-from-minio.md: - **No bucket-to-bucket or site-to-site replication.**
+docs/operations/health-and-readiness.md: "erasure_coding": false
+docs/operations/health-and-readiness.md: `erasure_coding` is always `false`; no code path produces or reads erasure stripes. See
+docs/reference/index.md: | Erasure coding | Not implemented — nothing produces or reads erasure stripes |
+docs/troubleshooting/faq.md: **Does erasure coding exist?**
+docs/troubleshooting/faq.md: No. `GET /api/v1/system/info` reports `capabilities.erasure_coding` as `false`, and no
+docs/troubleshooting/faq.md: code path produces or reads erasure stripes.

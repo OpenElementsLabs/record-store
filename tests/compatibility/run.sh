@@ -66,8 +66,16 @@ export RECORD_STORE_COMPAT_ENDPOINT="http://127.0.0.1:$s3_port"
 export AWS_REQUEST_CHECKSUM_CALCULATION="WHEN_REQUIRED"
 export AWS_RESPONSE_CHECKSUM_VALIDATION="WHEN_REQUIRED"
 
-cargo build --manifest-path "$repository_root/Cargo.toml" --bin record-store-server --release --locked
-"$repository_root/target/release/record-store-server" >"$run_directory/server.log" 2>&1 &
+# RECORD_STORE_COMPAT_BIN names a binary built elsewhere -- the release gates
+# pass the candidate's, so the SDKs test the exact artifact under evaluation
+# rather than whatever this checkout compiles to.
+if [[ -n "${RECORD_STORE_COMPAT_BIN:-}" ]]; then
+  server_binary="$RECORD_STORE_COMPAT_BIN"
+else
+  cargo build --manifest-path "$repository_root/Cargo.toml" --bin record-store-server --release --locked
+  server_binary="$repository_root/target/release/record-store-server"
+fi
+"$server_binary" >"$run_directory/server.log" 2>&1 &
 server_pid=$!
 
 # Liveness is checked before readiness: a dead child with a reachable port means
@@ -113,3 +121,10 @@ mkdir "$run_directory/java"
 cp "$compatibility_root/java/pom.xml" "$run_directory/java/"
 cp -R "$compatibility_root/java/src" "$run_directory/java/"
 mvn --batch-mode --no-transfer-progress -f "$run_directory/java/pom.xml" test
+
+# Tells the release-gate recorder which server binary these SDKs were run
+# against, so the result can be bound to the candidate's digest.
+if [[ -n "${GATE_DETAIL:-}" ]]; then
+  digest="$( (command -v sha256sum >/dev/null && sha256sum "$server_binary" || shasum -a 256 "$server_binary") | cut -d' ' -f1)"
+  printf '{"gate":"CMP-S3-SDK","outcome":"pass","checks":[{"name":"boto3, JavaScript v3, Go v2 and Java v2 suites passed","passed":true}],"context":{"artifact":{"server_sha256":"%s"}}}\n' "$digest" > "$GATE_DETAIL"
+fi

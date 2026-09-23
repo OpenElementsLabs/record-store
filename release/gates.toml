@@ -1,0 +1,687 @@
+# Record Store standalone release gates.
+#
+# The machine-readable gate matrix. It is the single source of truth for what
+# each gate guarantees, how it runs, what it measures, when it runs, and whether
+# it blocks: CI invokes gates by id through tests/gates/record.py, which reads
+# the command from here, and tests/gates/evaluate.py decides from here.
+#
+# Standalone is the publicly supported deployment model. Internal cluster
+# readiness is a separate matrix, internal/cluster/gates.toml, evaluated by
+# passing it as --matrix; nothing here makes a cluster claim.
+#
+# Changing a gate's definition or implementation changes its digest, which
+# invalidates every recorded result for it. Bump matrix_version for any change
+# to semantics (a threshold, a stage, blocking) so reports name which version
+# of the rules produced a decision. See release/README.md.
+
+schema = 1
+matrix_version = "2026.09.23-1"
+scope = "standalone"
+
+# Stages, cheapest first. A stage includes every gate listed for it; "candidate"
+# is the complete release evaluation for one commit and one artifact set.
+#   pr           every pull request and push
+#   integration  pull requests that change code, lockfiles, packaging or gates
+#   scheduled    nightly (performance, extended recovery) and weekly (endurance)
+#   candidate    workflow_dispatch release-candidate evaluation, and release.yml
+[stages]
+pr = "fast, deterministic checks for every change"
+integration = "real-binary correctness, compatibility, recovery and overload"
+scheduled = "performance, endurance and extended recovery"
+candidate = "the complete, candidate-specific release evaluation"
+
+# ---------------------------------------------------------------------------
+# Correctness
+# ---------------------------------------------------------------------------
+
+[[gate]]
+id = "COR-LINT"
+title = "Formatting and Clippy are clean"
+area = "correctness"
+guarantee = "The workspace compiles without warnings under the pinned toolchain; formatting is canonical."
+modes = ["standalone", "cluster"]
+platforms = ["linux-amd64"]
+stages = ["pr", "integration", "candidate"]
+blocking = true
+command = "cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+environment = "Rust toolchain from rust-toolchain.toml"
+fixtures = "none"
+failure_injection = "none"
+evidence = "job log"
+implementation = []
+timeout_minutes = 30
+infra_retries = 0
+binds_artifact = false
+limitations = "Style and lint only; says nothing about behaviour."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "COR-UNIT"
+title = "Workspace unit, property and integration tests pass"
+area = "correctness"
+guarantee = """In-process storage, metadata, protocol, auth, sharing, audit, event, lifecycle, backup \
+and consensus/replication invariants hold. Shared crates are exercised for both modes."""
+modes = ["standalone", "cluster"]
+platforms = ["linux-amd64"]
+stages = ["pr", "integration", "candidate"]
+blocking = true
+command = "cargo test --workspace --all-features --locked --no-fail-fast"
+environment = "Rust toolchain from rust-toolchain.toml; no network after dependency fetch"
+fixtures = "tempdir data directories built per test; synthetic schema-4 catalog (migration_v4.rs); redb v2 file (redb-v2 dev-dependency)"
+failure_injection = "in-process only: interrupted transactions, damaged backup components, modelled partitions"
+evidence = "job log; test count recorded by COR-SKIPS"
+implementation = []
+timeout_minutes = 60
+infra_retries = 0
+binds_artifact = false
+limitations = """In-process. Proves the logic is self-consistent, not that a killed process, a real disk, or a real \
+network behaves. The real-binary gates below exist for that. Baseline at 0765aee: 1085 passed, 0 failed, 0 ignored."""
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "COR-SKIPS"
+title = "Nothing mandatory is skipped, ignored, or focused"
+area = "correctness"
+guarantee = """A skipped test is not a pass. Every #[ignore], test.skip, test.only, describe.skip, it.skip, \
+pytest.skip and t.Skip in the tree is listed in release/quarantine.toml with an owner, reason, expiry and \
+coverage risk; the test run reports no more ignored tests than are quarantined; entries are unexpired."""
+modes = ["standalone", "cluster"]
+platforms = ["any"]
+stages = ["pr", "integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/skip_accounting.py --quarantine release/quarantine.toml ${COR_UNIT_LOG:+--cargo-log $COR_UNIT_LOG}"
+environment = "python3 >= 3.11"
+fixtures = "the repository tree"
+failure_injection = "none"
+evidence = "detail.json listing every skip marker found and its quarantine entry"
+implementation = ["tests/gates/skip_accounting.py", "release/quarantine.toml"]
+timeout_minutes = 5
+infra_retries = 0
+binds_artifact = false
+limitations = "Pattern-based: a test disabled by deleting it, or by an always-false cfg, is not seen."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "GATES-SELFTEST"
+title = "The gates and the evaluator fail when they should"
+area = "correctness"
+guarantee = """The evaluator's rules hold (missing, skipped, stale, lighter-profile, wrong-artifact, infrastructure and \
+invalid results block; exceptions, quarantine, findings and known failures behave as documented), and REC-CRASH \
+fails, on the check meant to catch it, when a committed payload is deleted while the server is down."""
+modes = ["standalone"]
+platforms = ["any"]
+stages = ["pr", "integration", "candidate"]
+blocking = true
+command = "bash tests/gates/selftest.sh ${CANDIDATE}"
+environment = "python venv; candidate binaries (for the negative control)"
+fixtures = "synthetic matrices and records (test_evaluate.py); one REC-CRASH run with GATE_INJECT_DEFECT=delete-payload"
+failure_injection = "a deleted payload file while the server is stopped"
+evidence = "job log"
+implementation = ["tests/gates/selftest.sh", "tests/gates/test_evaluate.py", "tests/gates/evaluate.py", "tests/gates/record.py", "tests/gates/crash_consistency.py"]
+timeout_minutes = 15
+infra_retries = 1
+binds_artifact = false
+limitations = "Negative controls exist for REC-CRASH and the evaluator; other gates' ability to fail was demonstrated once by hand (see release/README.md) rather than on every run."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "COR-CONSOLE"
+title = "Console format, lint, types, unit tests and build"
+area = "correctness"
+guarantee = "The console builds reproducibly from package-lock.json and its unit tests pass."
+modes = ["standalone"]
+platforms = ["linux-amd64"]
+stages = ["pr", "integration", "candidate"]
+blocking = true
+command = "cd console && npm ci && npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
+environment = "Node.js 24"
+fixtures = "none"
+failure_injection = "none"
+evidence = "job log"
+implementation = []
+timeout_minutes = 30
+infra_retries = 1
+binds_artifact = false
+limitations = "Unit tests mock the backend; CMP-CONSOLE-E2E covers the integration."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "COR-INTEGRITY"
+title = "A damaged payload is never served as if it were intact"
+area = "correctness"
+guarantee = """docs/concepts/durability.md: a whole-object read of a payload whose bytes no longer match its \
+SHA-256 fails visibly to the client (non-2xx, or a body shorter than Content-Length); truncation fails before \
+any byte; encrypted ranged reads fail over a damaged chunk; bucket verification counts every damaged payload."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "darwin-arm64 (developer)"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/integrity_read.py --bin-dir ${CANDIDATE}/bin --profile ${PROFILE}"
+environment = "candidate binaries; python venv from tests/gates/requirements.txt; loopback ports only"
+fixtures = "isolated data directory per mode; objects of 1000 B, 3 MiB+17, 20 MiB+3, seeded random bytes"
+failure_injection = "with the process stopped: flip one byte mid-payload, truncate one byte, delete the payload file"
+evidence = "detail.json with status, Content-Length, bytes received and match flags per damaged object; server logs"
+implementation = ["tests/gates/integrity_read.py", "tests/gates/gatelib.py"]
+timeout_minutes = 15
+infra_retries = 1
+binds_artifact = true
+limitations = """Plaintext ranged reads over a same-length edit are documented as undetected and are recorded, \
+not asserted. Detection is measured over plain HTTP on loopback; a proxy that buffers a whole response could \
+still forward a failed body."""
+[[gate.metrics]]
+name = "whole-read of a same-length-corrupted payload"
+unit = "outcome"
+threshold = "client can tell (non-2xx, or received < Content-Length)"
+kind = "contract"
+basis = "docs/concepts/durability.md: 'A mismatch fails the read before its last chunk'"
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "CMP-UNSUPPORTED"
+title = "Unsupported S3 operations are refused explicitly"
+area = "compatibility"
+guarantee = """docs/reference/s3-compatibility.md: UploadPartCopy, SSE request headers, ACLs and aws-chunked \
+payloads return 501 NotImplemented and change nothing. A flexible-checksum header (CRC32, CRC32C, SHA-1, \
+SHA-256) that contradicts the body is never stored: it is verified or refused, not silently ignored."""
+modes = ["standalone"]
+platforms = ["linux-amd64"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/unsupported.py --bin-dir ${CANDIDATE}/bin"
+environment = "candidate binaries; python venv"
+fixtures = "one bucket, one object"
+failure_injection = "none"
+evidence = "detail.json with status and error code per request"
+implementation = ["tests/gates/unsupported.py", "tests/gates/gatelib.py"]
+timeout_minutes = 10
+infra_retries = 1
+binds_artifact = true
+limitations = "Covers the operations the compatibility page lists plus flexible checksums (RSG-007); virtual-hosted addressing and undocumented S3 actions are not enumerated."
+[gate.reuse]
+max_age_days = 0
+
+# ---------------------------------------------------------------------------
+# Recovery
+# ---------------------------------------------------------------------------
+
+[[gate]]
+id = "REC-CRASH"
+title = "Acknowledged writes survive SIGKILL; nothing partial is published"
+area = "recovery"
+guarantee = """docs/concepts/durability.md 'Survives a process crash': after SIGKILL at a seeded random moment \
+with uploads, overwrites, new versions, multipart parts and a stream of small writes in flight: every \
+acknowledged object and version reads back with its bytes; an unacknowledged write is absent or complete; \
+listings agree exactly with reads; acknowledged parts are still listed; every acknowledged write has its \
+storage event and no event id names two changes; the audit chain is intact; staging left by killed uploads \
+is gone after restart; nothing unreclaimable remains."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "darwin-arm64 (developer)"]
+stages = ["integration", "scheduled", "candidate"]
+blocking = true
+command = "python3 tests/gates/crash_consistency.py --bin-dir ${CANDIDATE}/bin --profile ${PROFILE} --seed ${SEED}"
+environment = "candidate binaries; python venv; data directory on the runner's local filesystem"
+fixtures = "40 small (0-64 KiB), 2 x 6 MiB, 1 overwrite target, 3-version key, completed multipart; per crash: 3 x 24 MiB PUTs, 8 MiB overwrite, 8 MiB new version, 5 MiB part, unbounded small-write burst"
+failure_injection = "SIGKILL at uniform(0.3, 1.8) s; 2 crashes per mode on integration, 5 on scheduled/candidate; plaintext and encrypted"
+evidence = "detail.json: seed, kill times, staged bytes at kill and after restart, residue before/after repair, every check; server logs"
+implementation = ["tests/gates/crash_consistency.py", "tests/gates/gatelib.py"]
+timeout_minutes = 30
+infra_retries = 1
+binds_artifact = true
+limitations = """SIGKILL is not power loss: the kernel still flushes the page cache, so this is not evidence for \
+the 'survives power loss' claim, which depends on the device honouring fsync and has no automated gate. \
+A seed fixes the plan and kill times, not thread interleaving. A run where fewer than half the kills land \
+while >= 1 MiB is being staged is reported as an invalid measurement, not a pass. \
+GATE_INJECT_DEFECT is the gate's own negative control (tests/gates/selftest.sh)."""
+[[gate.metrics]]
+name = "crash_restart_to_ready_seconds_max"
+unit = "s"
+threshold = "<= 5"
+kind = "contract"
+basis = "HEALTHCHECK start period in deploy/docker/Dockerfile is 5 s; on the gate dataset"
+[[gate.metrics]]
+name = "<mode>_temporary_bytes_after_abort_and_repair"
+unit = "bytes"
+threshold = "== 0"
+kind = "structural"
+basis = "interrupted writes must not leave space an operator cannot reclaim"
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "REC-BACKUP"
+title = "Backups restore into an equivalent deployment; bad ones are refused safely"
+area = "recovery"
+guarantee = """docs/operations/backup-and-restore.md, with the shipped CLI and its exit codes: backup refuses a \
+running server (6) and never overwrites a completed backup (4); full verification passes a good backup; a \
+flipped payload byte, an INCOMPLETE marker, an unlisted component and missing component files are refused (3) \
+without writing anything; the wrong master key is refused before anything is written and the refusal names no \
+key; an interrupted restore blocks start-up and a re-run succeeds; the restored deployment serves identical \
+object bytes, versions, delete markers, enforced compliance retention, legal holds, working service-account \
+credentials, share links, an intact audit chain and the same event ids; a write made after the backup is absent."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "darwin-arm64 (developer)"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/recovery_drill.py --bin-dir ${CANDIDATE}/bin --profile ${PROFILE} --seed ${SEED}"
+environment = "candidate binaries; python venv; restore onto an empty, isolated directory"
+fixtures = "60 small objects, 4 (integration) or 24 (candidate) x 16 MiB, 2 versioned keys x 3 versions + delete marker, COMPLIANCE retention +30 d, legal hold, service account, share link"
+failure_injection = "byte flip in a backed-up payload; INCOMPLETE marker; component removed from manifest; component files deleted; wrong master key; SIGKILL of restore at 0.05-0.8 s"
+evidence = "detail.json with every exit code and check, durations, manifest format fields; logs"
+implementation = ["tests/gates/recovery_drill.py", "tests/gates/gatelib.py"]
+timeout_minutes = 30
+infra_retries = 1
+binds_artifact = true
+limitations = """Offline backup only (the only mode offered). Filesystem-snapshot backups (ZFS/LVM) are not \
+exercised. Disk-full during backup relies on the in-process test and the advisory space check."""
+[[gate.metrics]]
+name = "recovery point"
+unit = "outcome"
+threshold = "every acknowledged write before the stop is restored; a write after the backup is absent"
+kind = "contract"
+basis = "offline backup: RPO = time since the last backup; the restore reproduces that point exactly"
+[[gate.metrics]]
+name = "<mode>_restore_to_first_verified_read_seconds"
+unit = "s"
+threshold = "<= 120 (advisory)"
+kind = "provisional"
+basis = "provisional RTO on the gate dataset; calibrate against a production-sized restore before stating one"
+[[gate.metrics]]
+name = "<mode>_shutdown_seconds"
+unit = "s"
+threshold = "<= 30"
+kind = "contract"
+basis = "server.shutdown_grace_period_seconds default 30; documented stop uses --time 40"
+[gate.reuse]
+max_age_days = 0
+
+# ---------------------------------------------------------------------------
+# Compatibility
+# ---------------------------------------------------------------------------
+
+[[gate]]
+id = "CMP-S3-SDK"
+title = "The declared S3 subset works with real SDKs"
+area = "compatibility"
+guarantee = "boto3, AWS SDK for JavaScript v3, Go v2 and Java v2 at the pinned versions complete the declared operations against the candidate server."
+modes = ["standalone"]
+platforms = ["linux-amd64"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "RECORD_STORE_COMPAT_BIN=${CANDIDATE}/bin/record-store-server bash tests/compatibility/run.sh"
+environment = "python 3.13, Node 24, Go (go.mod), Java 21"
+fixtures = "per-SDK buckets with random names"
+failure_injection = "none"
+evidence = "job log"
+implementation = ["tests/compatibility/run.sh"]
+timeout_minutes = 30
+infra_retries = 1
+binds_artifact = true
+limitations = "Pinned SDK versions only; the AWS CLI and newer SDK defaults (aws-chunked) are not exercised."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "CMP-CONSOLE-E2E"
+title = "The console works against the real backend"
+area = "compatibility"
+guarantee = "Playwright drives the production console build against a real standalone server."
+modes = ["standalone"]
+platforms = ["linux-amd64"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "cd console && npm ci && npx playwright install --with-deps chromium && npm run test:e2e"
+environment = "Node 24, Chromium, Rust toolchain (the suite builds the server)"
+fixtures = "console/e2e"
+failure_injection = "none"
+evidence = "job log; Playwright report on failure"
+implementation = []
+timeout_minutes = 45
+infra_retries = 1
+binds_artifact = false
+limitations = "The suite compiles its own server rather than using the candidate binary, so it is not artifact-bound."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "CMP-UPGRADE"
+title = "Data written by 0.1.3 survives upgrade, and the rollback path works"
+area = "compatibility"
+guarantee = """With the real 0.1.3 binaries: everything 0.1.3 wrote (plaintext and encrypted) reads back byte for \
+byte after the candidate opens it -- versions, delete markers, user metadata, content types, multipart ETags, \
+unfinished uploads, sealed service-account credentials, share links, lifecycle rules; the audit chain and \
+integrity verification pass; 0.1.3's example configuration passes check-config; taking the pre-upgrade \
+backup leaves the 0.1.3 directory byte-identical; 0.1.3 refuses the upgraded directory and changes nothing; \
+restoring the pre-upgrade backup and running 0.1.3 returns to the pre-upgrade recovery point."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "darwin-arm64 (developer)"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/upgrade.py --bin-dir ${CANDIDATE}/bin --previous-bin-dir ${PREVIOUS}/bin --seed ${SEED}"
+environment = "candidate binaries and 0.1.3 binaries (built from tag v0.1.3 or extracted from its image)"
+fixtures = "per mode: 50 small objects with metadata, 12 MiB object, completed and unfinished multipart, 2 versioned keys, delete marker, service account, share, lifecycle rule"
+failure_injection = "downgrade attempt onto the upgraded directory"
+evidence = "detail.json incl. the downgrade refusal text; logs of both versions"
+implementation = ["tests/gates/upgrade.py", "tests/gates/gatelib.py"]
+timeout_minutes = 30
+infra_retries = 1
+binds_artifact = true
+limitations = """Only 0.1.3 -> candidate is supported and tested. 0.1.2 and earlier must pass through 0.1.3 \
+(redb v2 -> v3); the refusal of v2 data is covered in-process only. Downgrade and rolling upgrade are not \
+supported and not claimed. 0.1.3 refuses upgraded data by panicking inside redb rather than naming the schema \
+(release/findings/RSG-003); the message is recorded, not asserted."""
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "DOC-BOUNDARY"
+title = "Public documentation stays standalone"
+area = "compatibility"
+guarantee = """The documentation build never includes internal/, the built site contains no internal material, \
+and every public mention of clustering, replication or consensus is a reviewed, allowlisted line."""
+modes = ["standalone"]
+platforms = ["any"]
+stages = ["pr", "integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/doc_boundary.py --allowlist release/public-docs-allowlist.txt ${SITE_DIR:+--site $SITE_DIR}"
+environment = "python3; optionally a built site/ from mkdocs build --strict"
+fixtures = "docs/, mkdocs.yml, internal/"
+failure_injection = "none"
+evidence = "detail.json listing every matched line"
+implementation = ["tests/gates/doc_boundary.py", "release/public-docs-allowlist.txt"]
+timeout_minutes = 5
+infra_retries = 0
+binds_artifact = false
+limitations = "Term-based; a cluster claim phrased without the listed terms is not caught."
+[gate.reuse]
+max_age_days = 0
+
+# ---------------------------------------------------------------------------
+# Performance and resources
+# ---------------------------------------------------------------------------
+
+[[gate]]
+id = "PERF-OVERLOAD"
+title = "Overload is refused with SlowDown, stays bounded, and recovers"
+area = "performance"
+guarantee = """record-store.example.toml [limits]: with 4 slots and a 1 s admission wait under 64 concurrent \
+clients and 48 slow-header connections, every refusal is 503 SlowDown; bodiless probes are admitted or refused \
+within the wait limit plus 1 s; every acknowledged write reads back intact and committed data is untouched; \
+descriptors and connections return to idle within 15 s; the next request is served within 1 s; no staging \
+space remains."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "darwin-arm64 (developer)"]
+stages = ["integration", "scheduled", "candidate"]
+blocking = true
+command = "python3 tests/gates/overload.py --bin-dir ${CANDIDATE}/bin --profile ${PROFILE}"
+environment = "candidate binaries, encryption on; python venv"
+fixtures = "20 x 256 KiB committed objects"
+failure_injection = "sustained overload: 60/40 slow PUT (64 KiB-4 MiB) / GET mix; 48 connections that never finish headers"
+evidence = "detail.json with outcome counts, probe latencies, resource samples"
+implementation = ["tests/gates/overload.py", "tests/gates/gatelib.py"]
+timeout_minutes = 20
+infra_retries = 1
+binds_artifact = true
+limitations = """Limits are shrunk so one runner can saturate them; the default 256-slot configuration is not \
+saturated. Client and server share a host. The slow-header hold time is advisory (RSG-004): the server keeps \
+such a connection open indefinitely, which the documented TLS terminator is relied on to bound."""
+[[gate.metrics]]
+name = "probe_slowdown_latency_max_seconds"
+unit = "s"
+threshold = "<= admission_wait_limit_seconds + 1"
+kind = "contract"
+basis = "the admission wait limit is the documented bound on queueing"
+[[gate.metrics]]
+name = "peak_rss_growth_bytes"
+unit = "bytes"
+threshold = "<= 512 MiB (advisory)"
+kind = "provisional"
+basis = "no documented memory requirement; calibrate from scheduled runs"
+[[gate.metrics]]
+name = "slow_header_connection_hold_seconds"
+unit = "s"
+threshold = "<= 60 (advisory)"
+kind = "provisional"
+basis = "RSG-004; mitigated by the TLS terminator docs/deployment/reverse-proxy.md requires"
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "PERF-BASELINE"
+title = "Operating measurements: structural invariants and regression against a baseline"
+area = "performance"
+guarantee = """Structural (blocking): zero errors within capacity; memory does not grow with object size (RSS \
+growth for 256 MiB within 64 MiB of that for 32 MiB); listing cost does not grow with position (late/early page \
+<= 3x); restart with the catalog within 5 s. Regression (blocking once calibrated): each metric's median over \
+R runs is no worse than the committed baseline for the same environment by more than max(15 %, 3 x CV)."""
+modes = ["standalone"]
+platforms = ["linux-amd64 (reference: ubuntu-24.04 GitHub-hosted)"]
+stages = ["scheduled", "candidate"]
+blocking = true
+command = "python3 tests/gates/perf.py --bin-dir ${CANDIDATE}/bin --profile ${PROFILE} ${PERF_BASELINE:+--baseline $PERF_BASELINE}"
+environment = "candidate binaries; runner fingerprint recorded; page cache warm"
+fixtures = "4 KiB x N small objects (c=8); 32 MiB and 256 MiB streaming; 70/30 mixed 1 KiB-256 KiB (c=16); 5k (pr) or 50k catalog listed at 1000/page; filtered audit query"
+failure_injection = "none"
+evidence = "detail.json with per-run values, medians, CVs, fingerprint, filesystem; logs"
+implementation = ["tests/gates/perf.py", "tests/gates/gatelib.py"]
+timeout_minutes = 60
+infra_retries = 1
+binds_artifact = true
+limitations = """No absolute latency or throughput requirement exists, so none is asserted; the medians are \
+evidence for setting one. Until a baseline for the reference environment is committed the regression half is \
+an invalid measurement, and the gate blocks the candidate stage. Client and server share one host. \
+Small-write throughput is flat across concurrency on the measured host (RSG-005)."""
+[gate.baseline]
+# Set by a reviewed change after a scheduled run on the reference environment:
+#   path = "release/baselines/<environment-key>.json"
+path = ""
+[gate.reuse]
+max_age_days = 7
+invalidated_by = ["crates/**", "apps/**", "Cargo.lock", "Cargo.toml", "tests/gates/perf.py", "tests/gates/gatelib.py", "release/gates.toml"]
+
+[[gate]]
+id = "PERF-ENDURANCE"
+title = "No unbounded growth over an extended run"
+area = "performance"
+guarantee = "Over a 30-minute mixed workload, RSS and open files show no sustained growth in the second half, and there are no errors."
+modes = ["standalone"]
+platforms = ["linux-amd64"]
+stages = ["scheduled", "candidate"]
+blocking = false
+command = "GATE_ID=PERF-ENDURANCE GATE_ENDURANCE_SECONDS=${ENDURANCE_SECONDS:-1800} python3 tests/gates/perf.py --bin-dir ${CANDIDATE}/bin --profile endurance"
+environment = "candidate binaries; plaintext"
+fixtures = "200 seeded keys, 70/30 read/write, 16 clients"
+failure_injection = "none"
+evidence = "detail.json with 1 s resource samples and fitted slopes"
+implementation = ["tests/gates/perf.py", "tests/gates/gatelib.py"]
+timeout_minutes = 60
+infra_retries = 1
+binds_artifact = false
+limitations = """Not blocking: the slope limits (64 MiB/h, 8 files/h) are provisional and uncalibrated. It becomes \
+blocking after four scheduled runs on the reference environment establish the noise floor. 30 minutes cannot \
+reveal slow leaks measured in days."""
+[[gate.metrics]]
+name = "endurance_rss_bytes_slope"
+unit = "bytes/hour"
+threshold = "<= 64 MiB/h"
+kind = "provisional"
+basis = "near-zero growth expected; calibrate"
+[gate.reuse]
+max_age_days = 14
+invalidated_by = ["crates/**", "apps/**", "Cargo.lock", "tests/gates/perf.py"]
+
+# ---------------------------------------------------------------------------
+# Security and artifacts
+# ---------------------------------------------------------------------------
+
+[[gate]]
+id = "SEC-AUDIT-RUST"
+title = "No Rust advisory, unmaintained or yanked crate"
+area = "security"
+guarantee = "cargo audit --deny warnings over Cargo.lock: no RustSec advisory of any severity, no yanked crate. No ignores."
+modes = ["standalone", "cluster"]
+platforms = ["any"]
+stages = ["pr", "integration", "candidate"]
+blocking = true
+command = "tests/rust-audit.sh"
+environment = "cargo-audit; network access to the advisory database"
+fixtures = "Cargo.lock"
+failure_injection = "none"
+evidence = "job log"
+implementation = ["tests/rust-audit.sh"]
+timeout_minutes = 10
+infra_retries = 2
+binds_artifact = false
+limitations = "Advisory database coverage only. Severity is not weighed: every advisory blocks until fixed or excepted."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "SEC-AUDIT-NPM"
+title = "No high or critical advisory in the console's production dependencies"
+area = "security"
+guarantee = "npm audit over the console's production dependency tree reports nothing at high or critical."
+modes = ["standalone"]
+platforms = ["any"]
+stages = ["pr", "integration", "candidate"]
+blocking = true
+command = "cd console && npm audit --omit=dev --audit-level=high"
+environment = "Node 24; network access to the npm advisory API"
+fixtures = "console/package-lock.json"
+failure_injection = "none"
+evidence = "job log"
+implementation = []
+timeout_minutes = 10
+infra_retries = 2
+binds_artifact = false
+limitations = """Policy: high and critical block; moderate and low are reported, reviewed at release, and do not \
+block. Development-only dependencies (build and test tooling) do not ship in the image and are excluded."""
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "SEC-SECRETS"
+title = "No committed secret"
+area = "security"
+guarantee = "gitleaks finds no secret in the working tree (pr) or in the full history (candidate)."
+modes = ["standalone", "cluster"]
+platforms = ["linux-amd64"]
+stages = ["pr", "integration", "candidate"]
+blocking = true
+# The scope follows the profile, inside the command, so a tree scan can never
+# stand in for the history scan a candidate requires (see evaluate.py).
+command = 'bash tests/gates/secret_scan.sh "$([ "${PROFILE}" = candidate ] && echo history || echo tree)"'
+environment = "gitleaks (pinned version, checksum-verified download)"
+fixtures = "the repository"
+failure_injection = "none"
+evidence = "gitleaks JSON report (redacted)"
+implementation = ["tests/gates/secret_scan.sh", ".gitleaks.toml"]
+timeout_minutes = 10
+infra_retries = 1
+binds_artifact = false
+limitations = "Rule-based. Test fixtures that look like secrets are allowlisted by path in .gitleaks.toml and reviewed there."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "SEC-REDACT"
+title = "Secrets never reach logs, APIs, CLI output, data or backups"
+area = "security"
+guarantee = """With debug logging: the root secret, master key, management and scrape tokens and an issued \
+service-account secret appear in no log line, error response, operational endpoint, audit or event record, \
+check-config/doctor/backup output, and in no file of the data directory or a backup (byte scan)."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "darwin-arm64 (developer)"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/redaction.py --bin-dir ${CANDIDATE}/bin"
+environment = "candidate binaries; unique secrets generated per run"
+fixtures = "one bucket, one object, one service account"
+failure_injection = "requests with a wrong secret, a wrong token, and the root secret presented as a token"
+evidence = "detail.json listing every scanned surface"
+implementation = ["tests/gates/redaction.py", "tests/gates/gatelib.py"]
+timeout_minutes = 10
+infra_retries = 1
+binds_artifact = true
+limitations = "Substring match on the raw values; an encoded or partial leak (base64, a prefix) is not detected."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "SEC-FUZZ"
+title = "Every fuzz target builds, reaches its parser and holds its invariant"
+area = "security"
+guarantee = "Each pre-authentication parser target runs for its budget without a crash or a failed assertion."
+modes = ["standalone"]
+platforms = ["linux-amd64"]
+stages = ["pr", "integration", "scheduled", "candidate"]
+blocking = true
+command = "FUZZ_SECONDS=${FUZZ_SECONDS:-20} tests/fuzz-smoke.sh"
+environment = "nightly toolchain, cargo-fuzz"
+fixtures = "fuzz/ targets"
+failure_injection = "fuzzed input"
+evidence = "crashing inputs uploaded on failure"
+implementation = ["tests/fuzz-smoke.sh"]
+timeout_minutes = 30
+infra_retries = 1
+binds_artifact = false
+limitations = "20 s per target is a smoke run, not a search; the scheduled stage runs 300 s per target."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "ART-IDENTITY"
+title = "The tested binaries are the candidate, identified by digest"
+area = "artifact"
+guarantee = """tests/gates/build-candidate.sh records the commit, tree cleanliness, Cargo.lock digest, toolchain and \
+binary digests; every artifact-bound result must carry the same digests or the evaluator rejects it. On a tag, \
+the binaries are the ones extracted from the published image, and the reported version equals the tag."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "linux-arm64"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/artifact_identity.py --candidate ${CANDIDATE} ${EXPECT_VERSION:+--expect-version $EXPECT_VERSION}"
+environment = "the candidate directory"
+fixtures = "candidate.json"
+failure_injection = "none"
+evidence = "candidate.json"
+implementation = ["tests/gates/artifact_identity.py", "tests/gates/build-candidate.sh"]
+timeout_minutes = 5
+infra_retries = 0
+binds_artifact = true
+limitations = """Binaries do not embed their commit, and unreleased builds report the previous release's version \
+until the release bump, so identity rests on digests recorded at build time (RSG-006)."""
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "ART-PACKAGE"
+title = "Published images and archives: provenance, SBOMs, checksums, smoke on both architectures"
+area = "artifact"
+guarantee = """release.yml: both images built from the tag commit for amd64 and arm64; signed provenance on each \
+index and archive and an SBOM per platform (verify-attestations.sh); the image reports the tag version; it runs \
+as a non-root user, answers SIGTERM within the grace period with exit 0, persists data across a container \
+restart on its volume, and serves S3, management and console; SHA256SUMS covers exactly the attached assets."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "linux-arm64"]
+stages = ["candidate"]
+blocking = true
+# Recorded by release.yml in a job that needs provenance and both smoke jobs;
+# ART_PACKAGE_VERIFIED is set only there, so it cannot pass anywhere else.
+command = 'test "${ART_PACKAGE_VERIFIED:-}" = "true" || { echo "ART-PACKAGE runs only inside release.yml after provenance and smoke" >&2; exit 77; }'
+environment = "GitHub-hosted runners; GHCR; attestation service"
+fixtures = "ephemeral credentials generated in the job"
+failure_injection = "none"
+evidence = "release workflow run; attestations; SBOM and provenance assets"
+implementation = [".github/workflows/release.yml", ".github/workflows/container-image.yml", ".github/scripts/verify-attestations.sh"]
+timeout_minutes = 90
+infra_retries = 0
+binds_artifact = false
+limitations = "Runs only on a tag; images are pushed to GHCR before the post-publish gates finish, so a failure leaves a tagged image without a GitHub Release (never repointed; the next patch supersedes it)."
+[gate.reuse]
+max_age_days = 0
