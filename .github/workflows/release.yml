@@ -1,13 +1,18 @@
 # Publishes a Record Store release.
 #
 # The Git tag is the source of truth. Pushing v0.1.1 validates that the tag and
-# the versions recorded in the repository agree, runs the same gates CI runs,
+# the versions recorded in the repository agree, runs the release gates
+# (release/gates.toml, integration stage) on a candidate built from the tag,
 # publishes both production images to GHCR with SBOMs, extracts the Linux
-# binaries from those images, smoke-tests what was actually published, and only
-# then creates the GitHub Release.
+# binaries from those images, runs the candidate-stage gates again against those
+# extracted binaries, smoke-tests both architectures of what was actually
+# published, evaluates every result into one decision, and only then creates the
+# GitHub Release -- with the decision attached to it.
 #
 # Nothing that fails leaves a release behind: the GitHub Release is the last step
-# and depends on every job before it.
+# and depends on every job before it. Images are pushed before the post-publish
+# gates finish, so a failure there leaves a version-tagged image without a
+# release; it is never repointed, and the next patch release supersedes it.
 name: Release
 
 on:
@@ -72,68 +77,28 @@ jobs:
             echo "console=ghcr.io/${owner}/record-store-console"
           } >> "$GITHUB_OUTPUT"
 
-  rust:
-    name: Rust checks
+  # Everything CI gates on, and the real-binary integration gates, on a
+  # candidate built from the tag commit. Nothing is published unless this is
+  # READY: an open release-blocking finding stops the release here.
+  gates:
+    name: Release gates (pre-publish)
     needs: validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
-        with:
-          toolchain: 1.97.1
-          components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/gates.yml
+    with:
+      stage: integration
+      prefix: prepublish
+      # Release rules: open release-blocking findings stop the release here,
+      # before anything is pushed, and nothing is downgraded to a known failure.
+      enforce-findings: true
 
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Run tests
-        run: cargo test --workspace --all-features --locked
-
-  console:
-    name: Console checks
-    needs: validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: console/package-lock.json
-
-      - name: Install console dependencies
-        working-directory: console
-        run: npm ci
-
-      - name: Check console formatting
-        working-directory: console
-        run: npm run format:check
-
-      - name: Lint console
-        working-directory: console
-        run: npm run lint
-
-      - name: Type-check console
-        working-directory: console
-        run: npm run typecheck
-
-      - name: Test console
-        working-directory: console
-        run: npm test
-
-      - name: Build console
-        working-directory: console
-        run: npm run build
-
-  # Both images wait on both gates. A release is one artifact set: publishing a
+  # Both images wait on the gates. A release is one artifact set: publishing a
   # server image while the console is broken would leave a version half released.
   server-image:
     name: Server image
-    needs: [validate, rust, console]
+    needs: [validate, gates]
     # A called workflow cannot hold more than its caller grants, so the two
     # attestation permissions have to be repeated here or the attest steps
     # inside container-image.yml fail with a missing OIDC token.
@@ -157,7 +122,7 @@ jobs:
 
   console-image:
     name: Console image
-    needs: [validate, rust, console]
+    needs: [validate, gates]
     # A called workflow cannot hold more than its caller grants, so the two
     # attestation permissions have to be repeated here or the attest steps
     # inside container-image.yml fail with a missing OIDC token.
@@ -267,10 +232,20 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Run on each shipped architecture's native runner: pulling the index resolves
+  # the platform the runner has, so without both runners arm64 is never run.
   smoke:
-    name: Smoke test
+    name: Smoke test (${{ matrix.architecture }})
     needs: [validate, server-image, console-image]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: read
@@ -284,6 +259,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Confirm the image under test is this runner's architecture
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          docker pull --quiet "$SERVER" > /dev/null
+          actual="$(docker image inspect "$SERVER" --format '{{.Architecture}}')"
+          if [[ "$actual" != "$ARCHITECTURE" ]]; then
+            echo "pulled a ${actual} image on the ${ARCHITECTURE} runner" >&2
+            exit 1
+          fi
 
       # The check that stops a 0.1.1 tag shipping a 0.1.0 binary: ask the image.
       - name: Report the version from inside the image
@@ -311,6 +298,7 @@ jobs:
           docker network create record-store-smoke
           docker run --detach --name record-store --network record-store-smoke \
             --publish 7600:7600 --publish 7601:7601 \
+            --volume record-store-smoke-data:/var/lib/record-store \
             --env RECORD_STORE_ROOT_ACCESS_KEY=smoke-access-key \
             --env "RECORD_STORE_ROOT_SECRET_KEY=${ROOT_SECRET}" \
             --env "RECORD_STORE_CREDENTIAL_MASTER_KEY=${MASTER_KEY}" \
@@ -348,6 +336,52 @@ jobs:
           set -euo pipefail
           docker exec --env "RECORD_STORE_MANAGEMENT_TOKEN=${SYSTEM_TOKEN}" record-store \
             record-store status --endpoint http://127.0.0.1:7601
+
+      # The Dockerfile says USER record-store; this checks the running process.
+      - name: Check the server does not run as root
+        run: |
+          set -euo pipefail
+          uid="$(docker exec record-store id -u)"
+          if [[ "$uid" == "0" ]]; then
+            echo "the server container runs as root" >&2
+            exit 1
+          fi
+          echo "running as uid ${uid}"
+
+      # Writes an object, stops the container the way an orchestrator does, and
+      # reads the object back from the same volume after a fresh start: SIGTERM
+      # is handled (exit 0 within the documented --time 40) and data persists.
+      - name: Check signal handling and persistence across a restart
+        run: |
+          set -euo pipefail
+          api=http://127.0.0.1:7601/api/v1
+          auth=(--header "authorization: Bearer ${SYSTEM_TOKEN}")
+          curl --fail --silent "${auth[@]}" --header 'content-type: application/json' \
+            --data '{"name":"smoke-persistence"}' "${api}/buckets" > /dev/null
+          head -c 1048576 /dev/urandom > probe.bin
+          curl --fail --silent "${auth[@]}" --upload-file probe.bin \
+            "${api}/buckets/smoke-persistence/object/probe.bin" > /dev/null
+          started="$(date +%s)"
+          docker stop --time 40 record-store > /dev/null
+          elapsed=$(( $(date +%s) - started ))
+          code="$(docker inspect record-store --format '{{.State.ExitCode}}')"
+          echo "stopped in ${elapsed}s with exit code ${code}"
+          if [[ "$code" != "0" || "$elapsed" -ge 40 ]]; then
+            echo "SIGTERM did not produce a clean exit within the grace period" >&2
+            docker logs record-store >&2
+            exit 1
+          fi
+          docker start record-store > /dev/null
+          for _ in $(seq 1 60); do
+            curl --fail --silent --output /dev/null http://127.0.0.1:7601/ready && break
+            sleep 1
+          done
+          curl --fail --silent "${auth[@]}" --output read.bin \
+            "${api}/buckets/smoke-persistence/object-content/probe.bin"
+          if ! cmp --silent probe.bin read.bin; then
+            echo "the object did not survive a container restart on its volume" >&2
+            exit 1
+          fi
 
       - name: Run the console container
         run: |
@@ -432,9 +466,76 @@ jobs:
             "${{ needs.validate.outputs.console-image }}" \
             "${{ needs.console-image.outputs.digest }}"
 
+  # The candidate-stage gates again, against the binaries extracted from the
+  # published image rather than a local build, so every artifact-bound result
+  # names the digests that ship. ART-PACKAGE is deferred to release-decision;
+  # PERF-ENDURANCE is reused from a recent scheduled run where still valid.
+  artifact-gates:
+    name: Release gates (published artifacts)
+    needs: [validate, binaries]
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/gates.yml
+    with:
+      stage: candidate
+      prefix: candidate
+      candidate-artifact: binaries
+      defer: ART-PACKAGE
+      skip: PERF-ENDURANCE
+
+  # One decision over every result, after packaging has been proven. It runs
+  # only when provenance and both smoke jobs succeeded, which is the only place
+  # ART_PACKAGE_VERIFIED is ever set. The report is attached to the release, so
+  # the evidence is retained as long as the release is.
+  release-decision:
+    name: Release decision
+    needs: [validate, gates, artifact-gates, smoke, provenance]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: "{prepublish,candidate}-*"
+          path: collected
+      - name: Record ART-PACKAGE
+        env:
+          ART_PACKAGE_VERIFIED: "true"
+        run: |
+          set -euo pipefail
+          mkdir -p candidate-x && tar -xzf collected/candidate-candidate/candidate.tar.gz -C candidate-x
+          python3 tests/gates/record.py --gate ART-PACKAGE --stage candidate \
+            --candidate candidate-x/candidate --results collected/release-decision
+      - name: Evaluate
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -uo pipefail
+          results=()
+          for directory in collected/*-results-* collected/release-decision; do results+=(--results "$directory"); done
+          python3 tests/gates/evaluate.py --stage candidate --candidate candidate-x/candidate "${results[@]}" --out report
+          status=$?
+          cat report/report.md >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p dist
+          cp report/report.json "dist/record-store-${VERSION}-release-gates.json"
+          cp report/report.md "dist/record-store-${VERSION}-release-gates.md"
+          exit "$status"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: release-gates-report
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 400
+
   release:
     name: GitHub Release
-    needs: [validate, server-image, console-image, binaries, smoke, provenance]
+    needs: [validate, server-image, console-image, binaries, smoke, provenance, release-decision]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -452,6 +553,12 @@ jobs:
           path: dist
           pattern: sbom-*
           merge-multiple: true
+
+      # The decision that allowed this release, attached so it is kept with it.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          name: release-gates-report
 
       # Checksums are generated from the assets that exist, so the file can
       # never list something that was not published.
