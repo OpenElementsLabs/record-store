@@ -458,6 +458,9 @@ jobs:
           DEFER: ${{ inputs.defer }}
           ENFORCE: ${{ inputs.enforce-findings }}
         run: |
+          # GitHub runs steps with bash -e. A BLOCKED decision exits 1, and the
+          # summary, the outputs and the report must still be written after it.
+          set +e
           set -uo pipefail
           mkdir -p collected/candidate-x && tar -xzf "collected/${PREFIX}-candidate/candidate.tar.gz" -C collected/candidate-x || true
           defer_args=()

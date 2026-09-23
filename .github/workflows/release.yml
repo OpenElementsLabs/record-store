@@ -515,6 +515,9 @@ jobs:
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
+          # GitHub runs steps with bash -e. A BLOCKED decision exits 1, and the
+          # summary, the outputs and the report must still be written after it.
+          set +e
           set -uo pipefail
           results=()
           for directory in collected/*-results-* collected/release-decision; do results+=(--results "$directory"); done
