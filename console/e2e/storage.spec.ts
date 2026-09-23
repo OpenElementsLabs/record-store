@@ -271,6 +271,15 @@ test.describe('uploading over an existing object', () => {
     await expect(page.getByRole('link', { name: /contract\.txt/ })).toBeVisible({
       timeout: 20_000,
     });
+    // Wait for the first upload to be confirmed before starting the second, so
+    // the queue is always in its two-row state below rather than only on a slow
+    // machine. A completed upload is kept when a later one follows it, and that
+    // is exactly what makes an unscoped assertion ambiguous.
+    const first = page
+      .getByRole('listitem')
+      .filter({ hasText: 'contract.txt' })
+      .filter({ hasText: '5 B' });
+    await expect(first.getByText('Stored successfully.')).toBeVisible({ timeout: 20_000 });
 
     await page.setInputFiles('input[type="file"]', {
       name: 'contract.txt',
@@ -292,6 +301,16 @@ test.describe('uploading over an existing object', () => {
     });
     await page.getByRole('button', { name: 'Upload anyway' }).click();
     await expect(page.getByRole('heading', { name: 'Uploads' })).toBeVisible();
-    await expect(page.getByText('Stored successfully.')).toBeVisible({ timeout: 20_000 });
+    // Scoped to the replacement's own row. Both uploads of this key stay in the
+    // queue — which is the point of keeping completed items — so asserting on
+    // any "Stored successfully." would match the first one too and could pass
+    // while the replacement was still in flight.
+    await expect(
+      page
+        .getByRole('listitem')
+        .filter({ hasText: 'contract.txt' })
+        .filter({ hasText: '6 B' })
+        .getByText('Stored successfully.'),
+    ).toBeVisible({ timeout: 20_000 });
   });
 });
