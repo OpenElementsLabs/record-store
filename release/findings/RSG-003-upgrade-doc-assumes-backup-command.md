@@ -2,10 +2,10 @@
 
 | | |
 | --- | --- |
-| Status | open — fix proposed in this change, container commands unverified |
+| Status | fixed |
 | Severity | medium — an operator following the guide may upgrade with no backup |
-| Blocks release | yes (documentation, before the release notes are final) |
-| Gate | CMP-UPGRADE (evidence); not enforceable by a test |
+| Blocks release | no — fixed |
+| Gate | CMP-UPGRADE, CMP-UPGRADE-CONTAINER |
 | Found | 2026-09-23, candidate `0765aee` |
 
 `docs/deployment/upgrading.md` step 1 is `record-store server backup` and
@@ -46,3 +46,13 @@ themselves (`--volumes-from`, the `/backups` ownership, the entrypoint
 arguments) were not run: Docker was unavailable where this was written. Close
 this finding after running the documented sequence once on a real 0.1.3
 container deployment.
+
+## Verified in containers
+
+CMP-UPGRADE-CONTAINER followed the revised guide on the GitHub-hosted runner
+with the published `ghcr.io/openelementslabs/record-store:0.1.3` and an image
+built from `407199b`: all 23 checks passed, in the candidate run
+(35887166104) and the integration run (35887161425). The downgrade attempt
+exited with exactly the redb panic the guide now describes. The gate also fails
+whenever the guide stops documenting a command form it runs, so the guide and
+the verified procedure cannot drift apart unnoticed.

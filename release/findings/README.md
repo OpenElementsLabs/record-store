@@ -22,7 +22,7 @@ proof.
 | --- | --- | --- | --- |
 | [RSG-001](RSG-001-corrupted-plaintext-read-served.md) | Plaintext whole-object read serves corrupted bytes with 200 | fixed | no |
 | [RSG-002](RSG-002-release-workflow-skipped-gates.md) | Release workflow published without the gates CI runs | fixed in this change | no |
-| [RSG-003](RSG-003-upgrade-doc-assumes-backup-command.md) | Upgrade guide: commands 0.1.3 lacks, a check that cannot run, backup before stop | open (fix proposed, unverified in a container) | yes |
+| [RSG-003](RSG-003-upgrade-doc-assumes-backup-command.md) | Upgrade guide: commands 0.1.3 lacks, a check that cannot run, backup before stop | fixed | no |
 | [RSG-004](RSG-004-no-header-read-timeout.md) | No header read timeout: slow clients hold connections indefinitely | open | no |
 | [RSG-005](RSG-005-small-writes-serialize.md) | Small-write throughput does not scale with concurrency | open (observation) | no |
 | [RSG-006](RSG-006-binaries-carry-no-commit.md) | Binaries carry no commit; unreleased builds report the previous version | open | no |
