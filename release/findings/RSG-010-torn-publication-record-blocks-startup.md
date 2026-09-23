@@ -2,9 +2,9 @@
 
 | | |
 | --- | --- |
-| Status | open |
+| Status | fixed |
 | Severity | critical — one SIGKILL at the wrong moment takes the deployment down until an operator intervenes |
-| Blocks release | yes |
+| Blocks release | no — fixed |
 | Gate | REC-CRASH |
 | Known failing checks | `a publication record torn by a kill does not prevent start-up` |
 | Found | 2026-09-23, candidate `417091a`, on the GitHub-hosted Linux runner (candidate profile, encrypted mode, first kill) |
@@ -54,3 +54,17 @@ Write the record to a temporary name, fsync, rename into place, fsync the
 directory; and let recovery treat a record that is empty or does not parse as
 "publication never started" (the payload it would name was never committed),
 removing it with a warning instead of refusing to start.
+
+## Fix
+
+Records are written as `<id>.publish.partial`, synchronized, renamed to
+`<id>.publish` and the directory synchronized, so a record never appears
+incomplete under its final name; start-up discards leftover partial files. A
+record that still cannot be decoded -- left by 0.1.3, or by power loss -- is
+recovered by the object id in its file name with a warning, which is exact,
+because the payload it guards is renamed into place only after the record is
+complete. Regression tests: `a_torn_publication_record_is_recovered_by_its_file_name`
+(empty, truncated, garbage records),
+`an_interrupted_record_write_leaves_only_residue_that_start_up_discards`,
+`a_torn_record_for_a_committed_object_leaves_the_object_intact`, and the
+deterministic torn-record check in REC-CRASH.

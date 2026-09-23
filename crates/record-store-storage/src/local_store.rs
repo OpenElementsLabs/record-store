@@ -294,19 +294,39 @@ impl LocalFilesystemStore {
             let encoded = fs::read(entry.path())
                 .await
                 .map_err(|source| filesystem("read publication record", source))?;
-            let record: PublicationRecord = serde_json::from_slice(&encoded)?;
-            if record.object_id.as_uuid() != filename_id {
-                return Err(filesystem(
-                    "decode publication record",
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "publication filename and record do not match",
-                    ),
-                ));
-            }
-            let committed = self.metadata.payload_referenced(record.object_id).await?;
+            // A record that does not decode was interrupted while it was being
+            // written -- by a crash in a release that wrote it in place, or by
+            // power loss. Its payload is renamed into place only after the
+            // record is complete and synchronized, so the payload was never
+            // published. The file name carries the same object id, so recovery
+            // proceeds exactly as it would from the record; refusing to start
+            // would turn one interrupted write into an outage.
+            let object_id = match serde_json::from_slice::<PublicationRecord>(&encoded) {
+                Ok(record) => {
+                    if record.object_id.as_uuid() != filename_id {
+                        return Err(filesystem(
+                            "decode publication record",
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "publication filename and record do not match",
+                            ),
+                        ));
+                    }
+                    record.object_id
+                }
+                Err(error) => {
+                    warn!(
+                        record = %entry.path().display(),
+                        bytes = encoded.len(),
+                        %error,
+                        "publication record is incomplete; recovering by its file name"
+                    );
+                    ObjectId::from_uuid(filename_id)
+                }
+            };
+            let committed = self.metadata.payload_referenced(object_id).await?;
             if !committed {
-                let path = self.layout.payload_path(record.object_id);
+                let path = self.layout.payload_path(object_id);
                 match fs::remove_file(path).await {
                     Ok(()) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -985,6 +1005,34 @@ mod tests {
 
     fn key(value: &str) -> ObjectKey {
         ObjectKey::new(value).expect("key")
+    }
+
+    /// Recovering from a torn publication record (RSG-010) must never cost a
+    /// committed object: when the catalog references the payload the record
+    /// names, the payload stays and the object reads back unchanged.
+    #[tokio::test]
+    async fn a_torn_record_for_a_committed_object_leaves_the_object_intact() {
+        let (directory, store, bucket) = store().await;
+        let committed = put(&store, &bucket, "kept.txt", b"committed bytes").await;
+        let metadata = Arc::clone(&store.metadata);
+        let record = store.layout.publication_path(committed.metadata.id);
+        drop(store);
+        fs::write(&record, b"").await.expect("torn record");
+
+        let store =
+            LocalFilesystemStore::open(directory.path(), directory.path().join("tmp"), metadata)
+                .await
+                .expect("start-up recovers");
+        assert!(!record.exists());
+        let fetched = store
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key("kept.txt"),
+                range: None,
+            })
+            .await
+            .expect("the committed object is still there");
+        assert_eq!(read(fetched).await, b"committed bytes");
     }
 
     /// The bytes a caller reads back must be exactly the bytes it wrote, and the
