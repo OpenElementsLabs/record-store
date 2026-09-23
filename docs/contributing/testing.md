@@ -2,17 +2,25 @@
 
 ## What CI runs
 
-| Job | Command |
+CI runs the [release gates](release-gates.md) for every change: the `pr` stage
+for changes that touch only documentation, the `integration` stage for
+everything else. The gates are defined in `release/gates.toml`; the ones you
+will meet most often:
+
+| Gate | Command |
 | --- | --- |
-| Format | `cargo fmt --all --check` |
-| Lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
-| Test | `cargo test --workspace --all-features --locked` |
-| Build | `cargo build --workspace --release --locked` |
-| Console | `npm run format:check`, `lint`, `typecheck`, `test`, `build` |
-| End-to-end | `npm run test:e2e` |
-| Compatibility | `tests/compatibility/run.sh` |
-| Audit | `tests/rust-audit.sh` |
-| Fuzz | `tests/fuzz-smoke.sh` |
+| COR-LINT | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
+| COR-UNIT | `cargo test --workspace --all-features --locked --no-fail-fast` |
+| COR-SKIPS | `tests/gates/skip_accounting.py` — no unquarantined skip |
+| COR-CONSOLE | `npm run format:check`, `lint`, `typecheck`, `test`, `build` |
+| CMP-CONSOLE-E2E | `npm run test:e2e` |
+| CMP-S3-SDK | `tests/compatibility/run.sh` |
+| SEC-AUDIT-RUST | `tests/rust-audit.sh` |
+| SEC-FUZZ | `tests/fuzz-smoke.sh` |
+| Real-binary gates | `tests/gates/run-stage.sh integration out/` |
+
+The `gates / report` job evaluates every result of the stage and is red if any
+blocking gate failed, was skipped or never ran.
 
 Run the first three before pushing. Clippy uses `-D warnings` — a warning is a failure.
 

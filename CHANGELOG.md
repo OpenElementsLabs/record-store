@@ -11,6 +11,32 @@ publishes, so keep it factual and written for the people upgrading.
 
 ### Added
 
+- **Release gates decide releases.** `release/gates.toml` defines every check a
+  release must pass: the guarantee it protects, its workload and failure
+  injection, what it measures against which limit and why, where its evidence is
+  kept, and whether it blocks. The gates run on every change (`pr` and
+  `integration` stages), nightly and weekly (`scheduled`), and for a release
+  candidate, and one evaluator turns their results into a decision. A gate that
+  failed, was skipped, never ran, ran an older definition of itself, ran a lighter
+  workload, or ran binaries other than the candidate's blocks. Exceptions are
+  reviewed, expiring files; nothing waives a gate automatically.
+
+  New real-binary gates start the built server, damage or interrupt it the way a
+  crash, a bad disk or an operator mistake would, and check final bytes and state
+  rather than status codes: crash recovery under SIGKILL, backup and restore with
+  every refusal the recovery guide promises, upgrade from the real 0.1.3 binaries
+  and the documented rollback, integrity on read, refusal of unsupported S3
+  operations, overload and slow clients, and secret redaction across logs, APIs,
+  CLI output, the data directory and backups.
+
+  A release now runs the gates on the tag commit before publishing, runs the
+  candidate gates again against the binaries extracted from the published image,
+  smoke-tests both `linux/amd64` and `linux/arm64` (non-root, clean SIGTERM exit,
+  persistence across a restart), and attaches the decision to the release as
+  `record-store-<version>-release-gates.json` and `.md`. See
+  [Release Gates](docs/contributing/release-gates.md).
+
+
 - **Releases ship their provenance as an asset, not only as an API record.**
   The build already produced SLSA provenance for every binary archive, but it
   existed only in GitHub's attestation service. A downloader could verify with
@@ -254,6 +280,28 @@ publishes, so keep it factual and written for the people upgrading.
 - Lock errors reaching the S3 surface through the delete path now return their intended
   status. They previously would have surfaced as `500 InternalError`, telling a client to
   retry something meant never to succeed.
+
+### Fixed
+
+- **The upgrade guide can now be followed from 0.1.3.** It told operators to run
+  `record-store server backup` before stopping the server, which a backup refuses;
+  used commands that 0.1.3 does not ship; and passed `record-store server
+  check-config` to an image whose entrypoint is already `record-store server`, so
+  the configuration check always failed. The guide now stops first, backs up and
+  verifies with the new image, and explains that 0.1.3 refuses an upgraded data
+  directory by exiting with a panic that leaves the directory unchanged.
+
+### Known issues
+
+These were found by the new gates and block the next release until fixed:
+
+- A plaintext object whose stored bytes were altered without changing their
+  length is served as a successful read with the altered bytes. Encrypted payloads,
+  truncated and missing payloads, and `record-store verify bucket` are not
+  affected. (release/findings/RSG-001)
+- A PUT carrying `x-amz-checksum-crc32`, `-crc32c` or `-sha1` that does not match
+  its body is stored without complaint; only SHA-256 checksums are verified.
+  (release/findings/RSG-007)
 
 ## [0.1.3] - 2026-09-16
 

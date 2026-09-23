@@ -180,4 +180,5 @@ nav:
       - Development Setup: contributing/development-setup.md
       - Repository Structure: contributing/repository-structure.md
       - Testing: contributing/testing.md
+      - Release Gates: contributing/release-gates.md
       - Releasing: contributing/releasing.md
