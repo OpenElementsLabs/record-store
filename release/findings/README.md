@@ -20,14 +20,14 @@ proof.
 
 | Id | Title | Status | Blocks release |
 | --- | --- | --- | --- |
-| [RSG-001](RSG-001-corrupted-plaintext-read-served.md) | Plaintext whole-object read serves corrupted bytes with 200 | open | yes |
+| [RSG-001](RSG-001-corrupted-plaintext-read-served.md) | Plaintext whole-object read serves corrupted bytes with 200 | fixed | no |
 | [RSG-002](RSG-002-release-workflow-skipped-gates.md) | Release workflow published without the gates CI runs | fixed in this change | no |
 | [RSG-003](RSG-003-upgrade-doc-assumes-backup-command.md) | Upgrade guide: commands 0.1.3 lacks, a check that cannot run, backup before stop | open (fix proposed, unverified in a container) | yes |
 | [RSG-004](RSG-004-no-header-read-timeout.md) | No header read timeout: slow clients hold connections indefinitely | open | no |
 | [RSG-005](RSG-005-small-writes-serialize.md) | Small-write throughput does not scale with concurrency | open (observation) | no |
 | [RSG-006](RSG-006-binaries-carry-no-commit.md) | Binaries carry no commit; unreleased builds report the previous version | open | no |
-| [RSG-007](RSG-007-flexible-checksums-ignored.md) | CRC32/CRC32C/SHA-1 checksum headers are accepted and ignored | open | yes |
-| [RSG-008](RSG-008-event-pagination-drops-one-per-page.md) | Storage-event pagination drops one event at every page boundary | open | yes |
+| [RSG-007](RSG-007-flexible-checksums-ignored.md) | CRC32/CRC32C/SHA-1 checksum headers are accepted and ignored | fixed | no |
+| [RSG-008](RSG-008-event-pagination-drops-one-per-page.md) | Storage-event pagination drops one event at every page boundary | fixed | no |
 | [RSG-009](RSG-009-multipart-listing-no-next-key-marker.md) | A truncated ListMultipartUploads page carries no NextKeyMarker | open | no |
-| [RSG-010](RSG-010-torn-publication-record-blocks-startup.md) | A crash can leave a publication record that stops the server starting | open | yes |
+| [RSG-010](RSG-010-torn-publication-record-blocks-startup.md) | A crash can leave a publication record that stops the server starting | fixed | no |
 | [RSG-011](RSG-011-memory-growth-under-steady-load.md) | Resident memory grows steadily under a steady mixed workload | open (investigating) | no — decision needed |

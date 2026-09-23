@@ -281,6 +281,18 @@ publishes, so keep it factual and written for the people upgrading.
   status. They previously would have surfaced as `500 InternalError`, telling a client to
   retry something meant never to succeed.
 
+- **Every body digest a client sends is verified.** `Content-MD5` and
+  `x-amz-checksum-crc32`, `-crc32c` and `-sha1` were accepted and ignored — as
+  in 0.1.3 — so a client that sent one believed a comparison had happened when
+  none had. They are now verified on uploads, multipart parts and every XML
+  request body, and a mismatch is refused with `400 BadDigest` without storing
+  anything; `x-amz-checksum-sha256` is also checked on XML bodies. A verified
+  `x-amz-checksum-*` is echoed in the response. **A request carrying
+  `x-amz-checksum-crc64nvme` is now refused with `NotImplemented`** instead of
+  being stored unverified; configure the client to use CRC32, CRC32C, SHA-1 or
+  SHA-256. Two different `x-amz-checksum-*` algorithms on one request are
+  refused, as S3 refuses them.
+
 ### Fixed
 
 - **The upgrade guide can now be followed from 0.1.3.** It told operators to run
@@ -291,22 +303,18 @@ publishes, so keep it factual and written for the people upgrading.
   verifies with the new image, and explains that 0.1.3 refuses an upgraded data
   directory by exiting with a panic that leaves the directory unchanged.
 
-### Known issues
-
-These were found by the new gates and block the next release until fixed:
-
-- A plaintext object whose stored bytes were altered without changing their
-  length is served as a successful read with the altered bytes. Encrypted payloads,
-  truncated and missing payloads, and `record-store verify bucket` are not
-  affected. (release/findings/RSG-001)
-- A PUT carrying `x-amz-checksum-crc32`, `-crc32c` or `-sha1` that does not match
-  its body is stored without complaint; only SHA-256 checksums are verified.
-  (release/findings/RSG-007)
-- Paging through `GET /api/v1/events` loses one event at every page boundary.
-  Webhook delivery is not affected. (release/findings/RSG-008)
-- A process killed at the wrong moment can leave an empty record under `tmp/`
-  that stops the server starting again until it is removed; committed data is
-  not lost. (release/findings/RSG-010)
+- **A crash can no longer leave the server unable to start.** A process killed
+  between creating and writing a publication record under `tmp/` left an empty
+  record, and every later start refused it with `storage publication record
+  encoding failed` — as 0.1.3 does. Records are now written under a temporary
+  name and renamed into place, and one that cannot be read is recovered by the
+  object id in its file name: its payload is only ever moved into place after
+  the record is complete, so recovery is exact. If a 0.1.3 deployment is stuck
+  this way, upgrading clears it.
+- **Paging through storage events no longer skips events.** Each page's cursor
+  named the first event it did *not* return, so the next page began after it
+  and one event was lost at every page boundary — also in 0.1.3. Webhook
+  delivery was never affected.
 
 ## [0.1.3] - 2026-09-16
 
