@@ -31,3 +31,4 @@ proof.
 | [RSG-009](RSG-009-multipart-listing-no-next-key-marker.md) | A truncated ListMultipartUploads page carries no NextKeyMarker | open | no |
 | [RSG-010](RSG-010-torn-publication-record-blocks-startup.md) | A crash can leave a publication record that stops the server starting | fixed | no |
 | [RSG-011](RSG-011-memory-growth-under-steady-load.md) | Resident memory grows steadily under a steady mixed workload | open (investigating) | no — decision needed |
+| [RSG-012](RSG-012-reads-slowed-by-audit-commits.md) | Reads under write load were twice as slow as in 0.1.3 | fixed | no |
