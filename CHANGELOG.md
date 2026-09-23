@@ -302,6 +302,11 @@ These were found by the new gates and block the next release until fixed:
 - A PUT carrying `x-amz-checksum-crc32`, `-crc32c` or `-sha1` that does not match
   its body is stored without complaint; only SHA-256 checksums are verified.
   (release/findings/RSG-007)
+- Paging through `GET /api/v1/events` loses one event at every page boundary.
+  Webhook delivery is not affected. (release/findings/RSG-008)
+- A process killed at the wrong moment can leave an empty record under `tmp/`
+  that stops the server starting again until it is removed; committed data is
+  not lost. (release/findings/RSG-010)
 
 ## [0.1.3] - 2026-09-16
 

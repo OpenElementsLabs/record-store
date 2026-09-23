@@ -259,6 +259,18 @@ class EvaluatorTest(unittest.TestCase):
         self.known()
         self.assertIn("G-PLAIN", self.evaluate(stage="pr")[1]["blockers"])
 
+    def test_several_findings_may_together_explain_one_gate(self) -> None:
+        self.all_pass()
+        self.result("G-PLAIN", "fail", checks={"failed": ["torn record", "walk missed an event"]})
+        self.result("G-BOUND", profile="pr")
+        (self.findings / "RSG-901-a.md").write_text(
+            "| | |\n| --- | --- |\n| Status | open |\n| Blocks release | yes |\n| Gate | G-PLAIN |\n"
+            "| Known failing checks | `torn record` |\n")
+        (self.findings / "RSG-902-b.md").write_text(
+            "| | |\n| --- | --- |\n| Status | open |\n| Blocks release | yes |\n| Gate | G-OTHER, G-PLAIN |\n"
+            "| Known failing checks | `walk missed` |\n")
+        self.assertEqual(self.evaluate(stage="pr")[1]["known_failures"], ["G-PLAIN"])
+
     def test_a_malformed_matrix_is_an_error(self) -> None:
         (self.root / "gates.toml").write_text(MATRIX.replace('guarantee = "g"\n', "", 1))
         self.assertEqual(self.evaluate()[0], 2)

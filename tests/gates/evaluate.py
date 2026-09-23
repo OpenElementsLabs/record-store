@@ -43,6 +43,7 @@ import argparse
 import datetime
 import fnmatch
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -197,7 +198,7 @@ def read_findings(directory: Path | None) -> list[dict]:
             "id": identifier,
             "open": fields.get("status", "").lower().startswith("open"),
             "blocks_release": fields.get("blocks release", "").lower().startswith("yes"),
-            "gate": fields.get("gate", "").split(" ")[0],
+            "gates": set(re.findall(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b", fields.get("gate", ""))),
             "known_checks": [part.strip().strip("`") for part in fields.get("known failing checks", "").split(";") if part.strip()],
         })
     return findings
@@ -209,19 +210,22 @@ def open_blocking_findings(directory: Path) -> list[str]:
 
 
 def known_failure(row: dict, findings: list[dict]) -> str | None:
-    """The finding that explains every failed check of this gate, if one does.
+    """The findings that together explain every failed check of this gate, if any do.
 
-    Only a failure fully explained by an open, recorded finding qualifies: one new
-    failed check in the same gate and it is an ordinary failure again.
+    Only a failure fully explained by open, recorded findings for this gate
+    qualifies: one new failed check and it is an ordinary failure again.
     """
     failed = row["failed_checks"]
     if row["status"] != "fail" or not failed:
         return None
-    for finding in findings:
-        if finding["open"] and finding["gate"] == row["gate"] and finding["known_checks"]:
-            if all(any(pattern in check for pattern in finding["known_checks"]) for check in failed):
-                return finding["id"]
-    return None
+    relevant = [f for f in findings if f["open"] and row["gate"] in f["gates"] and f["known_checks"]]
+    explaining = set()
+    for check in failed:
+        owners = [f["id"] for f in relevant if any(pattern in check for pattern in f["known_checks"])]
+        if not owners:
+            return None
+        explaining.update(owners)
+    return ", ".join(sorted(explaining))
 
 
 def main() -> int:

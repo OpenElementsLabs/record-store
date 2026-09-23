@@ -25,6 +25,8 @@ import os
 import random
 import threading
 import time
+import urllib.parse
+import uuid
 from dataclasses import dataclass, field
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -338,7 +340,20 @@ def verify(gate: Gate, server: Server, expected: Expected, multipart: dict, labe
         if not missing_events or time.monotonic() > deadline:
             break
         time.sleep(1)
-    gate.check(f"{label}: every acknowledged write produced its storage event", not missing_events, missing_events[:10])
+    # The paginated walk can lose an event at every page boundary (RSG-008).
+    # Each event it did not return is looked up again with its exact key as the
+    # prefix -- a single page, no boundary -- so a pagination defect and a
+    # crash that really lost an event are reported as different failures.
+    lost = []
+    for entry in missing_events:
+        bucket, key = entry.split("/", 1)
+        page = server.api("GET", "/api/v1/events?" + urllib.parse.urlencode({"bucket": bucket, "prefix": key, "limit": "1000"}))
+        kinds = {e["type"] for e in page.get("events", []) if e.get("object") == key}
+        if not ({"object.created", "object.updated", "multipart.completed"} & kinds):
+            lost.append(entry)
+    gate.check(f"{label}: every acknowledged write produced its storage event", not lost, lost[:10])
+    gate.check(f"{label}: the paginated storage-event walk returns every event",
+               not missing_events, {"not returned by the walk but present": sorted(set(missing_events) - set(lost))[:10]})
     gate.check(f"{label}: an event id never names two different changes", not duplicates, duplicates[:5])
 
     intact, chain = audit_chain_intact(server)
@@ -428,6 +443,32 @@ def main(gate: Gate) -> None:
             result = server.api("POST", f"/api/v1/verify/buckets/{bucket}")
             gate.check(f"{mode}: full integrity verification of {bucket} finds no failure", result.get("failures") == 0, result)
         server.stop()
+
+    # Deterministic companion to the random kills: the exact state a SIGKILL
+    # leaves between creating a publication record and writing it (an empty
+    # tmp/<id>.publish). Random kills reach that window only occasionally, so
+    # it is placed here on every run (release/findings/RSG-010).
+    for encrypted in (False, True):
+        mode = "encrypted" if encrypted else "plaintext"
+        server = Server(artifact, gate.work_directory / f"torn-{mode}" / "data", gate.evidence_directory / "logs",
+                        credentials=Secrets(), encrypted=encrypted, name=f"torn-record-{mode}")
+        server.start()
+        client = server.s3()
+        client.create_bucket(Bucket="torn")
+        client.put_object(Bucket="torn", Key="committed", Body=b"committed before the kill")
+        server.stop()
+        (server.data_directory / "tmp" / f"{uuid.uuid4().hex}.publish").write_bytes(b"")
+        try:
+            server.start()
+            started = True
+        except GateFailure:
+            started = False
+        gate.check(f"{mode}: a publication record torn by a kill does not prevent start-up", started,
+                   "see the torn-record log: start-up refused an empty .publish record")
+        if started:
+            gate.check(f"{mode}: committed data is served after recovering from a torn record",
+                       read_all(server.s3(), "torn", "committed") == b"committed before the kill")
+            server.stop()
 
     gate.metric(
         "crash_restart_to_ready_seconds_max",

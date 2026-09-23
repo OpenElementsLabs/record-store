@@ -27,3 +27,6 @@ proof.
 | [RSG-005](RSG-005-small-writes-serialize.md) | Small-write throughput does not scale with concurrency | open (observation) | no |
 | [RSG-006](RSG-006-binaries-carry-no-commit.md) | Binaries carry no commit; unreleased builds report the previous version | open | no |
 | [RSG-007](RSG-007-flexible-checksums-ignored.md) | CRC32/CRC32C/SHA-1 checksum headers are accepted and ignored | open | yes |
+| [RSG-008](RSG-008-event-pagination-drops-one-per-page.md) | Storage-event pagination drops one event at every page boundary | open | yes |
+| [RSG-009](RSG-009-multipart-listing-no-next-key-marker.md) | A truncated ListMultipartUploads page carries no NextKeyMarker | open | no |
+| [RSG-010](RSG-010-torn-publication-record-blocks-startup.md) | A crash can leave a publication record that stops the server starting | open | yes |
