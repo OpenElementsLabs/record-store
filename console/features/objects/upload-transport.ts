@@ -23,6 +23,7 @@ export type UploadProgress = {
 export type UploadResult =
   | { readonly status: 'done' }
   | { readonly status: 'cancelled' }
+  | { readonly status: 'unknown'; readonly reason: string }
   | { readonly status: 'failed'; readonly reason: string };
 
 export type UploadObserver = {
@@ -85,15 +86,26 @@ export const singleRequestUpload: UploadTransport = ({ bucket, key, file }, obse
     }
     observer.onProgress({ sent: event.loaded, total });
   };
-  request.onload = () =>
-    observer.onSettled(
-      request.status >= 200 && request.status < 300
-        ? { status: 'done' }
-        : { status: 'failed', reason: describeFailure(request) },
-    );
-  request.onerror = () =>
-    observer.onSettled({ status: 'failed', reason: 'The connection failed.' });
-  request.onabort = () => observer.onSettled({ status: 'cancelled' });
+  let finished = false;
+  const settle = (result: UploadResult) => {
+    if (finished) return;
+    finished = true;
+    observer.onSettled(result);
+  };
+  const uncertain = () =>
+    settle({
+      status: 'unknown',
+      reason:
+        'The server may have stored this file. Check the object and its versions before uploading again; another upload may create a duplicate version or replace the current object.',
+    });
+  request.onload = () => {
+    if (request.status >= 200 && request.status < 300) settle({ status: 'done' });
+    else if (request.status === 0 || request.status >= 500) uncertain();
+    else settle({ status: 'failed', reason: describeFailure(request) });
+  };
+  request.onerror = uncertain;
+  request.ontimeout = uncertain;
+  request.onabort = uncertain;
 
   // The `File` itself is the body, so the browser streams it from disk.
   request.send(file);

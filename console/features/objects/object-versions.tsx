@@ -70,14 +70,31 @@ export function ObjectVersions({
   // A caller-supplied scope wins over the URL filter: object detail is already
   // looking at one key, so a stale filter must not widen the list.
   const prefix = prefixOverride ?? readString(params, 'vprefix', '');
+  const keyMarker = readString(params, 'vkey', '') || null;
+  const versionIdMarker = readString(params, 'vid', '') || null;
   const [draft, setDraft] = React.useState(prefix);
+  // The filter can move without the form being touched: a browser back, a
+  // breadcrumb, or a caller-supplied scope. When it does, the typed draft
+  // belonged to the previous filter and would contradict the list below it, so
+  // it is replaced during render rather than in an effect — an effect would
+  // paint the stale draft first and then correct it.
+  const [syncedPrefix, setSyncedPrefix] = React.useState(prefix);
+  if (syncedPrefix !== prefix) {
+    setSyncedPrefix(prefix);
+    setDraft(prefix);
+  }
   const [pendingDelete, setPendingDelete] = React.useState<ObjectVersionEntry | null>(null);
   const [pendingRestore, setPendingRestore] = React.useState<ObjectVersionEntry | null>(null);
 
   const versions = useQuery({
-    queryKey: queryKeys.objectVersions(bucket, prefix),
-    queryFn: ({ signal }) => fetchObjectVersions({ bucket, prefix, limit: 100 }, signal),
+    queryKey: [...queryKeys.objectVersions(bucket, prefix), keyMarker, versionIdMarker],
+    queryFn: ({ signal }) =>
+      fetchObjectVersions({ bucket, prefix, keyMarker, versionIdMarker, limit: 100 }, signal),
   });
+
+  const entries = (versions.data?.versions ?? []).filter(
+    (entry) => prefixOverride === undefined || entry.key === prefixOverride,
+  );
 
   const removal = useMutation({
     mutationFn: (entry: ObjectVersionEntry) =>
@@ -101,38 +118,46 @@ export function ObjectVersions({
 
   return (
     <div className="space-y-4">
-      <form
-        className="flex items-end gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          router.push(`${pathname}${mergeSearch(params, { vprefix: draft || null })}`);
-        }}
-      >
-        <div className="w-full max-w-sm space-y-1.5">
-          <label htmlFor="version-prefix" className="type-label">
-            Key prefix
-          </label>
-          <Input
-            id="version-prefix"
-            value={draft}
-            placeholder="documents/"
-            onChange={(event) => setDraft(event.target.value)}
-          />
-        </div>
-        <Button type="submit" size="md">
-          Filter
-        </Button>
-      </form>
+      {prefixOverride === undefined ? (
+        <form
+          className="flex items-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            router.push(
+              `${pathname}${mergeSearch(params, { vprefix: draft || null, vkey: null, vid: null })}`,
+            );
+          }}
+        >
+          <div className="w-full max-w-sm space-y-1.5">
+            <label htmlFor="version-prefix" className="type-label">
+              Key prefix
+            </label>
+            <Input
+              id="version-prefix"
+              value={draft}
+              placeholder="documents/"
+              onChange={(event) => setDraft(event.target.value)}
+            />
+          </div>
+          <Button type="submit" size="md">
+            Filter
+          </Button>
+        </form>
+      ) : null}
 
       <Card>
         {versions.isError ? (
           <ErrorState error={versions.error} onRetry={() => void versions.refetch()} />
         ) : versions.isPending ? (
           <TableSkeleton columns={5} />
-        ) : versions.data.versions.length === 0 ? (
+        ) : entries.length === 0 ? (
           <EmptyState
             title="No versions"
-            description="No object versions match this prefix in this bucket."
+            description={
+              versions.data.next_key_marker
+                ? 'No matching versions on this page. Continue to the next page.'
+                : 'No object versions match this selection.'
+            }
           />
         ) : (
           <TableShell>
@@ -150,7 +175,7 @@ export function ObjectVersions({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {versions.data.versions.map((entry) => (
+                {entries.map((entry) => (
                   <TableRow key={`${entry.key}:${entry.version_id}`}>
                     <TableCell className="max-w-xs truncate" title={entry.key}>
                       {entry.key}
@@ -250,11 +275,34 @@ export function ObjectVersions({
         )}
       </Card>
 
-      {versions.data?.next_key_marker ? (
-        <p className="type-meta-subtle">
-          More versions match this prefix than are shown. Narrow the prefix to see them.
-        </p>
-      ) : null}
+      <nav aria-label="Version pages" className="flex items-center gap-2">
+        {keyMarker ? (
+          <Button
+            variant="secondary"
+            onClick={() =>
+              router.push(`${pathname}${mergeSearch(params, { vkey: null, vid: null })}`)
+            }
+          >
+            First page
+          </Button>
+        ) : null}
+        {versions.data?.next_key_marker ? (
+          <Button
+            variant="secondary"
+            disabled={versions.isFetching}
+            onClick={() =>
+              router.push(
+                `${pathname}${mergeSearch(params, {
+                  vkey: versions.data.next_key_marker,
+                  vid: versions.data.next_version_id_marker,
+                })}`,
+              )
+            }
+          >
+            Next page
+          </Button>
+        ) : null}
+      </nav>
 
       <ConfirmDialog
         open={pendingRestore !== null}

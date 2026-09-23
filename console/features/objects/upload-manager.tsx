@@ -9,7 +9,7 @@ import {
 } from '@/features/objects/upload-transport';
 
 /** Where an upload has got to. */
-export type UploadState = 'queued' | 'uploading' | 'done' | 'failed' | 'cancelled';
+export type UploadState = 'queued' | 'uploading' | 'done' | 'failed' | 'cancelled' | 'unknown';
 
 export type UploadTask = {
   readonly id: string;
@@ -90,6 +90,9 @@ export function useUploadManager(
                 // The file handle is only needed for a retry, and there is none.
                 pending.current.delete(id);
                 update(id, { state: 'done', reason: null, retryable: false });
+              } else if (result.status === 'unknown') {
+                pending.current.delete(id);
+                update(id, { state: 'unknown', reason: result.reason, retryable: false });
               } else if (result.status === 'cancelled') {
                 update(id, { state: 'cancelled', reason: null, retryable: true });
               } else {
@@ -175,7 +178,7 @@ export function useUploadManager(
    */
   const retry = React.useCallback(
     (id: string) => {
-      if (!pending.current.has(id)) return;
+      if (!pending.current.has(id) || handles.current.has(id) || queue.current.includes(id)) return;
       update(id, { state: 'queued', sent: 0, total: null, reason: null, retryable: false });
       queue.current.push(id);
       pump();

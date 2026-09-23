@@ -26,11 +26,22 @@ test.describe('standalone deployment', () => {
     await expect(signedIn.getByText('Stored data').locator('..')).not.toContainText('—');
   });
 
-  test('system health reports readiness and capacity', async ({ signedIn }) => {
+  test('system health separates readiness from liveness and says what it proved', async ({
+    signedIn,
+  }) => {
     await signedIn.goto('/system');
     await expect(signedIn.getByRole('heading', { name: 'System health' })).toBeVisible();
-    // 'Ready' now appears in both the summary strip and the subsystem list.
+
+    // Readiness is its own labelled fact, not a generic "responding" badge: the
+    // server ran a real write probe against its storage path to answer it.
+    await expect(signedIn.getByText('Service readiness')).toBeVisible();
     await expect(signedIn.getByText('Ready').first()).toBeVisible();
+    await expect(signedIn.getByText(/write, synchronise, and delete probe/)).toBeVisible();
+    // And it must not be allowed to imply anything about stored objects.
+    await expect(
+      signedIn.getByText(/says nothing about the integrity of objects already stored/),
+    ).toBeVisible();
+
     await expect(signedIn.getByText('Disk capacity')).toBeVisible();
   });
 

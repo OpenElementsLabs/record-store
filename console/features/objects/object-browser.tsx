@@ -27,6 +27,7 @@ import { ErrorState } from '@/components/error-state';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,10 +50,11 @@ import { useUploadManager } from '@/features/objects/upload-manager';
 import { useCapabilities, usePermissions } from '@/features/system/deployment';
 import { queryKeys } from '@/hooks/use-system';
 import { ApiError } from '@/lib/api/error';
+import { fetchBuckets } from '@/lib/api/buckets';
 import { deleteObject, fetchObjects, objectContentUrl } from '@/lib/api/objects';
 import { formatBytes, formatCount, formatDateTime, keyBasename, keySegments } from '@/lib/format';
 import { mergeSearch, readInt, readString } from '@/lib/search-params';
-import type { ObjectSummary } from '@/types/api';
+import type { ObjectSummary, VersioningState } from '@/types/api';
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
 
@@ -89,6 +91,11 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
   const prefix = normalisePrefix(readString(params, 'prefix', ''));
   const limit = readInt(params, 'limit', 50, 25, 200);
   const cursor = readString(params, 'cursor', '') || null;
+  // Finding is a different listing, not a filter over the current one: it drops
+  // the delimiter so the whole bucket is scanned instead of one folder level.
+  // It lives in the URL so a result set survives navigation and can be shared.
+  const find = readString(params, 'find', '');
+  const searching = find !== '';
 
   const [pendingDelete, setPendingDelete] = React.useState<ObjectSummary | null>(null);
   const [copying, setCopying] = React.useState<string | null>(null);
@@ -98,12 +105,43 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
   const [batch, setBatch] = React.useState<BatchProgress | null>(null);
   const dropRef = React.useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = React.useState(false);
+  // Files held back because they would land on a key this listing already
+  // shows. Kept whole so confirming uploads exactly what was chosen.
+  const [conflicting, setConflicting] = React.useState<readonly File[] | null>(null);
 
   const listing = useQuery({
-    queryKey: queryKeys.objects(bucket, prefix, cursor),
+    queryKey: [...queryKeys.objects(bucket, searching ? find : prefix, cursor), limit, searching],
     queryFn: ({ signal }) =>
-      fetchObjects({ bucket, prefix, delimiter: '/', continuationToken: cursor, limit }, signal),
+      fetchObjects(
+        {
+          bucket,
+          prefix: searching ? find : prefix,
+          // Omitting the delimiter is what makes a find span every folder; with
+          // it, the server would collapse anything deeper into prefix rows.
+          ...(searching ? {} : { delimiter: '/' }),
+          continuationToken: cursor,
+          limit,
+        },
+        signal,
+      ),
   });
+
+  // The console already knows whether this bucket versions its objects, so it
+  // can state what an upload will do instead of telling the operator to go and
+  // find out. Only fetched when they can actually upload.
+  const buckets = useQuery({
+    queryKey: queryKeys.buckets,
+    queryFn: ({ signal }) => fetchBuckets(signal),
+    enabled: permissions.manage_objects,
+    staleTime: 60_000,
+  });
+  // Only an array of buckets can answer the question. Anything else — a failed
+  // lookup, or a payload that is not what this expects — is reported as unknown
+  // rather than guessed at, because guessing "versioning is off" would tell an
+  // operator their upload replaces content when it may not.
+  const versioning: VersioningState | 'unknown' = Array.isArray(buckets.data)
+    ? (buckets.data.find((entry) => entry.name === bucket)?.versioning ?? 'unknown')
+    : 'unknown';
 
   const pageKeys = React.useMemo(
     () => (listing.data?.objects ?? []).map((object) => object.key),
@@ -199,27 +237,65 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
     })),
   ];
 
+  /**
+   * Starts an upload, pausing first when it would destroy something.
+   *
+   * Two conditions, and both are needed. The key must already be here — the
+   * check can only see the loaded page, so it proves a collision and never
+   * proves the absence of one, which is why a clean check passes silently
+   * instead of announcing "no conflicts". And the overwrite must actually cost
+   * something: with versioning on, replacing a key keeps the previous content
+   * in history, so a confirmation would be friction in front of a safe action
+   * and would train the reader to dismiss the dialog that matters.
+   */
+  function submit(files: readonly File[]) {
+    if (files.length === 0) return;
+    const existing = new Set(pageKeys);
+    const collisions = files.filter((file) => existing.has(`${prefix}${file.name}`));
+    if (collisions.length > 0 && overwriteDestroys(versioning)) {
+      setConflicting(files);
+      return;
+    }
+    uploads.enqueue(bucket, prefix, [...files]);
+  }
+
   function onDrop(event: React.DragEvent) {
     event.preventDefault();
     setDragging(false);
     if (!permissions.manage_objects) return;
-    const files = Array.from(event.dataTransfer.files);
-    if (files.length > 0) uploads.enqueue(bucket, prefix, files);
+    submit(Array.from(event.dataTransfer.files));
   }
 
   return (
     <div className="space-y-4">
+      {permissions.manage_objects && !searching ? (
+        <p id="upload-behavior" className="type-meta">
+          Files upload immediately using their names under this folder.{' '}
+          <UploadConsequence versioning={buckets.isPending ? 'loading' : versioning} /> Interrupted
+          uploads do not resume.
+        </p>
+      ) : null}
+      <FindBar
+        value={find}
+        bucket={bucket}
+        onSubmit={(next) =>
+          // A find replaces the folder location rather than narrowing it: the
+          // results span the bucket, so keeping a prefix would be a lie.
+          navigate({ find: next || null, cursor: null, prefix: next ? null : prefix || null })
+        }
+      />
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Breadcrumbs items={crumbs} />
-        {permissions.manage_objects ? (
-          <label className="inline-flex">
+        {searching ? <FindScope bucket={bucket} find={find} /> : <Breadcrumbs items={crumbs} />}
+        {permissions.manage_objects && !searching ? (
+          <label className="inline-flex rounded-control focus-within:ring-2 focus-within:ring-accent">
             <input
               type="file"
               multiple
+              aria-label="Upload files"
+              aria-describedby="upload-behavior"
               className="sr-only"
               onChange={(event) => {
-                const files = Array.from(event.target.files ?? []);
-                if (files.length > 0) uploads.enqueue(bucket, prefix, files);
+                submit(Array.from(event.target.files ?? []));
                 event.target.value = '';
               }}
             />
@@ -254,14 +330,25 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
         ) : listing.isPending ? (
           <TableSkeleton columns={4} />
         ) : listing.data.prefixes.length === 0 && listing.data.objects.length === 0 ? (
-          <EmptyState
-            title={prefix ? 'Nothing under this prefix' : 'This bucket is empty'}
-            description={
-              permissions.manage_objects
-                ? 'Upload a file, or drop files onto this panel, to store your first object.'
-                : 'No objects are stored here yet.'
-            }
-          />
+          searching ? (
+            <EmptyState
+              title={`No keys in ${bucket} begin with “${find}”`}
+              description={
+                'Matching is on the beginning of the whole key, including its folders — so ' +
+                '“report.pdf” does not match “documents/report.pdf”. Try a shorter beginning, ' +
+                'or include the folder.'
+              }
+            />
+          ) : (
+            <EmptyState
+              title={prefix ? 'Nothing under this prefix' : 'This bucket is empty'}
+              description={
+                permissions.manage_objects
+                  ? 'Upload a file, or drop files onto this panel, to store your first object.'
+                  : 'No objects are stored here yet.'
+              }
+            />
+          )
         ) : (
           <TableShell>
             <Table>
@@ -321,13 +408,22 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
                         />
                       </TableCell>
                     ) : null}
-                    <TableCell>
+                    <TableCell className={searching ? 'whitespace-nowrap' : undefined}>
                       <Link
                         href={objectHref(bucket, object.key)}
                         className="inline-flex items-center gap-2 type-body hover:underline"
                       >
-                        <FileIcon aria-hidden className="size-4 text-ink-subtle" />
-                        {keyBasename(object.key)}
+                        <FileIcon aria-hidden className="size-4 shrink-0 text-ink-subtle" />
+                        {searching ? (
+                          // Results span folders, so the basename alone would be
+                          // ambiguous between two keys with the same file name.
+                          // Kept on one line: the table shell scrolls, whereas
+                          // wrapping a long key inside a narrow column breaks it
+                          // one character per line and makes it unreadable.
+                          <span className="shrink-0 whitespace-nowrap">{object.key}</span>
+                        ) : (
+                          keyBasename(object.key)
+                        )}
                       </Link>
                     </TableCell>
                     <TableCell className="tabular-nums">{formatBytes(object.size)}</TableCell>
@@ -454,8 +550,75 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
           if (pendingDelete) removal.mutate(pendingDelete.key);
         }}
       />
+
+      <ConfirmDialog
+        open={conflicting !== null}
+        onOpenChange={(open) => {
+          // Dismissing uploads nothing: the files stay unsent rather than being
+          // queued behind a dialog the operator closed.
+          if (!open) setConflicting(null);
+        }}
+        title={
+          conflicting === null
+            ? ''
+            : overwriteTitle(
+                conflicting.filter((file) => pageKeys.includes(`${prefix}${file.name}`)),
+              )
+        }
+        description={
+          conflicting === null
+            ? ''
+            : conflicting
+                .filter((file) => pageKeys.includes(`${prefix}${file.name}`))
+                .map((file) => file.name)
+                .join(', ')
+        }
+        consequence={overwriteConsequence(versioning)}
+        confirmLabel="Upload anyway"
+        onConfirm={() => {
+          if (conflicting) uploads.enqueue(bucket, prefix, [...conflicting]);
+          setConflicting(null);
+        }}
+      />
     </div>
   );
+}
+
+/**
+ * Whether replacing an existing key here loses the previous content.
+ *
+ * Unknown counts as destructive: the console cannot rule out loss, and the
+ * safer error is to ask.
+ */
+function overwriteDestroys(versioning: VersioningState | 'unknown'): boolean {
+  return versioning !== 'enabled';
+}
+
+/** Names how many of the chosen files already exist here. */
+function overwriteTitle(collisions: readonly File[]): string {
+  return collisions.length === 1
+    ? `${collisions[0]?.name} already exists here`
+    : `${collisions.length} of these files already exist here`;
+}
+
+/**
+ * States what uploading over an existing key costs in this bucket.
+ *
+ * Written as a consequence rather than a warning because the three versioning
+ * states differ in whether anything is actually lost, and a single "this will
+ * overwrite" would be wrong in the enabled case and too mild in the others.
+ */
+function overwriteConsequence(versioning: VersioningState | 'unknown'): string {
+  if (versioning === 'enabled') {
+    return 'Versioning is on, so each of these adds a new current version and the existing content stays in history.';
+  }
+  if (versioning === 'suspended') {
+    return 'Versioning is suspended, so each of these replaces the null version permanently. Versions created before suspension are kept.';
+  }
+  if (versioning === 'disabled') {
+    return 'Versioning is off, so each of these permanently replaces the stored content. The previous bytes cannot be recovered.';
+  }
+  return 'This bucket’s versioning could not be read, so whether the existing content survives is unknown.';
 }
 
 /**
@@ -528,6 +691,122 @@ function objectHref(bucket: string, key: string): string {
 }
 
 /** Normalises a prefix so it is either empty or ends with a delimiter. */
+/**
+ * Finds objects by the beginning of their key, across the whole bucket.
+ *
+ * This is the only matching the storage layer can do: keys are held in one
+ * ordered index and a listing is a range scan over it. There is no word index,
+ * no metadata index, and no substring matching, so the control says "begins
+ * with" rather than "search" — a box labelled Search that quietly failed to
+ * find `report.pdf` inside `documents/` would be worse than no box at all.
+ */
+function FindBar({
+  value,
+  bucket,
+  onSubmit,
+}: {
+  readonly value: string;
+  readonly bucket: string;
+  readonly onSubmit: (next: string) => void;
+}) {
+  const [draft, setDraft] = React.useState(value);
+  // The URL is the source of truth; when it moves the box follows it.
+  const [synced, setSynced] = React.useState(value);
+  if (synced !== value) {
+    setSynced(value);
+    setDraft(value);
+  }
+
+  return (
+    <form
+      className="flex flex-wrap items-end gap-2"
+      role="search"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit(draft.trim());
+      }}
+    >
+      <div className="w-full max-w-sm space-y-1.5">
+        <label htmlFor="object-find" className="type-label">
+          Find keys beginning with
+        </label>
+        <Input
+          id="object-find"
+          type="search"
+          value={draft}
+          placeholder="documents/2026"
+          aria-describedby="object-find-scope"
+          onChange={(event) => setDraft(event.target.value)}
+        />
+      </div>
+      <Button type="submit" variant="secondary">
+        Find
+      </Button>
+      {value ? (
+        <Button type="button" variant="ghost" onClick={() => onSubmit('')}>
+          Clear
+        </Button>
+      ) : null}
+      <p id="object-find-scope" className="w-full type-meta-subtle">
+        Searches every folder in {bucket} by the start of the whole key. It does not match words
+        inside a name, metadata, or file contents.
+      </p>
+    </form>
+  );
+}
+
+/** Says what the rows below are, now that they are not a folder. */
+function FindScope({ bucket, find }: { readonly bucket: string; readonly find: string }) {
+  return (
+    <p className="type-body" role="status">
+      Keys in <span className="font-medium">{bucket}</span> beginning with{' '}
+      <span className="font-mono">{find}</span>
+    </p>
+  );
+}
+
+/**
+ * States what uploading here will actually do to an existing key.
+ *
+ * The three versioning states have genuinely different consequences, and the
+ * difference is the whole question an operator is asking before they drop a
+ * file onto a key that already exists. Saying "check bucket versioning" put
+ * that lookup back on them for information the console already had.
+ *
+ * `undefined` means the bucket record has not loaded yet, which is not the same
+ * as versioning being off — so it says nothing rather than guessing wrong in the
+ * more dangerous direction.
+ */
+function UploadConsequence({
+  versioning,
+}: {
+  readonly versioning: VersioningState | 'unknown' | 'loading';
+}) {
+  if (versioning === 'enabled') {
+    return (
+      <>Versioning is on: uploading to an existing key adds a version and keeps the previous one.</>
+    );
+  }
+  if (versioning === 'suspended') {
+    return (
+      <>
+        Versioning is suspended: uploading to an existing key replaces its null version permanently,
+        while versions created earlier are kept.
+      </>
+    );
+  }
+  if (versioning === 'disabled') {
+    return <>Versioning is off: uploading to an existing key replaces its content permanently.</>;
+  }
+  if (versioning === 'loading') return <>Checking this bucket’s versioning…</>;
+  return (
+    <>
+      This bucket’s versioning could not be read, so whether an upload to an existing key keeps the
+      previous content is unknown.
+    </>
+  );
+}
+
 function normalisePrefix(value: string): string {
   if (value.length === 0) return '';
   const trimmed = value.replace(/^\/+/, '');

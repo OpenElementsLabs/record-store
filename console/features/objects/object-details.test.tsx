@@ -198,7 +198,7 @@ describe('ObjectDetails', () => {
       expect(call).toBeTruthy();
       expect(call?.[1]?.method).toBe('POST');
     });
-    expect(await screen.findByText(/match the recorded checksum/)).toBeTruthy();
+    expect(await screen.findByText(/match its recorded checksum/)).toBeTruthy();
   });
 
   it('lists storage activity for this key only', async () => {
@@ -284,4 +284,15 @@ describe('ObjectDetails', () => {
       expect(push).toHaveBeenCalledWith('/buckets/records');
     });
   });
+});
+
+it('does not verify the current object from a historical view', async () => {
+  searchParams = new URLSearchParams('version=version-1&tab=integrity');
+  renderWithProviders(<ObjectDetails bucket="records" objectKey={object.key} />);
+  await screen.findByText(/Server verification checks the current object only/);
+  expect(screen.queryByRole('button', { name: 'Verify object' })).toBeNull();
+  expect(
+    (await screen.findByRole('link', { name: 'Download matching version' })).getAttribute('href'),
+  ).toContain('version_id=version-1');
+  expect(screen.getByText(/Establish signer identity/)).toBeTruthy();
 });

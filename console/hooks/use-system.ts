@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 
 import {
+  fetchReadiness,
   fetchSession,
   fetchStorageStatus,
   fetchStorageUsage,
@@ -12,6 +13,7 @@ import {
 /** Query keys, kept in one place so invalidation stays consistent. */
 export const queryKeys = {
   systemInfo: ['system', 'info'] as const,
+  readiness: ['system', 'readiness'] as const,
   session: ['auth', 'session'] as const,
   storageUsage: ['storage', 'usage'] as const,
   storageStatus: ['storage', 'status'] as const,
@@ -79,6 +81,22 @@ export function useStorageUsage() {
     queryKey: queryKeys.storageUsage,
     queryFn: ({ signal }) => fetchStorageUsage(signal),
     refetchInterval: 15_000,
+  });
+}
+
+/**
+ * Polls the server's readiness probe.
+ *
+ * Deliberately never retried and never treated as an error: every outcome is a
+ * state the screen renders, and a retry would only delay showing the operator
+ * that the server is refusing to serve.
+ */
+export function useReadiness() {
+  return useQuery({
+    queryKey: queryKeys.readiness,
+    queryFn: ({ signal }) => fetchReadiness(signal),
+    refetchInterval: 30_000,
+    retry: false,
   });
 }
 

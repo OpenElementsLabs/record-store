@@ -261,8 +261,8 @@ function EmbedForm({
           <div className="space-y-2 rounded-control border border-border p-3">
             <span className="type-label">Allowed origins</span>
             <p className="type-meta">
-              Restricting origins stops a leaked URL from rendering on someone else&rsquo;s site. It
-              is a narrowing, not the security boundary: the unguessable, revocable token is.
+              Origins restrict browser requests that send an Origin header. They do not authenticate
+              a recipient: clients can omit or forge that header. Treat the URL as a secret.
             </p>
             <div className="flex gap-2">
               <Input
@@ -386,7 +386,8 @@ function IssuedEmbedView({
       <DialogHeader>
         <DialogTitle>Embed link created</DialogTitle>
         <DialogDescription>
-          Paste this into the site that needs it. Revoke it here to stop it working.
+          Paste this into the site that needs it. Revocation stops future authorized requests;
+          caches may retain bytes for up to a minute, and downloaded copies cannot be recalled.
         </DialogDescription>
       </DialogHeader>
       <DialogBody className="max-h-[60vh] overflow-y-auto">
