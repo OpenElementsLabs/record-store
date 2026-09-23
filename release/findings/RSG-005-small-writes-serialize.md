@@ -23,3 +23,28 @@ platform, so this is not the number users will see; it is the reason to measure
 the reference environment before anyone writes a throughput target. Record the
 first scheduled `PERF-BASELINE` on `ubuntu-24.04` and decide whether per-commit
 serialization is intended.
+
+## Measured on the reference environment (2026-09-23)
+
+PERF-BASELINE, candidate profile, GitHub-hosted `ubuntu-24.04` (AMD EPYC 7763,
+4 vCPU, ext4), medians of five runs, client on the same host:
+
+| Metric | Plaintext | Encrypted |
+| --- | --- | --- |
+| 4 KiB PUT p50 | 5.4 ms | 5.7 ms |
+| 4 KiB GET p50 | 42.6 ms | 42.7 ms |
+| 4 KiB PUT+GET throughput, 8 clients | 328 ops/s | 326 ops/s |
+| 256 MiB PUT | 191 MiB/s | 165 MiB/s |
+| 256 MiB GET | **98 MiB/s** | 466 MiB/s |
+| Mixed 70/30, 16 clients | 450 ops/s, p99 61 ms | 475 ops/s, p99 62 ms |
+| List 50 000 keys at 1000/page | 4.9 s | 5.1 s |
+
+Small writes take ~5 ms on Linux against ~156 ms on the developer Mac, so most
+of the effect above is macOS `F_FULLFSYNC`, not the product; whether writes
+still serialize at higher concurrency on Linux is not yet measured.
+
+Two further observations, neither judged against a requirement: a 4 KiB GET is
+slower than a 4 KiB PUT (42 ms against 5 ms), and a whole-object plaintext read
+of a large object is about five times slower than an encrypted one (the same
+ratio appears on the Mac: 327 against 950 MiB/s). Both are worth a look before
+anyone writes a throughput target.
