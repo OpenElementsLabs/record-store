@@ -2,9 +2,9 @@
 
 | | |
 | --- | --- |
-| Status | open |
+| Status | fixed |
 | Severity | high — silent data corruption reaches clients |
-| Blocks release | yes |
+| Blocks release | no — fixed |
 | Gate | COR-INTEGRITY (`tests/gates/integrity_read.py`) |
 | Known failing checks | `plaintext: whole read of a payload with one flipped byte fails visibly` |
 | Found | 2026-09-23, candidate `0765aee` |
@@ -52,3 +52,13 @@ Hold back the final chunk until the digest over everything before it plus that
 chunk matches, then release it; on mismatch, abort the connection so the client
 sees a short body. The added latency is one chunk. The regression test belongs
 at the HTTP level, where COR-INTEGRITY already measures it.
+
+## Fix
+
+`verifying_stream` now releases every chunk one step late and releases the last
+chunk only after the digest over the whole payload has matched. On a mismatch
+the final chunk is never sent, so a client reading against `Content-Length`
+sees a short body: 0 of 1000 bytes for a one-chunk object, all but the last
+chunk for larger ones. Regression tests: `integrity::tests::a_mismatch_withholds_the_final_chunk`
+(stream level) and COR-INTEGRITY (HTTP level, both modes, three sizes).
+The defect never shipped: read-side verification is unreleased work.
