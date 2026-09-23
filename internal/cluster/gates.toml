@@ -1,0 +1,179 @@
+# Internal cluster readiness gates. Internal. Not published. See ../README.md.
+#
+# Evaluated separately from the public, standalone matrix (release/gates.toml):
+#
+#   python3 tests/gates/evaluate.py --matrix internal/cluster/gates.toml \
+#     --stage candidate --results out/results --out out/cluster-report
+#
+# A cluster READY here would permit a discussion about announcing clustering;
+# it changes nothing in the public documentation by itself (G12). Gates that
+# have no implementation yet exit 77 ("skipped"), which the evaluator treats as
+# not passing: an unimplemented gate can never be mistaken for a met one.
+#
+# Standalone regression (G11) is enforced by the standalone matrix: COR-UNIT,
+# COR-LINT and the real-binary gates run for every shared-crate change.
+
+schema = 1
+matrix_version = "2026.09.23-1"
+scope = "cluster"
+
+[stages]
+pr = "fast, deterministic checks for every change"
+integration = "changes to code, lockfiles, packaging or gates"
+scheduled = "nightly"
+candidate = "internal cluster readiness evaluation"
+
+[[gate]]
+id = "CL-SUITES"
+title = "In-process consensus, replication, cluster and RPC suites pass"
+area = "correctness"
+guarantee = "G1-G5, G8: every invariant in failure-model.md reproduces in-process (see failure-matrix.md)."
+modes = ["cluster"]
+platforms = ["linux-amd64"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "cargo test --locked --no-fail-fast -p record-store-consensus -p record-store-replication -p record-store-cluster -p record-store-rpc -p record-store-metadata"
+environment = "Rust toolchain"
+fixtures = "in-process multi-member groups over loopback RPC"
+failure_injection = "modelled: leader kill, minority partition, interrupted snapshot, ambiguous commit, replica timeout"
+evidence = "job log"
+implementation = []
+timeout_minutes = 45
+infra_retries = 0
+binds_artifact = false
+limitations = "In-process only (L1). Partitions are modelled, not induced; no real disk faults."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "CL-EVIDENCE"
+title = "Every test the failure matrix cites exists and passed"
+area = "correctness"
+guarantee = "No invariant in failure-matrix.md, release-gates.md or test-evidence.md points at a missing or failing test."
+modes = ["cluster"]
+platforms = ["any"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/evidence_references.py --document internal/cluster/failure-matrix.md --document internal/cluster/release-gates.md --document internal/cluster/test-evidence.md ${COR_UNIT_LOG:+--cargo-log $COR_UNIT_LOG}"
+environment = "python3; the cargo test log of the same candidate (COR_UNIT_LOG)"
+fixtures = "internal/cluster/*.md"
+failure_injection = "none"
+evidence = "detail.json"
+implementation = ["tests/gates/evidence_references.py", "internal/cluster/failure-matrix.md"]
+timeout_minutes = 5
+infra_retries = 0
+binds_artifact = false
+limitations = "Checks that cited tests exist and passed, not that they test what the row claims."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "CL-CONSOLE-E2E"
+title = "The console works against a real multi-node cluster"
+area = "compatibility"
+guarantee = "Playwright drives the console against a real in-repo cluster (console/e2e cluster config)."
+modes = ["cluster"]
+platforms = ["linux-amd64"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "cd console && npm ci && npx playwright install --with-deps chromium && npm run test:e2e:cluster"
+environment = "Node 24, Chromium, Rust toolchain"
+fixtures = "console/playwright.cluster.config.ts"
+failure_injection = "none"
+evidence = "job log; Playwright report"
+implementation = []
+timeout_minutes = 45
+infra_retries = 1
+binds_artifact = false
+limitations = "UI integration only; asserts nothing about durability."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "CL-G9-MULTIPROCESS"
+title = "Multi-process, multi-host fault evidence"
+area = "recovery"
+guarantee = """G9: a cluster of real processes started by the shipped binary survives SIGKILL at each stage of a \
+write and a real network partition between hosts, with bytes, versions, metadata, placement and events verified."""
+modes = ["cluster"]
+platforms = ["linux-amd64"]
+stages = ["candidate"]
+blocking = true
+command = "echo 'CL-G9-MULTIPROCESS is not implemented (internal/cluster/limitations.md L1)' >&2; exit 77"
+environment = "not yet defined: multiple hosts or network namespaces"
+fixtures = "not yet defined"
+failure_injection = "not yet implemented: process kill per write stage; iptables/netns partition"
+evidence = "none"
+implementation = []
+timeout_minutes = 1
+infra_retries = 0
+binds_artifact = false
+limitations = "Not implemented. Release blocker for clustering."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "CL-G10-HISTORY"
+title = "Concurrent histories checked against the model"
+area = "correctness"
+guarantee = "G10: recorded concurrent client histories are linearizable (or satisfy the stated read model)."
+modes = ["cluster"]
+platforms = ["linux-amd64"]
+stages = ["candidate"]
+blocking = true
+command = "echo 'CL-G10-HISTORY is not implemented (internal/cluster/limitations.md L4)' >&2; exit 77"
+environment = "not yet defined"
+fixtures = "not yet defined"
+failure_injection = "not yet implemented"
+evidence = "none"
+implementation = []
+timeout_minutes = 1
+infra_retries = 0
+binds_artifact = false
+limitations = "Not implemented. Release blocker for clustering."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "CL-G6-PARTITIONS"
+title = "Asymmetric, intermittent and delayed-message partitions"
+area = "recovery"
+guarantee = "G6 remainder: no stale leader authorises a write under asymmetric partitions, flapping links or delayed messages."
+modes = ["cluster"]
+platforms = ["linux-amd64"]
+stages = ["candidate"]
+blocking = true
+command = "echo 'CL-G6-PARTITIONS is not implemented (internal/cluster/limitations.md L3)' >&2; exit 77"
+environment = "not yet defined"
+fixtures = "not yet defined"
+failure_injection = "not yet implemented"
+evidence = "none"
+implementation = []
+timeout_minutes = 1
+infra_retries = 0
+binds_artifact = false
+limitations = "Not implemented. G6 is partly met in-process only."
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "CL-G7-REPAIR-FAULTS"
+title = "Repair bounds under slow and failing devices; soak"
+area = "performance"
+guarantee = "G7 remainder: repair bandwidth and concurrency bounds hold on a slow or failing device; no growth over a long outage."
+modes = ["cluster"]
+platforms = ["linux-amd64"]
+stages = ["candidate"]
+blocking = true
+command = "echo 'CL-G7-REPAIR-FAULTS is not implemented (internal/cluster/limitations.md L5, L6)' >&2; exit 77"
+environment = "not yet defined: dm-delay / dm-flakey or equivalent"
+fixtures = "not yet defined"
+failure_injection = "not yet implemented"
+evidence = "none"
+implementation = []
+timeout_minutes = 1
+infra_retries = 0
+binds_artifact = false
+limitations = "Not implemented. G7 is partly met in-process only."
+[gate.reuse]
+max_age_days = 0
