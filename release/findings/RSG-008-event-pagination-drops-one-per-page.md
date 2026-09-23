@@ -2,9 +2,9 @@
 
 | | |
 | --- | --- |
-| Status | open |
+| Status | fixed |
 | Severity | high — "a committed change always produces its event" does not hold for anyone who pages |
-| Blocks release | yes |
+| Blocks release | no — fixed |
 | Gate | COR-PAGINATION, REC-CRASH |
 | Known failing checks | `storage events at limit=`; `storage events filtered by prefix`; `the paginated storage-event walk returns every event` |
 | Found | 2026-09-23, candidate `417091a` (product code as `0765aee`), first on the GitHub-hosted Linux runner |
@@ -42,3 +42,11 @@ loop sets `page.next` to the *first event not returned*, and the next request
 uses the cursor as the exclusive upper bound of the scan
 (`lower..event_time_key(time, id)`), so that event is never returned. The cursor
 should name the last event returned.
+
+## Fix
+
+The cursor now names the last event returned. The unit test that let the
+defect through checked only that pages do not overlap; the new
+`paging_returns_every_event_exactly_once_at_every_page_size` checks
+completeness at seven page sizes, filtered and not, with shared timestamps, and
+fails on the old code. COR-PAGINATION checks it against the running binary.

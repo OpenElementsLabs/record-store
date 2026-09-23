@@ -768,7 +768,13 @@ impl EventRepository for RedbEventRepository {
                     continue;
                 }
                 if page.events.len() == limit {
-                    page.next = Some((event.time, event.id));
+                    // Another matching event exists, so there is a next page.
+                    // The cursor names the last event returned: the next scan's
+                    // upper bound is exclusive, so naming this unreturned event
+                    // instead would skip it -- one lost event per page (RSG-008).
+                    if let Some(last) = page.events.last() {
+                        page.next = Some((last.time, last.id));
+                    }
                     break;
                 }
                 page.events.push(event);
@@ -1201,6 +1207,70 @@ mod tests {
             .await
             .expect("bounded");
         assert_eq!(bounded.events.len(), 2);
+    }
+
+    /// Paging must return every event exactly once, not merely avoid repeats.
+    /// The cursor once named the first event *not* returned, and the next
+    /// page's exclusive bound then skipped it -- one lost event per page
+    /// (RSG-008) -- while a test that only checked for overlap still passed.
+    #[tokio::test]
+    async fn paging_returns_every_event_exactly_once_at_every_page_size() {
+        let directory = tempdir().expect("temporary directory");
+        let repository = RedbEventRepository::open(
+            directory.path().join("events.redb"),
+            None,
+            WebhookConfig::default(),
+        )
+        .await
+        .expect("open");
+        let base = Utc::now() - chrono::Duration::seconds(3_600);
+        for index in 0..37_i64 {
+            let bucket = if index % 3 == 0 { "other" } else { "uploads" };
+            let mut event = StorageEvent::new(StorageEventType::ObjectCreated, bucket).object(
+                format!("k/{index:03}"),
+                None,
+                Some(1),
+            );
+            // Some events share a timestamp, so the id must break ties.
+            event.time = base + chrono::Duration::seconds(index / 2);
+            repository.publish(&event).await.expect("publish");
+        }
+        for bucket in [None, Some("uploads".to_owned())] {
+            let everything = repository
+                .list_events(EventQuery {
+                    bucket: bucket.clone(),
+                    limit: 1_000,
+                    ..EventQuery::default()
+                })
+                .await
+                .expect("single page");
+            assert!(everything.next.is_none());
+            let expected: Vec<_> = everything.events.iter().map(|event| event.id).collect();
+            for limit in [1_usize, 2, 3, 7, 36, 37, 38] {
+                let mut seen = Vec::new();
+                let mut after = None;
+                loop {
+                    let page = repository
+                        .list_events(EventQuery {
+                            bucket: bucket.clone(),
+                            after,
+                            limit,
+                            ..EventQuery::default()
+                        })
+                        .await
+                        .expect("page");
+                    seen.extend(page.events.iter().map(|event| event.id));
+                    match page.next {
+                        Some(cursor) => after = Some(cursor),
+                        None => break,
+                    }
+                }
+                assert_eq!(
+                    seen, expected,
+                    "limit {limit}, bucket {bucket:?}: every event once, in order"
+                );
+            }
+        }
     }
 
     #[tokio::test]
