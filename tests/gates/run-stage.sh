@@ -66,6 +66,7 @@ if $needs_previous; then
   previous="$out/previous"
   if [[ -n "${PREVIOUS_BIN_DIR:-}" ]]; then
     mkdir -p "$previous/bin" && cp "$PREVIOUS_BIN_DIR/record-store" "$PREVIOUS_BIN_DIR/record-store-server" "$previous/bin/"
+    [[ -f "$PREVIOUS_BIN_DIR/../record-store.example.toml" ]] && cp "$PREVIOUS_BIN_DIR/../record-store.example.toml" "$previous/"
   elif [[ ! -x "$previous/bin/record-store-server" ]]; then
     # Built from the tag, in its own worktree and target directory, so nothing
     # of the candidate's build can leak into it.
@@ -74,6 +75,11 @@ if $needs_previous; then
     (cd "$worktree" && cargo build --release --locked --bin record-store-server --bin record-store) || exit 75
     mkdir -p "$previous/bin"
     cp "$worktree/target/release/record-store" "$worktree/target/release/record-store-server" "$previous/bin/"
+    cp "$worktree/record-store.example.toml" "$previous/"
+  fi
+  if [[ ! -f "$previous/record-store.example.toml" ]]; then
+    git -C "$repository_root" show v0.1.3:record-store.example.toml > "$previous/record-store.example.toml" 2>/dev/null \
+      || rm -f "$previous/record-store.example.toml"
   fi
   previous_args=(--previous "$previous")
 fi

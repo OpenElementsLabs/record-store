@@ -17,7 +17,9 @@ python3 -m unittest discover -s "$here" -p 'test_*.py' -v
 evidence="$(mktemp -d)"
 trap 'rm -rf "$evidence"' EXIT
 set +e
-GATE_INJECT_DEFECT=delete-payload GATE_EVIDENCE_DIR="$evidence" \
+# The inner run must not write the outer gate's detail record: it fails on
+# purpose, and its checks are not this gate's checks.
+env -u GATE_DETAIL GATE_INJECT_DEFECT=delete-payload GATE_EVIDENCE_DIR="$evidence" \
   python3 "$here/crash_consistency.py" --bin-dir "$candidate/bin" --profile pr > "$evidence/output.log" 2>&1
 status=$?
 set -e

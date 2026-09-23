@@ -184,10 +184,19 @@ def main(gate: Gate) -> None:
     if described["reported_version"] != f"record-store {PREVIOUS_VERSION}":
         raise InfrastructureError(f"previous binaries report {described['reported_version']!r}")
     rng = random.Random(int(options["seed"]))
+    # 0.1.3's own example configuration: shipped next to its binaries by
+    # run-stage.sh and the CI job that builds them, or read from the tag.
     config_file = gate.work_directory / "previous-example.toml"
-    subprocess.run(["git", "-C", str(Path(__file__).resolve().parents[2]), "show",
-                    f"v{PREVIOUS_VERSION}:record-store.example.toml"], check=True,
-                   stdout=open(config_file, "wb"))
+    shipped = previous.directory.parent / "record-store.example.toml"
+    if shipped.is_file():
+        config_file.write_bytes(shipped.read_bytes())
+    else:
+        shown = subprocess.run(["git", "-C", str(Path(__file__).resolve().parents[2]), "show",
+                                f"v{PREVIOUS_VERSION}:record-store.example.toml"], capture_output=True)
+        if shown.returncode != 0:
+            raise InfrastructureError(f"cannot obtain {PREVIOUS_VERSION}'s record-store.example.toml "
+                                      "(no copy beside its binaries, and the tag is not fetched)")
+        config_file.write_bytes(shown.stdout)
 
     for encrypted in (False, True):
         mode = "encrypted" if encrypted else "plaintext"
