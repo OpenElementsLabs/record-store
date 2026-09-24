@@ -771,7 +771,7 @@ impl EventRepository for RedbEventRepository {
                     // Another matching event exists, so there is a next page.
                     // The cursor names the last event returned: the next scan's
                     // upper bound is exclusive, so naming this unreturned event
-                    // instead would skip it -- one lost event per page (RSG-008).
+                    // instead would skip it -- one lost event per page.
                     if let Some(last) = page.events.last() {
                         page.next = Some((last.time, last.id));
                     }
@@ -1211,8 +1211,8 @@ mod tests {
 
     /// Paging must return every event exactly once, not merely avoid repeats.
     /// The cursor once named the first event *not* returned, and the next
-    /// page's exclusive bound then skipped it -- one lost event per page
-    /// (RSG-008) -- while a test that only checked for overlap still passed.
+    /// page's exclusive bound then skipped it -- one lost event per page,
+    /// while a test that only checked for overlap still passed.
     #[tokio::test]
     async fn paging_returns_every_event_exactly_once_at_every_page_size() {
         let directory = tempdir().expect("temporary directory");

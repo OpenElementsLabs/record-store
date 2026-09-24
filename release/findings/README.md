@@ -14,21 +14,14 @@ Pull requests are judged differently, so that the fixes can land: in the `pr`
 and `integration` stages a failing gate is reported as a *known failure* when
 every one of its failed checks matches a `Known failing checks` pattern of an
 open finding for that gate. A single new failed check in the same gate blocks
-as usual. Close a finding by setting
-`Status` to `fixed` with the commit that fixed it; the gate's result is the
-proof.
+as usual. Close a finding by deleting its file
+in the commit that fixes it: the gate's result is the proof, and history keeps
+the record.
 
 | Id | Title | Status | Blocks release |
 | --- | --- | --- | --- |
-| [RSG-001](RSG-001-corrupted-plaintext-read-served.md) | Plaintext whole-object read serves corrupted bytes with 200 | fixed | no |
-| [RSG-002](RSG-002-release-workflow-skipped-gates.md) | Release workflow published without the gates CI runs | fixed in this change | no |
-| [RSG-003](RSG-003-upgrade-doc-assumes-backup-command.md) | Upgrade guide: commands 0.1.3 lacks, a check that cannot run, backup before stop | fixed | no |
 | [RSG-004](RSG-004-no-header-read-timeout.md) | No header read timeout: slow clients hold connections indefinitely | open | no |
 | [RSG-005](RSG-005-small-writes-serialize.md) | Small-write throughput does not scale with concurrency | open (observation) | no |
 | [RSG-006](RSG-006-binaries-carry-no-commit.md) | Binaries carry no commit; unreleased builds report the previous version | open | no |
-| [RSG-007](RSG-007-flexible-checksums-ignored.md) | CRC32/CRC32C/SHA-1 checksum headers are accepted and ignored | fixed | no |
-| [RSG-008](RSG-008-event-pagination-drops-one-per-page.md) | Storage-event pagination drops one event at every page boundary | fixed | no |
 | [RSG-009](RSG-009-multipart-listing-no-next-key-marker.md) | A truncated ListMultipartUploads page carries no NextKeyMarker | open | no |
-| [RSG-010](RSG-010-torn-publication-record-blocks-startup.md) | A crash can leave a publication record that stops the server starting | fixed | no |
 | [RSG-011](RSG-011-memory-growth-under-steady-load.md) | Resident memory grows steadily under a steady mixed workload | open (investigating) | no — decision needed |
-| [RSG-012](RSG-012-reads-slowed-by-audit-commits.md) | Reads under write load were twice as slow as in 0.1.3 | fixed | no |

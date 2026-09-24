@@ -104,7 +104,7 @@ def main(gate: Gate) -> None:
     # declared subset. Current AWS SDKs send one by default, and a client that
     # sent one believes the server compared it. Either verifying it or refusing
     # it is acceptable; storing a body that contradicts it is silent acceptance
-    # of an unsupported feature (release/findings/RSG-007).
+    # of an unsupported feature.
     # Well-formed but wrong values (base64 of all-zero digests of the right
     # length), so a refusal cannot be a parse error standing in for a check.
     wrong_values = {"x-amz-checksum-crc32": "AAAAAA==", "x-amz-checksum-crc32c": "AAAAAA==",

@@ -340,7 +340,7 @@ def verify(gate: Gate, server: Server, expected: Expected, multipart: dict, labe
         if not missing_events or time.monotonic() > deadline:
             break
         time.sleep(1)
-    # The paginated walk can lose an event at every page boundary (RSG-008).
+    # The paginated walk can lose an event at every page boundary.
     # Each event it did not return is looked up again with its exact key as the
     # prefix -- a single page, no boundary -- so a pagination defect and a
     # crash that really lost an event are reported as different failures.
@@ -447,7 +447,7 @@ def main(gate: Gate) -> None:
     # Deterministic companion to the random kills: the exact state a SIGKILL
     # leaves between creating a publication record and writing it (an empty
     # tmp/<id>.publish). Random kills reach that window only occasionally, so
-    # it is placed here on every run (release/findings/RSG-010).
+    # it is placed here on every run.
     for encrypted in (False, True):
         mode = "encrypted" if encrypted else "plaintext"
         server = Server(artifact, gate.work_directory / f"torn-{mode}" / "data", gate.evidence_directory / "logs",

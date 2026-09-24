@@ -1024,7 +1024,7 @@ mod tests {
         ObjectKey::new(value).expect("key")
     }
 
-    /// Recovering from a torn publication record (RSG-010) must never cost a
+    /// Recovering from a torn publication record must never cost a
     /// committed object: when the catalog references the payload the record
     /// names, the payload stays and the object reads back unchanged.
     #[tokio::test]

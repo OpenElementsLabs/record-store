@@ -1199,7 +1199,7 @@ mod tests {
     }
 
     /// Every digest a client can send about its body is checked, not merely
-    /// SHA-256 (RSG-007): a wrong one refuses the write with BadDigest and stores
+    /// SHA-256: a wrong one refuses the write with BadDigest and stores
     /// nothing, a right one stores the object and is echoed back, and an
     /// algorithm this server cannot verify is refused rather than ignored.
     #[tokio::test]

@@ -50,7 +50,7 @@ pub(crate) const fn verify_physical_length(
 /// recent chunk back, and the last one is released only after the digest over
 /// the whole payload has matched. On a mismatch the last chunk is never sent,
 /// so a client reading against `Content-Length` sees a short body -- a failed
-/// read -- rather than a complete response of the wrong bytes (RSG-001). The
+/// read -- rather than a complete response of the wrong bytes. The
 /// cost is one chunk of latency on each read.
 pub(crate) fn verifying_stream(body: DownloadStream, expected: Checksum) -> DownloadStream {
     struct State {

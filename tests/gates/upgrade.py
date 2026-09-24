@@ -247,7 +247,7 @@ def main(gate: Gate) -> None:
         # What the refusal *says* is decided by the already-published 0.1.3,
         # which this release cannot change; what this release controls is that
         # the refusal happens, harms nothing, and is documented. The text is
-        # kept as evidence for the upgrade notes (release/findings/RSG-003).
+        # kept as evidence for the upgrade notes.
         explained = "newer" in text.lower() or "schema" in text.lower()
         gate.context[f"{mode}_downgrade_refusal"] = {"exit_code": code, "explains_schema": explained,
                                                     "tail": text.strip()[-600:]}

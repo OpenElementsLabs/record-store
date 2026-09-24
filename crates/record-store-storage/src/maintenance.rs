@@ -417,7 +417,7 @@ mod tests {
     }
 
     /// A crash between creating a publication record and writing it used to
-    /// leave an empty record that stopped every later start-up (RSG-010). The
+    /// leave an empty record that stopped every later start-up. The
     /// payload it guards is only moved into place after the record is complete,
     /// so recovery by the record's file name is exact, and start-up proceeds.
     #[tokio::test]

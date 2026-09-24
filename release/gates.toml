@@ -229,7 +229,7 @@ implementation = ["tests/gates/unsupported.py", "tests/gates/gatelib.py"]
 timeout_minutes = 10
 infra_retries = 1
 binds_artifact = true
-limitations = "Covers the operations the compatibility page lists plus flexible checksums (RSG-007); virtual-hosted addressing and undocumented S3 actions are not enumerated."
+limitations = "Covers the operations the compatibility page lists plus flexible checksums; virtual-hosted addressing and undocumented S3 actions are not enumerated."
 [gate.reuse]
 max_age_days = 0
 
@@ -245,10 +245,10 @@ guarantee = """docs/concepts/durability.md 'Survives a process crash': after SIG
 with uploads, overwrites, new versions, multipart parts and a stream of small writes in flight: every \
 acknowledged object and version reads back with its bytes; an unacknowledged write is absent or complete; \
 listings agree exactly with reads; acknowledged parts are still listed; every acknowledged write has its \
-storage event (looked up by exact key where the paginated walk missed it, so RSG-008 is reported separately) \
+storage event (looked up by exact key where the paginated walk missed it, so a pagination loss is reported separately) \
 and no event id names two changes; the audit chain is intact; staging left by killed uploads is gone after \
 restart; nothing unreclaimable remains; and -- deterministically, every run -- a publication record left empty \
-by a kill between its creation and its write does not prevent start-up (RSG-010)."""
+by a kill between its creation and its write does not prevent start-up."""
 modes = ["standalone"]
 platforms = ["linux-amd64", "darwin-arm64 (developer)"]
 stages = ["integration", "scheduled", "candidate"]
@@ -402,8 +402,8 @@ infra_retries = 1
 binds_artifact = true
 limitations = """Only 0.1.3 -> candidate is supported and tested. 0.1.2 and earlier must pass through 0.1.3 \
 (redb v2 -> v3); the refusal of v2 data is covered in-process only. Downgrade and rolling upgrade are not \
-supported and not claimed. 0.1.3 refuses upgraded data by panicking inside redb rather than naming the schema \
-(release/findings/RSG-003); the message is recorded, not asserted."""
+supported and not claimed. 0.1.3 refuses upgraded data by panicking inside redb rather than naming the schema; \
+the message is recorded, not asserted."""
 [gate.reuse]
 max_age_days = 0
 

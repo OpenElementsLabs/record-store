@@ -3,7 +3,7 @@
 //! A client that sends a digest believes the server compared it with the body,
 //! and current AWS SDKs send one by default. So every digest this server
 //! accepts is verified, and every algorithm it cannot verify is refused with
-//! `NotImplemented`; none is accepted and ignored (RSG-007).
+//! `NotImplemented`; none is accepted and ignored.
 //!
 //! Streamed uploads (PutObject, UploadPart) are verified while the body
 //! streams: on a mismatch the stream ends in an error, the storage layer aborts

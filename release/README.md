@@ -48,10 +48,10 @@ fail on a real defect or an injected one:
 | --- | --- |
 | REC-CRASH | A committed payload deleted, or one byte flipped, while the server was down (`GATE_INJECT_DEFECT`); runs on every change via GATES-SELFTEST |
 | REC-CRASH | A run whose kills never landed mid-upload: reported `invalid_measurement`, not pass |
-| REC-CRASH | The live product defect RSG-010, deterministically (an empty publication record) |
-| COR-PAGINATION | The live product defect RSG-008, at every page size |
-| COR-INTEGRITY | The live product defect RSG-001 |
-| CMP-UNSUPPORTED | The live product defect RSG-007 (and a malformed-value variant, removed so a refusal cannot be a parse error) |
+| REC-CRASH | A torn publication record that stopped start-up, deterministically (an empty record) |
+| COR-PAGINATION | Storage-event pagination dropping one event per page, at every page size |
+| COR-INTEGRITY | A corrupted plaintext read served as a complete 200 |
+| CMP-UNSUPPORTED | Checksum headers accepted and ignored (and a malformed-value variant, removed so a refusal cannot be a parse error) |
 | CL-EVIDENCE | A failure-matrix row citing a test that does not exist |
 | COR-SKIPS | `#[ignore]`, `.skip`, `.fixme`, `t.Skip`, `pytest.skip`, `@Disabled`, `.only` patterns |
 | record.py | An artifact-bound gate that did not report the binary it ran: `invalid_measurement` |

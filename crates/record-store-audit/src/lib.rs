@@ -719,7 +719,7 @@ fn backend(operation: &'static str, error: impl Display) -> AuditError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Group commit batches concurrent appends into one transaction (RSG-012).
+    /// Group commit batches concurrent appends into one transaction.
     /// However they are batched, the chain must come out exactly as if they had
     /// been appended one at a time: every event present once, sequences gapless,
     /// every link verifying -- and all of it still there after a reopen.
