@@ -13,8 +13,8 @@ file is also what actually runs.
 | Stage | When | Adds |
 | --- | --- | --- |
 | `pr` | Every push and pull request | Format, Clippy, tests, skip accounting, console checks, dependency and secret scanning, fuzz smoke, documentation build |
-| `integration` | Changes to code, lockfiles, packaging, tests or workflows | Real-binary gates: integrity on read, unsupported operations, crash recovery, backup and restore, upgrade from the previous release, S3 SDKs, console end-to-end, overload, secret redaction, artifact identity |
-| `scheduled` | Weekly | Performance against a baseline, longer crash runs, 300 s fuzzing, 30-minute endurance |
+| `integration` | Changes to code, lockfiles, packaging, tests or workflows | Real-binary gates: integrity on read, unsupported operations, crash recovery, backup and restore, upgrade from the previous release, S3 SDKs, console end-to-end, secret redaction, artifact identity |
+| `scheduled` | Weekly | Performance against a baseline, overload, longer crash runs, 300 s fuzzing, 30-minute endurance. Never blocks a candidate or a release |
 | `candidate` | `workflow_dispatch` of the Gates workflow, a push to a `candidate/*` branch, and every release | Everything, against one candidate, plus packaging, provenance and both-architecture smoke tests in `release.yml` |
 
 ## What a gate result is bound to

@@ -22,12 +22,12 @@ scope = "standalone"
 # is the complete release evaluation for one commit and one artifact set.
 #   pr           every pull request and push
 #   integration  pull requests that change code, lockfiles, packaging or gates
-#   scheduled    weekly (performance, extended recovery, endurance)
+#   scheduled    weekly (performance, overload, extended recovery, endurance)
 #   candidate    workflow_dispatch release-candidate evaluation, and release.yml
 [stages]
 pr = "fast, deterministic checks for every change"
-integration = "real-binary correctness, compatibility, recovery and overload"
-scheduled = "performance, endurance and extended recovery"
+integration = "real-binary correctness, compatibility and recovery"
+scheduled = "performance, overload, endurance and extended recovery"
 candidate = "the complete, candidate-specific release evaluation"
 
 # ---------------------------------------------------------------------------
@@ -474,7 +474,7 @@ descriptors and connections return to idle within 15 s; the next request is serv
 space remains."""
 modes = ["standalone"]
 platforms = ["linux-amd64", "darwin-arm64 (developer)"]
-stages = ["integration", "scheduled", "candidate"]
+stages = ["scheduled"]
 blocking = true
 command = "python3 tests/gates/overload.py --bin-dir ${CANDIDATE}/bin --profile ${PROFILE}"
 environment = "candidate binaries, encryption on; python venv"

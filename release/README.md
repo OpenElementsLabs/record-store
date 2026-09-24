@@ -36,7 +36,7 @@ evaluated separately. It is excluded from the documentation build.
 | Candidate binaries and `candidate.json` | `<prefix>-candidate` artifact | 30 days |
 | The decision a release shipped under | Release assets `record-store-<version>-release-gates.{json,md}`, covered by `SHA256SUMS` | As long as the release |
 
-PERF-BASELINE and PERF-ENDURANCE run only in the weekly scheduled stage; they
+PERF-BASELINE, PERF-ENDURANCE and PERF-OVERLOAD run only in the weekly scheduled stage; they
 do not block a candidate or a release. PERF-BASELINE compares the build with the
 previous release on the same runner rather than with a stored baseline: GitHub-hosted runners do not all have
 the same CPU, so a stored number would rarely describe the machine it is

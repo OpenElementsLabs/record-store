@@ -18,7 +18,7 @@ jobs:
   # Which gate stage this change needs. A change that touches only prose runs
   # the fast pr stage; anything that can change behaviour, packaging, or the
   # gates themselves runs the integration stage, which adds the real-binary
-  # correctness, compatibility, recovery, overload and redaction gates.
+  # correctness, compatibility, recovery and redaction gates.
   changes:
     runs-on: ubuntu-latest
     outputs:

@@ -256,8 +256,8 @@ jobs:
           retention-days: 90
 
   # The two long real-binary gates, each on its own runner so neither queues
-  # behind the other or behind the binary job: at the candidate stage REC-CRASH
-  # takes about 7 minutes and PERF-OVERLOAD about 5.
+  # behind the other or behind the binary job: REC-CRASH takes about 7 minutes
+  # at the candidate stage, and PERF-OVERLOAD (weekly only) about 5.
   binary-long:
     name: binary (${{ matrix.gate }})
     needs: [plan, candidate]
