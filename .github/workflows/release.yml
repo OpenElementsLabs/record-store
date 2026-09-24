@@ -468,8 +468,7 @@ jobs:
 
   # The candidate-stage gates again, against the binaries extracted from the
   # published image rather than a local build, so every artifact-bound result
-  # names the digests that ship. ART-PACKAGE is deferred to release-decision;
-  # PERF-ENDURANCE is reused from a recent scheduled run where still valid.
+  # names the digests that ship. ART-PACKAGE is deferred to release-decision.
   artifact-gates:
     name: Release gates (published artifacts)
     needs: [validate, binaries]
@@ -482,7 +481,6 @@ jobs:
       prefix: candidate
       candidate-artifact: binaries
       defer: ART-PACKAGE
-      skip: PERF-ENDURANCE
 
   # One decision over every result, after packaging has been proven. It runs
   # only when provenance and both smoke jobs succeeded, which is the only place

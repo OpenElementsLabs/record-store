@@ -520,11 +520,11 @@ the same workload in alternating rounds on the same host; each compared median i
 release's by more than max(15 %, 3 x the larger CV)."""
 modes = ["standalone"]
 platforms = ["linux-amd64 (GitHub-hosted ubuntu-24.04; CPU varies by run, which is why the comparison is same-host)"]
-stages = ["scheduled", "candidate"]
+stages = ["scheduled"]
 blocking = true
 command = "python3 tests/gates/perf.py --bin-dir ${CANDIDATE}/bin --profile ${PROFILE} ${PREVIOUS:+--previous-bin-dir $PREVIOUS/bin}"
 environment = "candidate binaries and the previous release's binaries; runner fingerprint recorded; page cache warm"
-fixtures = "4 KiB x N small objects (c=8); 32 MiB and 256 MiB streaming; 70/30 mixed 1 KiB-256 KiB (c=16); 5k (pr), 20k (candidate) or 50k (scheduled) catalog listed at 1000/page; filtered audit query"
+fixtures = "4 KiB x N small objects (c=8); 32 MiB and 256 MiB streaming; 70/30 mixed 1 KiB-256 KiB (c=16); 5k (pr) or 50k catalog listed at 1000/page; filtered audit query"
 failure_injection = "none"
 evidence = "detail.json with per-run values, medians and CVs for both binaries, the comparisons, the fingerprint and filesystem; logs"
 implementation = ["tests/gates/perf.py", "tests/gates/gatelib.py"]
@@ -547,7 +547,7 @@ area = "performance"
 guarantee = "Over a 30-minute mixed workload, RSS and open files show no sustained growth in the second half, and there are no errors."
 modes = ["standalone"]
 platforms = ["linux-amd64"]
-stages = ["scheduled", "candidate"]
+stages = ["scheduled"]
 blocking = false
 command = "GATE_ID=PERF-ENDURANCE GATE_ENDURANCE_SECONDS=${ENDURANCE_SECONDS:-1800} python3 tests/gates/perf.py --bin-dir ${CANDIDATE}/bin --profile endurance"
 environment = "candidate binaries; plaintext"

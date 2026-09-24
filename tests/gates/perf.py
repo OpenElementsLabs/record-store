@@ -280,14 +280,9 @@ def main(gate: Gate) -> None:
     identify_artifact(gate, artifact)
     profile = options["profile"]
     repeats = {"pr": 3, "scheduled": 5, "endurance": 1}.get(profile, 3)
-    # The weekly scheduled run carries the full workload. A candidate runs the
-    # same shape smaller, so the whole CI run stays within 15 minutes: twelve
-    # alternating runs of 60 s mixed load and two 50k catalogs took 20 minutes
-    # on their own. Fewer samples widen the CV, which widens the tolerance, so a
-    # smaller run is more lenient rather than flakier.
-    small_count = {"pr": 400, "candidate": 1000}.get(profile, 2000)
-    catalog_count = {"pr": 5000, "candidate": 20000}.get(profile, 50000)
-    mixed_seconds = {"pr": 10.0, "candidate": 15.0}.get(profile, 60.0)
+    small_count = 400 if profile == "pr" else 2000
+    catalog_count = 5000 if profile == "pr" else 50000
+    mixed_seconds = 10.0 if profile == "pr" else 60.0
     fingerprint = environment_fingerprint()
     key = environment_key(fingerprint)
     gate.context.update(profile=profile, repeats=repeats, environment_key=key, fingerprint=fingerprint,

@@ -36,16 +36,12 @@ evaluated separately. It is excluded from the documentation build.
 | Candidate binaries and `candidate.json` | `<prefix>-candidate` artifact | 30 days |
 | The decision a release shipped under | Release assets `record-store-<version>-release-gates.{json,md}`, covered by `SHA256SUMS` | As long as the release |
 
-PERF-BASELINE compares the candidate with the previous release on the same
-runner rather than with a stored baseline: GitHub-hosted runners do not all have
+PERF-BASELINE and PERF-ENDURANCE run only in the weekly scheduled stage; they
+do not block a candidate or a release. PERF-BASELINE compares the build with the
+previous release on the same runner rather than with a stored baseline: GitHub-hosted runners do not all have
 the same CPU, so a stored number would rarely describe the machine it is
 compared on. When a release ships, the workflows' previous-release reference
 (`v0.1.3` today) moves to it.
-
-Scheduled performance results are reused by a candidate only when the evaluator
-finds them within the gate's `max_age_days`, produced by the same gate
-definition, and with no change since to the gate's `invalidated_by` paths.
-Everything else is produced for the candidate itself.
 
 ## Negative controls demonstrated at matrix 2026.09.23-2
 

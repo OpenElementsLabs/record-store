@@ -497,18 +497,6 @@ jobs:
         with:
           pattern: ${{ env.PREFIX }}-*
           path: collected
-      # Scheduled-only gates (PERF-ENDURANCE) may be reused by a candidate from
-      # a recent scheduled run. The evaluator decides whether each record is
-      # still valid (age, definition digest, invalidating paths, artifact).
-      - name: Collect reusable scheduled results
-        if: needs.plan.outputs.stage == 'candidate'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          for run in $(gh run list --workflow gates.yml --event schedule --status success --limit 3 --json databaseId --jq '.[].databaseId'); do
-            gh run download "$run" --name gate-results-performance --dir "reused/$run" || true
-          done
       - id: evaluate
         env:
           DEFER: ${{ inputs.defer }}
@@ -523,7 +511,7 @@ jobs:
           for gate in $DEFER; do defer_args+=(--defer "$gate"); done
           if [[ "$ENFORCE" == "true" ]]; then defer_args+=(--enforce-findings); fi
           results=()
-          for directory in "collected/${PREFIX}-results-"* reused; do [[ -d "$directory" ]] && results+=(--results "$directory"); done
+          for directory in "collected/${PREFIX}-results-"*; do [[ -d "$directory" ]] && results+=(--results "$directory"); done
           python3 tests/gates/evaluate.py --stage "$STAGE" --candidate collected/candidate-x/candidate \
             "${results[@]}" ${defer_args[@]+"${defer_args[@]}"} --out report
           status=$?

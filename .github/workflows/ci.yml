@@ -66,11 +66,8 @@ jobs:
       stage: ${{ needs.changes.outputs.stage }}
       # A candidate/* push evaluates everything that can run without
       # publishing. ART-PACKAGE only exists inside release.yml after provenance
-      # and smoke, so it is deferred rather than reported MISSING; the 30-minute
-      # endurance run is left to the weekly schedule and reused from there, as
-      # release.yml does.
+      # and smoke, so it is deferred rather than reported MISSING.
       defer: ${{ needs.changes.outputs.stage == 'candidate' && 'ART-PACKAGE' || '' }}
-      skip: ${{ needs.changes.outputs.stage == 'candidate' && 'PERF-ENDURANCE' || '' }}
 
   # Catches a broken production Dockerfile before a tag is pushed, when fixing it
   # is still cheap. One architecture is enough for that; the release builds both.
