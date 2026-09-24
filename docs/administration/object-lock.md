@@ -70,6 +70,14 @@ aws --endpoint-url http://localhost:7600 s3api put-object-retention \
   --retention '{"Mode":"COMPLIANCE","RetainUntilDate":"2033-01-01T00:00:00Z"}'
 ```
 
+Setting a lock at write time needs the same permission as setting it afterwards, on top
+of `s3:PutObject`: `s3:PutObjectRetention` for `x-amz-object-lock-mode` and
+`x-amz-object-lock-retain-until-date`, and `s3:PutObjectLegalHold` for
+`x-amz-object-lock-legal-hold`. That applies to `PutObject`, `CopyObject`, and
+`CreateMultipartUpload`, which is where a multipart upload's lock is fixed. Without the
+permission the request is refused and nothing is written. A writer that names no lock
+needs only `s3:PutObject`, and the bucket default still applies.
+
 A mode without a date, or a date without a mode, is refused. Half a retention describes
 no retention period at all, and guessing the other half would invent a promise nobody
 made.
@@ -216,9 +224,9 @@ exercising a permission, so expiry gives way to retention and not the other way 
 | Action | Grants |
 | --- | --- |
 | `s3:GetObjectRetention` | Read a version's retention |
-| `s3:PutObjectRetention` | Place, extend, or (with a bypass) shorten a retention |
+| `s3:PutObjectRetention` | Place, extend, or (with a bypass) shorten a retention, including one written with the object |
 | `s3:GetObjectLegalHold` | Read a version's legal hold |
-| `s3:PutObjectLegalHold` | Place or remove a legal hold |
+| `s3:PutObjectLegalHold` | Place or remove a legal hold, including naming one when writing the object |
 | `s3:BypassGovernanceRetention` | Override a governance retention |
 | `s3:ManageBucket` | Read and set the bucket's default retention |
 

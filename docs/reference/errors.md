@@ -23,6 +23,7 @@ The request ID is also in `x-amz-request-id`.
 | --- | --- | --- |
 | `AccessDenied` | Authenticated, but no policy allows it | Check the account's [policies](../administration/policies.md) |
 | `AccessDenied` | The version is under retention or a legal hold | Read the message: it names which, and whether a bypass exists. See [Object Lock](../administration/object-lock.md) |
+| `AccessDenied` | `There were headers present in the request which were not signed` | Sign every `x-amz-*` header the request sends, including on a presigned URL. See [S3 Compatibility](s3-compatibility.md#signed-headers) |
 | `InvalidAccessKeyId` | The access key is not known | Check the key; check the account is not deleted |
 | `SignatureDoesNotMatch` | The signature does not verify | Usually a proxy rewriting `Host`, or a wrong secret |
 | `RequestTimeTooSkewed` | Client clock is too far off | Sync time |

@@ -37,6 +37,20 @@ Requests for an unsupported operation return `501 NotImplemented`.
 
 ## Client requirements
 
+### Signed headers
+
+Every `x-amz-*` header a request carries must be covered by its signature, as in AWS.
+A request with an unsigned one is refused with `403 AccessDenied`, `There were headers
+present in the request which were not signed`, before its credential is looked up. For
+header authentication this includes `x-amz-date` and `x-amz-content-sha256`. For a
+presigned URL, sign it with every `x-amz-*` header the uploader will send, such as
+`x-amz-meta-*` or an Object Lock header. The URL's own `X-Amz-*` query parameters are
+not headers and are unaffected. `Content-MD5` may be left unsigned: it can only make the
+server refuse a body, never change what is stored.
+
+The AWS SDKs sign every `x-amz-*` header they send, so this affects only hand-built
+requests and presigned URLs whose holder adds headers.
+
 ### Path-style addressing
 
 ```text

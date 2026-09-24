@@ -316,6 +316,32 @@ publishes, so keep it factual and written for the people upgrading.
   and one event was lost at every page boundary — also in 0.1.3. Webhook
   delivery was never affected.
 
+### Security
+
+- **Every `x-amz-*` header must now be signed.** A request could carry `x-amz-*`
+  headers its signature did not cover, and the server acted on them. That mattered
+  most for presigned URLs, whose holder could add terms the signer never approved.
+  Such a request is now refused with `403 AccessDenied` (`There were headers present
+  in the request which were not signed`), as AWS does. For header authentication this
+  includes `x-amz-date` and `x-amz-content-sha256`. `Content-MD5` may still be left
+  unsigned.
+- **Setting Object Lock at write time needs the Object Lock permissions.**
+  `x-amz-object-lock-mode` and `x-amz-object-lock-retain-until-date` on a PUT, copy,
+  or multipart initiation now require `s3:PutObjectRetention`, and
+  `x-amz-object-lock-legal-hold` requires `s3:PutObjectLegalHold`. Before, `s3:PutObject`
+  alone was enough to write a `COMPLIANCE` version nobody could delete. A bucket's
+  default retention still needs only `s3:PutObject`.
+- **Copying a named version needs `s3:GetObjectVersion`.** A copy source with
+  `?versionId=` was checked against `s3:GetObject`, so an account that could read only
+  current objects could read any version by copying it.
+
+**Potentially breaking.** A client that sent unsigned `x-amz-*` headers is now
+refused. The AWS SDKs sign every such header, so this affects hand-built requests and
+presigned URLs whose holder adds headers: sign the URL with them. An account that
+set locks at write time with only `s3:PutObject`, or copied named versions with only
+`s3:GetObject`, needs the permissions above. See
+[Policies](docs/administration/policies.md).
+
 ## [0.1.3] - 2026-09-16
 
 A patch release that prepares every database for the next one. It changes no
