@@ -19,7 +19,7 @@ const MIB = 1024 * 1024;
 const BOUNDARY = 10 * MIB;
 const SIZES = [BOUNDARY - 1, BOUNDARY, BOUNDARY + 1, 40 * MIB];
 
-const MANAGEMENT_URL = process.env.RECORD_STORE_E2E_MANAGEMENT_URL ?? 'http://127.0.0.1:47601';
+const MANAGEMENT_URL = process.env.RECORD_STORE_E2E_MANAGEMENT_URL ?? 'http://127.0.0.1:27601';
 
 function payload(size: number): { buffer: Buffer; checksum: string } {
   const buffer = randomBytes(size);

@@ -9,6 +9,15 @@ self-consistent; it says nothing about machines, disks, and networks failing.
 Each gate is either met, partly met, or not met. Nothing here is aspirational:
 if a gate is not met, the corresponding public claim is not made.
 
+The executable form is [`gates.toml`](gates.toml), evaluated with
+`tests/gates/evaluate.py --matrix internal/cluster/gates.toml`. CL-SUITES runs
+the in-process suites; CL-EVIDENCE fails if any test cited in
+[`failure-matrix.md`](failure-matrix.md), this file or
+[`test-evidence.md`](test-evidence.md) is missing or did not pass in the same
+candidate's run; G6, G7, G9 and G10 are listed as gates whose command exits
+"skipped", so the cluster decision reads BLOCKED until they exist. G11 is
+enforced by the standalone matrix, which runs for every shared-crate change.
+
 ## G1. The failure model is written down and enforced — **met**
 
 [`failure-model.md`](failure-model.md) states the assumptions, the failure

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 
 import { expect, MANAGEMENT_TOKEN, test, uniqueBucket } from './fixtures';
 
-const endpoint = process.env.RECORD_STORE_E2E_MANAGEMENT_URL ?? 'http://127.0.0.1:47601';
+const endpoint = process.env.RECORD_STORE_E2E_MANAGEMENT_URL ?? 'http://127.0.0.1:27601';
 async function api(path: string, init: RequestInit = {}) {
   const response = await fetch(`${endpoint}/api/v1${path}`, {
     ...init,

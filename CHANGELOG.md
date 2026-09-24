@@ -11,6 +11,32 @@ publishes, so keep it factual and written for the people upgrading.
 
 ### Added
 
+- **Release gates decide releases.** `release/gates.toml` defines every check a
+  release must pass: the guarantee it protects, its workload and failure
+  injection, what it measures against which limit and why, where its evidence is
+  kept, and whether it blocks. The gates run on every change (`pr` and
+  `integration` stages), nightly and weekly (`scheduled`), and for a release
+  candidate, and one evaluator turns their results into a decision. A gate that
+  failed, was skipped, never ran, ran an older definition of itself, ran a lighter
+  workload, or ran binaries other than the candidate's blocks. Exceptions are
+  reviewed, expiring files; nothing waives a gate automatically.
+
+  New real-binary gates start the built server, damage or interrupt it the way a
+  crash, a bad disk or an operator mistake would, and check final bytes and state
+  rather than status codes: crash recovery under SIGKILL, backup and restore with
+  every refusal the recovery guide promises, upgrade from the real 0.1.3 binaries
+  and the documented rollback, integrity on read, refusal of unsupported S3
+  operations, overload and slow clients, and secret redaction across logs, APIs,
+  CLI output, the data directory and backups.
+
+  A release now runs the gates on the tag commit before publishing, runs the
+  candidate gates again against the binaries extracted from the published image,
+  smoke-tests both `linux/amd64` and `linux/arm64` (non-root, clean SIGTERM exit,
+  persistence across a restart), and attaches the decision to the release as
+  `record-store-<version>-release-gates.json` and `.md`. See
+  [Release Gates](docs/contributing/release-gates.md).
+
+
 - **Releases ship their provenance as an asset, not only as an API record.**
   The build already produced SLSA provenance for every binary archive, but it
   existed only in GitHub's attestation service. A downloader could verify with
@@ -254,6 +280,41 @@ publishes, so keep it factual and written for the people upgrading.
 - Lock errors reaching the S3 surface through the delete path now return their intended
   status. They previously would have surfaced as `500 InternalError`, telling a client to
   retry something meant never to succeed.
+
+- **Every body digest a client sends is verified.** `Content-MD5` and
+  `x-amz-checksum-crc32`, `-crc32c` and `-sha1` were accepted and ignored — as
+  in 0.1.3 — so a client that sent one believed a comparison had happened when
+  none had. They are now verified on uploads, multipart parts and every XML
+  request body, and a mismatch is refused with `400 BadDigest` without storing
+  anything; `x-amz-checksum-sha256` is also checked on XML bodies. A verified
+  `x-amz-checksum-*` is echoed in the response. **A request carrying
+  `x-amz-checksum-crc64nvme` is now refused with `NotImplemented`** instead of
+  being stored unverified; configure the client to use CRC32, CRC32C, SHA-1 or
+  SHA-256. Two different `x-amz-checksum-*` algorithms on one request are
+  refused, as S3 refuses them.
+
+### Fixed
+
+- **The upgrade guide can now be followed from 0.1.3.** It told operators to run
+  `record-store server backup` before stopping the server, which a backup refuses;
+  used commands that 0.1.3 does not ship; and passed `record-store server
+  check-config` to an image whose entrypoint is already `record-store server`, so
+  the configuration check always failed. The guide now stops first, backs up and
+  verifies with the new image, and explains that 0.1.3 refuses an upgraded data
+  directory by exiting with a panic that leaves the directory unchanged.
+
+- **A crash can no longer leave the server unable to start.** A process killed
+  between creating and writing a publication record under `tmp/` left an empty
+  record, and every later start refused it with `storage publication record
+  encoding failed` — as 0.1.3 does. Records are now written under a temporary
+  name and renamed into place, and one that cannot be read is recovered by the
+  object id in its file name: its payload is only ever moved into place after
+  the record is complete, so recovery is exact. If a 0.1.3 deployment is stuck
+  this way, upgrading clears it.
+- **Paging through storage events no longer skips events.** Each page's cursor
+  named the first event it did *not* return, so the next page began after it
+  and one event was lost at every page boundary — also in 0.1.3. Webhook
+  delivery was never affected.
 
 ## [0.1.3] - 2026-09-16
 

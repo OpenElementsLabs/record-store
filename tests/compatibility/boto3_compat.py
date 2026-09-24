@@ -233,6 +233,54 @@ def object_lock_compatibility(client) -> None:
     print("boto3 object lock compatibility: ok")
 
 
+def checksum_compatibility(bucket: str) -> None:
+    """Body digests the SDK sends are verified, with the SDK's own encoding.
+
+    The other clients here are configured with checksum calculation
+    WHEN_REQUIRED; this one keeps boto3's default (WHEN_SUPPORTED), which sends
+    a CRC32 with every upload -- the case that used to be stored unverified.
+    """
+    import base64
+    import hashlib
+
+    default = boto3.client(
+        "s3",
+        endpoint_url=ENDPOINT,
+        region_name="us-east-1",
+        aws_access_key_id=ACCESS_KEY,
+        aws_secret_access_key=SECRET_KEY,
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+    )
+    default.put_object(Bucket=bucket, Key="checksum-default", Body=b"default checksum")
+    require(
+        default.get_object(Bucket=bucket, Key="checksum-default")["Body"].read() == b"default checksum",
+        "an upload with the SDK's default checksum round-trips",
+    )
+    # CRC32C needs botocore[crt], an optional client dependency; the server side
+    # of CRC32C is covered against the standard check vector in the S3 crate.
+    for algorithm in ("CRC32", "SHA1", "SHA256"):
+        key = f"checksum-{algorithm.lower()}"
+        default.put_object(Bucket=bucket, Key=key, Body=b"algorithm " + algorithm.encode(), ChecksumAlgorithm=algorithm)
+        require(
+            default.get_object(Bucket=bucket, Key=key)["Body"].read() == b"algorithm " + algorithm.encode(),
+            f"{algorithm} upload round-trips",
+        )
+    good_md5 = base64.b64encode(hashlib.md5(b"md5 body").digest()).decode()
+    default.put_object(Bucket=bucket, Key="checksum-md5", Body=b"md5 body", ContentMD5=good_md5)
+    wrong_md5 = base64.b64encode(hashlib.md5(b"something else").digest()).decode()
+    try:
+        default.put_object(Bucket=bucket, Key="checksum-md5-wrong", Body=b"md5 body", ContentMD5=wrong_md5)
+    except botocore.exceptions.ClientError as error:
+        require(error.response["Error"]["Code"] == "BadDigest", f"wrong Content-MD5: got {error.response['Error']['Code']}")
+    else:
+        raise AssertionError("a wrong Content-MD5 was accepted")
+    try:
+        default.head_object(Bucket=bucket, Key="checksum-md5-wrong")
+        raise AssertionError("an object refused for its Content-MD5 was stored")
+    except botocore.exceptions.ClientError:
+        pass
+
+
 def main() -> None:
     client = boto3.client(
         "s3",
@@ -317,6 +365,7 @@ def main() -> None:
         "copy mismatch",
     )
     object_lock_compatibility(client)
+    checksum_compatibility(bucket)
     print("boto3 compatibility: ok")
 
 

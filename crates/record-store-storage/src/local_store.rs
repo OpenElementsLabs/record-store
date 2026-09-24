@@ -294,19 +294,39 @@ impl LocalFilesystemStore {
             let encoded = fs::read(entry.path())
                 .await
                 .map_err(|source| filesystem("read publication record", source))?;
-            let record: PublicationRecord = serde_json::from_slice(&encoded)?;
-            if record.object_id.as_uuid() != filename_id {
-                return Err(filesystem(
-                    "decode publication record",
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "publication filename and record do not match",
-                    ),
-                ));
-            }
-            let committed = self.metadata.payload_referenced(record.object_id).await?;
+            // A record that does not decode was interrupted while it was being
+            // written -- by a crash in a release that wrote it in place, or by
+            // power loss. Its payload is renamed into place only after the
+            // record is complete and synchronized, so the payload was never
+            // published. The file name carries the same object id, so recovery
+            // proceeds exactly as it would from the record; refusing to start
+            // would turn one interrupted write into an outage.
+            let object_id = match serde_json::from_slice::<PublicationRecord>(&encoded) {
+                Ok(record) => {
+                    if record.object_id.as_uuid() != filename_id {
+                        return Err(filesystem(
+                            "decode publication record",
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "publication filename and record do not match",
+                            ),
+                        ));
+                    }
+                    record.object_id
+                }
+                Err(error) => {
+                    warn!(
+                        record = %entry.path().display(),
+                        bytes = encoded.len(),
+                        %error,
+                        "publication record is incomplete; recovering by its file name"
+                    );
+                    ObjectId::from_uuid(filename_id)
+                }
+            };
+            let committed = self.metadata.payload_referenced(object_id).await?;
             if !committed {
-                let path = self.layout.payload_path(record.object_id);
+                let path = self.layout.payload_path(object_id);
                 match fs::remove_file(path).await {
                     Ok(()) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -344,12 +364,18 @@ impl LocalFilesystemStore {
     /// Opens a payload for streaming, checking what can be checked up front.
     ///
     /// `expected_checksum` is the digest committed metadata records for these
-    /// bytes. When it is supplied and the whole payload is being read, the
-    /// stream recomputes it and fails rather than completing with bytes nobody
-    /// vouched for. A ranged read cannot be checked that way, so it is not:
-    /// what it does get is the physical-length check below, which happens
+    /// bytes. When it is supplied and a whole plaintext payload is being read,
+    /// the stream recomputes it and fails rather than completing with bytes
+    /// nobody vouched for. A ranged read cannot be checked that way, so it is
+    /// not: what it does get is the physical-length check below, which happens
     /// before a single byte is released and is what catches the truncation that
     /// storage corruption actually looks like.
+    ///
+    /// An encrypted payload is not digested a second time. Each chunk's tag
+    /// binds it to this object, its index and its length, and the header binds
+    /// the size, so a damaged chunk fails decryption before it is released --
+    /// prevention rather than detection. Recomputing SHA-256 on top cost
+    /// encrypted whole-object reads a third of their throughput.
     pub(crate) async fn open_payload(
         &self,
         object_id: ObjectId,
@@ -402,7 +428,11 @@ impl LocalFilesystemStore {
             }
         };
         let body = match expected_checksum {
-            Some(expected) if resolved_range.is_none() => verifying_stream(body, expected),
+            Some(expected)
+                if resolved_range.is_none() && payload_format == PayloadFormat::Plaintext =>
+            {
+                verifying_stream(body, expected)
+            }
             _ => body,
         };
         Ok((resolved_range, body))
@@ -833,11 +863,18 @@ impl ObjectStore for LocalFilesystemStore {
         let key_lock = self.key_lock(request.bucket_id, &request.key)?;
         let _guard = key_lock.read().await;
         let metadata = self.metadata_for(request.bucket_id, &request.key).await?;
-        // The ordinary read path already recomputes and compares the committed
-        // digest, so verification is that same read drained to the end rather
-        // than a second, separately maintained implementation of it.
+        // Verification is the ordinary read drained to the end rather than a
+        // second, separately maintained implementation of it. That read
+        // recomputes the committed digest only for plaintext; an encrypted one
+        // relies on its chunk tags, so verification adds the digest back and
+        // still proves the bytes are the ones the catalog recorded.
         let opened = self.open_metadata(metadata.clone(), None).await?;
-        let mut body = opened.body;
+        let mut body = match metadata.payload_format {
+            PayloadFormat::Plaintext => opened.body,
+            PayloadFormat::Aes256GcmEnvelopeV1 => {
+                verifying_stream(opened.body, metadata.checksum.clone())
+            }
+        };
         while let Some(chunk) = body.next().await {
             chunk?;
         }
@@ -985,6 +1022,34 @@ mod tests {
 
     fn key(value: &str) -> ObjectKey {
         ObjectKey::new(value).expect("key")
+    }
+
+    /// Recovering from a torn publication record must never cost a
+    /// committed object: when the catalog references the payload the record
+    /// names, the payload stays and the object reads back unchanged.
+    #[tokio::test]
+    async fn a_torn_record_for_a_committed_object_leaves_the_object_intact() {
+        let (directory, store, bucket) = store().await;
+        let committed = put(&store, &bucket, "kept.txt", b"committed bytes").await;
+        let metadata = Arc::clone(&store.metadata);
+        let record = store.layout.publication_path(committed.metadata.id);
+        drop(store);
+        fs::write(&record, b"").await.expect("torn record");
+
+        let store =
+            LocalFilesystemStore::open(directory.path(), directory.path().join("tmp"), metadata)
+                .await
+                .expect("start-up recovers");
+        assert!(!record.exists());
+        let fetched = store
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key("kept.txt"),
+                range: None,
+            })
+            .await
+            .expect("the committed object is still there");
+        assert_eq!(read(fetched).await, b"committed bytes");
     }
 
     /// The bytes a caller reads back must be exactly the bytes it wrote, and the

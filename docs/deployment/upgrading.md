@@ -6,12 +6,9 @@
    you want. They are generated from
    [CHANGELOG.md](https://github.com/OpenElementsLabs/record-store/blob/main/CHANGELOG.md)
    and list anything that requires action on your part.
-2. **Take a backup and verify it.** An upgrade is the moment a backup earns its keep.
-
-```bash
-record-store server backup /backups/pre-upgrade-2026-09-22
-record-store server verify-backup /backups/pre-upgrade-2026-09-22 --level full
-```
+2. **Plan a verified backup of the stopped deployment.** An upgrade is the moment a
+   backup earns its keep. A backup refuses to run while the server holds the data
+   directory, so it is taken after the stop, in the upgrade below.
 
 3. **Rehearse on a non-production deployment** with a copy of real metadata.
 
@@ -20,28 +17,42 @@ stopped. Plan a window rather than expecting a seamless swap.
 
 ## The upgrade
 
-```bash
-# 1. Back up
-record-store server backup /backups/pre-upgrade
+The image's entrypoint is `record-store server`, so arguments passed to
+`docker run` are server subcommands: `... record-store:<version> backup ...`
+runs `record-store server backup ...`.
 
-# 2. Stop, allowing the full drain window
+```bash
+NEW=ghcr.io/openelementslabs/record-store:<version>
+
+# 1. Stop, allowing the full drain window
 docker stop --time 40 record-store
 
-# 3. Pull the new image
-docker pull ghcr.io/openelementslabs/record-store:0.1.3
+# 2. Pull the new image
+docker pull "$NEW"
+
+# 3. Back up the stopped deployment and verify the backup, with the new image.
+#    /backups must be writable by uid 10001, the user the image runs as.
+docker run --rm --volumes-from record-store --volume /backups:/backups \
+  --env-file /etc/record-store/env "$NEW" backup /backups/pre-upgrade
+docker run --rm --volume /backups:/backups \
+  --env-file /etc/record-store/env "$NEW" verify-backup /backups/pre-upgrade --level full
 
 # 4. Validate configuration against the new version before starting it
-docker run --rm \
-  --env-file /etc/record-store/env \
-  ghcr.io/openelementslabs/record-store:0.1.3 \
-  record-store server check-config
+docker run --rm --env-file /etc/record-store/env "$NEW" check-config
 
 # 5. Start
-docker run -d --name record-store ... ghcr.io/openelementslabs/record-store:0.1.3
+docker run -d --name record-store-new ... "$NEW"
 
 # 6. Verify
 record-store status --endpoint http://127.0.0.1:7601
 ```
+
+!!! note "Upgrading from 0.1.3"
+    0.1.3 has no `server backup`, `verify-backup` or `restore`: it ships only
+    `backup-metadata`, which copies no payloads. Take the backup in step 3 with the
+    **new** image, as shown. Taking it reads the stopped 0.1.3 data directory without
+    changing it, and the backup restores into a directory 0.1.3 serves again, which
+    is the rollback below.
 
 Step 4 is the cheap one that catches the expensive problem: a setting that was valid
 in the old version and is not in the new one.
@@ -89,15 +100,23 @@ docker stop --time 40 record-store
 docker run -d --name record-store ... ghcr.io/openelementslabs/record-store:<previous>
 ```
 
-If the metadata schema changed, the old binary will refuse to open it. Then the path
-is a full restore:
+If the metadata schema changed, the old binary will refuse to open it. 0.1.3 does
+this by exiting with a panic inside its database library (`internal error: entered
+unreachable code`) rather than a schema message; the data directory is left
+unchanged. Then the path is a full restore of the pre-upgrade backup, with the new
+image's CLI, into an empty directory:
 
 ```bash
 # Move the whole data directory aside rather than deleting it
 mv /var/lib/record-store /var/lib/record-store.failed
-mkdir -p /var/lib/record-store
+mkdir -p /var/lib/record-store && chown 10001:10001 /var/lib/record-store
 
-record-store server restore /backups/pre-upgrade --level full
+docker run --rm --volume /var/lib/record-store:/var/lib/record-store \
+  --volume /backups:/backups --env-file /etc/record-store/env \
+  "$NEW" restore /backups/pre-upgrade --level full
+
+# Then start the previous image against it
+docker run -d --name record-store ... ghcr.io/openelementslabs/record-store:<previous>
 ```
 
 Restore requires a data directory with no `metadata/`, `objects/`, or `system/` in it,

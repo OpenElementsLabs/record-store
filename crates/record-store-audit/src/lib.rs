@@ -210,6 +210,109 @@ pub enum AuditError {
 #[derive(Clone)]
 pub struct RedbAuditRepository {
     database: Arc<Database>,
+    /// The one thread that writes the chain, shared by every clone.
+    writer: Arc<Writer>,
+}
+
+/// Owns the writer thread. Dropping the last repository handle closes the
+/// queue and waits for the thread, so the database is closed -- and can be
+/// reopened -- as soon as the repository is gone.
+struct Writer {
+    queue: Option<std::sync::mpsc::Sender<PendingAppend>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        drop(self.queue.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// An event waiting to be appended, and where to report the durable outcome.
+type PendingAppend = (
+    AuditEvent,
+    tokio::sync::oneshot::Sender<Result<(), AuditError>>,
+);
+
+/// Appends committed by one transaction at most.
+const MAXIMUM_BATCH: usize = 512;
+
+/// Starts the thread that owns every write to the chain.
+///
+/// Every request is audited and every change twice (`attempted`, then its
+/// outcome), and each append used to be its own durable commit through redb's
+/// single writer, so under write load a read's audit record queued behind every
+/// change's two fsyncs. The writer takes whatever has queued, appends it in
+/// arrival order inside one transaction -- sequence numbers and hash links are
+/// assigned exactly as before -- commits once, and only then answers each
+/// caller. A caller is still told its record is durable only after it is.
+fn start_writer(database: Arc<Database>) -> Result<Writer, AuditError> {
+    let (sender, receiver) = std::sync::mpsc::channel::<PendingAppend>();
+    let thread = std::thread::Builder::new()
+        .name("audit-writer".into())
+        .spawn(move || {
+            while let Ok(first) = receiver.recv() {
+                let mut batch = vec![first];
+                while batch.len() < MAXIMUM_BATCH {
+                    match receiver.try_recv() {
+                        Ok(pending) => batch.push(pending),
+                        Err(_) => break,
+                    }
+                }
+                commit_batch(&database, batch);
+            }
+        })
+        .map_err(|error| backend("start audit writer", error))?;
+    Ok(Writer {
+        queue: Some(sender),
+        thread: Some(thread),
+    })
+}
+
+/// Commits a batch in one transaction. If any append in it fails, the batch is
+/// abandoned whole and every append retried in a transaction of its own, so
+/// one bad record never fails its neighbours and never lands half a batch.
+fn commit_batch(database: &Database, batch: Vec<PendingAppend>) {
+    let together = (|| {
+        let write = database
+            .begin_write()
+            .map_err(|error| backend("begin append", error))?;
+        for (event, _) in &batch {
+            append_in(&write, event)?;
+        }
+        write
+            .commit()
+            .map_err(|error| backend("commit event", error))
+    })();
+    match together {
+        Ok(()) => {
+            for (_, reply) in batch {
+                let _ = reply.send(Ok(()));
+            }
+        }
+        Err(error) if batch.len() == 1 => {
+            if let Some((_, reply)) = batch.into_iter().next() {
+                let _ = reply.send(Err(error));
+            }
+        }
+        Err(_) => {
+            for (event, reply) in batch {
+                let alone = (|| {
+                    let write = database
+                        .begin_write()
+                        .map_err(|error| backend("begin append", error))?;
+                    append_in(&write, &event)?;
+                    write
+                        .commit()
+                        .map_err(|error| backend("commit event", error))
+                })();
+                let _ = reply.send(alone);
+            }
+        }
+    }
 }
 
 impl RedbAuditRepository {
@@ -237,12 +340,78 @@ impl RedbAuditRepository {
             write
                 .commit()
                 .map_err(|error| backend("commit initialization", error))?;
-            Ok(Self {
-                database: Arc::new(database),
-            })
+            let database = Arc::new(database);
+            let writer = Arc::new(start_writer(Arc::clone(&database))?);
+            Ok(Self { database, writer })
         })
         .await?
     }
+}
+
+/// Appends one event inside `write`: one sequence number, one hash link to its
+/// predecessor, one index entry, and the new head. redb allows one writer at a
+/// time and every append goes through the writer thread, so appends cannot
+/// interleave into a chain with a gap, a repeat, or a hash over the wrong
+/// predecessor.
+fn append_in(write: &redb::WriteTransaction, event: &AuditEvent) -> Result<(), AuditError> {
+    let key = event_key(event);
+    {
+        let mut state = write
+            .open_table(CHAIN_STATE)
+            .map_err(|error| backend("open chain state", error))?;
+        let (sequence, previous) = read_chain_head(&state)?;
+        let record = chain::AuditRecord {
+            sequence,
+            chain: Some(chain::ChainLinks {
+                previous_hash: previous,
+                record_hash: chain::hash_event(sequence, &previous, event),
+            }),
+            event: event.clone(),
+        };
+        let bytes = serde_json::to_vec(&record)?;
+        {
+            let mut events = write
+                .open_table(EVENTS)
+                .map_err(|error| backend("open events", error))?;
+            let replaced = events
+                .insert(key.as_slice(), bytes.as_slice())
+                .map_err(|error| backend("append event", error))?;
+            // Unreachable by construction — every caller allocates a
+            // fresh identifier — and refused rather than assumed,
+            // because appending the same event twice would leave two
+            // sequence positions pointing at one stored record and a
+            // chain that no longer verifies for reasons nobody could
+            // trace back to here.
+            if replaced.is_some() {
+                return Err(backend(
+                    "append event",
+                    "an audit record with this identifier and timestamp already exists",
+                ));
+            }
+        }
+        {
+            let mut index = write
+                .open_table(SEQUENCE_INDEX)
+                .map_err(|error| backend("open sequence index", error))?;
+            index
+                .insert(sequence, key.as_slice())
+                .map_err(|error| backend("index event", error))?;
+        }
+        let head = record
+            .chain
+            .ok_or_else(|| backend("append event", "a new record is always chained"))?
+            .record_hash;
+        state
+            .insert(
+                NEXT_SEQUENCE,
+                sequence.saturating_add(1).to_be_bytes().as_slice(),
+            )
+            .map_err(|error| backend("advance audit sequence", error))?;
+        state
+            .insert(HEAD_HASH, head.as_slice())
+            .map_err(|error| backend("advance audit chain head", error))?;
+    }
+    Ok(())
 }
 
 /// Decodes a stored value, accepting records written before the chain existed.
@@ -291,79 +460,16 @@ fn read_chain_head(
 #[async_trait]
 impl AuditRepository for RedbAuditRepository {
     async fn append(&self, event: &AuditEvent) -> Result<(), AuditError> {
-        let database = Arc::clone(&self.database);
-        let event = event.clone();
-        tokio::task::spawn_blocking(move || {
-            // One write transaction assigns the sequence, computes the link,
-            // writes the record, indexes it, and advances the head. redb allows
-            // one writer at a time, so concurrent appends cannot interleave
-            // into a chain with a gap, a repeat, or a hash over the wrong
-            // predecessor.
-            let write = database
-                .begin_write()
-                .map_err(|error| backend("begin append", error))?;
-            let key = event_key(&event);
-            {
-                let mut state = write
-                    .open_table(CHAIN_STATE)
-                    .map_err(|error| backend("open chain state", error))?;
-                let (sequence, previous) = read_chain_head(&state)?;
-                let record = chain::AuditRecord {
-                    sequence,
-                    chain: Some(chain::ChainLinks {
-                        previous_hash: previous,
-                        record_hash: chain::hash_event(sequence, &previous, &event),
-                    }),
-                    event,
-                };
-                let bytes = serde_json::to_vec(&record)?;
-                {
-                    let mut events = write
-                        .open_table(EVENTS)
-                        .map_err(|error| backend("open events", error))?;
-                    let replaced = events
-                        .insert(key.as_slice(), bytes.as_slice())
-                        .map_err(|error| backend("append event", error))?;
-                    // Unreachable by construction — every caller allocates a
-                    // fresh identifier — and refused rather than assumed,
-                    // because appending the same event twice would leave two
-                    // sequence positions pointing at one stored record and a
-                    // chain that no longer verifies for reasons nobody could
-                    // trace back to here.
-                    if replaced.is_some() {
-                        return Err(backend(
-                            "append event",
-                            "an audit record with this identifier and timestamp already exists",
-                        ));
-                    }
-                }
-                {
-                    let mut index = write
-                        .open_table(SEQUENCE_INDEX)
-                        .map_err(|error| backend("open sequence index", error))?;
-                    index
-                        .insert(sequence, key.as_slice())
-                        .map_err(|error| backend("index event", error))?;
-                }
-                let head = record
-                    .chain
-                    .ok_or_else(|| backend("append event", "a new record is always chained"))?
-                    .record_hash;
-                state
-                    .insert(
-                        NEXT_SEQUENCE,
-                        sequence.saturating_add(1).to_be_bytes().as_slice(),
-                    )
-                    .map_err(|error| backend("advance audit sequence", error))?;
-                state
-                    .insert(HEAD_HASH, head.as_slice())
-                    .map_err(|error| backend("advance audit chain head", error))?;
-            }
-            write
-                .commit()
-                .map_err(|error| backend("commit event", error))
-        })
-        .await?
+        let (reply, outcome) = tokio::sync::oneshot::channel();
+        self.writer
+            .queue
+            .as_ref()
+            .ok_or_else(|| backend("append event", "the audit writer has stopped"))?
+            .send((event.clone(), reply))
+            .map_err(|_| backend("append event", "the audit writer has stopped"))?;
+        outcome
+            .await
+            .map_err(|_| backend("append event", "the audit writer stopped before committing"))?
     }
 
     async fn query(&self, query: AuditQuery) -> Result<AuditPage, AuditError> {
@@ -613,6 +719,68 @@ fn backend(operation: &'static str, error: impl Display) -> AuditError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Group commit batches concurrent appends into one transaction.
+    /// However they are batched, the chain must come out exactly as if they had
+    /// been appended one at a time: every event present once, sequences gapless,
+    /// every link verifying -- and all of it still there after a reopen.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_appends_form_one_gapless_verifying_chain() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("audit.redb");
+        let repository = RedbAuditRepository::open(&path).await.expect("repository");
+        let mut tasks = Vec::new();
+        for index in 0..400_u32 {
+            let repository = repository.clone();
+            tasks.push(tokio::spawn(async move {
+                let event = AuditEvent {
+                    event_id: AuditEventId::new(),
+                    timestamp: Utc::now(),
+                    request_id: Some(format!("request-{index}")),
+                    principal: "service:test".into(),
+                    credential_id: None,
+                    source_ip: None,
+                    operation: "object.created".into(),
+                    resource: format!("bucket:test/{index}"),
+                    result: AuditResult::Success,
+                    metadata: BTreeMap::new(),
+                };
+                repository.append(&event).await.expect("append");
+                event.event_id
+            }));
+        }
+        let mut appended = std::collections::BTreeSet::new();
+        for task in tasks {
+            appended.insert(task.await.expect("task"));
+        }
+        drop(repository);
+
+        let repository = RedbAuditRepository::open(&path).await.expect("reopen");
+        let verification = repository.verify_chain(0, 10_000).await.expect("verify");
+        assert_eq!(verification.checked, 400);
+        assert_eq!(verification.intact, 400, "{verification:?}");
+        let mut stored = std::collections::BTreeSet::new();
+        let mut after = None;
+        loop {
+            let page = repository
+                .query(AuditQuery {
+                    limit: 1_000,
+                    after,
+                    ..AuditQuery::default()
+                })
+                .await
+                .expect("query");
+            stored.extend(page.events.iter().map(|event| event.event_id));
+            match page.next {
+                Some(cursor) => after = Some(cursor),
+                None => break,
+            }
+        }
+        assert_eq!(
+            stored, appended,
+            "every appended event is stored exactly once"
+        );
+    }
+
     #[tokio::test]
     async fn events_survive_restart_and_queries_are_bounded() {
         let dir = tempfile::tempdir().expect("temp");

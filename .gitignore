@@ -7,3 +7,4 @@ node_modules/
 
 # MkDocs build output
 /site/
+__pycache__/

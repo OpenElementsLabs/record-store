@@ -23,3 +23,4 @@ continue to say so until the release gates in
 | [`cluster/test-evidence.md`](cluster/test-evidence.md) | Suite results and measurements, with what they do not show |
 | [`cluster/limitations.md`](cluster/limitations.md) | Known gaps, unsupported scenarios, and open risks |
 | [`cluster/release-gates.md`](cluster/release-gates.md) | What must be true before clustering can be announced |
+| [`cluster/gates.toml`](cluster/gates.toml) | The executable cluster readiness matrix, evaluated separately from the public standalone gates (`release/gates.toml`) |

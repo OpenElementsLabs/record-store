@@ -1,0 +1,17 @@
+# Quarantined tests.
+#
+# A test listed here may be skipped (#[ignore], test.skip, t.Skip, ...) without
+# failing COR-SKIPS -- and only a test listed here. Every entry must carry all
+# of the fields below; an entry past its expiry blocks every stage until it is
+# resolved or deliberately renewed in a reviewed change.
+#
+#   [[entry]]
+#   test = "path/to/file.rs::function_name"   # as COR-SKIPS names it
+#   gate = "COR-UNIT"
+#   owner = "github-handle"
+#   reason = "why it cannot run right now, with the observed failure"
+#   issue = "https://github.com/OpenElementsLabs/record-store/issues/NNN"
+#   expires = 2026-10-31
+#   coverage_risk = "which guarantee is unverified while this is skipped, and what else still covers it"
+#
+# Empty at matrix 2026.09.23-1: the baseline run at 0765aee reported 0 ignored.
