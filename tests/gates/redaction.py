@@ -99,15 +99,24 @@ def main(gate: Gate) -> None:
     gate.require("the backup used for the scan completes", result.returncode == 0, result.stderr[-300:])
     captured["server log"] = server.log_path.read_text(errors="replace")
 
-    secrets = {
-        "root secret key": credentials.root_secret_key,
-        "credential master key": credentials.master_key,
-        "management system token": credentials.system_token,
-        "metrics scrape token": scrape_token,
-        "issued service-account secret": issued_secret,
-    }
+    # Names and values are held apart, and only a name is ever recorded as
+    # evidence: the record of a leak must not become a second copy of it.
+    names = (
+        "root secret key",
+        "credential master key",
+        "management system token",
+        "metrics scrape token",
+        "issued service-account secret",
+    )
+    values = (
+        credentials.root_secret_key,
+        credentials.master_key,
+        credentials.system_token,
+        scrape_token,
+        issued_secret,
+    )
     for surface, text in sorted(captured.items()):
-        leaked = [name for name, value in secrets.items() if value in text]
+        leaked = [names[index] for index, value in enumerate(values) if value in text]
         gate.check(f"no secret appears in {surface}", not leaked, leaked)
 
     for label, root in (("data directory", server.data_directory), ("backup", backup)):
@@ -118,9 +127,9 @@ def main(gate: Gate) -> None:
                 continue
             scanned += 1
             content = path.read_bytes()
-            for name, value in secrets.items():
+            for index, value in enumerate(values):
                 if value.encode() in content:
-                    leaks.append(f"{name} in {path.relative_to(root)}")
+                    leaks.append(f"{names[index]} in {path.relative_to(root)}")
         gate.context[f"{label}_files_scanned"] = scanned
         gate.check(f"no secret is stored anywhere in the {label} ({scanned} files, byte for byte)", not leaks, leaks)
     gate.context["surfaces"] = sorted(captured)
