@@ -130,6 +130,12 @@ pub(crate) enum S3ErrorKind {
     InvalidAccessKeyId,
     SignatureDoesNotMatch,
     AuthorizationHeaderMalformed,
+    /// An `x-amz-*` header is present that the signature does not cover.
+    ///
+    /// It answers `AccessDenied` with the message AWS uses for the same
+    /// refusal, so a client sees what it would see from S3, and an operator can
+    /// tell it apart from a policy denial.
+    UnsignedAmzHeader,
     RequestTimeTooSkewed,
     NoSuchBucket,
     NoSuchCorsConfiguration,
@@ -171,7 +177,7 @@ pub(crate) enum S3ErrorKind {
 impl S3ErrorKind {
     const fn code(self) -> &'static str {
         match self {
-            Self::AccessDenied => "AccessDenied",
+            Self::AccessDenied | Self::UnsignedAmzHeader => "AccessDenied",
             Self::InvalidAccessKeyId => "InvalidAccessKeyId",
             Self::SignatureDoesNotMatch => "SignatureDoesNotMatch",
             Self::AuthorizationHeaderMalformed => "AuthorizationHeaderMalformed",
@@ -213,6 +219,9 @@ impl S3ErrorKind {
             Self::InvalidAccessKeyId => "The AWS access key ID does not exist",
             Self::SignatureDoesNotMatch => "The request signature does not match",
             Self::AuthorizationHeaderMalformed => "The authorization header is malformed",
+            Self::UnsignedAmzHeader => {
+                "There were headers present in the request which were not signed"
+            }
             Self::RequestTimeTooSkewed => {
                 "The difference between request time and server time is too large"
             }
@@ -276,6 +285,7 @@ impl S3ErrorKind {
             Self::AccessDenied
             | Self::InvalidAccessKeyId
             | Self::SignatureDoesNotMatch
+            | Self::UnsignedAmzHeader
             | Self::RequestTimeTooSkewed
             | Self::ObjectUnderLegalHold
             | Self::ObjectUnderGovernanceRetention

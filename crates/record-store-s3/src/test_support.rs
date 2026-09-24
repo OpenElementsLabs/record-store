@@ -116,6 +116,39 @@ pub(crate) fn signed_request(
     secret_key: &str,
     time: DateTime<Utc>,
 ) -> HttpRequest<Body> {
+    signed_request_leaving_unsigned(
+        method,
+        uri,
+        payload,
+        extra_headers,
+        &[],
+        access_key,
+        secret_key,
+        time,
+    )
+}
+
+/// Signs a request with every header it carries except those named in
+/// `unsigned`, which are sent but left out of `SignedHeaders`.
+///
+/// The signature is genuine over what remains, so a refusal can only come from
+/// the server noticing what the signature leaves out, never from a signature
+/// that simply fails to match.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the signing inputs are independent; bundling them would only \
+              hide which one a test is varying"
+)]
+pub(crate) fn signed_request_leaving_unsigned(
+    method: Method,
+    uri: &str,
+    payload: &[u8],
+    extra_headers: &[(&str, &str)],
+    unsigned: &[&str],
+    access_key: &str,
+    secret_key: &str,
+    time: DateTime<Utc>,
+) -> HttpRequest<Body> {
     let uri: Uri = uri.parse().expect("request URI");
     let payload_hash = hex::encode(Sha256::digest(payload));
     let timestamp = time.format("%Y%m%dT%H%M%SZ").to_string();
@@ -138,6 +171,7 @@ pub(crate) fn signed_request(
     let mut signed_headers = headers
         .keys()
         .map(|name| name.as_str().to_owned())
+        .filter(|name| !unsigned.contains(&name.as_str()))
         .collect::<Vec<_>>();
     signed_headers.sort();
     let payload_hash = headers["x-amz-content-sha256"]

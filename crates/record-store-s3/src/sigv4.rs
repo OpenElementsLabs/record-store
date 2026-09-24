@@ -290,6 +290,37 @@ impl ParsedAuthorization {
     }
 }
 
+/// Refuses a request carrying an `x-amz-*` header its signature does not cover.
+///
+/// Only signed headers reach the canonical request, so an unsigned one is
+/// whatever whoever holds the request chose to add. In this family that is
+/// never harmless: an Object Lock mode, a copy source, custom metadata, or a
+/// governance bypass each changes what the request does. A presigned URL is
+/// the sharp case, because it is handed to someone who does not hold the
+/// credential. AWS refuses these requests too, so no conforming client sends one.
+///
+/// This also makes `x-amz-date` and `x-amz-content-sha256` signed wherever
+/// they appear, which header authentication needs both of.
+///
+/// `content-md5` is deliberately not held to this on presigned requests. It
+/// can only make the server refuse a body the holder already chose, so leaving
+/// it unsigned grants nothing, and AWS does not require it to be signed either.
+pub(crate) fn reject_unsigned_amz_headers(
+    headers: &HeaderMap,
+    signed_headers: &[String],
+) -> Result<(), S3ErrorKind> {
+    // Header names are already lowercase in a HeaderMap, and the parsers
+    // refuse any signed-header name with an uppercase letter, so the two
+    // spellings compare directly.
+    if headers.keys().any(|name| {
+        name.as_str().starts_with("x-amz-")
+            && !signed_headers.iter().any(|signed| signed == name.as_str())
+    }) {
+        return Err(S3ErrorKind::UnsignedAmzHeader);
+    }
+    Ok(())
+}
+
 pub(crate) fn parse_request_time(headers: &HeaderMap) -> Result<DateTime<Utc>, S3ErrorKind> {
     let value = headers
         .get("x-amz-date")

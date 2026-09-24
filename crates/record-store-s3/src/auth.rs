@@ -25,10 +25,13 @@ use tracing::info;
 use crate::cors::{apply_cors_grant, cors_grant_for_request, is_cors_preflight};
 use crate::error::{S3Error, S3ErrorKind};
 use crate::handlers::listing::query_map;
-use crate::response::insert_request_id;
+use crate::response::{
+    OBJECT_LOCK_LEGAL_HOLD, OBJECT_LOCK_MODE, OBJECT_LOCK_RETAIN_UNTIL, insert_request_id,
+};
 use crate::sigv4::{
     Authenticated, ParsedAuthorization, ParsedPresign, PayloadHash, S3RequestId,
     calculate_signature, canonical_request, parse_amz_date, parse_payload_hash, parse_request_time,
+    reject_unsigned_amz_headers,
 };
 use crate::*;
 
@@ -343,6 +346,9 @@ pub(crate) async fn verify_request(
         };
         (parsed, request_time, PayloadHash::Unsigned)
     };
+    // Checked before the credential lookup, so a request that could be
+    // carrying terms its signer never approved never reaches the secret store.
+    reject_unsigned_amz_headers(&headers, &parsed.signed_headers)?;
     if (Utc::now() - request_time).num_seconds().unsigned_abs()
         > state.allowed_clock_skew.num_seconds() as u64
         && headers.contains_key(header::AUTHORIZATION)
@@ -499,8 +505,34 @@ pub(crate) fn request_permissions(request: &Request) -> Result<Vec<Permission>, 
     {
         permissions.push(Permission {
             action: Action::BypassGovernanceRetention,
-            resource,
+            resource: resource.clone(),
         });
+    }
+    // Setting a lock while writing is the same decision as setting it later
+    // through ?retention or ?legal-hold, and harder to take back: a COMPLIANCE
+    // retention written with the object outlives every credential that could
+    // have removed it. So it needs the permission those subresources need, on
+    // top of PutObject. This covers a plain PUT, a copy, and a multipart
+    // initiation, which is where a multipart upload's lock is fixed. A bucket's
+    // default retention is applied by the service when a request names no
+    // lock, so it is never asked for here and needs nothing extra. Presence is
+    // what counts, not the value: even `legal-hold: OFF` is an explicit lock
+    // choice that takes the place of the bucket default.
+    if key.is_some() {
+        let headers = request.headers();
+        if headers.contains_key(OBJECT_LOCK_MODE) || headers.contains_key(OBJECT_LOCK_RETAIN_UNTIL)
+        {
+            permissions.push(Permission {
+                action: Action::PutObjectRetention,
+                resource: resource.clone(),
+            });
+        }
+        if headers.contains_key(OBJECT_LOCK_LEGAL_HOLD) {
+            permissions.push(Permission {
+                action: Action::PutObjectLegalHold,
+                resource,
+            });
+        }
     }
     if let Some(source) = request
         .headers()
@@ -509,12 +541,20 @@ pub(crate) fn request_permissions(request: &Request) -> Result<Vec<Permission>, 
     {
         let source = String::from_utf8(percent_decode_str(source).collect())
             .map_err(|_| S3ErrorKind::InvalidRequest)?;
-        let source = source
+        let (source, source_query) = source
             .trim_start_matches('/')
             .split_once('?')
-            .map_or(source.trim_start_matches('/'), |(path, _)| path);
+            .unwrap_or((source.trim_start_matches('/'), ""));
+        // Naming a version reads that version, which may be one the current
+        // object has since replaced or deleted. A GET with ?versionId needs
+        // GetObjectVersion, and a copy is a read of the same kind.
+        let action = if query_map(Some(source_query))?.contains_key("versionId") {
+            Action::GetObjectVersion
+        } else {
+            Action::GetObject
+        };
         permissions.push(Permission {
-            action: Action::GetObject,
+            action,
             resource: format!("bucket:{source}"),
         });
     }
@@ -527,10 +567,14 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::test_support::*;
+    use axum::Router;
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
+    use axum::response::Response;
     use chrono::{Duration, Utc};
-    use record_store_auth::{Action, PolicyEffect, PolicyStatement};
+    use record_store_auth::{
+        Action, CredentialManager, IssuedServiceAccount, PolicyEffect, PolicyStatement,
+    };
     use record_store_core::OrganizationId;
 
     #[tokio::test]
@@ -1042,6 +1086,491 @@ mod tests {
             .await
             .expect("bypass with permission");
         assert_eq!(permitted.status(), StatusCode::NO_CONTENT);
+    }
+
+    /// Issues a service account allowed exactly `actions` on every bucket.
+    async fn account_allowed(
+        credentials: &CredentialManager,
+        name: &str,
+        actions: Vec<Action>,
+    ) -> (IssuedServiceAccount, String) {
+        let issued = credentials
+            .create_service_account(name, OrganizationId::new())
+            .await
+            .expect("issue service account");
+        grant(credentials, &issued, name, actions).await;
+        let secret = std::str::from_utf8(issued.secret.expose())
+            .expect("secret text")
+            .to_owned();
+        (issued, secret)
+    }
+
+    /// Attaches one more policy, allowing `actions` on every bucket.
+    async fn grant(
+        credentials: &CredentialManager,
+        issued: &IssuedServiceAccount,
+        name: &str,
+        actions: Vec<Action>,
+    ) {
+        let policy = credentials
+            .create_policy(
+                name,
+                "test-only grant",
+                vec![PolicyStatement {
+                    effect: PolicyEffect::Allow,
+                    actions,
+                    resources: vec!["bucket:*".into()],
+                }],
+            )
+            .await
+            .expect("create policy");
+        credentials
+            .attach_policy(issued.info.account.id, policy.id)
+            .await
+            .expect("attach policy");
+    }
+
+    /// Sends a request signed by a service account rather than root, which
+    /// is never subject to policy.
+    async fn send_as(
+        application: &Router,
+        (issued, secret): &(IssuedServiceAccount, String),
+        method: Method,
+        uri: &str,
+        payload: &[u8],
+        headers: &[(&str, &str)],
+    ) -> Response {
+        application
+            .clone()
+            .oneshot(signed_request(
+                method,
+                uri,
+                payload,
+                headers,
+                &issued.info.credential.key_id,
+                secret,
+                Utc::now(),
+            ))
+            .await
+            .expect("router responds")
+    }
+
+    async fn assert_refused_as_unsigned(response: Response) {
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = body_text(response).await;
+        assert_eq!(xml_value(&body, "Code"), Some("AccessDenied"), "{body}");
+        assert_eq!(
+            xml_value(&body, "Message"),
+            Some("There were headers present in the request which were not signed"),
+            "{body}"
+        );
+    }
+
+    fn retain_until(days: i64) -> String {
+        (Utc::now() + Duration::days(days)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }
+
+    /// A presigned URL grants what its signer signed and nothing more. A
+    /// holder who could add an Object Lock header would write a COMPLIANCE
+    /// retention nobody can remove, under the signer's name.
+    #[tokio::test]
+    async fn a_presigned_put_refuses_an_unsigned_lock_header_before_storing_anything() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_locked_bucket(&application, "records").await;
+
+        let mut put = presigned_request(
+            Method::PUT,
+            "/records/statement.pdf",
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            Utc::now(),
+            60,
+        );
+        put.headers_mut().insert(
+            "x-amz-object-lock-mode",
+            HeaderValue::from_static("COMPLIANCE"),
+        );
+        put.headers_mut().insert(
+            "x-amz-object-lock-retain-until-date",
+            HeaderValue::from_static("2100-01-01T00:00:00.000Z"),
+        );
+        *put.body_mut() = Body::from("forged");
+        let response = application
+            .clone()
+            .oneshot(put)
+            .await
+            .expect("presigned put");
+        assert_refused_as_unsigned(response).await;
+
+        let stored = send(
+            &application,
+            Method::GET,
+            "/records/statement.pdf",
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(
+            stored.status(),
+            StatusCode::NOT_FOUND,
+            "nothing reached storage"
+        );
+
+        // Refused before the credential is looked up: an unknown key is not
+        // reported as unknown, because the store was never asked.
+        let mut unknown = presigned_request(
+            Method::PUT,
+            "/records/statement.pdf",
+            "unknown-access",
+            TEST_SECRET_KEY,
+            Utc::now(),
+            60,
+        );
+        unknown.headers_mut().insert(
+            "x-amz-object-lock-legal-hold",
+            HeaderValue::from_static("ON"),
+        );
+        let response = application
+            .clone()
+            .oneshot(unknown)
+            .await
+            .expect("presigned put");
+        assert_refused_as_unsigned(response).await;
+    }
+
+    /// A copy source turns an upload into a read of anything the signer can
+    /// read, so a presigned PUT must not accept one its signer did not sign.
+    #[tokio::test]
+    async fn a_presigned_put_refuses_an_unsigned_copy_source() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        put(&application, "photos", "private.txt", b"private").await;
+
+        let mut upload = presigned_request(
+            Method::PUT,
+            "/photos/public.txt",
+            TEST_ACCESS_KEY,
+            TEST_SECRET_KEY,
+            Utc::now(),
+            60,
+        );
+        upload.headers_mut().insert(
+            "x-amz-copy-source",
+            HeaderValue::from_static("/photos/private.txt"),
+        );
+        let response = application
+            .clone()
+            .oneshot(upload)
+            .await
+            .expect("presigned put");
+        assert_refused_as_unsigned(response).await;
+
+        let copied = send(&application, Method::GET, "/photos/public.txt", b"", &[]).await;
+        assert_eq!(copied.status(), StatusCode::NOT_FOUND, "nothing was copied");
+    }
+
+    /// Header authentication is held to the same rule: a signature covers
+    /// the headers it names, and any other `x-amz-*` header is refused rather
+    /// than acted on.
+    #[tokio::test]
+    async fn a_header_signed_request_refuses_an_unsigned_amz_header() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        let metadata = [("x-amz-meta-foo", "bar")];
+
+        let unsigned = application
+            .clone()
+            .oneshot(signed_request_leaving_unsigned(
+                Method::PUT,
+                "/photos/a.txt",
+                b"hello",
+                &metadata,
+                &["x-amz-meta-foo"],
+                TEST_ACCESS_KEY,
+                TEST_SECRET_KEY,
+                Utc::now(),
+            ))
+            .await
+            .expect("unsigned metadata");
+        assert_refused_as_unsigned(unsigned).await;
+        let stored = send(&application, Method::GET, "/photos/a.txt", b"", &[]).await;
+        assert_eq!(stored.status(), StatusCode::NOT_FOUND);
+
+        let signed = send(
+            &application,
+            Method::PUT,
+            "/photos/a.txt",
+            b"hello",
+            &metadata,
+        )
+        .await;
+        assert_eq!(signed.status(), StatusCode::OK);
+        let head = send(&application, Method::HEAD, "/photos/a.txt", b"", &[]).await;
+        assert_eq!(
+            response_header(&head, "x-amz-meta-foo").as_deref(),
+            Some("bar")
+        );
+    }
+
+    /// SigV4 header authentication requires the payload hash and the request
+    /// time to be signed. Unsigned, the hash could be swapped for
+    /// UNSIGNED-PAYLOAD and the time replayed.
+    #[tokio::test]
+    async fn the_payload_hash_and_request_time_must_be_signed() {
+        let (_directory, application, _credentials) = test_router().await;
+        for header in ["x-amz-content-sha256", "x-amz-date"] {
+            let response = application
+                .clone()
+                .oneshot(signed_request_leaving_unsigned(
+                    Method::GET,
+                    "/",
+                    b"",
+                    &[],
+                    &[header],
+                    TEST_ACCESS_KEY,
+                    TEST_SECRET_KEY,
+                    Utc::now(),
+                ))
+                .await
+                .expect("response");
+            assert_refused_as_unsigned(response).await;
+        }
+    }
+
+    /// Everything an ordinary writer needs, with no Object Lock permission.
+    fn writer_actions() -> Vec<Action> {
+        vec![Action::ListBucket, Action::GetObject, Action::PutObject]
+    }
+
+    /// Writing an object with a retention is the same decision as setting one
+    /// through ?retention afterwards, and needs the same permission. A PUT and
+    /// a multipart initiation, where a multipart upload's lock is fixed, are
+    /// held to it alike.
+    #[tokio::test]
+    async fn a_retention_written_with_the_object_requires_the_retention_permission() {
+        let (_directory, application, credentials) = test_router().await;
+        make_locked_bucket(&application, "records").await;
+        let writer = account_allowed(&credentials, "lock-writer", writer_actions()).await;
+        let until = retain_until(30);
+        let lock = [
+            ("x-amz-object-lock-mode", "COMPLIANCE"),
+            ("x-amz-object-lock-retain-until-date", until.as_str()),
+        ];
+
+        let refused = send_as(
+            &application,
+            &writer,
+            Method::PUT,
+            "/records/a.txt",
+            b"hello",
+            &lock,
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let stored = send(&application, Method::GET, "/records/a.txt", b"", &[]).await;
+        assert_eq!(
+            stored.status(),
+            StatusCode::NOT_FOUND,
+            "nothing reached storage"
+        );
+        let initiation = send_as(
+            &application,
+            &writer,
+            Method::POST,
+            "/records/big.bin?uploads",
+            b"",
+            &lock,
+        )
+        .await;
+        assert_eq!(initiation.status(), StatusCode::FORBIDDEN);
+
+        grant(
+            &credentials,
+            &writer.0,
+            "lock-writer-retention",
+            vec![Action::PutObjectRetention],
+        )
+        .await;
+        let permitted = send_as(
+            &application,
+            &writer,
+            Method::PUT,
+            "/records/a.txt",
+            b"hello",
+            &lock,
+        )
+        .await;
+        assert_eq!(permitted.status(), StatusCode::OK);
+        let head = send(&application, Method::HEAD, "/records/a.txt", b"", &[]).await;
+        assert_eq!(
+            response_header(&head, "x-amz-object-lock-mode").as_deref(),
+            Some("COMPLIANCE")
+        );
+        let initiation = send_as(
+            &application,
+            &writer,
+            Method::POST,
+            "/records/big.bin?uploads",
+            b"",
+            &lock,
+        )
+        .await;
+        assert_eq!(initiation.status(), StatusCode::OK);
+    }
+
+    /// The legal-hold header needs the legal-hold permission, whatever its
+    /// value. Even `OFF` is an explicit lock choice that takes the place of
+    /// the bucket default, so it is not a free way to decline one.
+    #[tokio::test]
+    async fn a_legal_hold_written_with_the_object_requires_the_legal_hold_permission() {
+        let (_directory, application, credentials) = test_router().await;
+        make_locked_bucket(&application, "records").await;
+        let writer = account_allowed(&credentials, "hold-writer", writer_actions()).await;
+
+        for value in ["ON", "OFF"] {
+            let refused = send_as(
+                &application,
+                &writer,
+                Method::PUT,
+                "/records/held.txt",
+                b"hello",
+                &[("x-amz-object-lock-legal-hold", value)],
+            )
+            .await;
+            assert_eq!(
+                refused.status(),
+                StatusCode::FORBIDDEN,
+                "legal hold {value}"
+            );
+        }
+        let stored = send(&application, Method::GET, "/records/held.txt", b"", &[]).await;
+        assert_eq!(stored.status(), StatusCode::NOT_FOUND);
+
+        grant(
+            &credentials,
+            &writer.0,
+            "hold-writer-legal-hold",
+            vec![Action::PutObjectLegalHold],
+        )
+        .await;
+        let permitted = send_as(
+            &application,
+            &writer,
+            Method::PUT,
+            "/records/held.txt",
+            b"hello",
+            &[("x-amz-object-lock-legal-hold", "ON")],
+        )
+        .await;
+        assert_eq!(permitted.status(), StatusCode::OK);
+        let head = send(&application, Method::HEAD, "/records/held.txt", b"", &[]).await;
+        assert_eq!(
+            response_header(&head, "x-amz-object-lock-legal-hold").as_deref(),
+            Some("ON")
+        );
+    }
+
+    /// A bucket default is the bucket owner's decision, applied by the
+    /// service. A writer who asks for no lock needs only PutObject, and still
+    /// gets the default.
+    #[tokio::test]
+    async fn a_bucket_default_retention_applies_to_a_writer_holding_only_put_object() {
+        let (_directory, application, credentials) = test_router().await;
+        make_locked_bucket(&application, "records").await;
+        let configured = send(
+            &application,
+            Method::PUT,
+            "/records?object-lock",
+            b"<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled><Rule><DefaultRetention><Mode>GOVERNANCE</Mode><Days>30</Days></DefaultRetention></Rule></ObjectLockConfiguration>",
+            &[],
+        )
+        .await;
+        assert_eq!(configured.status(), StatusCode::OK);
+        let writer = account_allowed(&credentials, "default-writer", vec![Action::PutObject]).await;
+
+        let written = send_as(
+            &application,
+            &writer,
+            Method::PUT,
+            "/records/a.txt",
+            b"hello",
+            &[],
+        )
+        .await;
+        assert_eq!(written.status(), StatusCode::OK);
+        let head = send(&application, Method::HEAD, "/records/a.txt", b"", &[]).await;
+        assert_eq!(
+            response_header(&head, "x-amz-object-lock-mode").as_deref(),
+            Some("GOVERNANCE"),
+            "the default still materializes onto the version"
+        );
+    }
+
+    /// Copying a named version reads that version, which the current object
+    /// may have replaced. That needs GetObjectVersion, as a GET with
+    /// ?versionId does.
+    #[tokio::test]
+    async fn copying_a_named_version_requires_get_object_version() {
+        let (_directory, application, credentials) = test_router().await;
+        make_bucket(&application, "photos").await;
+        let versioning = send(
+            &application,
+            Method::PUT,
+            "/photos?versioning",
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+            &[],
+        )
+        .await;
+        assert_eq!(versioning.status(), StatusCode::OK);
+        let first = put_returning_version(&application, "photos", "a.txt", b"one", &[]).await;
+        put(&application, "photos", "a.txt", b"two").await;
+        let copier = account_allowed(&credentials, "copier", writer_actions()).await;
+        let versioned_source = format!("/photos/a.txt?versionId={first}");
+
+        let refused = send_as(
+            &application,
+            &copier,
+            Method::PUT,
+            "/photos/copy.txt",
+            b"",
+            &[("x-amz-copy-source", &versioned_source)],
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let current = send_as(
+            &application,
+            &copier,
+            Method::PUT,
+            "/photos/copy.txt",
+            b"",
+            &[("x-amz-copy-source", "/photos/a.txt")],
+        )
+        .await;
+        assert_eq!(
+            current.status(),
+            StatusCode::OK,
+            "the current version needs only GetObject"
+        );
+
+        grant(
+            &credentials,
+            &copier.0,
+            "copier-versions",
+            vec![Action::GetObjectVersion],
+        )
+        .await;
+        let permitted = send_as(
+            &application,
+            &copier,
+            Method::PUT,
+            "/photos/copy.txt",
+            b"",
+            &[("x-amz-copy-source", &versioned_source)],
+        )
+        .await;
+        assert_eq!(permitted.status(), StatusCode::OK);
+        let copied = send(&application, Method::GET, "/photos/copy.txt", b"", &[]).await;
+        assert_eq!(body_text(copied).await, "one");
     }
 }
 
