@@ -40,7 +40,8 @@ means exactly depends on the read, and the difference is worth stating:
 
 | Read | What is checked, and when |
 | --- | --- |
-| Whole object or version | **Length before any byte is sent**, then the SHA-256 recomputed while streaming. A mismatch fails the read before its last chunk. |
+| Whole object or version, unencrypted | **Length before any byte is sent**, then the SHA-256 recomputed while streaming. A mismatch fails the read before its last chunk. |
+| Whole object or version, encrypted | Length, and then each chunk's authentication tag as it is decrypted. A damaged chunk fails before it is sent. |
 | Ranged read, unencrypted | **Length before any byte is sent.** A digest over part of a payload cannot be compared with a digest over all of it. |
 | Ranged read, encrypted | Length, and then each chunk's authentication tag as it is decrypted — so a ranged read is covered too. |
 | Multipart assembly | Each part against the checksum recorded when that part was uploaded. |
@@ -48,7 +49,7 @@ means exactly depends on the read, and the difference is worth stating:
 
 Two limits stated plainly:
 
-- For a whole-object read this is **detection, not prevention**. Bytes have already
+- For an unencrypted whole-object read this is **detection, not prevention**. Bytes have already
   left by the time the digest disagrees; the guarantee is that the read *fails*
   rather than completing silently. Verifying before releasing anything would mean
   reading every payload twice.

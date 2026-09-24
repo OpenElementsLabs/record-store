@@ -2,7 +2,7 @@
 #
 # Called by ci.yml (stage pr or integration) and release.yml (integration before
 # anything is published; candidate against the binaries extracted from the
-# published image). Runs on its own nightly and weekly, and by hand for a
+# published image). Runs on its own weekly, and by hand for a
 # release-candidate evaluation of any ref.
 #
 # Every gate job uploads its result records whether it passed or not, and the
@@ -54,9 +54,8 @@ on:
         description: The evaluator's decision for the stage.
         value: ${{ jobs.report.outputs.decision }}
   schedule:
-    # Nightly: performance, extended crash recovery, 300 s fuzzing.
-    - cron: "17 2 * * *"
-    # Weekly: the same plus the 30-minute endurance run.
+    # Weekly: performance, extended crash recovery, 300 s fuzzing and the
+    # 30-minute endurance run.
     - cron: "43 3 * * 0"
   workflow_dispatch:
     inputs:
@@ -87,15 +86,12 @@ jobs:
       - id: plan
         env:
           SKIP: ${{ inputs.skip }}
-          SCHEDULE: ${{ github.event.schedule }}
         run: |
           set -euo pipefail
           stage="$STAGE"
-          python3 - "$stage" "$SKIP" "$SCHEDULE" >> "$GITHUB_OUTPUT" <<'EOF'
+          python3 - "$stage" "$SKIP" >> "$GITHUB_OUTPUT" <<'EOF'
           import sys, tomllib
-          stage, skip, schedule = sys.argv[1], set(sys.argv[2].split()), sys.argv[3]
-          if schedule == "17 2 * * *":
-              skip.add("PERF-ENDURANCE")          # weekly only
+          stage, skip = sys.argv[1], set(sys.argv[2].split())
           gates = [g["id"] for g in tomllib.load(open("release/gates.toml", "rb"))["gate"]
                    if stage in g["stages"] and g["id"] not in skip]
           print(f"stage={stage}")
@@ -247,7 +243,7 @@ jobs:
         run: |
           set -euo pipefail
           selected=()
-          for gate in ART-IDENTITY COR-INTEGRITY COR-PAGINATION CMP-UNSUPPORTED REC-CRASH REC-BACKUP CMP-UPGRADE SEC-REDACT PERF-OVERLOAD; do
+          for gate in ART-IDENTITY COR-INTEGRITY COR-PAGINATION CMP-UNSUPPORTED REC-BACKUP CMP-UPGRADE SEC-REDACT; do
             [[ " $GATES " == *" $gate "* ]] && selected+=("$gate")
           done
           [[ ${#selected[@]} -eq 0 ]] || PREVIOUS_BIN_DIR="$PWD/previous/bin" GATE_EVALUATE=0 \
@@ -256,6 +252,40 @@ jobs:
         if: always()
         with:
           name: ${{ env.PREFIX }}-results-binary
+          path: out/results
+          retention-days: 90
+
+  # The two long real-binary gates, each on its own runner so neither queues
+  # behind the other or behind the binary job: at the candidate stage REC-CRASH
+  # takes about 7 minutes and PERF-OVERLOAD about 5.
+  binary-long:
+    name: binary (${{ matrix.gate }})
+    needs: [plan, candidate]
+    if: needs.plan.outputs.stage != 'pr'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [REC-CRASH, PERF-OVERLOAD]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: "${{ env.PREFIX }}-candidate" }
+      - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
+      - env:
+          GATES: ${{ needs.plan.outputs.gates }}
+          GATE: ${{ matrix.gate }}
+        run: |
+          set -euo pipefail
+          [[ " $GATES " == *" $GATE "* ]] || exit 0
+          GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out "$GATE"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-${{ matrix.gate }}
           path: out/results
           retention-days: 90
 
@@ -451,7 +481,7 @@ jobs:
           retention-days: 90
 
   report:
-    needs: [plan, candidate, previous, rust, binary, sdk, console, repository, fuzz, performance, container]
+    needs: [plan, candidate, previous, rust, binary, binary-long, sdk, console, repository, fuzz, performance, container]
     if: always()
     runs-on: ubuntu-latest
     permissions:

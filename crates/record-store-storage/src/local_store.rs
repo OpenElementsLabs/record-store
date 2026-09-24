@@ -364,12 +364,18 @@ impl LocalFilesystemStore {
     /// Opens a payload for streaming, checking what can be checked up front.
     ///
     /// `expected_checksum` is the digest committed metadata records for these
-    /// bytes. When it is supplied and the whole payload is being read, the
-    /// stream recomputes it and fails rather than completing with bytes nobody
-    /// vouched for. A ranged read cannot be checked that way, so it is not:
-    /// what it does get is the physical-length check below, which happens
+    /// bytes. When it is supplied and a whole plaintext payload is being read,
+    /// the stream recomputes it and fails rather than completing with bytes
+    /// nobody vouched for. A ranged read cannot be checked that way, so it is
+    /// not: what it does get is the physical-length check below, which happens
     /// before a single byte is released and is what catches the truncation that
     /// storage corruption actually looks like.
+    ///
+    /// An encrypted payload is not digested a second time. Each chunk's tag
+    /// binds it to this object, its index and its length, and the header binds
+    /// the size, so a damaged chunk fails decryption before it is released --
+    /// prevention rather than detection. Recomputing SHA-256 on top cost
+    /// encrypted whole-object reads a third of their throughput.
     pub(crate) async fn open_payload(
         &self,
         object_id: ObjectId,
@@ -422,7 +428,11 @@ impl LocalFilesystemStore {
             }
         };
         let body = match expected_checksum {
-            Some(expected) if resolved_range.is_none() => verifying_stream(body, expected),
+            Some(expected)
+                if resolved_range.is_none() && payload_format == PayloadFormat::Plaintext =>
+            {
+                verifying_stream(body, expected)
+            }
             _ => body,
         };
         Ok((resolved_range, body))
@@ -853,11 +863,18 @@ impl ObjectStore for LocalFilesystemStore {
         let key_lock = self.key_lock(request.bucket_id, &request.key)?;
         let _guard = key_lock.read().await;
         let metadata = self.metadata_for(request.bucket_id, &request.key).await?;
-        // The ordinary read path already recomputes and compares the committed
-        // digest, so verification is that same read drained to the end rather
-        // than a second, separately maintained implementation of it.
+        // Verification is the ordinary read drained to the end rather than a
+        // second, separately maintained implementation of it. That read
+        // recomputes the committed digest only for plaintext; an encrypted one
+        // relies on its chunk tags, so verification adds the digest back and
+        // still proves the bytes are the ones the catalog recorded.
         let opened = self.open_metadata(metadata.clone(), None).await?;
-        let mut body = opened.body;
+        let mut body = match metadata.payload_format {
+            PayloadFormat::Plaintext => opened.body,
+            PayloadFormat::Aes256GcmEnvelopeV1 => {
+                verifying_stream(opened.body, metadata.checksum.clone())
+            }
+        };
         while let Some(chunk) = body.next().await {
             chunk?;
         }

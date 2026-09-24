@@ -20,7 +20,7 @@ scope = "cluster"
 [stages]
 pr = "fast, deterministic checks for every change"
 integration = "changes to code, lockfiles, packaging or gates"
-scheduled = "nightly"
+scheduled = "weekly"
 candidate = "internal cluster readiness evaluation"
 
 [[gate]]
