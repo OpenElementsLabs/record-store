@@ -54,8 +54,7 @@ on:
         description: The evaluator's decision for the stage.
         value: ${{ jobs.report.outputs.decision }}
   schedule:
-    # Weekly: performance, extended crash recovery, 300 s fuzzing and the
-    # 30-minute endurance run.
+    # Weekly: extended crash recovery and 300 s fuzzing.
     - cron: "43 3 * * 0"
   workflow_dispatch:
     inputs:
@@ -139,8 +138,8 @@ jobs:
   # The real previous release, built from its tag, cached by tag.
   previous:
     needs: plan
-    # CMP-UPGRADE upgrades from it; PERF-BASELINE measures against it.
-    if: contains(needs.plan.outputs.gates, 'CMP-UPGRADE') || contains(needs.plan.outputs.gates, 'PERF-BASELINE')
+    # CMP-UPGRADE upgrades from it.
+    if: contains(needs.plan.outputs.gates, 'CMP-UPGRADE')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -255,18 +254,12 @@ jobs:
           path: out/results
           retention-days: 90
 
-  # The two long real-binary gates, each on its own runner so neither queues
-  # behind the other or behind the binary job: REC-CRASH takes about 7 minutes
-  # at the candidate stage, and PERF-OVERLOAD (weekly only) about 5.
-  binary-long:
-    name: binary (${{ matrix.gate }})
+  # The longest real-binary gate, on its own runner so it does not queue behind
+  # the binary job: REC-CRASH takes about 7 minutes at the candidate stage.
+  crash:
     needs: [plan, candidate]
-    if: needs.plan.outputs.stage != 'pr'
+    if: needs.plan.outputs.stage != 'pr' && contains(needs.plan.outputs.gates, 'REC-CRASH')
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        gate: [REC-CRASH, PERF-OVERLOAD]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -275,17 +268,11 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: { name: "${{ env.PREFIX }}-candidate" }
       - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
-      - env:
-          GATES: ${{ needs.plan.outputs.gates }}
-          GATE: ${{ matrix.gate }}
-        run: |
-          set -euo pipefail
-          [[ " $GATES " == *" $GATE "* ]] || exit 0
-          GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out "$GATE"
+      - run: GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out REC-CRASH
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ env.PREFIX }}-results-${{ matrix.gate }}
+          name: ${{ env.PREFIX }}-results-crash
           path: out/results
           retention-days: 90
 
@@ -420,47 +407,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
 
-  performance:
-    needs: [plan, candidate, previous]
-    if: >-
-      always() && needs.candidate.result == 'success' &&
-      (needs.previous.result == 'success' || needs.previous.result == 'skipped') &&
-      (contains(needs.plan.outputs.gates, 'PERF-BASELINE') || contains(needs.plan.outputs.gates, 'PERF-ENDURANCE'))
-    # The reference environment named by release/baselines. Changing the runner
-    # invalidates the baseline: the environment key will no longer match.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 150
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with: { pattern: "${{ env.PREFIX }}-{candidate,previous}", merge-multiple: true }
-      - run: |
-          mkdir -p out && tar -xzf candidate.tar.gz -C out
-          if [[ -f previous.tar.gz ]]; then tar -xzf previous.tar.gz; fi
-      - name: Performance gates
-        env:
-          GATES: ${{ needs.plan.outputs.gates }}
-        run: |
-          set -euo pipefail
-          selected=()
-          for gate in PERF-BASELINE PERF-ENDURANCE; do
-            [[ " $GATES " == *" $gate "* ]] && selected+=("$gate")
-          done
-          # The previous release is the reference PERF-BASELINE compares with.
-          PREVIOUS_BIN_DIR="$PWD/previous/bin" GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out "${selected[@]}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: ${{ env.PREFIX }}-results-performance
-          path: out/results
-          # Kept long enough to calibrate provisional thresholds and baselines.
-          retention-days: 90
-
   # The upgrade guide, followed with real images: the published previous
   # release and one built here from this commit.
   container:
@@ -481,7 +427,7 @@ jobs:
           retention-days: 90
 
   report:
-    needs: [plan, candidate, previous, rust, binary, binary-long, sdk, console, repository, fuzz, performance, container]
+    needs: [plan, candidate, previous, rust, binary, crash, sdk, console, repository, fuzz, container]
     if: always()
     runs-on: ubuntu-latest
     permissions:

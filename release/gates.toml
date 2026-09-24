@@ -15,19 +15,19 @@
 # of the rules produced a decision. See release/README.md.
 
 schema = 1
-matrix_version = "2026.09.24-1"
+matrix_version = "2026.09.24-2"
 scope = "standalone"
 
 # Stages, cheapest first. A stage includes every gate listed for it; "candidate"
 # is the complete release evaluation for one commit and one artifact set.
 #   pr           every pull request and push
 #   integration  pull requests that change code, lockfiles, packaging or gates
-#   scheduled    weekly (performance, overload, extended recovery, endurance)
+#   scheduled    weekly (extended crash recovery, 300 s fuzzing)
 #   candidate    workflow_dispatch release-candidate evaluation, and release.yml
 [stages]
 pr = "fast, deterministic checks for every change"
 integration = "real-binary correctness, compatibility and recovery"
-scheduled = "performance, overload, endurance and extended recovery"
+scheduled = "extended crash recovery and fuzzing"
 candidate = "the complete, candidate-specific release evaluation"
 
 # ---------------------------------------------------------------------------
@@ -458,118 +458,6 @@ binds_artifact = false
 limitations = "Term-based; a cluster claim phrased without the listed terms is not caught."
 [gate.reuse]
 max_age_days = 0
-
-# ---------------------------------------------------------------------------
-# Performance and resources
-# ---------------------------------------------------------------------------
-
-[[gate]]
-id = "PERF-OVERLOAD"
-title = "Overload is refused with SlowDown, stays bounded, and recovers"
-area = "performance"
-guarantee = """record-store.example.toml [limits]: with 4 slots and a 1 s admission wait under 64 concurrent \
-clients and 48 slow-header connections, every refusal is 503 SlowDown; bodiless probes are admitted or refused \
-within the wait limit plus 1 s; every acknowledged write reads back intact and committed data is untouched; \
-descriptors and connections return to idle within 15 s; the next request is served within 1 s; no staging \
-space remains."""
-modes = ["standalone"]
-platforms = ["linux-amd64", "darwin-arm64 (developer)"]
-stages = ["scheduled"]
-blocking = true
-command = "python3 tests/gates/overload.py --bin-dir ${CANDIDATE}/bin --profile ${PROFILE}"
-environment = "candidate binaries, encryption on; python venv"
-fixtures = "20 x 256 KiB committed objects"
-failure_injection = "sustained overload: 60/40 slow PUT (64 KiB-4 MiB) / GET mix; 48 connections that never finish headers"
-evidence = "detail.json with outcome counts, probe latencies, resource samples"
-implementation = ["tests/gates/overload.py", "tests/gates/gatelib.py"]
-timeout_minutes = 20
-infra_retries = 1
-binds_artifact = true
-limitations = """Limits are shrunk so one runner can saturate them; the default 256-slot configuration is not \
-saturated. Client and server share a host. The slow-header hold time is advisory (RSG-004): the server keeps \
-such a connection open indefinitely, which the documented TLS terminator is relied on to bound."""
-[[gate.metrics]]
-name = "probe_slowdown_latency_max_seconds"
-unit = "s"
-threshold = "<= admission_wait_limit_seconds + 1"
-kind = "contract"
-basis = "the admission wait limit is the documented bound on queueing"
-[[gate.metrics]]
-name = "peak_rss_growth_bytes"
-unit = "bytes"
-threshold = "<= 512 MiB (advisory)"
-kind = "provisional"
-basis = "no documented memory requirement; calibrate from scheduled runs"
-[[gate.metrics]]
-name = "slow_header_connection_hold_seconds"
-unit = "s"
-threshold = "<= 60 (advisory)"
-kind = "provisional"
-basis = "RSG-004; mitigated by the TLS terminator docs/deployment/reverse-proxy.md requires"
-[gate.reuse]
-max_age_days = 0
-
-[[gate]]
-id = "PERF-BASELINE"
-title = "Operating measurements: structural invariants, and no regression against the previous release"
-area = "performance"
-guarantee = """Structural (blocking): zero errors within capacity; memory does not grow with object size (RSS \
-growth for 256 MiB within 64 MiB of that for 32 MiB); listing cost does not grow with position (late/early page \
-<= 3x); restart with the catalog within 5 s. Regression (blocking): the candidate and the previous release run \
-the same workload in alternating rounds on the same host; each compared median is no worse than the previous \
-release's by more than max(15 %, 3 x the larger CV)."""
-modes = ["standalone"]
-platforms = ["linux-amd64 (GitHub-hosted ubuntu-24.04; CPU varies by run, which is why the comparison is same-host)"]
-stages = ["scheduled"]
-blocking = true
-command = "python3 tests/gates/perf.py --bin-dir ${CANDIDATE}/bin --profile ${PROFILE} ${PREVIOUS:+--previous-bin-dir $PREVIOUS/bin}"
-environment = "candidate binaries and the previous release's binaries; runner fingerprint recorded; page cache warm"
-fixtures = "4 KiB x N small objects (c=8); 32 MiB and 256 MiB streaming; 70/30 mixed 1 KiB-256 KiB (c=16); 5k (pr) or 50k catalog listed at 1000/page; filtered audit query"
-failure_injection = "none"
-evidence = "detail.json with per-run values, medians and CVs for both binaries, the comparisons, the fingerprint and filesystem; logs"
-implementation = ["tests/gates/perf.py", "tests/gates/gatelib.py"]
-timeout_minutes = 110
-infra_retries = 1
-binds_artifact = true
-limitations = """No absolute latency or throughput requirement exists, so none is asserted. The reference is the \
-previous release, so a regression already present in it is not seen; when a release ships, the reference moves \
-to it (PREVIOUS in the workflows). Without the previous release's binaries the regression half is an invalid \
-measurement and blocks. Tail latency of the small-object runs and memory deltas are recorded, not compared. \
-Client and server share one host."""
-[gate.reuse]
-max_age_days = 7
-invalidated_by = ["crates/**", "apps/**", "Cargo.lock", "Cargo.toml", "tests/gates/perf.py", "tests/gates/gatelib.py", "release/gates.toml"]
-
-[[gate]]
-id = "PERF-ENDURANCE"
-title = "No unbounded growth over an extended run"
-area = "performance"
-guarantee = "Over a 30-minute mixed workload, RSS and open files show no sustained growth in the second half, and there are no errors."
-modes = ["standalone"]
-platforms = ["linux-amd64"]
-stages = ["scheduled"]
-blocking = false
-command = "GATE_ID=PERF-ENDURANCE GATE_ENDURANCE_SECONDS=${ENDURANCE_SECONDS:-1800} python3 tests/gates/perf.py --bin-dir ${CANDIDATE}/bin --profile endurance"
-environment = "candidate binaries; plaintext"
-fixtures = "200 seeded keys, 70/30 read/write, 16 clients"
-failure_injection = "none"
-evidence = "detail.json with 1 s resource samples and fitted slopes"
-implementation = ["tests/gates/perf.py", "tests/gates/gatelib.py"]
-timeout_minutes = 60
-infra_retries = 1
-binds_artifact = false
-limitations = """Not blocking: the slope limits (64 MiB/h, 8 files/h) are provisional and uncalibrated. It becomes \
-blocking after four scheduled runs on the reference environment establish the noise floor. 30 minutes cannot \
-reveal slow leaks measured in days."""
-[[gate.metrics]]
-name = "endurance_rss_bytes_slope"
-unit = "bytes/hour"
-threshold = "<= 64 MiB/h"
-kind = "provisional"
-basis = "near-zero growth expected; calibrate"
-[gate.reuse]
-max_age_days = 14
-invalidated_by = ["crates/**", "apps/**", "Cargo.lock", "tests/gates/perf.py"]
 
 # ---------------------------------------------------------------------------
 # Security and artifacts

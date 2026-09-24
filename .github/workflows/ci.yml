@@ -34,8 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           # A push to candidate/<name> evaluates that commit as a release
-          # candidate -- every gate, including performance and endurance --
-          # without publishing anything. It is how a candidate is evaluated
+          # candidate -- every candidate gate -- without publishing anything. It is how a candidate is evaluated
           # before gates.yml can be dispatched from the default branch.
           if [[ "$REF" == refs/heads/candidate/* ]]; then
             echo "stage=candidate" >> "$GITHUB_OUTPUT"

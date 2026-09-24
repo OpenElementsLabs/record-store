@@ -129,7 +129,7 @@ def reusable(gate: dict, record: dict, commit: str) -> tuple[bool, str]:
 
 
 PROFILE_OF_STAGE = {"pr": "pr", "integration": "pr", "scheduled": "scheduled", "candidate": "candidate"}
-PROFILE_STRENGTH = {"pr": 0, "scheduled": 1, "candidate": 2, "endurance": 2}
+PROFILE_STRENGTH = {"pr": 0, "scheduled": 1, "candidate": 2}
 
 
 def select_result(gate: dict, records: list[dict], commit: str, candidate: dict | None,

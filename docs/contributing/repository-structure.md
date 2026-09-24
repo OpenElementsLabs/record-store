@@ -10,7 +10,7 @@ record-store/
 ├── deploy/docker/              Dockerfiles and Compose files
 ├── docs/                       this documentation
 ├── fuzz/                       fuzz targets, a workspace of their own
-├── release/                    release-gate matrix, quarantine, exceptions, findings, baselines
+├── release/                    release-gate matrix, quarantine, exceptions, findings
 ├── tests/
 │   ├── compatibility/          real-SDK tests against a live server
 │   ├── gates/                  release-gate harness and real-binary gates
@@ -92,7 +92,7 @@ tests that need a running binary are under `apps/*/tests/`.
 Test fixtures shared within a crate go in a `test_support` module.
 
 Gates that drive the *built* binary from outside — crash, restore, upgrade,
-overload, redaction — are under `tests/gates/`, and are defined in
+redaction — are under `tests/gates/`, and are defined in
 `release/gates.toml`. See [Release Gates](release-gates.md).
 
 See [Testing](testing.md).

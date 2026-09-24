@@ -14,7 +14,7 @@ file is also what actually runs.
 | --- | --- | --- |
 | `pr` | Every push and pull request | Format, Clippy, tests, skip accounting, console checks, dependency and secret scanning, fuzz smoke, documentation build |
 | `integration` | Changes to code, lockfiles, packaging, tests or workflows | Real-binary gates: integrity on read, unsupported operations, crash recovery, backup and restore, upgrade from the previous release, S3 SDKs, console end-to-end, secret redaction, artifact identity |
-| `scheduled` | Weekly | Performance against a baseline, overload, longer crash runs, 300 s fuzzing, 30-minute endurance. Never blocks a candidate or a release |
+| `scheduled` | Weekly | Longer crash runs, 300 s fuzzing |
 | `candidate` | `workflow_dispatch` of the Gates workflow, a push to a `candidate/*` branch, and every release | Everything, against one candidate, plus packaging, provenance and both-architecture smoke tests in `release.yml` |
 
 ## What a gate result is bound to
@@ -29,8 +29,7 @@ only if:
   matrix plus the files it lists as its implementation — so changing a gate
   invalidates its old results;
 - it names the commit under evaluation, or the gate explicitly allows reuse and
-  nothing it depends on changed since (performance and endurance only, with an
-  age limit);
+  nothing it depends on changed since (no standalone gate allows it today);
 - for artifact-bound gates, it names the candidate's binary digests;
 - it ran at least the workload profile the stage requires.
 
@@ -43,7 +42,7 @@ extracted from the published image, so the evidence describes what ships.
 | --- | --- | --- |
 | `pass` | Every check held | — |
 | `fail` | The product violated a guarantee, or the gate hung | Yes, if the gate is blocking |
-| `invalid_measurement` | The run completed but proves nothing (for example, no kill landed mid-upload, or no baseline exists) | Yes |
+| `invalid_measurement` | The run completed but proves nothing (for example, no kill landed mid-upload) | Yes |
 | `infrastructure_error` | The gate could not run | Yes |
 | `skipped`, `missing`, `stale` | No usable result | Yes |
 | `known_failure` | In `pr` and `integration` only: every failed check matches an open finding recorded for that gate | Not a pull request; always a release |
@@ -84,10 +83,7 @@ never touch a running deployment.
 
 A threshold is either derived from a documented contract (the container start
 period, the admission wait limit, the shutdown grace period), follows from the
-design (memory must not grow with object size), or is labelled provisional.
-Provisional limits are reported but do not block until they have been
-calibrated. No latency or throughput target is set, because none is
-documented. Performance is compared with the previous release, run on the same
-machine in alternating rounds, using a noise-aware tolerance: hosted runners
-differ from run to run, so a stored baseline would rarely describe the machine it
-is compared on.
+design, or is labelled provisional. Provisional limits are reported but do not
+block until they have been calibrated. No gate measures latency or throughput:
+none is documented, and hosted runners differ too much from run to run for a
+measurement to mean anything as a gate.

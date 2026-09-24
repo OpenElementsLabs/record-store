@@ -22,7 +22,7 @@ The implementation is in `tests/gates/`:
 | `run-stage.sh` | Runs a stage (or named gates) locally or in CI |
 | `gatelib.py` | The real-binary harness: isolated servers, generated credentials, random loopback ports, resource sampling |
 | `selftest.sh`, `test_evaluate.py` | Prove the gates and the evaluator fail when they should |
-| One script per real-binary gate | `crash_consistency.py`, `integrity_read.py`, `recovery_drill.py`, `upgrade.py`, `unsupported.py`, `overload.py`, `redaction.py`, `perf.py`, and the repository checks |
+| One script per real-binary gate | `crash_consistency.py`, `integrity_read.py`, `recovery_drill.py`, `upgrade.py`, `unsupported.py`, `redaction.py`, and the repository checks |
 
 Internal cluster readiness has its own matrix, `internal/cluster/gates.toml`,
 evaluated separately. It is excluded from the documentation build.
@@ -36,12 +36,8 @@ evaluated separately. It is excluded from the documentation build.
 | Candidate binaries and `candidate.json` | `<prefix>-candidate` artifact | 30 days |
 | The decision a release shipped under | Release assets `record-store-<version>-release-gates.{json,md}`, covered by `SHA256SUMS` | As long as the release |
 
-PERF-BASELINE, PERF-ENDURANCE and PERF-OVERLOAD run only in the weekly scheduled stage; they
-do not block a candidate or a release. PERF-BASELINE compares the build with the
-previous release on the same runner rather than with a stored baseline: GitHub-hosted runners do not all have
-the same CPU, so a stored number would rarely describe the machine it is
-compared on. When a release ships, the workflows' previous-release reference
-(`v0.1.3` today) moves to it.
+CMP-UPGRADE upgrades from the previous release (`v0.1.3` today). When a release
+ships, the workflows' previous-release reference moves to it.
 
 ## Negative controls demonstrated at matrix 2026.09.23-2
 
@@ -58,6 +54,5 @@ fail on a real defect or an injected one:
 | CMP-UNSUPPORTED | The live product defect RSG-007 (and a malformed-value variant, removed so a refusal cannot be a parse error) |
 | CL-EVIDENCE | A failure-matrix row citing a test that does not exist |
 | COR-SKIPS | `#[ignore]`, `.skip`, `.fixme`, `t.Skip`, `pytest.skip`, `@Disabled`, `.only` patterns |
-| PERF-BASELINE | No baseline for the environment: `invalid_measurement` |
 | record.py | An artifact-bound gate that did not report the binary it ran: `invalid_measurement` |
 | evaluate.py | 20 unit tests: missing, skipped, stale, lighter profile, other binaries, infrastructure, invalid, expired or incomplete exceptions, expired quarantine, open findings, known failures, candidate-commit mismatch, malformed matrix |
