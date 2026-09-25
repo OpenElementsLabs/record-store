@@ -21,6 +21,12 @@ export const STARTUP_INTERVAL_MS = 2_000;
 const WINDOW = 240;
 
 /**
+ * A seeded reading must precede this client's first by at least this much, so
+ * the interval between them is a measurement rather than rounding and latency.
+ */
+const MINIMUM_SEED_GAP_MS = 1_000;
+
+/**
  * The four counters the charts differentiate.
  *
  * Narrower than `SystemMetrics` on purpose. A seeded reading comes from the
@@ -64,22 +70,26 @@ class SampleStore {
   }
 
   /**
-   * Fills an empty window with readings the server already took.
+   * Fills the window with readings the server already took.
    *
-   * Only ever applied to an empty window. Once this client has started
-   * observing, its own readings are the record — splicing server samples in
-   * underneath them could interleave two clocks and produce a rate that never
-   * happened.
+   * An empty window takes them as they are. A window this client has already
+   * started filling takes only readings older than its own, and only when they
+   * were `aligned` onto this client's clock: splicing server-clock samples in
+   * underneath browser-clock ones would make a rate out of the clock skew.
    */
-  seed(samples: readonly Sample[]): void {
-    if (this.#samples.length > 0 || samples.length === 0) return;
-    this.#samples = samples.slice(-WINDOW);
+  seed(samples: readonly Sample[], aligned: boolean): void {
+    if (samples.length === 0) return;
+    const first = this.#samples[0];
+    if (!first) {
+      this.#samples = samples.slice(-WINDOW);
+    } else if (aligned) {
+      const older = samples.filter((sample) => sample.at < first.at - MINIMUM_SEED_GAP_MS);
+      if (older.length === 0) return;
+      this.#samples = [...older, ...this.#samples].slice(-WINDOW);
+    } else {
+      return;
+    }
     for (const listener of this.#listeners) listener();
-  }
-
-  /** Whether anything has been observed yet. */
-  get isEmpty(): boolean {
-    return this.#samples.length === 0;
   }
 
   clear(): void {
@@ -151,11 +161,19 @@ function counter(value: unknown): number | null {
  * unrecognisable is dropped and the screen falls back to watching for itself.
  *
  * Timestamps are the server's, parsed to epoch milliseconds, so a seeded sample
- * keeps the instant it was actually taken.
+ * keeps the instant it was actually taken. When the server says what its clock
+ * read as it answered, every timestamp is moved onto this client's clock by
+ * the difference, measured against `receivedAt`, and the result is `aligned`.
  */
-function seedSamples(history: MetricsHistory | undefined): readonly Sample[] {
+function seedSamples(
+  history: MetricsHistory | undefined,
+  receivedAt: number,
+): { samples: readonly Sample[]; aligned: boolean } {
   const source: unknown = history?.samples;
-  if (!Array.isArray(source)) return [];
+  if (!Array.isArray(source)) return { samples: [], aligned: false };
+  const serverNow = typeof history?.now === 'string' ? Date.parse(history.now) : Number.NaN;
+  const aligned = !Number.isNaN(serverNow) && receivedAt > 0;
+  const offset = aligned ? receivedAt - serverNow : 0;
   const samples: Sample[] = [];
   for (const entry of source) {
     if (typeof entry !== 'object' || entry === null) continue;
@@ -175,7 +193,7 @@ function seedSamples(history: MetricsHistory | undefined): readonly Sample[] {
       continue;
     }
     samples.push({
-      at,
+      at: at + offset,
       metrics: {
         requests,
         errors,
@@ -188,7 +206,10 @@ function seedSamples(history: MetricsHistory | undefined): readonly Sample[] {
   // repeated or reordered timestamp would make a rate out of a delta that never
   // elapsed.
   samples.sort((left, right) => left.at - right.at);
-  return samples.filter((sample, index) => index === 0 || sample.at > samples[index - 1]!.at);
+  return {
+    samples: samples.filter((sample, index) => index === 0 || sample.at > samples[index - 1]!.at),
+    aligned,
+  };
 }
 
 function rateOf(
@@ -234,11 +255,12 @@ export function useMetricsSamples(): MetricsObservation {
 
   // The server has been reading its own counters since it started, so the first
   // paint can show a window somebody already waited for instead of an empty
-  // chart. Fetched once: after that this client's own readings are the record.
+  // chart -- also when Overview's cached reading got there first. Fetched once:
+  // after that this client's own readings are the record.
   const history = useQuery({
     queryKey: queryKeys.systemMetricsHistory,
     queryFn: ({ signal }) => fetchSystemMetricsHistory(signal),
-    enabled: store.isEmpty,
+    enabled: samples.length < 3,
     staleTime: Infinity,
     // A missing history is not an error worth showing. Without it the screen
     // behaves exactly as it did before: it starts empty and fills as it watches.
@@ -246,8 +268,10 @@ export function useMetricsSamples(): MetricsObservation {
   });
 
   React.useEffect(() => {
-    if (history.data) store.seed(seedSamples(history.data));
-  }, [history.data, store]);
+    if (!history.data) return;
+    const seeded = seedSamples(history.data, history.dataUpdatedAt);
+    store.seed(seeded.samples, seeded.aligned);
+  }, [history.data, history.dataUpdatedAt, store]);
   const query = useQuery({
     queryKey: queryKeys.systemMetrics,
     queryFn: ({ signal }) => fetchSystemMetrics(signal),

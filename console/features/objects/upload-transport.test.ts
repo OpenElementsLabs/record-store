@@ -160,6 +160,20 @@ describe('singleRequestUpload', () => {
     expect(settled).toEqual([{ status: 'failed', reason: 'Bucket quota exceeded' }]);
   });
 
+  it('settles a quota refusal from the API as failed, since nothing was stored', () => {
+    singleRequestUpload({ bucket: 'uploads', key: 'a', file: hugeFile(1) }, observer());
+    only().respond(507, JSON.stringify({ error: { message: 'Bucket quota exceeded' } }));
+
+    expect(settled).toEqual([{ status: 'failed', reason: 'Bucket quota exceeded' }]);
+  });
+
+  it('keeps a 507 an intermediary answered uncertain', () => {
+    singleRequestUpload({ bucket: 'uploads', key: 'a', file: hugeFile(1) }, observer());
+    only().respond(507, '<html>Insufficient Storage</html>');
+
+    expect(settled).toEqual([expect.objectContaining({ status: 'unknown' })]);
+  });
+
   it('explains a status an intermediary answered with a non-JSON body', () => {
     singleRequestUpload({ bucket: 'uploads', key: 'a', file: hugeFile(1) }, observer());
     only().respond(502, '<html>Bad gateway</html>');
