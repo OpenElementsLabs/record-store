@@ -65,7 +65,7 @@ auth:
 # through the environment by the chart and override whatever this file says.
 configuration: |
   [storage]
-  data_directory = "/var/lib/record-store"
+  data_directory = "/var/lib/record-store/data"
   encryption_enabled = true
 
   [auth]
@@ -101,7 +101,7 @@ configuration: |
 # Extra environment variables for the server, for settings you would rather not
 # put in the ConfigMap. These win over the configuration file above.
 extraEnv: []
-# - name: RECORD_STORE_LIMITS_MAXIMUM_CONCURRENT_OPERATIONS
+# - name: RECORD_STORE_MAX_CONCURRENT_OPERATIONS
 #   value: "512"
 
 service:
@@ -249,5 +249,8 @@ networkPolicy:
   enabled: false
   # Extra selectors allowed to reach the S3 listener.
   s3From: []
-  # Extra selectors allowed to reach the management API.
+  # Extra selectors allowed to reach the management API. Kubelet probes come
+  # from the node, which mainstream CNIs admit to its own pods without a rule;
+  # if yours does not, add an ipBlock for the node addresses here -- never
+  # 0.0.0.0/0, which would open the API to every pod.
   apiFrom: []

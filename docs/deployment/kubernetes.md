@@ -83,6 +83,13 @@ redundant volume underneath and regular [backups](../operations/backup-and-resto
 
 ## Storage
 
+The volume is mounted at `/var/lib/record-store`, and the server keeps its data in
+`data/` inside it, a directory it creates with its own permissions. Provisioners such
+as local-path and many NFS ones create the volume root writable by everyone, which
+the server refuses to store data in; the subdirectory is what makes those volumes
+usable. Size memory with [Capacity Planning](../operations/capacity-planning.md#memory):
+the chart requests 512 MiB and limits the pod to 2 GiB.
+
 `persistence.enabled: false` puts objects in an `emptyDir` — useful for a trial,
 never for anything else.
 
@@ -102,7 +109,7 @@ configuring Record Store changes because it is running in Kubernetes.
 ```yaml
 configuration: |
   [storage]
-  data_directory = "/var/lib/record-store"
+  data_directory = "/var/lib/record-store/data"
   encryption_enabled = true
 
   [observability]
@@ -163,12 +170,14 @@ The endpoint stays closed while no token is set. See
 
 ```bash
 helm upgrade record-store \
-  oci://ghcr.io/openelementslabs/charts/record-store --version 0.1.4 \
-  --namespace record-store --reuse-values
+  oci://ghcr.io/openelementslabs/charts/record-store --version <new-version> \
+  --namespace record-store --values my-values.yaml
 ```
 
-The StatefulSet stops the old pod before it starts the new one, so an upgrade is
-a short outage rather than a rolling one. Read [Upgrading](upgrading.md) for what
+Pass your values file again rather than `--reuse-values`, which keeps the previous
+chart's values and drops any default the new chart adds. The StatefulSet stops the
+old pod before it starts the new one, so an upgrade is a short outage rather than a
+rolling one. Read [Upgrading](upgrading.md) for what
 a version change can mean for stored data, and take a backup first.
 
 ## Air-gapped installs
