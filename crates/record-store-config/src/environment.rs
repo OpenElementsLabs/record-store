@@ -37,6 +37,12 @@ impl Config {
             self.server.header_read_timeout_seconds =
                 parse_environment("RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS", value)?;
         }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_STORAGE_METADATA_CACHE_MIB")?
+        {
+            self.storage.metadata_cache_mib =
+                parse_environment("RECORD_STORE_STORAGE_METADATA_CACHE_MIB", value)?;
+        }
         if let Some(value) = environment_value(environment, "RECORD_STORE_STORAGE_DATA_DIRECTORY")?
         {
             self.storage.data_directory = PathBuf::from(value);
@@ -472,6 +478,7 @@ mod exhaustive_tests {
                 "/srv/records-tmp".into(),
             ),
             ("RECORD_STORE_STORAGE_ENCRYPTION_ENABLED", "true".into()),
+            ("RECORD_STORE_STORAGE_METADATA_CACHE_MIB", "64".into()),
             (
                 "RECORD_STORE_CREDENTIAL_MASTER_KEY",
                 "credential-master-key-at-least-32-bytes".into(),
@@ -636,6 +643,7 @@ mod exhaustive_tests {
             Some(std::path::PathBuf::from("/srv/records-tmp"))
         );
         assert!(config.storage.encryption_enabled);
+        assert_eq!(config.storage.metadata_cache_mib, 64);
 
         assert!(!config.auth.root_s3_enabled);
         assert!(config.auth.credential_master_key.is_some());

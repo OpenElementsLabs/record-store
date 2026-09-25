@@ -276,6 +276,28 @@ jobs:
           path: out/results
           retention-days: 90
 
+  # Five minutes of steady load, on its own runner so the measurement shares the
+  # machine with nothing else and the binary job does not queue behind it.
+  memory:
+    needs: [plan, candidate]
+    if: needs.plan.outputs.stage != 'pr' && contains(needs.plan.outputs.gates, 'RES-MEMORY')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: "${{ env.PREFIX }}-candidate" }
+      - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
+      - run: GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out RES-MEMORY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-memory
+          path: out/results
+          retention-days: 90
+
   sdk:
     needs: [plan, candidate]
     if: needs.plan.outputs.stage != 'pr' && contains(needs.plan.outputs.gates, 'CMP-S3-SDK')
@@ -427,7 +449,7 @@ jobs:
           retention-days: 90
 
   report:
-    needs: [plan, candidate, previous, rust, binary, crash, sdk, console, repository, fuzz, container]
+    needs: [plan, candidate, previous, rust, binary, crash, memory, sdk, console, repository, fuzz, container]
     if: always()
     runs-on: ubuntu-latest
     permissions:

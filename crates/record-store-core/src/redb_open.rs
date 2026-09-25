@@ -8,7 +8,20 @@ use redb::{Database, DatabaseError, StorageError};
 /// because the file format is not something an operator can act on directly.
 const MIGRATION_RELEASE: &str = "0.1.3";
 
-/// Opens a redb database at `path`, creating it if absent.
+/// Page cache for a database whose caller names none: the small, slowly
+/// growing ones (credentials, sharing, lifecycle cursors) and tools that open a
+/// database briefly. redb's own default is 1 GiB per database, filled lazily
+/// as pages are read or written, so a deployment's memory grew with the size of
+/// its databases until each reached a gibibyte.
+pub const DEFAULT_CACHE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Opens a redb database at `path` with [`DEFAULT_CACHE_BYTES`] of page cache.
+pub fn open_database(path: impl AsRef<Path>) -> Result<Database, DatabaseError> {
+    open_database_with_cache(path, DEFAULT_CACHE_BYTES)
+}
+
+/// Opens a redb database at `path`, creating it if absent, with at most
+/// `cache_bytes` of page cache (read cache and write buffer together).
 ///
 /// redb 4 reads only file format v3. Record Store wrote v2 up to and including
 /// 0.1.2, and 0.1.3 migrates a v2 file to v3 when it opens it. A deployment
@@ -18,9 +31,12 @@ const MIGRATION_RELEASE: &str = "0.1.3";
 ///
 /// The migration cannot happen here: `Database::upgrade` exists only in redb
 /// 2.6, and redb 4 removed it along with the ability to read v2.
-pub fn open_database(path: impl AsRef<Path>) -> Result<Database, DatabaseError> {
+pub fn open_database_with_cache(
+    path: impl AsRef<Path>,
+    cache_bytes: usize,
+) -> Result<Database, DatabaseError> {
     let path = path.as_ref();
-    match Database::create(path) {
+    match Database::builder().set_cache_size(cache_bytes).create(path) {
         Err(DatabaseError::UpgradeRequired(version)) => {
             Err(DatabaseError::Storage(StorageError::Corrupted(format!(
                 "{} is in redb file format v{version}, which this release cannot read. \

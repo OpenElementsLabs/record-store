@@ -4,10 +4,11 @@ use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use record_store_core::{
-    Bucket, BucketId, BucketName, BucketQuota, CorsConfiguration, LifecycleRule, LifecycleRuleId,
-    MultipartUpload, MutationEvent, ObjectId, ObjectKey, ObjectLockConfiguration, ObjectLockState,
-    ObjectMetadata, ObjectVersionRecord, PartNumber, StorageUsage, UploadId, UploadedPart,
-    VersionId, VersioningState, WriteOrigin, open_database,
+    Bucket, BucketId, BucketName, BucketQuota, CorsConfiguration, DEFAULT_CACHE_BYTES,
+    LifecycleRule, LifecycleRuleId, MultipartUpload, MutationEvent, ObjectId, ObjectKey,
+    ObjectLockConfiguration, ObjectLockState, ObjectMetadata, ObjectVersionRecord, PartNumber,
+    StorageUsage, UploadId, UploadedPart, VersionId, VersioningState, WriteOrigin,
+    open_database_with_cache,
 };
 use redb::{Database, ReadableDatabase, ReadableTable};
 
@@ -37,12 +38,21 @@ pub struct RedbMetadataRepository {
 impl RedbMetadataRepository {
     /// Opens the catalog and applies ordered non-destructive migrations.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, MetadataError> {
+        Self::open_with_cache(path, DEFAULT_CACHE_BYTES).await
+    }
+
+    /// Opens the catalog with at most `cache_bytes` of page cache.
+    pub async fn open_with_cache(
+        path: impl AsRef<Path>,
+        cache_bytes: usize,
+    ) -> Result<Self, MetadataError> {
         let path = path.as_ref().to_path_buf();
         tokio::task::spawn_blocking(move || {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(MetadataError::Directory)?;
             }
-            let database = open_database(path).map_err(|error| backend("open", error))?;
+            let database = open_database_with_cache(path, cache_bytes)
+                .map_err(|error| backend("open", error))?;
             initialize_schema(&database)?;
             Ok(Self {
                 database: Arc::new(database),

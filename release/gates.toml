@@ -331,6 +331,48 @@ basis = "server.shutdown_grace_period_seconds default 30; documented stop uses -
 [gate.reuse]
 max_age_days = 0
 
+[[gate]]
+id = "RES-MEMORY"
+title = "Resident memory stops growing with history once the caches are full"
+area = "resources"
+guarantee = """docs/operations/capacity-planning.md#memory: the metadata page cache is bounded by \
+storage.metadata_cache_mib and is the only part of the server's memory that grows with its databases. Under the \
+endurance workload (16 clients, 200 keys, 70 % reads, 1-256 KiB objects) with an 8 MiB cache, in the environment the \
+image ships (MALLOC_ARENA_MAX=2), after a 120 s warm-up: the databases outgrow the cache several times over, resident \
+memory grows by at most 256 bytes per request, peak RSS stays under 256 MiB, and no request fails."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "linux-arm64 (developer, Docker)"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/memory_bound.py --bin-dir ${CANDIDATE}/bin"
+environment = "candidate binaries; python venv; loopback ports only; the data directory on the runner's disk"
+fixtures = "one bucket, 200 keys; 4 client processes x 4 threads for 300 s"
+failure_injection = "none"
+evidence = "detail.json with every RSS, request-count and .redb-size sample"
+implementation = ["tests/gates/memory_bound.py", "tests/gates/gatelib.py"]
+timeout_minutes = 15
+infra_retries = 1
+binds_artifact = true
+limitations = """A five-minute run shows that memory stops following the databases, not that it is flat for days; \
+the 90-minute soak behind RSG-011's closure is recorded in docs/operations/capacity-planning.md, not re-run per \
+change. Judged per request, so a slower runner makes fewer requests and is held to the same ratio; fewer than \
+15 000 requests in the window is an invalid measurement. glibc without MALLOC_ARENA_MAX, and musl, are measured \
+in that soak, not here."""
+[[gate.metrics]]
+name = "rss_bytes_per_request_after_warm_up"
+unit = "B"
+threshold = "<= 256"
+kind = "structural"
+basis = "an unbounded cache grew 1189-1300 B/request under this workload (RSG-011); bounded, 50-160 B/request on a contended Linux host"
+[[gate.metrics]]
+name = "peak_rss_bytes"
+unit = "B"
+threshold = "<= 256 MiB"
+kind = "contract"
+basis = "half of the 512 MiB memory request the Helm chart makes, at an 8 MiB cache"
+[gate.reuse]
+max_age_days = 0
+
 # ---------------------------------------------------------------------------
 # Compatibility
 # ---------------------------------------------------------------------------

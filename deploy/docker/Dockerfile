@@ -17,10 +17,16 @@ COPY --from=builder /src/target/release/record-store /usr/local/bin/record-store
 # The image is labelled Apache-2.0, so it carries the licence it claims.
 COPY --from=builder /src/LICENSE /usr/share/licenses/record-store/LICENSE
 
+# glibc gives each thread that contends for the allocator an arena of its own,
+# up to eight per core, and keeps what every arena once held. Under steady load
+# the server's resident memory then keeps climbing while its live heap stays
+# flat; two arenas held it at half, with no difference in throughput (see
+# docs/operations/capacity-planning.md#memory).
 ENV RECORD_STORE_S3_BIND=0.0.0.0:7600 \
     RECORD_STORE_API_BIND=0.0.0.0:7601 \
     RECORD_STORE_STORAGE_DATA_DIRECTORY=/var/lib/record-store \
-    RECORD_STORE_LOG_JSON=true
+    RECORD_STORE_LOG_JSON=true \
+    MALLOC_ARENA_MAX=2
 
 USER record-store:record-store
 VOLUME ["/var/lib/record-store"]
