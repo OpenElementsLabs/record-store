@@ -1,6 +1,11 @@
-FROM rust:1.98-bookworm@sha256:9a73a5088750b4c95158ab26629c854c3d6fc4b173cb7bc8079ad252d8ed7bfa AS builder
+# The toolchain rust-toolchain.toml pins, so the image digest pins the compiler
+# and the build needs no toolchain download. Bump the two together.
+FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
 WORKDIR /src
 
+# The build context has no .git, so the commit is passed in; the binaries
+# report it (record-store version, /api/v1/system/info, backup manifests).
+ARG RECORD_STORE_BUILD_COMMIT=unknown
 COPY . .
 RUN cargo build --locked --release --bin record-store-server --bin record-store
 

@@ -482,6 +482,7 @@ jobs:
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
+          RECORD_STORE_BUILD_COMMIT: ${{ github.sha }}
         run: |
           cargo build --locked --release --target ${{ matrix.target }} \
             --bin record-store --bin record-store-server

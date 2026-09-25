@@ -140,6 +140,7 @@ pub struct AppState {
     audit: Arc<dyn AuditRepository>,
     owner: OrganizationId,
     version: &'static str,
+    commit: &'static str,
     mode: DeploymentMode,
     management_auth: ManagementAuth,
     metrics_auth: MetricsAuth,
@@ -226,6 +227,7 @@ impl AppState {
             audit,
             owner,
             version,
+            commit: "unknown",
             mode: DeploymentMode::Standalone,
             management_auth,
             metrics_auth: MetricsAuth::disabled(),
@@ -237,6 +239,13 @@ impl AppState {
             metrics_history: Arc::new(crate::history::MetricsHistory::new(chrono::Utc::now())),
             trusted_proxies: Arc::new(TrustedProxies::default()),
         }
+    }
+
+    /// Names the commit this build came from, reported beside the version.
+    #[must_use]
+    pub const fn with_build_commit(mut self, commit: &'static str) -> Self {
+        self.commit = commit;
+        self
     }
 
     /// Names the reverse-proxy hops whose forwarding headers may be believed.

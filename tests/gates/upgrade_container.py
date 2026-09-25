@@ -122,7 +122,9 @@ def main(gate: Gate) -> None:
     logs.mkdir(parents=True, exist_ok=True)
 
     docker("pull", PREVIOUS_IMAGE)
-    built = docker("build", "--file", "deploy/docker/Dockerfile", "--tag", CANDIDATE_IMAGE, str(REPOSITORY_ROOT), timeout=3600)
+    commit = subprocess.run(["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    built = docker("build", "--file", "deploy/docker/Dockerfile", "--build-arg", f"RECORD_STORE_BUILD_COMMIT={commit}",
+                   "--tag", CANDIDATE_IMAGE, str(REPOSITORY_ROOT), timeout=3600)
     gate.context["images"] = {
         "previous": docker("image", "inspect", PREVIOUS_IMAGE, "--format", "{{.Id}}").stdout.strip(),
         "candidate": docker("image", "inspect", CANDIDATE_IMAGE, "--format", "{{.Id}}").stdout.strip(),

@@ -126,6 +126,8 @@ jobs:
           context: .
           file: ${{ inputs.dockerfile }}
           platforms: ${{ matrix.platform }}
+          # Embedded in the binaries; ART-IDENTITY checks it against the tag.
+          build-args: RECORD_STORE_BUILD_COMMIT=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           # Each runner pushes a nameless manifest; the merge job below is what
           # gives the release its tags.

@@ -1,6 +1,10 @@
 //! Explicit Record Store server initialization and dual-listener lifecycle orchestration.
 
 pub mod backup;
+
+/// The commit this binary was built from, or `unknown` (see `build.rs`).
+pub const BUILD_COMMIT: &str = env!("RECORD_STORE_BUILD_COMMIT");
+
 mod cluster;
 pub mod discovery;
 pub mod preflight;
@@ -421,6 +425,7 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         owner,
         env!("CARGO_PKG_VERSION"),
     )
+    .with_build_commit(BUILD_COMMIT)
     .with_mode(config.server.mode)
     .with_trusted_proxies(trusted_proxies.clone())
     .with_metrics_history(Arc::clone(&metrics_history))
@@ -552,7 +557,12 @@ where
             source,
         })?;
     let runtime = initialize(config).await?;
-    info!(mode = %config.server.mode, "Record Store starting");
+    info!(
+        mode = %config.server.mode,
+        version = env!("CARGO_PKG_VERSION"),
+        commit = BUILD_COMMIT,
+        "Record Store starting"
+    );
     info!(address = %config.server.s3_bind, "S3 API listening");
     info!(address = %config.server.api_bind, "management API listening");
     if !config.server.mode.clustered() {

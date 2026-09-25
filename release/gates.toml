@@ -667,8 +667,9 @@ id = "ART-IDENTITY"
 title = "The tested binaries are the candidate, identified by digest"
 area = "artifact"
 guarantee = """tests/gates/build-candidate.sh records the commit, tree cleanliness, Cargo.lock digest, toolchain and \
-binary digests; every artifact-bound result must carry the same digests or the evaluator rejects it. On a tag, \
-the binaries are the ones extracted from the published image, and the reported version equals the tag."""
+binary digests; every artifact-bound result must carry the same digests or the evaluator rejects it. The CLI \
+(`record-store version`) and the running server (/api/v1/system/info) name the candidate's commit. On a tag, the \
+binaries are the ones extracted from the published image, and the reported version equals the tag."""
 modes = ["standalone"]
 platforms = ["linux-amd64", "linux-arm64"]
 stages = ["integration", "candidate"]
@@ -678,12 +679,13 @@ environment = "the candidate directory"
 fixtures = "candidate.json"
 failure_injection = "none"
 evidence = "candidate.json"
-implementation = ["tests/gates/artifact_identity.py", "tests/gates/build-candidate.sh"]
+implementation = ["tests/gates/artifact_identity.py", "tests/gates/build-candidate.sh", "tests/gates/gatelib.py"]
 timeout_minutes = 5
 infra_retries = 0
 binds_artifact = true
-limitations = """Binaries do not embed their commit, and unreleased builds report the previous release's version \
-until the release bump, so identity rests on digests recorded at build time (RSG-006)."""
+limitations = """Unreleased builds report the previous release's version until the release bump; the embedded \
+commit and the digests are what tell them apart. A build from a modified tree embeds its base commit, which is \
+why tree cleanliness is recorded and checked separately."""
 [gate.reuse]
 max_age_days = 0
 

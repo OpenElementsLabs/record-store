@@ -92,6 +92,10 @@ pub struct BackupManifest {
     pub backup_format_version: u32,
     /// Release that produced the backup, for support and for upgrade ordering.
     pub record_store_version: String,
+    /// Commit of the build that produced the backup. Absent from backups made
+    /// before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_store_commit: Option<String>,
     /// Catalog schema the metadata files were written by.
     pub metadata_schema_version: u64,
     /// Payload layout the objects were written under.
@@ -307,6 +311,7 @@ pub fn backup(
     let manifest = BackupManifest {
         backup_format_version: BACKUP_FORMAT_VERSION,
         record_store_version: env!("CARGO_PKG_VERSION").to_owned(),
+        record_store_commit: Some(crate::BUILD_COMMIT.to_owned()),
         metadata_schema_version: record_store_metadata::METADATA_SCHEMA_VERSION,
         storage_format_version: read_storage_format_version(destination)?,
         created_unix_seconds: SystemTime::now()
@@ -867,6 +872,7 @@ fn legacy_manifest(encoded: &[u8]) -> Result<BackupManifest, BackupError> {
     Ok(BackupManifest {
         backup_format_version: 1,
         record_store_version: "unknown".to_owned(),
+        record_store_commit: None,
         metadata_schema_version: legacy.metadata_schema_version,
         storage_format_version: 1,
         created_unix_seconds: legacy.created_unix_seconds,
