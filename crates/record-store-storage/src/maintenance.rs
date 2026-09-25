@@ -270,6 +270,10 @@ pub(crate) async fn write_publication_record(
         .open(&partial)
         .await
         .map_err(|source| filesystem("create publication record", source))?;
+    // Ours from here until the rename. A write or sync that fails must not
+    // leave it behind: a multipart completion retries under the same object
+    // id, and the leftover would refuse every retry until the next restart.
+    let mut partial_cleanup = TemporaryFileGuard::new(partial.clone());
     file.write_all(&encoded)
         .await
         .map_err(|source| filesystem("write publication record", source))?;
@@ -280,6 +284,7 @@ pub(crate) async fn write_publication_record(
     fs::rename(&partial, path)
         .await
         .map_err(|source| filesystem("publish publication record", source))?;
+    partial_cleanup.disarm();
     let parent = path.parent().ok_or_else(|| {
         filesystem(
             "resolve publication directory",
@@ -338,6 +343,40 @@ mod tests {
 
     use super::*;
     use crate::layout::PublicationRecord;
+
+    /// A record that could not be published leaves nothing under its partial
+    /// name, so a retry under the same object id -- a multipart completion
+    /// reuses its reserved one -- is not refused as already existing.
+    #[tokio::test]
+    async fn a_failed_publication_record_leaves_no_partial_behind() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("object.publish");
+        let record = PublicationRecord {
+            object_id: ObjectId::new(),
+            bucket_id: None,
+            key: None,
+        };
+        // A non-empty directory where the record belongs makes the final
+        // rename fail after the partial was written and synchronized.
+        fs::create_dir_all(path.join("obstacle"))
+            .await
+            .expect("obstacle");
+        write_publication_record(&path, &record)
+            .await
+            .expect_err("the rename cannot succeed");
+        let mut partial = path.as_os_str().to_owned();
+        partial.push(".partial");
+        assert!(
+            !std::path::Path::new(&partial).exists(),
+            "the partial record was left behind"
+        );
+
+        fs::remove_dir_all(&path).await.expect("clear the obstacle");
+        write_publication_record(&path, &record)
+            .await
+            .expect("a retry succeeds");
+        assert!(path.is_file());
+    }
 
     #[tokio::test]
     async fn startup_publication_journal_removes_an_uncommitted_payload() {
