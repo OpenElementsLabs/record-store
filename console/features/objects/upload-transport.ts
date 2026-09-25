@@ -100,6 +100,8 @@ export const singleRequestUpload: UploadTransport = ({ bucket, key, file }, obse
     });
   request.onload = () => {
     if (request.status >= 200 && request.status < 300) settle({ status: 'done' });
+    else if (definitelyRefused(request))
+      settle({ status: 'failed', reason: describeFailure(request) });
     else if (request.status === 0 || request.status >= 500) uncertain();
     else settle({ status: 'failed', reason: describeFailure(request) });
   };
@@ -112,6 +114,22 @@ export const singleRequestUpload: UploadTransport = ({ bucket, key, file }, obse
 
   return { abort: () => request.abort() };
 };
+
+/**
+ * A quota refusal (507) is decided inside the commit that would have stored the
+ * object, so nothing was stored. It counts as definite only when the body is
+ * the management API's own error envelope: the same status from an
+ * intermediary proves nothing about what Record Store did.
+ */
+function definitelyRefused(request: XMLHttpRequest): boolean {
+  if (request.status !== 507) return false;
+  try {
+    const body = JSON.parse(request.responseText) as { error?: { message?: unknown } };
+    return typeof body.error?.message === 'string';
+  } catch {
+    return false;
+  }
+}
 
 function describeFailure(request: XMLHttpRequest): string {
   try {

@@ -82,6 +82,9 @@ pub struct MetricsHistoryResponse {
     pub started_at: DateTime<Utc>,
     /// Samples, oldest first.
     pub samples: Vec<MetricsSample>,
+    /// The server's clock when it answered. A client that samples on its own
+    /// clock uses this to place these samples on it, so the two never mix.
+    pub now: DateTime<Utc>,
 }
 
 /// A bounded ring of counter readings.
@@ -148,6 +151,7 @@ impl MetricsHistory {
             capacity: self.capacity,
             started_at: self.started_at,
             samples,
+            now: Utc::now(),
         }
     }
 }

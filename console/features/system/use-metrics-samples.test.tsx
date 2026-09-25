@@ -164,6 +164,47 @@ describe('seeding from the server history', () => {
   });
 
   /**
+   * Coming from Overview, its cached reading reaches the window before the
+   * history does. A server that names its clock lets the history go in
+   * underneath that reading anyway, moved onto the browser's clock, so a skew
+   * between the two machines changes nothing about the rate.
+   */
+  it('seeds beneath an existing reading when the server names its clock, whatever the skew', async () => {
+    const skew = 90_000; // the server's clock runs a minute and a half ahead
+    const seeded = history(5);
+    const shifted = {
+      ...seeded,
+      now: new Date(Date.now() + skew).toISOString(),
+      samples: seeded.samples.map((sample) => ({
+        ...sample,
+        at: new Date(Date.parse(sample.at) + skew - 1_500).toISOString(),
+      })),
+    };
+    let resolveHistory: (value: unknown) => void = () => {};
+    vi.mocked(fetchSystemMetricsHistory).mockReturnValue(
+      new Promise((resolve) => {
+        resolveHistory = resolve;
+      }) as never,
+    );
+    vi.mocked(fetchSystemMetrics).mockResolvedValue(reading(415));
+
+    const { result } = mount();
+    await vi.waitFor(() => expect(result.current.current).not.toBeNull());
+    await act(async () => {
+      resolveHistory(shifted);
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(result.current.requests).not.toBeNull());
+    // Five readings 15 s apart at 100 requests each, then the live one 1.5 s
+    // later at +15: every interval is 100/15 per second. Had the skew leaked
+    // in, the last interval would span -88.5 s and the window would be wrong.
+    expect(result.current.requests?.perSecond).toBeCloseTo(415 / 61.5, 1);
+    expect(result.current.windowSeconds).toBeGreaterThanOrEqual(60);
+    expect(result.current.windowSeconds).toBeLessThanOrEqual(63);
+  });
+
+  /**
    * Seeding is a convenience. A server too old to know the path, or a proxy
    * returning something else entirely, must leave the screen working exactly as
    * it did before — not blank it.
