@@ -20,7 +20,6 @@ the record.
 
 | Id | Title | Status | Blocks release |
 | --- | --- | --- | --- |
-| [RSG-004](RSG-004-no-header-read-timeout.md) | No header read timeout: slow clients hold connections indefinitely | open | no |
 | [RSG-005](RSG-005-small-writes-serialize.md) | Small-write throughput does not scale with concurrency | open (observation) | no |
 | [RSG-006](RSG-006-binaries-carry-no-commit.md) | Binaries carry no commit; unreleased builds report the previous version | open | no |
 | [RSG-011](RSG-011-memory-growth-under-steady-load.md) | Resident memory grows steadily under a steady mixed workload | open (investigating) | no — decision needed |

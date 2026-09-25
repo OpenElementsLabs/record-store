@@ -33,6 +33,13 @@ pub struct ServerConfig {
     pub rpc_advertise: Option<String>,
     /// Maximum graceful-shutdown drain time.
     pub shutdown_grace_period_seconds: u64,
+    /// How long a client may take to send a request's headers, and how long an
+    /// idle keep-alive connection waits for the next request, before both
+    /// listeners close the connection. Without a bound, a client that trickles
+    /// a header line at a time holds a connection -- a descriptor and a task --
+    /// for as long as it likes.
+    #[serde(default = "default_header_read_timeout_seconds")]
+    pub header_read_timeout_seconds: u64,
     /// Reverse-proxy hops whose `X-Forwarded-For` header may be believed.
     ///
     /// Addresses or CIDR blocks, for example `10.0.0.0/8`. Empty by default,
@@ -74,6 +81,10 @@ impl ServerConfig {
     }
 }
 
+const fn default_header_read_timeout_seconds() -> u64 {
+    30
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -83,6 +94,7 @@ impl Default for ServerConfig {
             rpc_bind: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 7_603)),
             rpc_advertise: None,
             shutdown_grace_period_seconds: 30,
+            header_read_timeout_seconds: default_header_read_timeout_seconds(),
             trusted_proxies: Vec::new(),
         }
     }

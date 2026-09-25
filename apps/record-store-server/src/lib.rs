@@ -45,6 +45,7 @@ pub struct ServerRuntime {
     management: axum::Router,
     s3: axum::Router,
     shutdown_grace_period: Duration,
+    header_read_timeout: Duration,
     webhook_worker: WebhookWorker,
     event_pump: StorageEventPump,
     lifecycle_worker: LifecycleWorker,
@@ -91,6 +92,7 @@ impl ServerRuntime {
                     self.s3,
                     s3_shutdown,
                     self.shutdown_grace_period,
+                    self.header_read_timeout,
                 )
                 .await
                 .map_err(StartupError::Http)
@@ -101,6 +103,7 @@ impl ServerRuntime {
                     self.management,
                     api_shutdown,
                     self.shutdown_grace_period,
+                    self.header_read_timeout,
                 )
                 .await
                 .map_err(StartupError::Http)
@@ -499,6 +502,7 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         management,
         s3,
         shutdown_grace_period: Duration::from_secs(config.server.shutdown_grace_period_seconds),
+        header_read_timeout: Duration::from_secs(config.server.header_read_timeout_seconds),
         webhook_worker: WebhookWorker::new(
             event_dependency,
             Duration::from_secs(config.webhooks.poll_interval_seconds),

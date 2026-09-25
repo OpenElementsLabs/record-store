@@ -31,6 +31,12 @@ impl Config {
             self.server.shutdown_grace_period_seconds =
                 parse_environment("RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS", value)?;
         }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS")?
+        {
+            self.server.header_read_timeout_seconds =
+                parse_environment("RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS", value)?;
+        }
         if let Some(value) = environment_value(environment, "RECORD_STORE_STORAGE_DATA_DIRECTORY")?
         {
             self.storage.data_directory = PathBuf::from(value);

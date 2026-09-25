@@ -242,7 +242,7 @@ jobs:
         run: |
           set -euo pipefail
           selected=()
-          for gate in ART-IDENTITY COR-INTEGRITY COR-PAGINATION CMP-UNSUPPORTED REC-BACKUP CMP-UPGRADE SEC-REDACT; do
+          for gate in ART-IDENTITY COR-INTEGRITY COR-PAGINATION CMP-UNSUPPORTED REC-BACKUP CMP-UPGRADE SEC-REDACT SEC-SLOW-CLIENTS; do
             [[ " $GATES " == *" $gate "* ]] && selected+=("$gate")
           done
           [[ ${#selected[@]} -eq 0 ]] || PREVIOUS_BIN_DIR="$PWD/previous/bin" GATE_EVALUATE=0 \
