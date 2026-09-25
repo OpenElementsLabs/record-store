@@ -432,6 +432,203 @@ jobs:
           docker logs record-store || true
           docker logs record-store-console || true
 
+  # Statically linked builds, and the deb and rpm made from them.
+  #
+  # These are compiled rather than extracted from the container image, because
+  # the image is glibc and the whole point of these artifacts is to not be. Each
+  # architecture builds on its own native runner: a release build of this
+  # workspace under QEMU turns a ten-minute job into an hour-long one.
+  linux-packages:
+    name: Linux packages (${{ matrix.architecture }})
+    needs: [validate, gates]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - architecture: amd64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            rpm-architecture: x86_64
+            probe-image: debian:12-slim
+          - architecture: arm64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            rpm-architecture: aarch64
+            probe-image: debian:12-slim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # ring compiles C, so a musl target needs a musl C compiler as well as the
+      # Rust standard library for that target.
+      - name: Install the musl toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: musl-${{ matrix.architecture }}
+
+      - name: Build the static binaries
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: |
+          cargo build --locked --release --target ${{ matrix.target }} \
+            --bin record-store --bin record-store-server
+
+      # A dynamically linked binary here would produce a package that installs
+      # on a system it cannot run on, and the failure would appear as a crash at
+      # first start rather than as a dependency error.
+      - name: Check the binaries are actually static
+        run: |
+          set -euo pipefail
+          for binary in record-store record-store-server; do
+            path="target/${{ matrix.target }}/release/${binary}"
+            description="$(file -b "$path")"
+            echo "${binary}: ${description}"
+            if [[ "$description" != *"statically linked"* ]]; then
+              echo "${binary} is not statically linked" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build the archive
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tar --create --gzip \
+            --owner=0 --group=0 --numeric-owner \
+            --file "dist/record-store-${VERSION}-linux-${{ matrix.architecture }}-musl.tar.gz" \
+            --directory "target/${{ matrix.target }}/release" \
+            record-store record-store-server
+
+      - name: Build the deb and the rpm
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          deploy/linux/build-packages.sh \
+            "${{ matrix.architecture }}" "$VERSION" \
+            "target/${{ matrix.target }}/release" dist
+
+      # Installs what was just built and starts it, so a broken maintainer
+      # script or a missing file fails the release instead of the first
+      # operator who runs apt-get install.
+      - name: Install and run the deb
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm --volume "${PWD}/dist:/pkg:ro" ${{ matrix.probe-image }} bash -c '
+            set -eu
+            apt-get update -qq > /dev/null
+            apt-get install -y -qq curl > /dev/null
+            apt-get install -y -qq "/pkg/record-store_'"${VERSION}"'_${{ matrix.architecture }}.deb" > /dev/null
+            test -f /etc/record-store/record-store.env
+            test "$(stat -c %a /etc/record-store/record-store.env)" = 600
+            systemd-analyze verify /usr/lib/systemd/system/record-store.service
+            set -a; . /etc/record-store/record-store.env; set +a
+            record-store server --config /etc/record-store/record-store.toml check-config
+            runuser -u record-store -- /usr/bin/record-store server \
+              --config /etc/record-store/record-store.toml > /tmp/server.log 2>&1 &
+            for _ in $(seq 1 60); do
+              curl -fsS http://127.0.0.1:7601/ready > /dev/null 2>&1 && break
+              sleep 1
+            done
+            curl -fsS http://127.0.0.1:7601/ready
+            echo
+            reported="$(record-store --version)"
+            test "$reported" = "record-store '"${VERSION}"'" || {
+              echo "the package reports ${reported}" >&2; exit 1; }
+          '
+
+      - name: Install the rpm
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm --volume "${PWD}/dist:/pkg:ro" rockylinux/rockylinux:9 bash -c '
+            set -eu
+            dnf install -y -q "/pkg/record-store-'"${VERSION}"'-1.${{ matrix.rpm-architecture }}.rpm"
+            test -f /etc/record-store/record-store.env
+            test "$(stat -c %a /etc/record-store/record-store.env)" = 600
+            rpm -q --configfiles record-store | grep -q /etc/record-store/record-store.toml
+            set -a; . /etc/record-store/record-store.env; set +a
+            record-store server --config /etc/record-store/record-store.toml check-config
+            reported="$(record-store --version)"
+            test "$reported" = "record-store '"${VERSION}"'" || {
+              echo "the package reports ${reported}" >&2; exit 1; }
+          '
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-packages-${{ matrix.architecture }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # The Helm chart, published to GHCR as an OCI artifact beside the images and
+  # attached to the release as a tarball for air-gapped installs.
+  chart:
+    name: Helm chart
+    needs: [validate, server-image, console-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.19.0
+
+      - name: Lint and render the chart
+        run: .github/scripts/chart-check.sh
+
+      # The chart version and its appVersion are both the release version, so a
+      # chart can never be ambiguous about which Record Store it deploys.
+      - name: Package the chart
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          helm package deploy/kubernetes/helm/record-store \
+            --version "$VERSION" --app-version "$VERSION" --destination dist
+          ls -l dist
+
+      - name: Publish the chart to GHCR
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          owner="$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          echo "$TOKEN" | helm registry login ghcr.io --username "$ACTOR" --password-stdin
+          helm push "dist/record-store-${VERSION}.tgz" "oci://ghcr.io/${owner}/charts"
+          echo "Published \`oci://ghcr.io/${owner}/charts/record-store:${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: chart
+          path: dist/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
   provenance:
     name: Verify attestations
     needs: [validate, server-image, console-image, binaries]
@@ -536,7 +733,7 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [validate, server-image, console-image, binaries, smoke, provenance, release-decision]
+    needs: [validate, server-image, console-image, binaries, linux-packages, chart, smoke, provenance, release-decision]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -553,6 +750,18 @@ jobs:
         with:
           path: dist
           pattern: sbom-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: linux-packages-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: chart
           merge-multiple: true
 
       # The decision that allowed this release, attached so it is kept with it.

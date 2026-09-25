@@ -98,3 +98,30 @@ jobs:
           # build, so a release can reuse what CI already compiled.
           cache-from: type=gha,scope=${{ matrix.image }}-amd64
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-amd64
+
+  # Lints the Helm chart and validates every render shape against the real
+  # Kubernetes schemas. Costs seconds, and catches the template errors that
+  # otherwise surface as a failed `helm install` during a release.
+  helm-chart:
+    name: helm-chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.19.0
+
+      - name: Lint and render the chart
+        run: .github/scripts/chart-check.sh
+
+      # Proves the chart actually runs, not only that it renders: a single node
+      # on a throwaway cluster, waited on until its probes pass. The published
+      # image is used, so this also catches a chart that disagrees with the
+      # image it deploys.
+      - name: Install the chart on a kind cluster
+        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: chart-check
+
+      - name: Deploy and probe
+        run: .github/scripts/chart-smoke.sh

@@ -1,0 +1,72 @@
+# Governs the StatefulSet, which requires a headless Service. Clients use the
+# S3 and management Services below, not this one.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "record-store.headlessService" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "record-store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "record-store.server.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.service.ports.api }}
+      targetPort: api
+      protocol: TCP
+---
+# The S3 endpoint: the address clients and SDKs are pointed at.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "record-store.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "record-store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  {{- with .Values.service.s3.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.s3.type }}
+  selector:
+    {{- include "record-store.server.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: s3
+      port: {{ .Values.service.ports.s3 }}
+      targetPort: s3
+      protocol: TCP
+      {{- if and .Values.service.s3.nodePort (eq .Values.service.s3.type "NodePort") }}
+      nodePort: {{ .Values.service.s3.nodePort }}
+      {{- end }}
+---
+# The management API. ClusterIP with no override on purpose: this is the control
+# plane, and the chart will not hand you a way to publish it by accident. Reach
+# it with `kubectl port-forward`, or put your own Ingress in front once you have
+# decided how it should be authenticated.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "record-store.apiService" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "record-store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  {{- with .Values.service.api.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "record-store.server.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.service.ports.api }}
+      targetPort: api
+      protocol: TCP

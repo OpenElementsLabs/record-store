@@ -110,13 +110,37 @@ cat <<NOTES
 
 ## Assets
 
-Linux binary archives contain \`record-store\` and \`record-store-server\`, taken from
-the published images so the archive and the container hold the same build. An
-SPDX SBOM is attached per image and per architecture, the SLSA provenance for the
-archives is attached as \`.intoto.jsonl\`, and \`SHA256SUMS\` covers every asset here.
+| Asset | What it is |
+| --- | --- |
+| \`record-store-$VERSION-linux-ARCH-musl.tar.gz\` | Statically linked binaries. No libc dependency, so they run on any distribution. |
+| \`record-store-$VERSION-linux-ARCH.tar.gz\` | glibc binaries, taken from the published image so the archive and the container hold the same build. |
+| \`record-store_${VERSION}_ARCH.deb\` | Debian and Ubuntu package: systemd unit, configuration, per-machine generated credentials. |
+| \`record-store-$VERSION-1.ARCH.rpm\` | The same for RHEL, Rocky, Fedora and openSUSE. |
+| \`record-store-$VERSION.tgz\` | The Helm chart, for installs that cannot reach a registry. |
+| \`*.spdx.json\` | An SPDX SBOM per image and per architecture. |
+| \`record-store-$VERSION-provenance.intoto.jsonl\` | SLSA provenance for the glibc archives. |
+| \`record-store-$VERSION-release-gates.json\` / \`.md\` | The release gate decision that allowed this release. |
+| \`SHA256SUMS\` | Checksums for every asset here. |
+
+\`ARCH\` is \`amd64\` or \`arm64\` (\`x86_64\`/\`aarch64\` for the rpm). Both archives
+contain \`record-store\` and \`record-store-server\`.
+
+The packages carry statically linked binaries and declare no libc dependency, so
+they install on Debian 11 and RHEL 8 onwards.
+
+The provenance covers the glibc archives, which are extracted from the attested
+image. The static archives and the packages are compiled separately and carry no
+provenance yet; verify them against \`SHA256SUMS\`.
 
 The release tag is signed too. See
 [Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/).
 
 macOS builds are not published; build from source with \`cargo build --release\`.
+
+## Helm chart
+
+\`\`\`bash
+helm install record-store \\
+  oci://ghcr.io/openelementslabs/charts/record-store --version $VERSION
+\`\`\`
 NOTES

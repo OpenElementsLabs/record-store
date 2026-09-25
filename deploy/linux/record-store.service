@@ -1,0 +1,73 @@
+# systemd unit for the Record Store server, installed by the deb and rpm
+# packages.
+#
+# The hardening below is deliberately limited to directives that exist in
+# systemd 239, the version RHEL 8 ships. Newer directives (ProtectProc,
+# ProtectClock, ProtectHostname, ProtectKernelLogs) would be silently ignored
+# there but still print warnings in `systemctl status`, which reads like
+# breakage to an operator. Add them locally with a drop-in if your fleet is
+# uniformly newer:
+#
+#   systemctl edit record-store
+[Unit]
+Description=Record Store S3-compatible object storage
+Documentation=https://github.com/OpenElementsLabs/record-store
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=simple rather than Type=exec: the latter needs systemd 240 and buys
+# little here, and these packages are built to install on older distributions.
+Type=simple
+User=record-store
+Group=record-store
+
+# Credentials live in the environment file, not in the unit and not in the TOML,
+# so that `systemctl cat` and world-readable config never expose a secret. The
+# leading '-' is absent on purpose: the server has no default credentials and
+# refusing to start without the file is the honest failure.
+EnvironmentFile=/etc/record-store/record-store.env
+ExecStart=/usr/bin/record-store server --config /etc/record-store/record-store.toml
+
+# systemd creates and owns these, so the package does not have to guess at
+# permissions and a purge can reclaim them.
+StateDirectory=record-store
+StateDirectoryMode=0700
+ConfigurationDirectory=record-store
+ConfigurationDirectoryMode=0750
+
+Restart=on-failure
+RestartSec=5s
+
+# The server drains for shutdown_grace_period_seconds (30 by default). Give it
+# more than that before SIGKILL, or a graceful shutdown becomes a hard kill.
+KillSignal=SIGTERM
+TimeoutStopSec=45s
+
+# An object store holds a socket and a file handle per concurrent operation.
+LimitNOFILE=65535
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# The listeners are all above 1024, so the service needs no capabilities at all.
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,41 @@
+{{- $fullname := include "record-store.fullname" . }}
+Record Store {{ .Chart.AppVersion }} is installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Running as a single standalone server, with its data on one volume.
+
+Endpoints inside the cluster:
+
+  S3          {{ $fullname }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ .Values.service.ports.s3 }}
+  Management  {{ include "record-store.apiService" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ .Values.service.ports.api }}
+{{- if .Values.console.enabled }}
+  Console     {{ $fullname }}-console.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ .Values.console.service.port }}
+{{- end }}
+
+The management API is deliberately not published. Reach it from your machine with:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "record-store.apiService" . }} {{ .Values.service.ports.api }}:{{ .Values.service.ports.api }}
+{{- if .Values.console.enabled }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ $fullname }}-console {{ .Values.console.service.port }}:{{ .Values.console.service.port }}
+{{- end }}
+
+Read the credentials back out of the Secret:
+
+  kubectl --namespace {{ .Release.Namespace }} get secret {{ include "record-store.secretName" . }} \
+    -o jsonpath='{.data.root-access-key}' | base64 -d; echo
+
+{{ if not .Values.persistence.enabled }}
+WARNING  persistence.enabled is false. Objects live in an emptyDir and are
+         destroyed with the pod. Do not store anything you intend to keep.
+{{ end -}}
+{{ if and .Values.console.enabled (not .Values.console.secureCookies) }}
+WARNING  console.secureCookies is false, so the session cookie is sent over
+         plain HTTP. Acceptable for a local trial, never for a real deployment.
+{{ end -}}
+{{ if not .Values.auth.existingSecret }}
+NOTE     Credentials were passed through Helm values and are recorded in the
+         release history. For anything long-lived, create the Secret yourself
+         and set auth.existingSecret.
+{{ end -}}
+
+Back up the credential master key off-cluster. Without it, every stored
+service-account credential becomes unreadable.

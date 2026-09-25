@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "record-store.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "record-store.labels" . | nindent 4 }}
+data:
+  record-store.toml: |
+    # Managed by Helm. Edit values.yaml (.configuration), not this ConfigMap:
+    # anything changed here is overwritten on the next `helm upgrade`.
+    #
+    # Listeners, the data directory and all credentials are supplied through
+    # the environment by the chart and take precedence over this file.
+{{ .Values.configuration | indent 4 }}

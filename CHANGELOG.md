@@ -236,6 +236,24 @@ publishes, so keep it factual and written for the people upgrading.
   filesystem, and it is not evidence against an operator with access to the data
   directory.
 
+- Debian and RPM packages for `amd64` and `arm64`, published with every release.
+  They install the server and CLI, a hardened systemd unit, a configuration file
+  that upgrades never overwrite, and generate credentials unique to the machine
+  on first install. Nothing starts until an operator enables it. The binaries
+  inside are statically linked, so the packages declare no libc dependency and
+  install on Debian 11 and RHEL 8 onwards.
+
+- Statically linked Linux binary archives (`…-musl.tar.gz`) beside the existing
+  glibc ones. The glibc archives come from the container image and need a
+  distribution at least as new as Debian 12; these run anywhere.
+
+- A Helm chart, published to `ghcr.io/openelementslabs/charts/record-store` and
+  attached to each release for air-gapped installs. It runs one standalone
+  server as a StatefulSet on its own volume and the console as a Deployment, and
+  keeps the management API `ClusterIP`-only — a rule CI asserts. Setting
+  `replicaCount` fails the install, so a request for more servers is never
+  silently ignored.
+
 ### Changed
 
 - **The console's metrics charts draw immediately instead of filling in over minutes.**
@@ -292,6 +310,10 @@ publishes, so keep it factual and written for the people upgrading.
   being stored unverified; configure the client to use CRC32, CRC32C, SHA-1 or
   SHA-256. Two different `x-amz-checksum-*` algorithms on one request are
   refused, as S3 refuses them.
+
+- The release workflow builds, installs and runs the Linux packages before it
+  publishes anything, and CI lints the Helm chart, validates every render shape
+  against the Kubernetes schemas, and installs it on a throwaway kind cluster.
 
 ### Fixed
 

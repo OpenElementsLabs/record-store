@@ -1,0 +1,253 @@
+# Record Store Helm chart values.
+#
+# The shortest useful install, a single node with generated credentials:
+#
+#   helm install rs oci://ghcr.io/openelementslabs/charts/record-store \
+#     --set auth.rootAccessKey=admin \
+#     --set auth.rootSecretKey="$(openssl rand -hex 24)" \
+#     --set auth.credentialMasterKey="$(openssl rand -hex 32)" \
+#     --set auth.managementSystemToken="$(openssl rand -hex 32)"
+#
+# For anything long-lived, create the Secret yourself and set
+# auth.existingSecret instead, so credentials never pass through Helm values or
+# your shell history.
+
+# Suffix of the in-cluster DNS zone. Change only if your cluster was installed
+# with something other than cluster.local.
+clusterDomain: cluster.local
+
+image:
+  repository: ghcr.io/openelementslabs/record-store
+  # Defaults to the chart's appVersion, which names an exact release.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # The server calls no Kubernetes API, so it has no use for a mounted token.
+  automountServiceAccountToken: false
+
+auth:
+  # Name of a Secret you manage yourself. When set, every value below is
+  # ignored and the Secret must carry these keys:
+  #   root-access-key, root-secret-key, credential-master-key,
+  #   management-system-token.
+  existingSecret: ""
+
+  # Used only when existingSecret is empty. Record Store has no default
+  # credentials and will not start until these are supplied.
+  rootAccessKey: ""
+  rootSecretKey: ""
+  # Encrypts stored service-account credentials. Losing it makes every stored
+  # credential unreadable: back it up outside the cluster.
+  credentialMasterKey: ""
+  # Bearer token for the management API and the console.
+  managementSystemToken: ""
+
+  # Optional lower-privilege roles. Each must differ from the others.
+  managementStorageToken: ""
+  managementAuditorToken: ""
+  # Enables authenticated Prometheus scraping. Metrics stay closed while empty.
+  metricsScrapeToken: ""
+
+# Rendered verbatim into a ConfigMap and mounted at
+# /etc/record-store/record-store.toml. It is raw TOML rather than a Helm-to-TOML
+# translation on purpose: this is the same file documented everywhere else, so
+# what you know about configuring Record Store applies unchanged.
+#
+# Listener addresses, the data directory and every credential are supplied
+# through the environment by the chart and override whatever this file says.
+configuration: |
+  [storage]
+  data_directory = "/var/lib/record-store"
+  encryption_enabled = true
+
+  [auth]
+  root_s3_enabled = true
+
+  [limits]
+  maximum_concurrent_operations = 256
+  maximum_custom_metadata_entries = 64
+  maximum_custom_metadata_bytes = 16384
+  maximum_header_bytes = 65536
+
+  [webhooks]
+  allow_http = false
+  allow_private_networks = false
+  request_timeout_seconds = 10
+  maximum_attempts = 6
+  poll_interval_seconds = 2
+
+  [lifecycle]
+  interval_seconds = 3600
+  batch_size = 100
+
+  [sharing]
+  shares_enabled = true
+  embeds_enabled = true
+  maximum_lifetime_days = 365
+  maximum_access_count = 10000
+
+  [observability]
+  log_filter = "record_store=info,tower_http=info"
+  json = true
+
+# Extra environment variables for the server, for settings you would rather not
+# put in the ConfigMap. These win over the configuration file above.
+extraEnv: []
+# - name: RECORD_STORE_LIMITS_MAXIMUM_CONCURRENT_OPERATIONS
+#   value: "512"
+
+service:
+  ports:
+    s3: 7600
+    api: 7601
+  # The S3 endpoint. This is the one clients talk to.
+  s3:
+    type: ClusterIP
+    annotations: {}
+    nodePort: null
+  # The management API. Kept ClusterIP-only on purpose: it is the control plane
+  # and has no business being reachable from outside the cluster.
+  api:
+    annotations: {}
+
+persistence:
+  enabled: true
+  size: 100Gi
+  # Leave empty to use the cluster's default StorageClass.
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 2Gi
+
+# Applied to the pod. uid/gid 10001 is the account the image creates.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Startup is allowed 5 minutes: a server recovering a large metadata database
+# should not be killed halfway through.
+probes:
+  startup:
+    failureThreshold: 30
+    periodSeconds: 10
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 5
+
+# Must exceed server.shutdown_grace_period_seconds, or a graceful drain becomes
+# a SIGKILL.
+terminationGracePeriodSeconds: 45
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+# Extra volumes and mounts, for TLS material and the like.
+extraVolumes: []
+extraVolumeMounts: []
+
+console:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/openelementslabs/record-store-console
+    tag: ""
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 7602
+    annotations: {}
+  # Leave true when the console is served over HTTPS, which marks the session
+  # cookie Secure. Set false only for a plain-HTTP trial.
+  secureCookies: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+# Two separate hostnames, because the two endpoints have different audiences:
+# S3 may face the internet, the console is for operators.
+ingress:
+  s3:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: storage.example.com
+    tls: []
+  console:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: record-store.example.com
+    tls: []
+
+# Adds Prometheus scrape annotations to the server pods. The metrics endpoint
+# stays closed unless auth.metricsScrapeToken is set.
+metrics:
+  podAnnotations:
+    enabled: false
+    port: 7601
+    path: /metrics
+
+# Denies everything except the traffic this chart needs. Off by default because
+# it silently breaks installs on clusters without a NetworkPolicy controller.
+networkPolicy:
+  enabled: false
+  # Extra selectors allowed to reach the S3 listener.
+  s3From: []
+  # Extra selectors allowed to reach the management API.
+  apiFrom: []

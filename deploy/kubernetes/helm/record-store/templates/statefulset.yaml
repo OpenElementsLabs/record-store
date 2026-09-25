@@ -1,0 +1,207 @@
+{{- if hasKey .Values "replicaCount" }}
+{{- fail "replicaCount is not supported: this chart runs exactly one standalone server pod." }}
+{{- end }}
+{{- $secret := include "record-store.secretName" . }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "record-store.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "record-store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  # A StatefulSet rather than a Deployment because it never runs two pods
+  # against the same volume: the old pod is gone before its replacement starts.
+  # A Deployment's rolling update can briefly run both, and two processes must
+  # never share a data directory.
+  serviceName: {{ include "record-store.headlessService" . }}
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "record-store.server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "record-store.server.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Restarts the pods when the configuration actually changes, instead of
+        # leaving them running with a file they no longer match.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.metrics.podAnnotations.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.metrics.podAnnotations.port | quote }}
+        prometheus.io/path: {{ .Values.metrics.podAnnotations.path | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "record-store.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: record-store
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # The image's entrypoint is already `record-store server`, so these are
+          # appended to it rather than replacing it.
+          args:
+            - --config
+            - /etc/record-store/record-store.toml
+          ports:
+            - name: s3
+              containerPort: {{ .Values.service.ports.s3 }}
+              protocol: TCP
+            - name: api
+              containerPort: {{ .Values.service.ports.api }}
+              protocol: TCP
+          env:
+            - name: RECORD_STORE_MODE
+              value: standalone
+            - name: RECORD_STORE_S3_BIND
+              value: "0.0.0.0:{{ .Values.service.ports.s3 }}"
+            - name: RECORD_STORE_API_BIND
+              value: "0.0.0.0:{{ .Values.service.ports.api }}"
+            - name: RECORD_STORE_STORAGE_DATA_DIRECTORY
+              value: /var/lib/record-store
+            - name: RECORD_STORE_ROOT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: root-access-key
+            - name: RECORD_STORE_ROOT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: root-secret-key
+            - name: RECORD_STORE_CREDENTIAL_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: credential-master-key
+            - name: RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: management-system-token
+            {{- range $name, $key := dict "RECORD_STORE_MANAGEMENT_STORAGE_TOKEN" "management-storage-token" "RECORD_STORE_MANAGEMENT_AUDITOR_TOKEN" "management-auditor-token" "RECORD_STORE_METRICS_SCRAPE_TOKEN" "metrics-scrape-token" }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $key }}
+                  # Absent unless the operator configured that role.
+                  optional: true
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # /ready reports whether the server can take traffic; /health reports
+          # whether the process is alive. Restarting on the former would kill a
+          # server that is merely still starting.
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: api
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: api
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: api
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/record-store
+            - name: config
+              mountPath: /etc/record-store
+              readOnly: true
+            # readOnlyRootFilesystem is on, and multipart uploads stage through
+            # a temporary directory.
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "record-store.fullname" . }}
+            items:
+              - key: record-store.toml
+                path: record-store.toml
+        - name: tmp
+          emptyDir: {}
+        {{- if not .Values.persistence.enabled }}
+        # Objects live for exactly as long as the pod. Useful for a trial, never
+        # for anything you intend to keep.
+        - name: data
+          emptyDir: {}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "record-store.labels" . | nindent 10 }}
+        {{- with .Values.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- if .Values.persistence.storageClassName }}
+        storageClassName: {{ .Values.persistence.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}
