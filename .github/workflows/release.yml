@@ -490,15 +490,24 @@ jobs:
       # A dynamically linked binary here would produce a package that installs
       # on a system it cannot run on, and the failure would appear as a crash at
       # first start rather than as a dependency error.
+      #
+      # Static means no program interpreter and no shared library, which is
+      # what the ELF headers say directly. `file` words the same property
+      # differently per target -- "static-pie linked" for x86_64 musl,
+      # "statically linked" for aarch64 -- so its prose is printed, not judged.
       - name: Check the binaries are actually static
         run: |
           set -euo pipefail
           for binary in record-store record-store-server; do
             path="target/${{ matrix.target }}/release/${binary}"
-            description="$(file -b "$path")"
-            echo "${binary}: ${description}"
-            if [[ "$description" != *"statically linked"* ]]; then
-              echo "${binary} is not statically linked" >&2
+            echo "${binary}: $(file -b "$path")"
+            if readelf --program-headers --wide "$path" | grep -q 'INTERP'; then
+              echo "${binary} names a program interpreter: it is dynamically linked" >&2
+              exit 1
+            fi
+            if readelf --dynamic --wide "$path" | grep -q '(NEEDED)'; then
+              echo "${binary} needs shared libraries:" >&2
+              readelf --dynamic --wide "$path" | grep '(NEEDED)' >&2
               exit 1
             fi
           done

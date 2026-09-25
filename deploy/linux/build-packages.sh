@@ -50,7 +50,8 @@ done
 if command -v file > /dev/null 2>&1; then
     for binary in record-store record-store-server; do
         description="$(file -b "${binaries}/${binary}")"
-        if [[ "$description" != *"statically linked"* ]]; then
+        # x86_64 musl builds are static-pie, which `file` words differently.
+        if [[ "$description" != *"statically linked"* && "$description" != *"static-pie linked"* ]]; then
             echo "${binary} is not statically linked: ${description}" >&2
             echo "build it for a *-unknown-linux-musl target before packaging" >&2
             exit 1
