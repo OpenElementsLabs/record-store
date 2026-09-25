@@ -1,8 +1,8 @@
 # Kubernetes
 
-Record Store publishes a Helm chart with every release. It runs the server as a
-StatefulSet, the console as a Deployment, and keeps the management API inside
-the cluster.
+Record Store publishes a Helm chart with every release. It runs one standalone
+server as a StatefulSet, the console as a Deployment, and keeps the management
+API off the network edge.
 
 ```bash
 helm install record-store \
@@ -14,23 +14,24 @@ helm install record-store \
   --set auth.managementSystemToken="$(openssl rand -hex 32)"
 ```
 
-That is a single standalone node. Read on before using it for anything you
+The chart always runs exactly one server pod, and setting `replicaCount` fails the
+install rather than being ignored. Read on before using it for anything you
 intend to keep.
 
 ## What the chart creates
 
 | Resource | Why |
 | --- | --- |
-| StatefulSet | Each node's identity is durable — consensus membership and the replicas a node holds are tied to the address it advertises |
-| Headless Service | Gives every pod a stable DNS name for peer traffic |
+| StatefulSet | One server pod on its own volume. Never runs two pods against that volume, even during an upgrade |
+| Headless Service | Required by the StatefulSet; nothing connects to it |
 | Service (S3) | Port 7600, the endpoint clients talk to |
-| Service (management) | Port 7601, `ClusterIP` only |
+| Service (management) | Port 7601, internal only |
 | Deployment + Service (console) | Port 7602, stateless and interchangeable |
 | Secret | Credentials, annotated `helm.sh/resource-policy: keep` |
 | ConfigMap | `record-store.toml` |
 
 The management API is never given a `LoadBalancer` or `NodePort` by this chart,
-and CI asserts that it stays `ClusterIP`. It is unrestricted administrative
+and CI asserts that it stays internal. It is unrestricted administrative
 access. Reach it deliberately:
 
 ```bash
@@ -59,83 +60,26 @@ auth:
 The chart-managed Secret is kept when the release is uninstalled, so
 reinstalling does not orphan credentials already encrypted with the master key.
 
-!!! warning "Back up the credential master key outside the cluster"
+!!! warning "Back up the credential master key somewhere other than Kubernetes"
 
     It cannot be rotated. Losing it makes every stored service-account
     credential unreadable, and with encryption enabled, every object.
 
-## Running a cluster
+## Availability
 
-`replicaCount: 1` is standalone: no consensus, no replication, one owner of the
-data. Three or more turns on cluster mode.
+There is one server pod, so anything that stops it stops the service: an
+upgrade, a configuration change, a node drain, a failed node. After an upgrade
+or a drain, Kubernetes starts the pod again with the same volume, and clients
+see errors until it passes its readiness probe.
 
-```yaml
-replicaCount: 3
-persistence:
-  size: 500Gi
-  storageClassName: fast-ssd
-podDisruptionBudget:
-  enabled: true
-  maxUnavailable: 1
-```
+A failed node is slower. Kubernetes does not start a replacement for a
+StatefulSet pod while the old one might still be running, so the pod stays
+unavailable until the node comes back or you delete the Node object. That wait
+is what keeps two processes off one data directory.
 
-Two replicas is the one size that buys nothing: a two-node cluster cannot form a
-majority after losing either node.
-
-### How nodes find each other
-
-Every pod in a StatefulSet shares one spec, but node 0 has to behave
-differently: it starts with no seeds, which is what tells Record Store to
-initialize a new cluster rather than join one. The chart makes that distinction
-at startup from the pod's ordinal.
-
-Each node advertises its own stable DNS name from the headless service, because
-the address it binds is not the address its peers can reach.
-
-A join token is not a value you choose. The running cluster issues it, records
-it in its own replicated state, and expires it — so it cannot be put in a Secret
-in advance. Instead each new node runs an init container that asks node 0 for
-one, using the management system token, and hands it to the server:
-
-```mermaid
-sequenceDiagram
-    participant I as node N init
-    participant Z as node 0
-    participant N as node N server
-    I->>Z: issue-join-token (management system token)
-    Z-->>I: recordstorejoin.…  (10 minutes, single use)
-    I->>N: token on a pod-local volume
-    N->>Z: join, presenting the token
-```
-
-This happens once per node. A node that has already joined re-attaches from its
-own state on restart and never presents a token again, so the init container
-exits immediately in that case. Nothing has to be rotated, and no long-lived
-join credential exists anywhere.
-
-Because node 0 issues the tokens, it must be running before a new node can
-join — which `OrderedReady` already guarantees when scaling up.
-
-!!! danger "Node 0's volume is what the cluster is bootstrapped from"
-
-    If node 0's PersistentVolumeClaim is deleted while the other nodes keep
-    running, node 0 restarts with empty state, sees no seeds, and initializes a
-    *second* cluster. Treat that volume as you would any other irreplaceable
-    one. Restoring it from backup is the recovery path; deleting it is not.
-
-Spread nodes across failure domains, or a rack outage takes the majority with
-it:
-
-```yaml
-topologySpreadConstraints:
-  - maxSkew: 1
-    topologyKey: topology.kubernetes.io/zone
-    whenUnsatisfiable: DoNotSchedule
-    labelSelector:
-      matchLabels:
-        app.kubernetes.io/name: record-store
-        app.kubernetes.io/component: server
-```
+Plan maintenance windows accordingly, and
+protect the data the way [Durability](../concepts/durability.md) describes: a
+redundant volume underneath and regular [backups](../operations/backup-and-restore.md).
 
 ## Storage
 
@@ -166,10 +110,10 @@ configuration: |
   json = true
 ```
 
-Listener addresses, the advertised peer address and every credential are set by
-the chart through the environment and override the file. Changing
-`configuration` restarts the pods, because the ConfigMap's checksum is part of
-the pod template.
+Listener addresses, the data directory and every credential are set by the
+chart through the environment and override the file. Changing `configuration`
+restarts the server, because the ConfigMap's checksum is part of the pod
+template.
 
 ## Exposing it
 
@@ -223,9 +167,9 @@ helm upgrade record-store \
   --namespace record-store --reuse-values
 ```
 
-The StatefulSet rolls one pod at a time, highest ordinal first, waiting for each
-to pass its readiness probe. Read [Upgrading](upgrading.md) for what a version
-change can mean for stored data.
+The StatefulSet stops the old pod before it starts the new one, so an upgrade is
+a short outage rather than a rolling one. Read [Upgrading](upgrading.md) for what
+a version change can mean for stored data, and take a backup first.
 
 ## Air-gapped installs
 

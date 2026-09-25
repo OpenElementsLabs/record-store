@@ -248,12 +248,11 @@ publishes, so keep it factual and written for the people upgrading.
   distribution at least as new as Debian 12; these run anywhere.
 
 - A Helm chart, published to `ghcr.io/openelementslabs/charts/record-store` and
-  attached to each release for air-gapped installs. It runs the server as a
-  StatefulSet with per-node volumes and stable peer addresses, the console as a
-  Deployment, and keeps the management API `ClusterIP`-only — a rule CI asserts.
-  Standalone and multi-node clusters are both supported: a joining node obtains
-  a short-lived join token from node 0 through an init container, because a join
-  token is issued by the running cluster and cannot be created in advance.
+  attached to each release for air-gapped installs. It runs one standalone
+  server as a StatefulSet on its own volume and the console as a Deployment, and
+  keeps the management API `ClusterIP`-only — a rule CI asserts. Setting
+  `replicaCount` fails the install, so a request for more servers is never
+  silently ignored.
 
 ### Changed
 
@@ -314,7 +313,7 @@ publishes, so keep it factual and written for the people upgrading.
 
 - The release workflow builds, installs and runs the Linux packages before it
   publishes anything, and CI lints the Helm chart, validates every render shape
-  against the Kubernetes schemas, and installs it on a throwaway cluster.
+  against the Kubernetes schemas, and installs it on a throwaway kind cluster.
 
 ### Fixed
 

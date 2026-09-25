@@ -1,4 +1,6 @@
-{{- $clustered := eq (include "record-store.clustered" .) "true" }}
+{{- if hasKey .Values "replicaCount" }}
+{{- fail "replicaCount is not supported: this chart runs exactly one standalone server pod." }}
+{{- end }}
 {{- $secret := include "record-store.secretName" . }}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -9,13 +11,12 @@ metadata:
     {{- include "record-store.labels" . | nindent 4 }}
     app.kubernetes.io/component: server
 spec:
-  # A StatefulSet rather than a Deployment because each node's identity is
-  # durable: consensus membership and the replicas a node holds are both tied to
-  # the address it advertises, which only a stable pod name and a stable volume
-  # can provide.
+  # A StatefulSet rather than a Deployment because it never runs two pods
+  # against the same volume: the old pod is gone before its replacement starts.
+  # A Deployment's rolling update can briefly run both, and two processes must
+  # never share a data directory.
   serviceName: {{ include "record-store.headlessService" . }}
-  replicas: {{ .Values.replicaCount }}
-  podManagementPolicy: OrderedReady
+  replicas: 1
   updateStrategy:
     type: RollingUpdate
   selector:
@@ -53,118 +54,17 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
-      {{- if $clustered }}
-      # A join token is not a secret an operator invents: the running cluster
-      # issues it, it names itself in the cluster's replicated state, and it
-      # expires. So it cannot be put in a Secret ahead of time — it has to be
-      # fetched from node 0 at the moment a new node first starts.
-      #
-      # Only ever needed once per node. A node that has already bound itself to
-      # the cluster re-attaches from its own state on restart and never presents
-      # a token again, so this exits immediately in that case.
-      initContainers:
-        - name: join-token
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
-          command:
-            - /bin/sh
-            - -c
-            - |
-              set -eu
-              if [ "${POD_NAME##*-}" = "0" ]; then
-                echo "node 0 initializes the cluster; no join token needed"
-                exit 0
-              fi
-              identity=/var/lib/record-store/node-identity.json
-              if [ -f "$identity" ] \
-                && grep -q '"cluster_id"[[:space:]]*:[[:space:]]*"' "$identity"; then
-                echo "already bound to a cluster; no join token needed"
-                exit 0
-              fi
-              seed={{ printf "http://%s-0.%s.%s.svc.%s:%d" (include "record-store.fullname" .) (include "record-store.headlessService" .) .Release.Namespace .Values.clusterDomain (int .Values.service.ports.api) | quote }}
-              echo "requesting a join token from ${seed}"
-              # Node 0 is Ready before this pod is created, but a leader election
-              # can still be in flight, so this is retried rather than raced.
-              attempt=0
-              while [ "$attempt" -lt 60 ]; do
-                if record-store cluster issue-join-token --json \
-                    --lifetime-seconds 600 \
-                    --description "helm: ${POD_NAME}" \
-                    --endpoint "$seed" > /run/record-store/join.json 2> /run/record-store/join.err; then
-                  break
-                fi
-                attempt=$((attempt + 1))
-                sleep 5
-              done
-              token="$(sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-                /run/record-store/join.json 2>/dev/null | head -1)"
-              if [ -z "$token" ]; then
-                echo "could not obtain a join token from ${seed}" >&2
-                cat /run/record-store/join.err >&2 || true
-                exit 1
-              fi
-              printf '%s' "$token" > /run/record-store/join-token
-              echo "join token obtained"
-          env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: RECORD_STORE_MANAGEMENT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $secret }}
-                  key: management-system-token
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/record-store
-            - name: join
-              mountPath: /run/record-store
-      {{- end }}
       containers:
         - name: record-store
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          {{- if $clustered }}
-          # Every pod in a StatefulSet shares one spec, but node 0 must start
-          # with no seeds — that is what tells Record Store to initialize a new
-          # cluster rather than join an existing one. The ordinal comes from the
-          # pod name, so the distinction is made at startup instead of needing a
-          # second StatefulSet.
-          #
-          # The join token has to go with it: a token without seeds is rejected
-          # at startup, because a node that joins nothing has nobody to present
-          # it to. It is injected from the Secret for every pod and dropped
-          # again here for node 0.
-          command:
-            - /bin/sh
-            - -c
-            - |
-              set -eu
-              if [ "${POD_NAME##*-}" != "0" ]; then
-                RECORD_STORE_CLUSTER_SEEDS={{ include "record-store.seed" . | quote }}
-                export RECORD_STORE_CLUSTER_SEEDS
-                # Present only when this node has not joined yet. A node that is
-                # already a member re-attaches from its own state, and a token
-                # configured without seeds is rejected outright, so it is set
-                # only when one was actually fetched.
-                if [ -s /run/record-store/join-token ]; then
-                  RECORD_STORE_CLUSTER_JOIN_TOKEN="$(cat /run/record-store/join-token)"
-                  export RECORD_STORE_CLUSTER_JOIN_TOKEN
-                fi
-              fi
-              exec record-store server --config /etc/record-store/record-store.toml
-          {{- else }}
           # The image's entrypoint is already `record-store server`, so these are
           # appended to it rather than replacing it.
           args:
             - --config
             - /etc/record-store/record-store.toml
-          {{- end }}
           ports:
             - name: s3
               containerPort: {{ .Values.service.ports.s3 }}
@@ -172,31 +72,13 @@ spec:
             - name: api
               containerPort: {{ .Values.service.ports.api }}
               protocol: TCP
-            {{- if $clustered }}
-            - name: rpc
-              containerPort: {{ .Values.service.ports.rpc }}
-              protocol: TCP
-            {{- end }}
           env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
             - name: RECORD_STORE_MODE
-              value: {{ if $clustered }}cluster{{ else }}standalone{{ end }}
+              value: standalone
             - name: RECORD_STORE_S3_BIND
               value: "0.0.0.0:{{ .Values.service.ports.s3 }}"
             - name: RECORD_STORE_API_BIND
               value: "0.0.0.0:{{ .Values.service.ports.api }}"
-            {{- if $clustered }}
-            - name: RECORD_STORE_RPC_BIND
-              value: "0.0.0.0:{{ .Values.service.ports.rpc }}"
-            # The bind address is not routable from other pods, so peers are
-            # given this pod's stable DNS name from the headless service.
-            # Kubernetes expands $(POD_NAME) because it is declared above.
-            - name: RECORD_STORE_RPC_ADVERTISE
-              value: "$(POD_NAME).{{ include "record-store.headlessService" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ .Values.service.ports.rpc }}"
-            {{- end }}
             - name: RECORD_STORE_STORAGE_DATA_DIRECTORY
               value: /var/lib/record-store
             - name: RECORD_STORE_ROOT_ACCESS_KEY
@@ -231,9 +113,9 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          # /ready reports whether this node can serve traffic; /health reports
+          # /ready reports whether the server can take traffic; /health reports
           # whether the process is alive. Restarting on the former would kill a
-          # node that is merely catching up.
+          # server that is merely still starting.
           startupProbe:
             httpGet:
               path: /ready
@@ -266,10 +148,6 @@ spec:
             # a temporary directory.
             - name: tmp
               mountPath: /tmp
-            {{- if $clustered }}
-            - name: join
-              mountPath: /run/record-store
-            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -282,13 +160,6 @@ spec:
                 path: record-store.toml
         - name: tmp
           emptyDir: {}
-        {{- if $clustered }}
-        # Carries the join token from the init container to the server. Lives
-        # and dies with the pod, which is the right lifetime for a single-use
-        # credential.
-        - name: join
-          emptyDir: {}
-        {{- end }}
         {{- if not .Values.persistence.enabled }}
         # Objects live for exactly as long as the pod. Useful for a trial, never
         # for anything you intend to keep.

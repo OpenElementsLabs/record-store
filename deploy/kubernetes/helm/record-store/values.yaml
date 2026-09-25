@@ -12,12 +12,6 @@
 # auth.existingSecret instead, so credentials never pass through Helm values or
 # your shell history.
 
-# One replica runs standalone: no consensus, no replication, one owner of the
-# data. Three or more turns on cluster mode, where nodes join through node 0 and
-# metadata is replicated by Raft. Two is a valid but poor choice: a two-node
-# cluster cannot survive losing either node.
-replicaCount: 1
-
 # Suffix of the in-cluster DNS zone. Change only if your cluster was installed
 # with something other than cluster.local.
 clusterDomain: cluster.local
@@ -53,8 +47,7 @@ auth:
   # Encrypts stored service-account credentials. Losing it makes every stored
   # credential unreadable: back it up outside the cluster.
   credentialMasterKey: ""
-  # Bearer token for the management API and the console. In cluster mode this
-  # is also how a joining node asks node 0 for its join token.
+  # Bearer token for the management API and the console.
   managementSystemToken: ""
 
   # Optional lower-privilege roles. Each must differ from the others.
@@ -108,14 +101,13 @@ configuration: |
 # Extra environment variables for the server, for settings you would rather not
 # put in the ConfigMap. These win over the configuration file above.
 extraEnv: []
-# - name: RECORD_STORE_CLUSTER_STORAGE_CLASS
-#   value: nvme
+# - name: RECORD_STORE_LIMITS_MAXIMUM_CONCURRENT_OPERATIONS
+#   value: "512"
 
 service:
   ports:
     s3: 7600
     api: 7601
-    rpc: 7603
   # The S3 endpoint. This is the one clients talk to.
   s3:
     type: ClusterIP
@@ -158,7 +150,7 @@ securityContext:
     drop:
       - ALL
 
-# Startup is allowed 5 minutes: a node recovering a large metadata database
+# Startup is allowed 5 minutes: a server recovering a large metadata database
 # should not be killed halfway through.
 probes:
   startup:
@@ -176,12 +168,6 @@ probes:
 # Must exceed server.shutdown_grace_period_seconds, or a graceful drain becomes
 # a SIGKILL.
 terminationGracePeriodSeconds: 45
-
-podDisruptionBudget:
-  # Only meaningful with more than one replica.
-  enabled: false
-  minAvailable: null
-  maxUnavailable: 1
 
 podAnnotations: {}
 podLabels: {}

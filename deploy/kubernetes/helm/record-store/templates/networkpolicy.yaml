@@ -1,5 +1,4 @@
 {{- if .Values.networkPolicy.enabled }}
-{{- $clustered := eq (include "record-store.clustered" .) "true" }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -41,15 +40,4 @@ spec:
         {{- with .Values.networkPolicy.apiFrom }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-    {{- if $clustered }}
-    # Peer-to-peer consensus and replication, restricted to this release's own
-    # server pods.
-    - ports:
-        - port: rpc
-          protocol: TCP
-      from:
-        - podSelector:
-            matchLabels:
-              {{- include "record-store.server.selectorLabels" . | nindent 14 }}
-    {{- end }}
 {{- end }}

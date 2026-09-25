@@ -53,8 +53,7 @@ app.kubernetes.io/component: console
 {{- end -}}
 {{- end -}}
 
-{{/* Headless service backing the StatefulSet: gives every node a stable DNS
-     name, which is what the consensus layer advertises to its peers. */}}
+{{/* Headless service governing the StatefulSet, which requires one. */}}
 {{- define "record-store.headlessService" -}}
 {{- printf "%s-headless" (include "record-store.fullname" .) -}}
 {{- end -}}
@@ -71,15 +70,4 @@ app.kubernetes.io/component: console
 {{- else -}}
 {{- printf "%s-auth" (include "record-store.fullname" .) -}}
 {{- end -}}
-{{- end -}}
-
-{{/* Whether this release runs a real cluster. One replica stays standalone so a
-     small installation pays nothing for consensus it does not need. */}}
-{{- define "record-store.clustered" -}}
-{{- if gt (int .Values.replicaCount) 1 -}}true{{- else -}}false{{- end -}}
-{{- end -}}
-
-{{/* Peer address of node 0, which every other node contacts to join. */}}
-{{- define "record-store.seed" -}}
-{{- printf "%s-0.%s.%s.svc.%s:%d" (include "record-store.fullname" .) (include "record-store.headlessService" .) .Release.Namespace .Values.clusterDomain (int .Values.service.ports.rpc) -}}
 {{- end -}}

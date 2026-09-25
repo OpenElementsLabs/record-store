@@ -131,7 +131,7 @@ helm install record-store \
   --set auth.managementSystemToken="$(openssl rand -hex 32)"
 ```
 
-See [Kubernetes](../deployment/kubernetes.md) for clustering, storage, ingress
+See [Kubernetes](../deployment/kubernetes.md) for storage, ingress, availability
 and where credentials really belong.
 
 ## Binary archives

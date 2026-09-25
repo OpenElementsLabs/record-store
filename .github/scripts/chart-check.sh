@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lints the Helm chart and renders it in the shapes that behave differently, so
-# a template that only breaks in cluster mode, or only when an Ingress is asked
-# for, fails here rather than in somebody's cluster.
+# a template that only breaks with a NetworkPolicy, or only when an Ingress is
+# asked for, fails here rather than in somebody's cluster.
 #
 # Renders are validated against the real Kubernetes schemas with kubeconform,
 # which runs from its container so nothing has to be installed.
@@ -39,12 +39,8 @@ render() {
 render standalone
 render standalone-no-console --set console.enabled=false
 render standalone-ephemeral --set persistence.enabled=false
-render cluster \
-    --set replicaCount=3 \
-    --set podDisruptionBudget.enabled=true \
-    --set networkPolicy.enabled=true
-render cluster-ingress \
-    --set replicaCount=3 \
+render network-policy --set networkPolicy.enabled=true
+render ingress \
     --set ingress.s3.enabled=true \
     --set ingress.console.enabled=true \
     --set ingress.s3.className=nginx \
@@ -57,12 +53,21 @@ docker run --rm --volume "${output}:/manifests:ro" "$kubeconform" \
 
 # Cheap assertions about things that are easy to break and expensive to notice.
 echo "==> invariants"
-if ! grep -q 'RECORD_STORE_CLUSTER_SEEDS' "${output}/cluster.yaml"; then
-    echo "cluster mode renders no seed configuration" >&2
-    exit 1
-fi
-if grep -q 'RECORD_STORE_CLUSTER_SEEDS' "${output}/standalone.yaml"; then
-    echo "standalone mode must not configure cluster seeds" >&2
+# The chart runs one standalone server. Nothing may configure more pods or any
+# multi-node setting, and asking for more replicas must fail rather than be
+# silently ignored.
+for manifest in "${output}"/*.yaml; do
+    if grep -qE 'RECORD_STORE_CLUSTER_|RECORD_STORE_RPC_|value: cluster$' "$manifest"; then
+        echo "$(basename "$manifest"): renders multi-node configuration" >&2
+        exit 1
+    fi
+    if ! awk '/^kind: StatefulSet/,/^---/' "$manifest" | grep -q '^  replicas: 1$'; then
+        echo "$(basename "$manifest"): the StatefulSet must run exactly one replica" >&2
+        exit 1
+    fi
+done
+if helm template render-check "$chart" "${common[@]}" --set replicaCount=3 > /dev/null 2>&1; then
+    echo "setting replicaCount must fail the render" >&2
     exit 1
 fi
 # The management API is the control plane. No render may publish it outside the

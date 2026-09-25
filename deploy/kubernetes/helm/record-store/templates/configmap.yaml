@@ -10,6 +10,6 @@ data:
     # Managed by Helm. Edit values.yaml (.configuration), not this ConfigMap:
     # anything changed here is overwritten on the next `helm upgrade`.
     #
-    # Listeners, the advertised peer address and all credentials are supplied
-    # through the environment by the chart and take precedence over this file.
+    # Listeners, the data directory and all credentials are supplied through
+    # the environment by the chart and take precedence over this file.
 {{ .Values.configuration | indent 4 }}

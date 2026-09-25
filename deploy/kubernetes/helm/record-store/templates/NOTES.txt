@@ -1,16 +1,7 @@
 {{- $fullname := include "record-store.fullname" . }}
-{{- $clustered := eq (include "record-store.clustered" .) "true" }}
 Record Store {{ .Chart.AppVersion }} is installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
 
-{{ if $clustered -}}
-Running as a {{ .Values.replicaCount }}-node cluster. Node 0 initializes the cluster and
-the rest join through it, so give the pods a moment to converge:
-
-  kubectl --namespace {{ .Release.Namespace }} rollout status statefulset/{{ $fullname }}
-{{- else -}}
-Running as a single standalone node: no consensus, no replication, one owner of
-the data. Set replicaCount to 3 or more to run a real cluster.
-{{- end }}
+Running as a single standalone server, with its data on one volume.
 
 Endpoints inside the cluster:
 
@@ -35,10 +26,6 @@ Read the credentials back out of the Secret:
 {{ if not .Values.persistence.enabled }}
 WARNING  persistence.enabled is false. Objects live in an emptyDir and are
          destroyed with the pod. Do not store anything you intend to keep.
-{{ end -}}
-{{ if eq (int .Values.replicaCount) 2 }}
-WARNING  Two replicas is the one cluster size that buys nothing: a two-node
-         cluster cannot form a majority after losing either node. Use 3.
 {{ end -}}
 {{ if and .Values.console.enabled (not .Values.console.secureCookies) }}
 WARNING  console.secureCookies is false, so the session cookie is sent over
