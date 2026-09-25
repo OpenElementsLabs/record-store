@@ -9,7 +9,105 @@ publishes, so keep it factual and written for the people upgrading.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-25
+
+A minor release: Object Lock, coordinated backup and restore, a tamper-evident audit
+trail, proof bundles, Debian and RPM packages and a Helm chart, and stricter S3
+request handling. Read **Upgrading** first — this release changes the on-disk
+format, cannot be rolled back by swapping the binary, and refuses some requests and
+some deployments that 0.1.3 accepted.
+
+### Upgrading
+
+- **Upgrade from 0.1.3, and only from 0.1.3.** redb moves from 2.6.3 to 4.x, which
+  reads only file format v3. 0.1.3 converts each database to v3 the first time it
+  opens it, so a deployment on 0.1.2 or earlier must upgrade to 0.1.3 and start it
+  once before upgrading to this release. A database still in v2 is refused at start-up
+  with a message naming 0.1.3.
+- **Stop, back up, then upgrade.** Stop the server, take a backup with this release's
+  `record-store server backup` (0.1.3 has none), verify it, then start this release on
+  the same data directory. [Upgrading](docs/deployment/upgrading.md) gives the exact
+  commands for containers.
+- **There is no downgrade.** The metadata schema moves from version 4 to 6 on the first
+  start, and 0.1.3 cannot open the upgraded data: it exits with a panic and leaves the
+  directory unchanged. Rolling back means restoring the pre-upgrade backup and running
+  0.1.3 on it; anything written after the upgrade is not in that backup.
+- **Start-up checks the machine first, and refuses three states 0.1.3 accepted:** a
+  data directory writable by every local user (`chmod 0700` it), a
+  `temporary_directory` on another filesystem than the data directory (payloads are
+  published by rename), and a data directory holding an unfinished restore. Run
+  `record-store server doctor` with the new binary before switching; it reports every
+  precondition without starting anything.
+- **S3 clients that relied on lenient handling are now refused.** Unsigned `x-amz-*`
+  headers, write-time Object Lock without the lock permissions, copies of a named
+  version without `s3:GetObjectVersion`, a body digest that does not match,
+  `x-amz-checksum-crc64nvme`, and CopyObject with server-side encryption, tagging, ACL
+  or conditional (`x-amz-copy-source-if-*`) headers. The AWS SDKs sign every header they
+  send and use only supported checksums by default; see **Security** and **Changed**
+  for each case and what to do.
+- **Connections are closed after 30 seconds without a request head** — a client still
+  sending its headers, or a kept-alive connection sitting idle. Set
+  `server.header_read_timeout_seconds` to change it. Clients and SDKs reconnect as they
+  do after any idle close.
+- **Metadata memory is bounded, and smaller by default.** 0.1.3 let each metadata
+  database cache up to 1 GiB, so memory grew with the database files. The catalog,
+  audit trail and event journal now share `storage.metadata_cache_mib` (default 128);
+  raise it for catalogs with millions of objects.
+- **Scripts:** a configuration that does not load now exits `2` from `check-config`,
+  `doctor`, `backup` and `restore` (it was `1`), with a JSON error under `--json`.
+  `record-store version` prints the commit on a second line; `record-store --version`
+  is unchanged.
+
+
 ### Added
+
+- **Coordinated backup and restore.** `record-store server backup <dir>` copies a
+  stopped deployment — every database, the payloads and the system records — under the
+  data directory's exclusive lock, so the copy is one point in time. A backup carries a
+  manifest with a SHA-256 per file and is marked incomplete until it is finished; it
+  never overwrites a completed backup and checks the destination's free space first.
+  `verify-backup --level manifest|checksums|full` says exactly what each level proves,
+  and `restore` restores only a verified backup into an empty directory. An interrupted
+  restore stops the server from starting until it is re-run, and cannot itself be
+  backed up. A restore under a different credential master key is refused before
+  anything is written, whether or not payloads are encrypted, because the key also
+  seals credentials, share links and webhook secrets. Exit codes are stable and
+  documented. 0.1.3's `backup-metadata` and `restore-metadata` remain, with a warning
+  that they copy metadata only. See [Backup and Restore](docs/operations/backup-and-restore.md).
+
+- **`record-store server doctor`, and the same checks at start-up.** Data and temporary
+  directories (existence, permissions, one filesystem), free space, the storage format,
+  the credential master key against encrypted payloads, and an unfinished restore are
+  checked before anything is opened. `doctor` reports all of them without starting
+  anything and exits `7` when one fails; start-up refuses the fatal ones by name.
+
+- **Admission control.** At most `limits.maximum_concurrent_operations` operations run
+  at once, and one that has waited `limits.admission_wait_limit_seconds` (default 15)
+  for a slot is refused as retryable — `503 SlowDown` on S3, `503 TOO_MANY_OPERATIONS`
+  on the management API — instead of queueing without bound under overload.
+  `record_store_operations_rejected_total` counts refusals.
+
+- **Guarantees that survive a crash.** A whole-object read verifies the payload's length
+  before the first byte and its SHA-256 before the last, so a damaged payload fails the
+  read instead of completing as a successful download. A mutating request writes an
+  audit intent before the change and its outcome after, and is refused if the intent
+  cannot be made durable. The audit log is hash-chained with gapless sequence numbers
+  (`record-store audit-export verify-chain`). Storage events are journalled inside the
+  transaction that commits the change and handed to the webhook outbox all-or-nothing,
+  so a crash no longer drops an event; delivery is at-least-once. Filtered audit
+  queries that stop scanning say so (`scan_truncated`) rather than returning an empty
+  last page.
+
+- `server.header_read_timeout_seconds` (default 30,
+  `RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS`): see **Security**.
+
+- `storage.metadata_cache_mib` (default 128, `RECORD_STORE_STORAGE_METADATA_CACHE_MIB`):
+  the page cache shared by the catalog, audit trail and event journal. See **Fixed**.
+
+- **Binaries name the commit they were built from**: `record-store version` (and
+  `--json version`), `commit` in `GET /api/v1/system/info`, the start-up log line, and
+  `record_store_commit` in a backup manifest. `record-store --version` keeps its
+  one-line form for scripts.
 
 - **Release gates decide releases.** `release/gates.toml` defines every check a
   release must pass: the guarantee it protects, its workload and failure
@@ -256,6 +354,38 @@ publishes, so keep it factual and written for the people upgrading.
 
 ### Changed
 
+- redb moves from 2.6.3 to 4.x, which reads only file format v3. A database still in v2
+  — one that 0.1.3 never opened — is refused at start-up with a message naming 0.1.3
+  rather than a file format number.
+
+- **CopyObject refuses what PutObject refuses.** Server-side encryption, ACL, tagging,
+  website-redirect and unknown `x-amz-object-lock-*` headers on a copy were silently
+  ignored, as in 0.1.3; they now return `501 NotImplemented` without writing anything,
+  as they already did on a PUT. So do `x-amz-tagging-directive` and every
+  `x-amz-copy-source-*` header: a conditional copy whose precondition was ignored could
+  overwrite the object it was meant to protect. The Object Lock headers are honoured on
+  a copy and applied to the new version.
+
+- **ListMultipartUploads pages the way S3 does.** A truncated page now carries
+  `NextKeyMarker` as well as `NextUploadIdMarker`, `key-marker` is honoured (alone it
+  resumes after that key's uploads), and a marker outside the requested prefix no
+  longer widens the listing past it. A marker upload completed or aborted between
+  pages restarts at its key rather than failing the listing. Requests that send only
+  `upload-id-marker`, which 0.1.3 resumed from, still work.
+
+- Configuration that does not load is exit `2` from `check-config`, `doctor`, `backup`
+  and `restore`, with a JSON error under `--json`; it was an unexpected failure (`1`)
+  with no JSON. `record-store version` prints `commit <sha>` on a second line.
+
+- `GET /api/v1/system/metrics/history` also returns the server's clock (`now`), and the
+  console uses it to place server readings on the browser's clock. Coming to Metrics
+  from Overview now shows the server's history too, and a clock difference between the
+  two machines no longer distorts the rates.
+
+- The console tells a server that answers "not ready" (`503`) apart from one it cannot
+  reach, and reports an upload refused for quota as failed rather than as "outcome
+  unknown".
+
 - **The console's metrics charts draw immediately instead of filling in over minutes.**
   Record Store exposes counters, so a rate can only come from comparing two readings.
   The console did all of that comparing itself, which meant it could only show a rate
@@ -272,10 +402,12 @@ publishes, so keep it factual and written for the people upgrading.
   rather than failing. The history is in memory only and resets on restart, which the
   endpoint reports through `started_at` rather than hiding.
 
-- The metadata schema moves from version 4 to 5, adding an Object Lock table and a clock
-  table. The migration is ordered and non-destructive: nothing is rewritten, a v4 bucket
-  decodes with no Object Lock configuration, and a v4 version decodes as unlocked. An
-  existing v4 deployment starts, migrates, and keeps serving every object unchanged.
+- The metadata schema moves from version 4 to 6: version 5 adds the Object Lock and
+  clock tables, version 6 the storage-event journal. The migration runs once, at the
+  first start, in one transaction, and only creates tables: nothing is rewritten, a v4
+  bucket decodes with no Object Lock configuration, and a v4 version decodes as
+  unlocked. An existing v4 deployment starts, migrates, and keeps serving every object
+  unchanged.
 
 - The lifecycle worker skips any version under retention or a legal hold, writes an audit
   record naming the rule and the reason, and continues the scan rather than aborting.
@@ -317,6 +449,31 @@ publishes, so keep it factual and written for the people upgrading.
 
 ### Fixed
 
+- **Memory no longer grows with the size of the metadata.** Every redb database was
+  opened with redb's default page cache of 1 GiB, filled as pages are read and written,
+  and the audit trail and event journal grow with every request — so resident memory
+  climbed with the database files until each cache reached a gibibyte, as in 0.1.3.
+  Measured on Linux under a steady mixed workload, 0.1.3's behaviour grew about 1.2 KB
+  per request and was killed by a 384 MiB container limit after 14 minutes; with the
+  cache bounded, the same workload ran for over an hour and a million requests under
+  that limit, levelling off near 230 MiB — and near 100 MiB with the allocator setting
+  below. The catalog, audit trail and event journal now share
+  `storage.metadata_cache_mib`; the other databases keep 16 MiB each. **The container
+  image also sets `MALLOC_ARENA_MAX=2`**: glibc otherwise keeps memory in up to eight
+  arenas per core, and two held resident memory at half with no change in
+  throughput. Set it yourself when running the glibc binary archive directly; the
+  static binaries and the packages use musl's allocator. See
+  [Capacity Planning](docs/operations/capacity-planning.md#memory).
+
+- **Concurrent small writes no longer queue behind one another's fsync.** Each catalog
+  change was its own durable transaction through redb's single writer, so small-write
+  throughput stopped at one commit per sync however many clients were writing, as in
+  0.1.3. Changes that arrive together are now committed together, in arrival order, and
+  each caller is answered only once its change is durable; a refused change is decided
+  alone and never fails its neighbours. Measured on Linux with fresh 4 KiB objects, 64
+  concurrent writers went from 173 to about 460 PUTs per second, and their p99 latency
+  from over 2 s to about 0.5 s; one to four writers are unchanged.
+
 - **The upgrade guide can now be followed from 0.1.3.** It told operators to run
   `record-store server backup` before stopping the server, which a backup refuses;
   used commands that 0.1.3 does not ship; and passed `record-store server
@@ -340,6 +497,11 @@ publishes, so keep it factual and written for the people upgrading.
 
 ### Security
 
+- **A client can no longer hold a connection by never finishing its request.** Both
+  listeners close a connection whose request headers have not arrived within
+  `server.header_read_timeout_seconds` (default 30) — trickled a line at a time, or
+  never sent — and a kept-alive connection idle for as long. 0.1.3 kept such a
+  connection, a descriptor and a task, for as long as the client liked.
 - **Every `x-amz-*` header must now be signed.** A request could carry `x-amz-*`
   headers its signature did not cover, and the server acted on them. That mattered
   most for presigned URLs, whose holder could add terms the signer never approved.
@@ -371,16 +533,6 @@ configuration and no API, and it is worth installing promptly: the release that
 follows cannot read a database this one has not opened.
 
 ### Changed
-
-- redb moves from 2.6.3 to 4.x, which reads only file format v3. **Upgrade to
-  0.1.3 and start it once before upgrading to this release**: 0.1.3 converts
-  each database to v3, and the conversion is unavailable here because redb 4
-  removed `Database::upgrade` along with the ability to read v2. A database that
-  is still v2 is refused at startup with a message naming 0.1.3 rather than a
-  file format number.
-- **This release cannot be rolled back to 0.1.2 or earlier.** Those releases
-  cannot read the v3 file that 0.1.3 produced. 0.1.3 itself remains a safe
-  rollback target.
 
 - Every redb database is migrated from file format v2 to v3 when it is opened.
   redb 3.0 dropped the ability to read v2, and every release up to 0.1.2 wrote

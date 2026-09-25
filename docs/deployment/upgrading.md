@@ -94,7 +94,7 @@ moving to, and to be able to move back to what you had. See
 ```bash
 # Confirm what you are about to run before you run it
 docker run --rm --entrypoint record-store \
-  ghcr.io/openelementslabs/record-store:0.1.3 --version
+  ghcr.io/openelementslabs/record-store:0.2.0 --version
 ```
 
 Check the digest and the checksums before you deploy — see
