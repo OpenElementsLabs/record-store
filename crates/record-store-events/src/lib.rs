@@ -8,7 +8,9 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
-use record_store_core::{EventId, MutationEvent, VersionId, WebhookId, open_database};
+use record_store_core::{
+    DEFAULT_CACHE_BYTES, EventId, MutationEvent, VersionId, WebhookId, open_database_with_cache,
+};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use reqwest::{Client, Url, redirect::Policy};
 use serde::{Deserialize, Serialize};
@@ -306,15 +308,26 @@ impl RedbEventRepository {
         master_key: Option<&[u8]>,
         config: WebhookConfig,
     ) -> Result<Self, EventError> {
+        Self::open_with_cache(path, master_key, config, DEFAULT_CACHE_BYTES).await
+    }
+
+    /// Opens the journal with at most `cache_bytes` of page cache.
+    pub async fn open_with_cache(
+        path: impl AsRef<Path>,
+        master_key: Option<&[u8]>,
+        config: WebhookConfig,
+        cache_bytes: usize,
+    ) -> Result<Self, EventError> {
         if let Some(parent) = path.as_ref().parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(EventError::Directory)?;
         }
         let path = path.as_ref().to_owned();
-        let database =
-            tokio::task::spawn_blocking(move || open_database(path).map_err(database_error))
-                .await??;
+        let database = tokio::task::spawn_blocking(move || {
+            open_database_with_cache(path, cache_bytes).map_err(database_error)
+        })
+        .await??;
         let database = Arc::new(database);
         let db = Arc::clone(&database);
         tokio::task::spawn_blocking(move || {

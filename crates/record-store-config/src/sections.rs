@@ -146,9 +146,44 @@ pub struct StorageConfig {
     /// Additional devices this node serves, beyond `data_directory`.
     #[serde(default)]
     pub devices: Vec<StorageDeviceConfig>,
+    /// Page cache, in MiB, shared by the catalog, the audit trail and the
+    /// event journal: half for the catalog, a quarter each for the other two.
+    /// The credential, sharing and lifecycle databases, which stay small, keep
+    /// a fixed 16 MiB each. The cache fills as the databases grow and is never
+    /// larger than this, so it is the part of the server's memory that scales
+    /// with history rather than with load.
+    #[serde(default = "default_metadata_cache_mib")]
+    pub metadata_cache_mib: u64,
+}
+
+const fn default_metadata_cache_mib() -> u64 {
+    128
+}
+
+/// How `storage.metadata_cache_mib` is divided between the databases that grow
+/// with use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetadataCacheBudget {
+    pub catalog_bytes: usize,
+    pub audit_bytes: usize,
+    pub events_bytes: usize,
 }
 
 impl StorageConfig {
+    /// Splits the configured metadata cache: the catalog serves every read and
+    /// write, while the audit trail and event journal are appended to and read
+    /// near their heads, so they need less of it.
+    #[must_use]
+    pub fn metadata_cache_budget(&self) -> MetadataCacheBudget {
+        let total = usize::try_from(self.metadata_cache_mib.saturating_mul(1024 * 1024))
+            .unwrap_or(usize::MAX);
+        MetadataCacheBudget {
+            catalog_bytes: total / 2,
+            audit_bytes: total / 4,
+            events_bytes: total / 4,
+        }
+    }
+
     /// Returns the explicit temporary directory or `<data_directory>/tmp`.
     #[must_use]
     pub fn effective_temporary_directory(&self) -> PathBuf {
@@ -174,6 +209,7 @@ impl Default for StorageConfig {
             temporary_directory: None,
             encryption_enabled: false,
             devices: Vec::new(),
+            metadata_cache_mib: default_metadata_cache_mib(),
         }
     }
 }

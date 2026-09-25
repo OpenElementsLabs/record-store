@@ -31,6 +31,7 @@ Some settings are file-only. Those are listed at the end.
 | --- | --- | --- |
 | `RECORD_STORE_STORAGE_DATA_DIRECTORY` | Root of all durable state | `./data` |
 | `RECORD_STORE_STORAGE_TEMPORARY_DIRECTORY` | Incomplete payload staging | `<data>/tmp` |
+| `RECORD_STORE_STORAGE_METADATA_CACHE_MIB` | Page cache for the catalog, audit trail and event journal, 8–1048576 | `128` |
 | `RECORD_STORE_STORAGE_ENCRYPTION_ENABLED` | Encrypt new payloads at rest | `false` |
 
 ## Credentials and tokens

@@ -47,7 +47,7 @@ pub use object_lock::{
 pub use preview::{CONTENT_SIGNATURE_PROBE_BYTES, PreviewKind, content_signature_matches};
 pub use quota::{BucketQuota, ByteQuota, ExpirationDays, ObjectCountQuota, VersioningState};
 pub use range::{ByteRange, PartNumber, ResolvedByteRange};
-pub use redb_open::open_database;
+pub use redb_open::{DEFAULT_CACHE_BYTES, open_database, open_database_with_cache};
 pub use shard::{ShardIndex, ShardKind, ShardState};
 pub use storage_class::StorageClass;
 pub use trusted_proxy::TrustedProxies;

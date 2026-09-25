@@ -68,6 +68,7 @@ front.
 | `data_directory` | path | `./data` | `RECORD_STORE_STORAGE_DATA_DIRECTORY` |
 | `temporary_directory` | path | `<data_directory>/tmp` | `RECORD_STORE_STORAGE_TEMPORARY_DIRECTORY` |
 | `encryption_enabled` | boolean | `false` | `RECORD_STORE_STORAGE_ENCRYPTION_ENABLED` |
+| `metadata_cache_mib` | integer 8–1048576 | `128` | `RECORD_STORE_STORAGE_METADATA_CACHE_MIB` |
 
 `temporary_directory` must be on the same filesystem as the data directory. A payload
 is published by renaming it out of there, and a rename cannot cross a mount boundary.
@@ -77,6 +78,14 @@ wrong, rather than letting it fail on the first upload.
 `encryption_enabled` requires `auth.credential_master_key`. It applies to newly
 committed payloads; it does not re-encrypt existing objects. See
 [Encryption](../security/encryption.md).
+
+`metadata_cache_mib` is the page cache shared by the catalog (half), the audit trail
+(a quarter) and the storage-event journal (a quarter); the credential, sharing and
+lifecycle databases keep 16 MiB each. The cache fills as those databases grow and
+never exceeds this, so it is the part of the server's memory that grows with history
+rather than with load. Raise it when the catalog holds millions of objects and the
+host has memory to spare; a read that misses it is served from the operating
+system's file cache or the disk. See [Capacity Planning](../operations/capacity-planning.md#memory).
 
 ## `[auth]`
 
@@ -225,6 +234,7 @@ trusted_proxies = ["10.0.0.0/8"]
 [storage]
 data_directory = "/var/lib/record-store"
 encryption_enabled = true
+metadata_cache_mib = 128
 
 [limits]
 maximum_concurrent_operations = 256

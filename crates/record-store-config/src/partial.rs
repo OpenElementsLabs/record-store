@@ -197,6 +197,7 @@ pub(crate) struct PartialStorageConfig {
     /// declare one. Without this field the whole section is rejected as an
     /// unknown key, which is how it should fail if it is ever removed.
     devices: Option<Vec<StorageDeviceConfig>>,
+    metadata_cache_mib: Option<u64>,
 }
 
 impl PartialStorageConfig {
@@ -212,6 +213,9 @@ impl PartialStorageConfig {
         }
         if let Some(value) = self.devices {
             target.devices = value;
+        }
+        if let Some(value) = self.metadata_cache_mib {
+            target.metadata_cache_mib = value;
         }
     }
 }

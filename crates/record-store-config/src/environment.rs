@@ -37,6 +37,12 @@ impl Config {
             self.server.header_read_timeout_seconds =
                 parse_environment("RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS", value)?;
         }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_STORAGE_METADATA_CACHE_MIB")?
+        {
+            self.storage.metadata_cache_mib =
+                parse_environment("RECORD_STORE_STORAGE_METADATA_CACHE_MIB", value)?;
+        }
         if let Some(value) = environment_value(environment, "RECORD_STORE_STORAGE_DATA_DIRECTORY")?
         {
             self.storage.data_directory = PathBuf::from(value);

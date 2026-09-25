@@ -58,8 +58,8 @@ pub use cluster::{ClusterConfig, ClusterTlsConfig};
 pub use deployment::DeploymentMode;
 pub use error::ConfigError;
 pub use sections::{
-    AuthConfig, LifecycleConfig, LimitsConfig, ObjectLockConfig, ObservabilityConfig, ServerConfig,
-    StorageConfig, StorageDeviceConfig, WebhookConfig,
+    AuthConfig, LifecycleConfig, LimitsConfig, MetadataCacheBudget, ObjectLockConfig,
+    ObservabilityConfig, ServerConfig, StorageConfig, StorageDeviceConfig, WebhookConfig,
 };
 pub use sharing::SharingConfig;
 /// Fully resolved and validated Record Store configuration.
