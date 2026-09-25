@@ -33,6 +33,134 @@ use crate::*;
 #[derive(Clone)]
 pub struct RedbMetadataRepository {
     database: Arc<Database>,
+    /// The one thread that commits commands, shared by every clone.
+    writer: Arc<Writer>,
+}
+
+/// Owns the writer thread. Dropping the last repository handle closes the
+/// queue and waits for the thread, so the database is closed -- and can be
+/// reopened -- as soon as the repository is.
+struct Writer {
+    queue: Option<std::sync::mpsc::Sender<PendingCommand>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    /// Transactions committed, so a test can tell batching from one-per-command.
+    commits: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        drop(self.queue.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A command waiting to be committed, and where to report its durable outcome.
+type PendingCommand = (
+    MetadataCommand,
+    tokio::sync::oneshot::Sender<Result<MetadataOutcome, MetadataError>>,
+);
+
+/// Commands committed by one transaction at most.
+const MAXIMUM_BATCH: usize = 128;
+
+/// Starts the thread that commits every command.
+///
+/// redb admits one write transaction at a time and each commit is durable, so
+/// one command per transaction meant concurrent writers queued behind each
+/// other's fsync and small-write throughput stopped at one commit per sync
+/// however many clients were writing (RSG-005). The writer takes whatever has
+/// queued, applies it in arrival order inside one transaction -- exactly the
+/// order the transactions would have run in -- commits once, and only then
+/// answers each caller. A caller is still told its change is durable only
+/// after it is.
+fn start_writer(database: Arc<Database>) -> Result<Writer, MetadataError> {
+    let (sender, receiver) = std::sync::mpsc::channel::<PendingCommand>();
+    let commits = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counted = Arc::clone(&commits);
+    let thread = std::thread::Builder::new()
+        .name("metadata-writer".into())
+        .spawn(move || {
+            while let Ok(first) = receiver.recv() {
+                let mut batch = vec![first];
+                while batch.len() < MAXIMUM_BATCH {
+                    match receiver.try_recv() {
+                        Ok(pending) => batch.push(pending),
+                        Err(_) => break,
+                    }
+                }
+                commit_batch(&database, batch, &counted);
+            }
+        })
+        .map_err(|error| backend("start metadata writer", error))?;
+    Ok(Writer {
+        queue: Some(sender),
+        thread: Some(thread),
+        commits,
+    })
+}
+
+/// Applies and commits one command in a transaction of its own.
+fn commit_one(
+    database: &Database,
+    command: MetadataCommand,
+) -> Result<MetadataOutcome, MetadataError> {
+    let write = database
+        .begin_write()
+        .map_err(|error| backend("begin metadata command", error))?;
+    let outcome = apply_command_tx(&write, command)?;
+    write
+        .commit()
+        .map_err(|error| backend("commit metadata command", error))?;
+    Ok(outcome)
+}
+
+/// Commits a batch in one transaction. A command that fails -- a refused
+/// precondition, a lock, a missing bucket -- abandons the batch, and every
+/// command in it is then applied in a transaction of its own, in the same
+/// order: one refusal never fails its neighbours, never lands half a batch, and
+/// is decided against exactly the state it would have met on its own.
+fn commit_batch(
+    database: &Database,
+    batch: Vec<PendingCommand>,
+    commits: &std::sync::atomic::AtomicU64,
+) {
+    use std::sync::atomic::Ordering;
+    if batch.len() == 1 {
+        if let Some((command, reply)) = batch.into_iter().next() {
+            commits.fetch_add(1, Ordering::Relaxed);
+            let _ = reply.send(commit_one(database, command));
+        }
+        return;
+    }
+    let together = (|| {
+        let write = database
+            .begin_write()
+            .map_err(|error| backend("begin metadata batch", error))?;
+        let mut outcomes = Vec::with_capacity(batch.len());
+        for (command, _) in &batch {
+            outcomes.push(apply_command_tx(&write, command.clone())?);
+        }
+        write
+            .commit()
+            .map_err(|error| backend("commit metadata batch", error))?;
+        Ok::<_, MetadataError>(outcomes)
+    })();
+    match together {
+        Ok(outcomes) => {
+            commits.fetch_add(1, Ordering::Relaxed);
+            for ((_, reply), outcome) in batch.into_iter().zip(outcomes) {
+                let _ = reply.send(Ok(outcome));
+            }
+        }
+        Err(_) => {
+            for (command, reply) in batch {
+                commits.fetch_add(1, Ordering::Relaxed);
+                let _ = reply.send(commit_one(database, command));
+            }
+        }
+    }
 }
 
 impl RedbMetadataRepository {
@@ -54,9 +182,9 @@ impl RedbMetadataRepository {
             let database = open_database_with_cache(path, cache_bytes)
                 .map_err(|error| backend("open", error))?;
             initialize_schema(&database)?;
-            Ok(Self {
-                database: Arc::new(database),
-            })
+            let database = Arc::new(database);
+            let writer = Arc::new(start_writer(Arc::clone(&database))?);
+            Ok(Self { database, writer })
         })
         .await?
     }
@@ -68,7 +196,17 @@ impl RedbMetadataRepository {
     /// single transaction.
     pub fn from_database(database: Arc<Database>) -> Result<Self, MetadataError> {
         initialize_schema(&database)?;
-        Ok(Self { database })
+        let writer = Arc::new(start_writer(Arc::clone(&database))?);
+        Ok(Self { database, writer })
+    }
+
+    /// Write transactions committed since the catalog was opened. Against the
+    /// number of changes made, it says how many each commit carried.
+    #[must_use]
+    pub fn transactions_committed(&self) -> u64 {
+        self.writer
+            .commits
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns the shared database handle.
@@ -77,26 +215,30 @@ impl RedbMetadataRepository {
         Arc::clone(&self.database)
     }
 
-    /// Applies one command in its own transaction.
+    /// Applies one command and returns once it is durable.
     ///
-    /// Cluster mode routes the same commands through consensus instead; this
-    /// entry point serves standalone deployments and tests.
+    /// Commands from concurrent callers are group-committed by the writer
+    /// thread; the outcome is the same as applying each in a transaction of its
+    /// own, in arrival order. Cluster mode routes the same commands through
+    /// consensus instead; this entry point serves standalone deployments and
+    /// tests.
     pub async fn command(
         &self,
         command: MetadataCommand,
     ) -> Result<MetadataOutcome, MetadataError> {
-        let database = Arc::clone(&self.database);
-        tokio::task::spawn_blocking(move || {
-            let write = database
-                .begin_write()
-                .map_err(|error| backend("begin metadata command", error))?;
-            let outcome = apply_command_tx(&write, command)?;
-            write
-                .commit()
-                .map_err(|error| backend("commit metadata command", error))?;
-            Ok(outcome)
-        })
-        .await?
+        let (reply, outcome) = tokio::sync::oneshot::channel();
+        self.writer
+            .queue
+            .as_ref()
+            .ok_or_else(|| backend("metadata command", "the metadata writer has stopped"))?
+            .send((command, reply))
+            .map_err(|_| backend("metadata command", "the metadata writer has stopped"))?;
+        outcome.await.map_err(|_| {
+            backend(
+                "metadata command",
+                "the metadata writer stopped before answering",
+            )
+        })?
     }
 }
 
@@ -1510,6 +1652,102 @@ mod tests {
                 .expect("lookup")
                 .is_none()
         );
+    }
+
+    /// Concurrent writers are group-committed. Whatever lands in one batch, the
+    /// outcome must be what one transaction per command would have given:
+    /// every success durable, and every refusal refused alone, without taking
+    /// the commands beside it down or leaving any of its own writes behind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_commands_commit_together_and_refusals_stay_alone() {
+        use crate::MetadataRepository;
+        use record_store_core::WriteOrigin;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("catalog.redb");
+        let catalog = RedbMetadataRepository::open(&path).await.expect("catalog");
+        let bucket = crate::test_support::bucket("group-commit");
+        catalog.create_bucket(&bucket).await.expect("bucket");
+
+        let mut tasks = Vec::new();
+        for index in 0..400_u32 {
+            let catalog = catalog.clone();
+            let bucket = bucket.clone();
+            tasks.push(tokio::spawn(async move {
+                if index % 10 == 0 {
+                    // A second bucket under a taken name: always refused.
+                    let mut duplicate = crate::test_support::bucket("group-commit");
+                    duplicate.id = record_store_core::BucketId::new();
+                    (index, catalog.create_bucket(&duplicate).await.map(|_| ()))
+                } else {
+                    let object =
+                        crate::test_support::object(bucket.id, &format!("k/{index:04}"), 1);
+                    (
+                        index,
+                        catalog
+                            .put_object(&object, None, WriteOrigin::Direct)
+                            .await
+                            .map(|_| ()),
+                    )
+                }
+            }));
+        }
+        let mut refused = 0;
+        for task in tasks {
+            let (index, result) = task.await.expect("join");
+            if index % 10 == 0 {
+                assert!(
+                    matches!(result, Err(MetadataError::BucketAlreadyExists)),
+                    "{index}: {result:?}"
+                );
+                refused += 1;
+            } else {
+                result.unwrap_or_else(|error| panic!("{index} failed beside a refusal: {error}"));
+            }
+        }
+        assert_eq!(refused, 40);
+        drop(catalog);
+
+        // Only puts this time, so no refusal splits a batch: writers that
+        // arrive together share a commit instead of queueing for one each.
+        let catalog = RedbMetadataRepository::open(directory.path().join("puts.redb"))
+            .await
+            .expect("catalog");
+        catalog.create_bucket(&bucket).await.expect("bucket");
+        let before = catalog.transactions_committed();
+        let puts: Vec<_> = (0..400_u32)
+            .map(|index| {
+                let catalog = catalog.clone();
+                let object = crate::test_support::object(bucket.id, &format!("p/{index:04}"), 1);
+                tokio::spawn(
+                    async move { catalog.put_object(&object, None, WriteOrigin::Direct).await },
+                )
+            })
+            .collect();
+        for put in puts {
+            put.await.expect("join").expect("put");
+        }
+        let transactions = catalog.transactions_committed() - before;
+        assert!(
+            transactions < 200,
+            "400 concurrent writes took {transactions} transactions: they are not being batched"
+        );
+        drop(catalog);
+
+        // Durable, and nothing of a refused command committed.
+        let reopened = RedbMetadataRepository::open(&path).await.expect("reopen");
+        for index in (0..400_u32).filter(|index| index % 10 != 0) {
+            let key = ObjectKey::new(format!("k/{index:04}")).expect("key");
+            assert!(
+                reopened
+                    .get_object(bucket.id, &key)
+                    .await
+                    .expect("read")
+                    .is_some(),
+                "k/{index:04} was acknowledged and lost"
+            );
+        }
+        assert_eq!(reopened.list_buckets().await.expect("buckets").len(), 1);
     }
 
     /// S3 pages uploads by the pair (key-marker, upload-id-marker), and a client

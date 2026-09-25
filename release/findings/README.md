@@ -20,5 +20,4 @@ the record.
 
 | Id | Title | Status | Blocks release |
 | --- | --- | --- | --- |
-| [RSG-005](RSG-005-small-writes-serialize.md) | Small-write throughput does not scale with concurrency | open (observation) | no |
 | [RSG-006](RSG-006-binaries-carry-no-commit.md) | Binaries carry no commit; unreleased builds report the previous version | open | no |
