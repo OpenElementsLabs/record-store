@@ -81,4 +81,27 @@ for manifest in "${output}"/*.yaml; do
     fi
 done
 
+# volumeClaimTemplates are immutable, so anything in them that changes between
+# chart versions makes every `helm upgrade` fail. Render two versions and
+# require the claim templates to be identical.
+claims() {
+    helm template render-check "$1" "${common[@]}" --show-only templates/statefulset.yaml \
+        | sed -n '/^  volumeClaimTemplates:/,$p'
+}
+next_version="${output}/next-version"
+cp -R "$chart" "$next_version"
+sed -i.bak -e 's/^version: .*/version: 99.0.0/' -e 's/^appVersion: .*/appVersion: "99.0.0"/' \
+    "${next_version}/Chart.yaml"
+if [[ -z "$(claims "$chart")" ]] || ! diff <(claims "$chart") <(claims "$next_version"); then
+    echo "volumeClaimTemplates change between chart versions, which refuses every upgrade" >&2
+    exit 1
+fi
+# A NetworkPolicy ingress rule with no sources admits every source, so the
+# management API must never be left with an empty `from`.
+if helm template render-check "$chart" "${common[@]}" --set networkPolicy.enabled=true \
+    --set console.enabled=false --show-only templates/networkpolicy.yaml | grep -q 'port: api'; then
+    echo "with no console and no apiFrom, the management API must have no ingress rule" >&2
+    exit 1
+fi
+
 echo "chart checks passed"

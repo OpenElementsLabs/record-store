@@ -18,11 +18,21 @@ namespace="${CHART_SMOKE_NAMESPACE:-record-store-smoke}"
 release=rs
 
 # The chart's appVersion names the release being prepared, whose images do not
-# exist until that release publishes them. On a branch that has just bumped the
-# version, deploying appVersion would fail on ImagePullBackOff and say nothing
-# about the chart. Pin a tag that is already published instead; this checks the
-# chart's wiring, not version agreement.
+# exist until that release publishes them. CI builds both images from the
+# commit and loads them into the cluster (CHART_SMOKE_IMAGE_REPOSITORY and
+# CHART_SMOKE_CONSOLE_IMAGE_REPOSITORY, pulled never), so the chart is proven
+# against the server it ships with rather than the previous release. Without
+# them a published tag is deployed instead, which checks the chart's wiring
+# but not that it agrees with this commit's server.
 image_tag="${CHART_SMOKE_IMAGE_TAG:-latest}"
+image_arguments=()
+if [[ -n "${CHART_SMOKE_IMAGE_REPOSITORY:-}" ]]; then
+    image_arguments+=(--set "image.repository=${CHART_SMOKE_IMAGE_REPOSITORY}" --set image.pullPolicy=Never)
+fi
+if [[ -n "${CHART_SMOKE_CONSOLE_IMAGE_REPOSITORY:-}" ]]; then
+    image_arguments+=(--set "console.image.repository=${CHART_SMOKE_CONSOLE_IMAGE_REPOSITORY}" \
+        --set console.image.pullPolicy=Never)
+fi
 
 cleanup() {
     local status=$?
@@ -57,6 +67,7 @@ helm install "$release" "$chart" \
     --set console.resources.requests.cpu=50m \
     --set "image.tag=${image_tag}" \
     --set "console.image.tag=${image_tag}" \
+    ${image_arguments[@]+"${image_arguments[@]}"} \
     --wait --timeout 10m
 
 pod="${release}-record-store-0"
@@ -67,17 +78,33 @@ kubectl --namespace "$namespace" exec "$pod" -- \
 
 echo "==> the data directory is writable by the unprivileged account"
 kubectl --namespace "$namespace" exec "$pod" -- \
-    /bin/sh -c 'test -d /var/lib/record-store/objects && test -d /var/lib/record-store/metadata'
+    /bin/sh -c 'test -d /var/lib/record-store/data/objects && test -d /var/lib/record-store/data/metadata'
 
 # Both checks run from the console pod, which has a JavaScript runtime and sits
 # on the far side of the Services. That makes them tests of the Services and of
 # pod-to-pod networking, not just of a listener bound inside one container.
+#
+# A Service routes to a pod only once its endpoint has propagated, which lags
+# the pod turning ready -- by long enough to matter when the images are already
+# on the node and `helm --wait` returns the moment the probes pass. Each check
+# is retried for up to 30 s; a Service that never routes still fails.
+eventually() {
+    local attempt
+    for attempt in $(seq 1 15); do
+        if "$@"; then
+            return 0
+        fi
+        echo "    not yet (attempt ${attempt}); retrying in 2 s"
+        sleep 2
+    done
+    "$@"
+}
 console="$(kubectl --namespace "$namespace" get pod \
     --selector app.kubernetes.io/component=console \
     -o jsonpath='{.items[0].metadata.name}')"
 
 echo "==> the console reaches the management API across Services"
-kubectl --namespace "$namespace" exec "$console" -- \
+eventually kubectl --namespace "$namespace" exec "$console" -- \
     node -e '
       fetch(process.env.RECORD_STORE_API_URL + "/health")
         .then(r => {
@@ -91,7 +118,7 @@ kubectl --namespace "$namespace" exec "$console" -- \
 echo "==> the S3 service answers and demands a signature"
 # 403 is the right answer to an unsigned request: it proves the listener is
 # serving and authenticating rather than merely open.
-kubectl --namespace "$namespace" exec "$console" -- \
+eventually kubectl --namespace "$namespace" exec "$console" -- \
     node -e '
       fetch("http://'"${release}"'-record-store:7600/")
         .then(r => {

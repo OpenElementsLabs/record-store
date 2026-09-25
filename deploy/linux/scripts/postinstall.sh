@@ -94,7 +94,7 @@ Record Store is installed but not running.
 
   Review /etc/record-store/record-store.toml, then:
 
-    sudo record-store server --config /etc/record-store/record-store.toml check-config
+    sudo sh -c 'set -a; . /etc/record-store/record-store.env; exec record-store server --config /etc/record-store/record-store.toml check-config'
     sudo systemctl enable --now record-store
 
   The S3 API listens on 0.0.0.0:7600 and the management API on 127.0.0.1:7601.

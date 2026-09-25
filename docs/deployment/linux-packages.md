@@ -47,11 +47,13 @@ onwards, RHEL 8 onwards, and their derivatives.
 Installing does not start anything. Record Store holds data, and the first start
 is a decision about where that data goes, so it is left to you.
 
-Read the generated credentials, check the configuration, then start:
+Read the generated credentials, check the configuration, then start. The check
+reads the credentials from `record-store.env` the way the systemd unit does;
+without them it fails on the missing root credentials, not on your file:
 
 ```bash
 sudo cat /etc/record-store/record-store.env
-sudo record-store server --config /etc/record-store/record-store.toml check-config
+sudo sh -c 'set -a; . /etc/record-store/record-store.env; exec record-store server --config /etc/record-store/record-store.toml check-config'
 sudo systemctl enable --now record-store
 systemctl status record-store
 ```
@@ -91,7 +93,7 @@ set `root_s3_enabled = false`.
 Edit `/etc/record-store/record-store.toml`, validate, restart:
 
 ```bash
-sudo record-store server --config /etc/record-store/record-store.toml check-config
+sudo sh -c 'set -a; . /etc/record-store/record-store.env; exec record-store server --config /etc/record-store/record-store.toml check-config'
 sudo systemctl restart record-store
 ```
 

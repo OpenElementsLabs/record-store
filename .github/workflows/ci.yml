@@ -116,13 +116,28 @@ jobs:
         run: .github/scripts/chart-check.sh
 
       # Proves the chart actually runs, not only that it renders: a single node
-      # on a throwaway cluster, waited on until its probes pass. The published
-      # image is used, so this also catches a chart that disagrees with the
-      # image it deploys.
+      # on a throwaway cluster, waited on until its probes pass, running images
+      # built from this commit -- a chart that disagrees with the server it
+      # ships with fails here, not after the release.
       - name: Install the chart on a kind cluster
         uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
         with:
           cluster_name: chart-check
 
+      - name: Build the images from this commit
+        run: |
+          set -euo pipefail
+          docker build --file deploy/docker/Dockerfile \
+            --build-arg "RECORD_STORE_BUILD_COMMIT=${GITHUB_SHA}" \
+            --tag record-store-smoke/server:commit .
+          docker build --file deploy/docker/Dockerfile.console \
+            --tag record-store-smoke/console:commit .
+          kind load docker-image --name chart-check \
+            record-store-smoke/server:commit record-store-smoke/console:commit
+
       - name: Deploy and probe
+        env:
+          CHART_SMOKE_IMAGE_REPOSITORY: record-store-smoke/server
+          CHART_SMOKE_CONSOLE_IMAGE_REPOSITORY: record-store-smoke/console
+          CHART_SMOKE_IMAGE_TAG: commit
         run: .github/scripts/chart-smoke.sh
