@@ -425,6 +425,35 @@ pub(crate) async fn authorize_permissions(
     Ok(())
 }
 
+/// The action an object-level request performs, decided in the order the
+/// object handlers dispatch on the query -- not in an order of its own. A
+/// query key the authorizer reads but the handler ignores would let a request
+/// be judged as one operation and performed as another: `POST ?uploadId&retention`
+/// completing an upload with only `s3:PutObjectRetention`, or
+/// `DELETE ?uploadId&legal-hold` aborting one.
+fn object_action(method: &Method, query: &BTreeMap<String, String>) -> Action {
+    let version = query.contains_key("versionId");
+    match *method {
+        // get_object: ListParts, then the retention and legal-hold documents,
+        // then the object. head_object serves the object alone.
+        Method::GET if query.contains_key("uploadId") => Action::GetObject,
+        Method::GET if query.contains_key("retention") => Action::GetObjectRetention,
+        Method::GET if query.contains_key("legal-hold") => Action::GetObjectLegalHold,
+        Method::GET | Method::HEAD if version => Action::GetObjectVersion,
+        Method::GET | Method::HEAD => Action::GetObject,
+        // put_object: the two lock subresources, then parts, copies and plain
+        // writes, which all write an object.
+        Method::PUT if query.contains_key("retention") => Action::PutObjectRetention,
+        Method::PUT if query.contains_key("legal-hold") => Action::PutObjectLegalHold,
+        // delete_object: an abort, then a version or the current object.
+        Method::DELETE if query.contains_key("uploadId") => Action::DeleteObject,
+        Method::DELETE if version => Action::DeleteObjectVersion,
+        Method::DELETE => Action::DeleteObject,
+        // post_object initiates or completes an upload; anything else is refused.
+        _ => Action::PutObject,
+    }
+}
+
 pub(crate) fn request_permissions(request: &Request) -> Result<Vec<Permission>, S3ErrorKind> {
     let decoded = String::from_utf8(percent_decode_str(request.uri().path()).collect())
         .map_err(|_| S3ErrorKind::InvalidRequest)?;
@@ -457,32 +486,8 @@ pub(crate) fn request_permissions(request: &Request) -> Result<Vec<Permission>, 
         } else {
             Action::ManageBucket
         }
-    } else if query.contains_key("retention") {
-        if reading {
-            Action::GetObjectRetention
-        } else {
-            Action::PutObjectRetention
-        }
-    } else if query.contains_key("legal-hold") {
-        if reading {
-            Action::GetObjectLegalHold
-        } else {
-            Action::PutObjectLegalHold
-        }
-    } else if reading {
-        if query.contains_key("versionId") {
-            Action::GetObjectVersion
-        } else {
-            Action::GetObject
-        }
-    } else if request.method() == Method::DELETE {
-        if query.contains_key("versionId") {
-            Action::DeleteObjectVersion
-        } else {
-            Action::DeleteObject
-        }
     } else {
-        Action::PutObject
+        object_action(request.method(), &query)
     };
     let resource = key.map_or_else(
         || format!("bucket:{bucket}"),
@@ -1416,6 +1421,107 @@ mod tests {
         )
         .await;
         assert_eq!(initiation.status(), StatusCode::OK);
+    }
+
+    /// Authorization reads the query in the order the handlers act on it. A
+    /// lock subresource added to a multipart request is ignored by the
+    /// handler, so it must not be what the request is judged as: with only the
+    /// lock permissions, none of these may complete, abort, list or start an
+    /// upload.
+    #[tokio::test]
+    async fn a_lock_subresource_does_not_turn_a_multipart_request_into_a_lock_request() {
+        let (_directory, application, credentials) = test_router().await;
+        make_locked_bucket(&application, "records").await;
+        let initiated = send(
+            &application,
+            Method::POST,
+            "/records/big.bin?uploads",
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(initiated.status(), StatusCode::OK);
+        let initiated = body_text(initiated).await;
+        let upload = xml_value(&initiated, "UploadId")
+            .expect("upload id")
+            .to_owned();
+        let part = send(
+            &application,
+            Method::PUT,
+            &format!("/records/big.bin?partNumber=1&uploadId={upload}"),
+            b"part",
+            &[],
+        )
+        .await;
+        let etag = response_header(&part, "etag").expect("part etag");
+        let lock_only = account_allowed(
+            &credentials,
+            "lock-only",
+            vec![
+                Action::ListBucket,
+                Action::GetObjectRetention,
+                Action::GetObjectLegalHold,
+                Action::PutObjectRetention,
+                Action::PutObjectLegalHold,
+            ],
+        )
+        .await;
+        let manifest = format!(
+            "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag}</ETag></Part></CompleteMultipartUpload>"
+        );
+
+        for (method, uri, payload) in [
+            (
+                Method::POST,
+                format!("/records/big.bin?uploadId={upload}&retention"),
+                manifest.as_bytes(),
+            ),
+            (
+                Method::POST,
+                format!("/records/big.bin?uploadId={upload}&legal-hold"),
+                manifest.as_bytes(),
+            ),
+            (
+                Method::DELETE,
+                format!("/records/big.bin?uploadId={upload}&legal-hold"),
+                b"".as_slice(),
+            ),
+            (
+                Method::DELETE,
+                format!("/records/big.bin?uploadId={upload}&retention"),
+                b"".as_slice(),
+            ),
+            (
+                Method::GET,
+                format!("/records/big.bin?uploadId={upload}&retention"),
+                b"".as_slice(),
+            ),
+            (
+                Method::POST,
+                "/records/other.bin?uploads&retention".to_owned(),
+                b"".as_slice(),
+            ),
+        ] {
+            let response =
+                send_as(&application, &lock_only, method.clone(), &uri, payload, &[]).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        }
+
+        let object = send(&application, Method::GET, "/records/big.bin", b"", &[]).await;
+        assert_eq!(
+            object.status(),
+            StatusCode::NOT_FOUND,
+            "nothing was completed"
+        );
+        let parts = send(
+            &application,
+            Method::GET,
+            &format!("/records/big.bin?uploadId={upload}"),
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(parts.status(), StatusCode::OK, "nothing was aborted");
     }
 
     /// The legal-hold header needs the legal-hold permission, whatever its
