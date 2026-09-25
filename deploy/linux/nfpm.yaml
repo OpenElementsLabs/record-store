@@ -1,7 +1,7 @@
 # nfpm builds the Record Store .deb and .rpm from one description, so the two
 # packages can never drift apart in contents, paths or maintainer scripts.
 #
-#   PKG_ARCH=amd64 PKG_VERSION=0.1.3 \
+#   PKG_ARCH=amd64 PKG_VERSION=0.2.0 \
 #     nfpm package --config deploy/linux/nfpm.yaml --packager deb --target dist
 #
 # The binaries this consumes are the statically linked musl builds. That is the

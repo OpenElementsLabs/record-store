@@ -39,8 +39,8 @@ out. For anything you intend to keep running, name the release instead, so an
 upgrade is something you decide rather than something that happens:
 
 ```bash
-docker pull ghcr.io/openelementslabs/record-store:0.1.3
-docker pull ghcr.io/openelementslabs/record-store-console:0.1.3
+docker pull ghcr.io/openelementslabs/record-store:0.2.0
+docker pull ghcr.io/openelementslabs/record-store-console:0.2.0
 ```
 
 Either way, keep the two images on the same version. Both cover `linux/amd64`
@@ -111,8 +111,8 @@ systemd service and a configuration file, and generating credentials unique to
 the machine.
 
 ```bash
-sudo apt-get install ./record-store_0.1.3_amd64.deb    # Debian, Ubuntu
-sudo dnf install ./record-store-0.1.3-1.x86_64.rpm     # RHEL, Rocky, Fedora
+sudo apt-get install ./record-store_0.2.0_amd64.deb    # Debian, Ubuntu
+sudo dnf install ./record-store-0.2.0-1.x86_64.rpm     # RHEL, Rocky, Fedora
 ```
 
 The binaries are statically linked, so the packages depend on nothing and
@@ -123,7 +123,7 @@ See [Linux Packages](../deployment/linux-packages.md).
 
 ```bash
 helm install record-store \
-  oci://ghcr.io/openelementslabs/charts/record-store --version 0.1.3 \
+  oci://ghcr.io/openelementslabs/charts/record-store --version 0.2.0 \
   --namespace record-store --create-namespace \
   --set auth.rootAccessKey=admin \
   --set auth.rootSecretKey="$(openssl rand -hex 24)" \
@@ -141,11 +141,11 @@ attaches two archives per architecture:
 
 | Archive | Use it when |
 | --- | --- |
-| `record-store-0.1.3-linux-amd64-musl.tar.gz` | Anywhere. Statically linked, no libc dependency. |
-| `record-store-0.1.3-linux-amd64.tar.gz` | You want exactly what is inside the container image. |
+| `record-store-0.2.0-linux-amd64-musl.tar.gz` | Anywhere. Statically linked, no libc dependency. |
+| `record-store-0.2.0-linux-amd64.tar.gz` | You want exactly what is inside the container image. |
 
 ```bash
-tar xzf record-store-0.1.3-linux-amd64-musl.tar.gz
+tar xzf record-store-0.2.0-linux-amd64-musl.tar.gz
 sudo install -m 0755 record-store record-store-server /usr/local/bin/
 record-store --version
 ```
