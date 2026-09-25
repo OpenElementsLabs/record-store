@@ -244,8 +244,23 @@ const SUPPORTED_OBJECT_LOCK_HEADERS: [&str; 3] = [
 ];
 
 pub(crate) fn unsupported_put_headers(headers: &HeaderMap) -> bool {
-    const UNSUPPORTED: [&str; 5] = [
-        "x-amz-copy-source",
+    headers.contains_key("x-amz-copy-source") || unsupported_write_headers(headers)
+}
+
+/// A copy refuses what a PUT refuses, and every `x-amz-copy-source-*` header:
+/// conditional copies and source encryption keys are not implemented, and a
+/// copy that ignored its precondition would overwrite what the client meant to
+/// protect.
+pub(crate) fn unsupported_copy_headers(headers: &HeaderMap) -> bool {
+    unsupported_write_headers(headers)
+        || headers.contains_key("x-amz-tagging-directive")
+        || headers
+            .keys()
+            .any(|name| name.as_str().starts_with("x-amz-copy-source-"))
+}
+
+fn unsupported_write_headers(headers: &HeaderMap) -> bool {
+    const UNSUPPORTED: [&str; 4] = [
         "x-amz-acl",
         "x-amz-server-side-encryption",
         "x-amz-tagging",

@@ -77,10 +77,14 @@ impl ObjectService {
                 object_id: None,
                 protocol_etag: None,
                 // A copy is a new version in the destination bucket, so it is
-                // born under that bucket's default retention like any other
-                // write. The source version's lock is not carried over: it
-                // protects that version, not this new one.
-                object_lock: ObjectLockService::initial_state(&destination_bucket, None)?,
+                // born under the lock the request names or, failing that, that
+                // bucket's default, like any other write. The source version's
+                // lock is not carried over: it protects that version, not this
+                // new one.
+                object_lock: ObjectLockService::initial_state(
+                    &destination_bucket,
+                    request.object_lock,
+                )?,
                 origin,
                 body: upload_stream(body),
             })
@@ -110,6 +114,7 @@ impl ObjectService {
                     metadata_directive: CopyMetadataDirective::Copy,
                     content_type: None,
                     replacement_metadata: Default::default(),
+                    object_lock: None,
                 },
                 WriteOrigin::Restore,
             )

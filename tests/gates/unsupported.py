@@ -73,6 +73,17 @@ def main(gate: Gate) -> None:
         ("PutObject with a canned ACL", lambda: client.put_object(Bucket="unsupported", Key="acl", Body=b"x",
                                                                   ACL="public-read"), "acl"),
         ("PutObjectAcl", lambda: client.put_object_acl(Bucket="unsupported", Key="source", ACL="public-read"), None),
+        # A copy is a write: it refuses what a PUT refuses, rather than copying
+        # and dropping the header, and refuses a precondition it cannot check.
+        ("CopyObject with SSE-S3 header", lambda: client.copy_object(Bucket="unsupported", Key="copy-sse",
+                                                                     CopySource={"Bucket": "unsupported", "Key": "source"},
+                                                                     ServerSideEncryption="AES256"), "copy-sse"),
+        ("CopyObject with tagging", lambda: client.copy_object(Bucket="unsupported", Key="copy-tagged",
+                                                               CopySource={"Bucket": "unsupported", "Key": "source"},
+                                                               Tagging="a=b", TaggingDirective="REPLACE"), "copy-tagged"),
+        ("CopyObject with CopySourceIfMatch", lambda: client.copy_object(Bucket="unsupported", Key="copy-conditional",
+                                                                         CopySource={"Bucket": "unsupported", "Key": "source"},
+                                                                         CopySourceIfMatch='"not-the-etag"'), "copy-conditional"),
         ("GetBucketAcl", lambda: client.get_bucket_acl(Bucket="unsupported"), None),
     ]
     for name, call, created_key in cases:

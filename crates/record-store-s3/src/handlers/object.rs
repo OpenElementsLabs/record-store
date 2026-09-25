@@ -30,7 +30,7 @@ use crate::response::{
     ConditionalOutcome, apply_object_headers, apply_object_lock_headers, bucket_name,
     conditional_streaming_response, custom_metadata, evaluate_conditions, insert_etag,
     insert_version_id, object_key, parse_range, reject_subresources, requested_governance_bypass,
-    requested_object_lock, unsupported_put_headers, xml_response,
+    requested_object_lock, unsupported_copy_headers, unsupported_put_headers, xml_response,
 };
 use crate::sigv4::{PayloadHash, S3RequestId, request_checksum};
 use crate::xml::CompleteMultipartUploadDocument;
@@ -564,6 +564,14 @@ pub(crate) async fn copy_object(
         .map(|value| value.parse::<VersionId>())
         .transpose()
         .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &key))?;
+    if unsupported_copy_headers(&headers) {
+        return Err(S3Error::new(
+            S3ErrorKind::NotImplemented,
+            request_id,
+            &format!("/{bucket}/{key}"),
+        ));
+    }
+    let object_lock = requested_object_lock(&headers, &request_id, &format!("/{bucket}/{key}"))?;
     let directive = match headers
         .get("x-amz-metadata-directive")
         .and_then(|value| value.to_str().ok())
@@ -590,6 +598,7 @@ pub(crate) async fn copy_object(
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned),
             replacement_metadata: custom_metadata(&headers, &request_id, &key)?,
+            object_lock,
         })
         .await
         .map_err(|error| service_error(error, request_id.clone(), &key))?;
@@ -2066,6 +2075,74 @@ mod object_lock_tests {
         )
         .await;
         assert!(response.status().is_client_error(), "{}", response.status());
+    }
+
+    /// A copy is a write, and a lock requested on it is applied to the new
+    /// version -- never accepted and dropped, which would leave the client
+    /// believing in a retention that does not exist. What a copy cannot honour
+    /// it refuses without writing anything.
+    #[tokio::test]
+    async fn a_copy_applies_the_lock_it_requests_and_refuses_what_it_cannot_honour() {
+        let (_directory, application, _credentials) = test_router().await;
+        make_locked_bucket(&application, "records").await;
+        put(&application, "records", "source.txt", b"hello").await;
+        let until = retain_until(10);
+
+        let copied = send(
+            &application,
+            Method::PUT,
+            "/records/copy.txt",
+            b"",
+            &[
+                ("x-amz-copy-source", "/records/source.txt"),
+                ("x-amz-object-lock-mode", "COMPLIANCE"),
+                ("x-amz-object-lock-retain-until-date", &until),
+                ("x-amz-object-lock-legal-hold", "ON"),
+            ],
+        )
+        .await;
+        assert_eq!(copied.status(), StatusCode::OK);
+        let head = send(&application, Method::HEAD, "/records/copy.txt", b"", &[]).await;
+        assert_eq!(
+            response_header(&head, "x-amz-object-lock-mode").as_deref(),
+            Some("COMPLIANCE")
+        );
+        assert_eq!(
+            response_header(&head, "x-amz-object-lock-retain-until-date").as_deref(),
+            Some(until.as_str())
+        );
+        assert_eq!(
+            response_header(&head, "x-amz-object-lock-legal-hold").as_deref(),
+            Some("ON")
+        );
+
+        for refused in [
+            ("x-amz-server-side-encryption", "AES256"),
+            ("x-amz-tagging", "a=b"),
+            ("x-amz-tagging-directive", "REPLACE"),
+            ("x-amz-copy-source-if-match", "\"not-the-etag\""),
+            ("x-amz-object-lock-unknown", "x"),
+        ] {
+            let response = send(
+                &application,
+                Method::PUT,
+                "/records/refused.txt",
+                b"",
+                &[("x-amz-copy-source", "/records/source.txt"), refused],
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_IMPLEMENTED,
+                "{refused:?}"
+            );
+        }
+        let absent = send(&application, Method::HEAD, "/records/refused.txt", b"", &[]).await;
+        assert_eq!(
+            absent.status(),
+            StatusCode::NOT_FOUND,
+            "a refused copy writes nothing"
+        );
     }
 
     /// The write headers and the read headers have to agree, or a client cannot

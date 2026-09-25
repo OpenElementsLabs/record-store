@@ -88,6 +88,8 @@ pub(crate) async fn copy_object(
             },
             content_type: input.content_type,
             replacement_metadata: input.custom_metadata.unwrap_or_default(),
+            // Lock state is set through S3, where its permissions are checked.
+            object_lock: None,
         })
         .await
         .map(|result| {

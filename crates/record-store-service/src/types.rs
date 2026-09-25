@@ -111,6 +111,9 @@ pub struct ServiceCopyRequest {
     pub metadata_directive: CopyMetadataDirective,
     pub content_type: Option<String>,
     pub replacement_metadata: std::collections::BTreeMap<String, String>,
+    /// The lock the request asked for; `None` applies the destination
+    /// bucket's default.
+    pub object_lock: Option<record_store_core::ObjectLockState>,
 }
 
 /// Service-layer streaming read result.
