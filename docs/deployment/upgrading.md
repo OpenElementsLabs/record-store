@@ -40,22 +40,34 @@ docker run --rm --volume /backups:/backups \
 # 4. Validate configuration against the new version before starting it
 docker run --rm --env-file /etc/record-store/env "$NEW" check-config
 
-# 5. Start
+# 5. Check the machine the way the new version's start-up will
+docker run --rm --volumes-from record-store --env-file /etc/record-store/env "$NEW" doctor
+
+# 6. Start
 docker run -d --name record-store-new ... "$NEW"
 
-# 6. Verify
+# 7. Verify
 record-store status --endpoint http://127.0.0.1:7601
 ```
 
-!!! note "Upgrading from 0.1.3"
+!!! note "Upgrading from 0.1.3 to 0.2"
     0.1.3 has no `server backup`, `verify-backup` or `restore`: it ships only
     `backup-metadata`, which copies no payloads. Take the backup in step 3 with the
     **new** image, as shown. Taking it reads the stopped 0.1.3 data directory without
     changing it, and the backup restores into a directory 0.1.3 serves again, which
-    is the rollback below.
+    is the rollback below. The first start migrates the metadata schema from 4 to 6,
+    after which 0.1.3 cannot open the directory.
+
+!!! warning "Upgrading from 0.1.2 or earlier"
+    Upgrade to 0.1.3 first and start it once: it converts every database to the file
+    format this release reads. A database 0.1.3 never opened is refused at start-up
+    with a message naming 0.1.3.
 
 Step 4 is the cheap one that catches the expensive problem: a setting that was valid
-in the old version and is not in the new one.
+in the old version and is not in the new one. Step 5 checks what start-up will refuse
+— a data directory writable by every local user, a temporary directory on another
+filesystem, an unfinished restore — without starting anything, and exits 7 if any of
+them fails.
 
 ## Metadata schema
 
