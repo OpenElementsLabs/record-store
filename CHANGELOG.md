@@ -9,6 +9,24 @@ publishes, so keep it factual and written for the people upgrading.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-25
+
+The first complete publication of 0.2. Upgrade from 0.1.3 as the
+[0.2.0 notes](#020---2026-09-25) describe; everything there applies unchanged. A
+deployment running the 0.2.0 image can move to 0.2.1 by replacing the image: the
+data format, configuration and API are the same.
+
+### Fixed
+
+- **0.2.0 was never released in full.** Its container images, provenance and Helm
+  chart were published, but the release workflow then refused the x86_64 static
+  binaries as "not statically linked" — `file` describes an x86_64 musl build as
+  `static-pie linked`, and the check matched the words — so no GitHub Release,
+  binary archive, Debian or RPM package, or checksum file was published for it. The
+  check now reads the property from the ELF headers: no program interpreter and no
+  shared-library dependency. The 0.2.0 image and chart stay published and are never
+  rebuilt; 0.2.1 supersedes them.
+
 ## [0.2.0] - 2026-09-25
 
 A minor release: Object Lock, coordinated backup and restore, a tamper-evident audit

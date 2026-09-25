@@ -17,4 +17,4 @@ body:
     id: environment
     attributes:
       label: Version and deployment method (if relevant)
-      placeholder: "0.2.0, Docker Compose"
+      placeholder: "0.2.1, Docker Compose"

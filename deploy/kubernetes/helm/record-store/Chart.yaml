@@ -4,8 +4,8 @@ description: Self-hosted, S3-compatible object storage written in Rust
 type: application
 # Both are stamped by the release workflow from the Git tag, so a chart version
 # always names the Record Store release it deploys.
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.2.1
+appVersion: "0.2.1"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/OpenElementsLabs/record-store
 sources:

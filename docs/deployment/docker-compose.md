@@ -17,7 +17,7 @@ no setup. **Override every one before running anything real.**
 until every secret is set:
 
 ```bash
-RECORD_STORE_VERSION=0.2.0 \
+RECORD_STORE_VERSION=0.2.1 \
   docker compose --env-file .env -f deploy/docker/compose.ghcr.yml up -d
 ```
 

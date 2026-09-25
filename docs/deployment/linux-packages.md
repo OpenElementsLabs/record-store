@@ -15,13 +15,13 @@ Download the package for your architecture from the
 === "Debian, Ubuntu"
 
     ```bash
-    sudo apt-get install ./record-store_0.2.0_amd64.deb
+    sudo apt-get install ./record-store_0.2.1_amd64.deb
     ```
 
 === "RHEL, Rocky, Fedora, openSUSE"
 
     ```bash
-    sudo dnf install ./record-store-0.2.0-1.x86_64.rpm
+    sudo dnf install ./record-store-0.2.1-1.x86_64.rpm
     ```
 
 Verify the download against `SHA256SUMS` from the same release first — see
@@ -160,7 +160,7 @@ The release workflow runs the same script you can:
 ```bash
 cargo build --release --target x86_64-unknown-linux-musl \
   --bin record-store --bin record-store-server
-deploy/linux/build-packages.sh amd64 0.2.0 \
+deploy/linux/build-packages.sh amd64 0.2.1 \
   target/x86_64-unknown-linux-musl/release
 ```
 

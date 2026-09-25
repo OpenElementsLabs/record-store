@@ -19,7 +19,7 @@ body:
     attributes:
       label: Version or image tag
       description: A release version, container image tag or digest, or commit.
-      placeholder: "0.2.0 or ghcr.io/openelementslabs/record-store:0.2.0"
+      placeholder: "0.2.1 or ghcr.io/openelementslabs/record-store:0.2.1"
     validations:
       required: true
   - type: dropdown
