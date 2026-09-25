@@ -20,4 +20,3 @@ the record.
 
 | Id | Title | Status | Blocks release |
 | --- | --- | --- | --- |
-| [RSG-006](RSG-006-binaries-carry-no-commit.md) | Binaries carry no commit; unreleased builds report the previous version | open | no |

@@ -22,7 +22,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Print the Record Store CLI version.
+    /// Print the Record Store CLI version and the commit it was built from.
     Version,
     /// Start or validate the Record Store server.
     Server(ServerArgs),
@@ -1014,7 +1014,16 @@ async fn main() -> Result<()> {
     let arguments = Cli::parse();
     let json = arguments.json;
     match arguments.command {
-        Command::Version => println!("record-store {}", env!("CARGO_PKG_VERSION")),
+        Command::Version => {
+            // `--version` stays one line for scripts; this names the build too.
+            let version = env!("CARGO_PKG_VERSION");
+            let commit = record_store_server::BUILD_COMMIT;
+            if json {
+                print_json(&serde_json::json!({ "version": version, "commit": commit }))?;
+            } else {
+                println!("record-store {version}\ncommit {commit}");
+            }
+        }
         Command::Server(arguments) => match arguments.command {
             Some(ServerCommand::CheckConfig) => {
                 Config::load(arguments.config.as_deref()).context("configuration is invalid")?;

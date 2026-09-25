@@ -51,6 +51,8 @@ pub(crate) struct StatusResponse {
 pub(crate) struct SystemInfoResponse {
     pub(crate) name: &'static str,
     pub(crate) version: &'static str,
+    /// The commit this build came from, or `unknown`.
+    pub(crate) commit: &'static str,
     pub(crate) status: &'static str,
     pub(crate) mode: DeploymentMode,
     #[serde(skip_serializing_if = "Option::is_none")]

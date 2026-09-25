@@ -49,6 +49,16 @@ record-store bucket list --endpoint https://management.example.com
 record-store version
 ```
 
+```text
+record-store 0.2.0
+commit 3f1c9a…
+```
+
+Names the release and the commit the binary was built from (`unknown` for a build
+that was given neither a checkout nor `RECORD_STORE_BUILD_COMMIT`). `--json version`
+prints both as an object. `record-store --version` prints the first line only, for
+scripts that compare it with a release.
+
 ## `server`
 
 Starts the server, or operates on its data offline.

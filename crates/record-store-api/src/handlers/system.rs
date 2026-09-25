@@ -33,6 +33,7 @@ pub(crate) async fn system_info(
     Ok(Json(SystemInfoResponse {
         name: "record-store",
         version: state.version,
+        commit: state.commit,
         status: "ready",
         mode: state.mode,
         cluster_id,
@@ -77,6 +78,8 @@ mod tests {
         .await;
         assert_eq!(info["mode"], "standalone", "{info}");
         assert!(info["version"].as_str().is_some(), "{info}");
+        // A fixture names no build, and says so rather than omitting the field.
+        assert_eq!(info["commit"], "unknown", "{info}");
         assert!(info["capabilities"].is_object(), "{info}");
     }
 
