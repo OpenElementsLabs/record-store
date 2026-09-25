@@ -77,7 +77,8 @@ record-store server --config /etc/record-store/config.toml check-config
 ```
 
 Loads the file, applies the environment, validates, and exits. Binds nothing and writes
-nothing.
+nothing. Exits 2 when the configuration does not load or validate, as `doctor`,
+`backup` and `restore` do; `--json` then prints the error as an object.
 
 ### `server doctor`
 
@@ -100,7 +101,8 @@ record-store server backup /backups/2026-09-22 [--replace-incomplete]
 
 Copies payloads, metadata, and system records into one destination with a manifest.
 Takes the exclusive data lock, so **the server must be stopped**. The destination must
-be empty or absent; a destination holding a completed backup is never overwritten.
+be empty or absent; a destination holding a completed backup is never overwritten. A
+data directory with an unfinished restore is refused (2): finish the restore first.
 
 ### `server verify-backup`
 
@@ -118,7 +120,9 @@ record-store server restore /backups/2026-09-22 --level full
 ```
 
 Verifies the backup, then stages and restores every component into an empty data
-directory. Refuses to write into a data directory that already holds one.
+directory. Refuses to write into a data directory that already holds one, and refuses
+(3) before writing anything when the configured credential master key — or, without
+one, the root secret — is not the one the backup's credentials were sealed under.
 
 ### `server backup-metadata`, `server restore-metadata`
 

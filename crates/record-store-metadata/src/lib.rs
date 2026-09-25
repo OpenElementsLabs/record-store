@@ -17,7 +17,7 @@ pub use commands::{MetadataCommand, MetadataOutcome, NewDeleteMarker, apply_comm
 pub use error::MetadataError;
 pub use redb_store::RedbMetadataRepository;
 pub use repository::MetadataRepository;
-pub use schema::METADATA_SCHEMA_VERSION;
+pub use schema::{METADATA_SCHEMA_VERSION, stored_schema_version};
 pub use snapshot::{MetadataEntry, export_tx, import_tx};
 pub use tx::LockRelease;
 pub use types::{

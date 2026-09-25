@@ -291,8 +291,9 @@ area = "recovery"
 guarantee = """docs/operations/backup-and-restore.md, with the shipped CLI and its exit codes: backup refuses a \
 running server (6) and never overwrites a completed backup (4); full verification passes a good backup; a \
 flipped payload byte, an INCOMPLETE marker, an unlisted component and missing component files are refused (3) \
-without writing anything; the wrong master key is refused before anything is written and the refusal names no \
-key; an interrupted restore blocks start-up and a re-run succeeds; the restored deployment serves identical \
+without writing anything; the wrong master key is refused before anything is written, with payload encryption on \
+or off, and the refusal names no key; an interrupted restore blocks start-up, cannot be backed up (2), and a re-run \
+succeeds; the restored deployment serves identical \
 object bytes, versions, delete markers, enforced compliance retention, legal holds, working service-account \
 credentials, share links, an intact audit chain and the same event ids; a write made after the backup is absent."""
 modes = ["standalone"]

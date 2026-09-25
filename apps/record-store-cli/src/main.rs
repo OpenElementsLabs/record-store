@@ -814,7 +814,7 @@ fn backup_exit_code(error: &record_store_server::backup::BackupError) -> i32 {
     use record_store_server::backup::BackupError::*;
 
     match error {
-        Configuration(_) | NotInitialized(_) => exit::CONFIGURATION,
+        Configuration(_) | NotInitialized(_) | RestoreInProgress(_) => exit::CONFIGURATION,
         DataDirectoryInUse(_) => exit::DATA_DIRECTORY_IN_USE,
         DestinationHoldsBackup(_) | DestinationNotEmpty(_) => exit::DESTINATION_CONFLICT,
         InsufficientSpace { .. } => exit::INSUFFICIENT_SPACE,
@@ -836,6 +836,26 @@ fn report_backup_error(error: &record_store_server::backup::BackupError, json: b
     }
     eprintln!("error: {error}");
     code
+}
+
+/// Loads the configuration for a command whose exit codes are documented. An
+/// unusable configuration is exit 2, reported the way the command reports its
+/// other failures, rather than an unexpected failure (1) with no JSON.
+fn load_config_or_exit(path: Option<&std::path::Path>, json: bool) -> Config {
+    match Config::load(path) {
+        Ok(config) => config,
+        Err(error) => {
+            let error = format!("configuration is invalid: {error}");
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "ok": false, "error": error, "exit_code": exit::CONFIGURATION })
+                );
+            }
+            eprintln!("error: {error}");
+            std::process::exit(exit::CONFIGURATION)
+        }
+    }
 }
 
 fn doctor(config: &record_store_config::Config, json: bool) -> i32 {
@@ -1026,20 +1046,18 @@ async fn main() -> Result<()> {
         }
         Command::Server(arguments) => match arguments.command {
             Some(ServerCommand::CheckConfig) => {
-                Config::load(arguments.config.as_deref()).context("configuration is invalid")?;
+                load_config_or_exit(arguments.config.as_deref(), json);
                 println!("configuration is valid");
             }
             Some(ServerCommand::Doctor) => {
-                let config = Config::load(arguments.config.as_deref())
-                    .context("load Record Store configuration")?;
+                let config = load_config_or_exit(arguments.config.as_deref(), json);
                 std::process::exit(doctor(&config, json));
             }
             Some(ServerCommand::Backup {
                 output,
                 replace_incomplete,
             }) => {
-                let config = Config::load(arguments.config.as_deref())
-                    .context("load Record Store configuration")?;
+                let config = load_config_or_exit(arguments.config.as_deref(), json);
                 std::process::exit(run_backup(&config, &output, replace_incomplete, json));
             }
             Some(ServerCommand::VerifyBackup { input, level }) => {
@@ -1065,8 +1083,7 @@ async fn main() -> Result<()> {
                 ));
             }
             Some(ServerCommand::Restore { input, level }) => {
-                let config = Config::load(arguments.config.as_deref())
-                    .context("load Record Store configuration")?;
+                let config = load_config_or_exit(arguments.config.as_deref(), json);
                 std::process::exit(run_restore(&config, &input, &level, json));
             }
             Some(ServerCommand::BackupMetadata { output }) => {
