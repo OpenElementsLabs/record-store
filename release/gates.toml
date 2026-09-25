@@ -216,8 +216,9 @@ id = "CMP-UNSUPPORTED"
 title = "Unsupported S3 operations are refused explicitly"
 area = "compatibility"
 guarantee = """docs/reference/s3-compatibility.md: UploadPartCopy, SSE request headers, ACLs and aws-chunked \
-payloads return 501 NotImplemented and change nothing. A flexible-checksum header (CRC32, CRC32C, SHA-1, \
-SHA-256) that contradicts the body is never stored: it is verified or refused, not silently ignored."""
+payloads return 501 NotImplemented and change nothing -- on CopyObject as on PutObject, where conditional-copy \
+headers are refused too. A flexible-checksum header (CRC32, CRC32C, SHA-1, SHA-256) that contradicts the body is \
+never stored: it is verified or refused, not silently ignored."""
 modes = ["standalone"]
 platforms = ["linux-amd64"]
 stages = ["integration", "candidate"]

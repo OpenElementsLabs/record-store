@@ -20,3 +20,5 @@ the record.
 
 | Id | Title | Status | Blocks release |
 | --- | --- | --- | --- |
+
+No finding is open.
