@@ -60,7 +60,9 @@ export function UploadPanel({
                     ? formatBytes(task.size)
                     : measured === null
                       ? 'Uploading…'
-                      : `${formatBytes(task.sent)} of ${formatBytes(measured)} · ${percent}%`}
+                      : percent === 100
+                        ? 'Transferred · waiting for confirmation'
+                        : `${formatBytes(task.sent)} of ${formatBytes(measured)} · ${percent}%`}
                 </span>
                 {task.state === 'uploading' || task.state === 'queued' ? (
                   <Button
@@ -95,6 +97,22 @@ export function UploadPanel({
                   <div className="h-full bg-accent" style={{ width: `${percent}%` }} />
                 </div>
               )}
+              {task.state === 'unknown' ? (
+                <p className="type-meta" role="alert">
+                  Upload outcome unknown. {task.reason}{' '}
+                  <a
+                    className="underline"
+                    href={`/buckets/${encodeURIComponent(task.bucket)}/objects/${task.key.split('/').map(encodeURIComponent).join('/')}?tab=versions`}
+                  >
+                    Check object history
+                  </a>
+                </p>
+              ) : null}
+              {task.state === 'done' ? (
+                <p className="type-meta-subtle" role="status">
+                  Stored successfully.
+                </p>
+              ) : null}
               {task.state === 'failed' ? (
                 <p className="text-xs text-danger" role="alert">
                   Upload failed. {task.reason}
@@ -119,6 +137,8 @@ export function UploadPanel({
 
 function StateIcon({ state }: { readonly state: UploadTask['state'] }) {
   if (state === 'done') return <CircleCheck aria-label="Uploaded" className="size-4 text-ok" />;
+  if (state === 'unknown')
+    return <CircleX aria-label="Outcome unknown" className="size-4 text-ink-muted" />;
   if (state === 'failed') return <CircleX aria-label="Failed" className="size-4 text-danger" />;
   if (state === 'cancelled') return <X aria-label="Cancelled" className="size-4 text-ink-subtle" />;
   return <Upload aria-label="Uploading" className="size-4 text-ink-muted" />;

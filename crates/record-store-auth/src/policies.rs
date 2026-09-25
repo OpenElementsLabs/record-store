@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use record_store_core::ServiceAccountId;
-use redb::ReadableTable;
+use redb::{ReadableDatabase, ReadableTable};
 use uuid::Uuid;
 
 use crate::keys::{policy_binding_key, store_backend};

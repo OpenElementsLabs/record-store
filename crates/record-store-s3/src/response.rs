@@ -12,13 +12,16 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
-use record_store_core::{BucketName, ByteRange, ObjectKey, ObjectMetadata, VersionId};
+use record_store_core::{
+    BucketName, ByteRange, ObjectKey, ObjectLockState, ObjectMetadata, Retention, VersionId,
+};
 use record_store_service::ServiceGetResult;
 use serde::Serialize;
 
 use crate::error::{S3Error, S3ErrorKind};
 use crate::handlers::listing::decode_query_component;
 use crate::sigv4::S3RequestId;
+use crate::xml::{format_retain_until, legal_hold_status, parse_legal_hold, parse_retain_until};
 use crate::*;
 
 pub(crate) async fn unsupported_operation(
@@ -229,6 +232,17 @@ pub(crate) fn reject_subresources(
     Ok(())
 }
 
+/// The Object Lock request headers this adapter understands.
+pub(crate) const OBJECT_LOCK_MODE: &str = "x-amz-object-lock-mode";
+pub(crate) const OBJECT_LOCK_RETAIN_UNTIL: &str = "x-amz-object-lock-retain-until-date";
+pub(crate) const OBJECT_LOCK_LEGAL_HOLD: &str = "x-amz-object-lock-legal-hold";
+pub(crate) const BYPASS_GOVERNANCE: &str = "x-amz-bypass-governance-retention";
+const SUPPORTED_OBJECT_LOCK_HEADERS: [&str; 3] = [
+    OBJECT_LOCK_MODE,
+    OBJECT_LOCK_RETAIN_UNTIL,
+    OBJECT_LOCK_LEGAL_HOLD,
+];
+
 pub(crate) fn unsupported_put_headers(headers: &HeaderMap) -> bool {
     const UNSUPPORTED: [&str; 5] = [
         "x-amz-copy-source",
@@ -238,12 +252,97 @@ pub(crate) fn unsupported_put_headers(headers: &HeaderMap) -> bool {
         "x-amz-website-redirect-location",
     ];
     UNSUPPORTED.iter().any(|name| headers.contains_key(*name))
-        || headers
-            .keys()
-            .any(|name| name.as_str().starts_with("x-amz-object-lock-"))
+        // The three Object Lock headers below are honoured. Any other member of
+        // that family is still an unimplemented semantic and is refused rather
+        // than dropped, so a client never believes a lock it did not get.
+        || headers.keys().any(|name| {
+            let name = name.as_str();
+            name.starts_with("x-amz-object-lock-")
+                && !SUPPORTED_OBJECT_LOCK_HEADERS.contains(&name)
+        })
         || headers
             .get("x-amz-storage-class")
             .is_some_and(|value| value != "STANDARD")
+}
+
+/// Reads the Object Lock a write request asks for.
+///
+/// `None` means the request said nothing, so the bucket default applies.
+/// `Some` means the caller was explicit, including explicitly asking for no
+/// retention with only a legal hold.
+pub(crate) fn requested_object_lock(
+    headers: &HeaderMap,
+    request_id: &S3RequestId,
+    resource: &str,
+) -> Result<Option<ObjectLockState>, S3Error> {
+    let invalid = || S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), resource);
+    let text = |name: &str| -> Result<Option<&str>, S3Error> {
+        headers
+            .get(name)
+            .map(|value| value.to_str().map_err(|_| invalid()))
+            .transpose()
+    };
+    let mode = text(OBJECT_LOCK_MODE)?;
+    let retain_until = text(OBJECT_LOCK_RETAIN_UNTIL)?;
+    let legal_hold = text(OBJECT_LOCK_LEGAL_HOLD)?;
+    if mode.is_none() && retain_until.is_none() && legal_hold.is_none() {
+        return Ok(None);
+    }
+    // A mode without a date, or a date without a mode, describes no retention
+    // period at all. Guessing either half would invent a promise the caller
+    // never made.
+    let retention = match (mode, retain_until) {
+        (None, None) => None,
+        (Some(mode), Some(retain_until)) => Some(Retention {
+            mode: record_store_core::RetentionMode::parse(mode).map_err(|_| invalid())?,
+            retain_until: parse_retain_until(retain_until).map_err(|_| invalid())?,
+        }),
+        _ => return Err(invalid()),
+    };
+    let legal_hold = legal_hold
+        .map(|value| parse_legal_hold(value).map_err(|_| invalid()))
+        .transpose()?
+        .unwrap_or(false);
+    Ok(Some(ObjectLockState {
+        retention,
+        legal_hold,
+    }))
+}
+
+/// Reads an authorized governance bypass from a request.
+///
+/// Presenting this header requires `s3:BypassGovernanceRetention`, which the
+/// authorization middleware has already enforced by the time a handler asks.
+pub(crate) fn requested_governance_bypass(headers: &HeaderMap) -> bool {
+    headers
+        .get(BYPASS_GOVERNANCE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+}
+
+/// Adds the Object Lock response headers a read reports.
+///
+/// Absent headers mean an unlocked version, which is what S3 does: a client
+/// reads the absence rather than an explicit "none".
+pub(crate) fn apply_object_lock_headers(response: &mut Response, state: &ObjectLockState) {
+    if let Some(retention) = state.retention {
+        if let Ok(value) = HeaderValue::from_str(retention.mode.as_str()) {
+            response
+                .headers_mut()
+                .insert(HeaderName::from_static(OBJECT_LOCK_MODE), value);
+        }
+        if let Ok(value) = HeaderValue::from_str(&format_retain_until(retention.retain_until)) {
+            response
+                .headers_mut()
+                .insert(HeaderName::from_static(OBJECT_LOCK_RETAIN_UNTIL), value);
+        }
+    }
+    if state.legal_hold {
+        response.headers_mut().insert(
+            HeaderName::from_static(OBJECT_LOCK_LEGAL_HOLD),
+            HeaderValue::from_static(legal_hold_status(true)),
+        );
+    }
 }
 
 pub(crate) fn parse_range(value: &str, size: u64) -> Result<ByteRange, S3ErrorKind> {

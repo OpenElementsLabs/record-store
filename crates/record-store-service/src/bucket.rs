@@ -4,14 +4,12 @@ use std::sync::{Arc, atomic::Ordering};
 
 use chrono::Utc;
 use record_store_core::{
-    Bucket, BucketId, BucketName, BucketQuota, CorsConfiguration, OrganizationId, VersioningState,
+    Bucket, BucketId, BucketName, BucketQuota, CorsConfiguration, ObjectLockConfiguration,
+    OrganizationId, VersioningState,
 };
-use record_store_events::{EventRepository, StorageEvent, StorageEventType};
 use record_store_metadata::MetadataRepository;
-use tokio::sync::Semaphore;
 
 use crate::error::map_metadata;
-use crate::events::publish_event;
 use crate::services::BucketCoordinator;
 use crate::*;
 
@@ -19,10 +17,9 @@ use crate::*;
 pub struct BucketService {
     pub(crate) metadata: Arc<dyn MetadataRepository>,
     pub(crate) coordinator: Arc<BucketCoordinator>,
-    pub(crate) operations: Arc<Semaphore>,
+    pub(crate) admission: Arc<crate::admission::Admission>,
     pub(crate) metrics: Arc<ServiceMetrics>,
     pub(crate) owner: OrganizationId,
-    pub(crate) events: Option<Arc<dyn EventRepository>>,
 }
 
 impl BucketService {
@@ -41,6 +38,22 @@ impl BucketService {
         name: BucketName,
         storage_class: Option<record_store_core::StorageClass>,
     ) -> Result<Bucket, ServiceError> {
+        self.create_locked(name, storage_class, false).await
+    }
+
+    /// Creates a bucket, optionally with Object Lock enabled for its lifetime.
+    ///
+    /// Object Lock brings versioning with it, because a retention protects
+    /// immutable versions and there is nothing to protect without them. It can
+    /// only be chosen here: enabling it later would claim protection over
+    /// versions that were written without it, so the answer is the bucket's
+    /// whole lifetime or nothing.
+    pub async fn create_locked(
+        &self,
+        name: BucketName,
+        storage_class: Option<record_store_core::StorageClass>,
+        object_lock_enabled: bool,
+    ) -> Result<Bucket, ServiceError> {
         self.metrics.requests.fetch_add(1, Ordering::Relaxed);
         let _permit = self.acquire().await?;
         let bucket = Bucket {
@@ -48,21 +61,21 @@ impl BucketService {
             organization_id: self.owner,
             name,
             created_at: Utc::now(),
-            versioning: VersioningState::Disabled,
+            versioning: if object_lock_enabled {
+                VersioningState::Enabled
+            } else {
+                VersioningState::Disabled
+            },
             quota: BucketQuota::default(),
             storage_class,
             durability_policy: None,
+            object_lock: object_lock_enabled.then(ObjectLockConfiguration::default),
             cors: None,
         };
         self.metadata
             .create_bucket(&bucket)
             .await
             .map_err(map_metadata)?;
-        publish_event(
-            &self.events,
-            StorageEvent::new(StorageEventType::BucketCreated, bucket.name.as_str()),
-        )
-        .await;
         Ok(bucket)
     }
 
@@ -156,11 +169,6 @@ impl BucketService {
             .delete_bucket(name)
             .await
             .map_err(map_metadata)?;
-        publish_event(
-            &self.events,
-            StorageEvent::new(StorageEventType::BucketDeleted, name.as_str()),
-        )
-        .await;
         Ok(())
     }
 
@@ -172,10 +180,7 @@ impl BucketService {
             .ok_or(ServiceError::BucketNotFound)
     }
 
-    pub(crate) async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, ServiceError> {
-        Arc::clone(&self.operations)
-            .acquire_owned()
-            .await
-            .map_err(|_| ServiceError::Unavailable)
+    pub(crate) async fn acquire(&self) -> Result<crate::admission::OperationPermit, ServiceError> {
+        self.admission.acquire().await
     }
 }

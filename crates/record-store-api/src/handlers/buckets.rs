@@ -1,9 +1,11 @@
 use axum::{
     Json,
-    extract::{Extension, Path, State},
+    extract::{Extension, Path, Query, State},
     http::StatusCode,
 };
-use record_store_core::{Bucket, BucketName, BucketQuota, VersioningState};
+use record_store_core::{
+    Bucket, BucketName, BucketQuota, ObjectLockConfiguration, ObjectLockState, VersioningState,
+};
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
@@ -158,6 +160,107 @@ pub(crate) async fn set_bucket_versioning(
         .await
         .map(Json)
         .map_err(|error| service_to_api_error(error, request_id))
+}
+
+/// Reports a bucket's Object Lock configuration.
+///
+/// Object Lock cannot be turned on here, only its default retention changed:
+/// enabling it later would claim protection over versions written without it,
+/// so it is a decision made once, when the bucket is created.
+pub(crate) async fn get_bucket_object_lock(
+    State(state): State<AppState>,
+    Path(bucket): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<ObjectLockResponse>, ApiError> {
+    let name = bucket_name(bucket, &request_id)?;
+    let configuration = state
+        .services
+        .locks
+        .bucket_configuration(&name)
+        .await
+        .map_err(|error| service_to_api_error(error, request_id))?;
+    Ok(Json(ObjectLockResponse {
+        object_lock: configuration,
+    }))
+}
+
+#[derive(Serialize)]
+pub(crate) struct ObjectLockResponse {
+    object_lock: ObjectLockConfiguration,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SetObjectLockRequest {
+    object_lock: ObjectLockConfiguration,
+}
+
+pub(crate) async fn set_bucket_object_lock(
+    State(state): State<AppState>,
+    Path(bucket): Path<String>,
+    Extension(request_id): Extension<RequestId>,
+    Json(input): Json<SetObjectLockRequest>,
+) -> Result<Json<Bucket>, ApiError> {
+    let name = bucket_name(bucket, &request_id)?;
+    state
+        .services
+        .locks
+        .set_bucket_configuration(&name, input.object_lock)
+        .await
+        .map(Json)
+        .map_err(|error| service_to_api_error(error, request_id))
+}
+
+/// Reports the Object Lock state of one object version.
+///
+/// Read-only on purpose. Placing or releasing a retention is an S3 action
+/// governed by S3 policy, and offering a second door to it here would make the
+/// bypass permission meaningless.
+pub(crate) async fn get_object_lock(
+    State(state): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    Query(query): Query<ObjectLockQuery>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Json<VersionLockResponse>, ApiError> {
+    let name = bucket_name(bucket, &request_id)?;
+    let key = record_store_core::ObjectKey::new(key).map_err(|_| {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_OBJECT_KEY",
+            "Invalid object key",
+        )
+    })?;
+    let lock = state
+        .services
+        .locks
+        .get(&name, &key, query.version_id)
+        .await
+        .map_err(|error| service_to_api_error(error, request_id))?;
+    Ok(Json(VersionLockResponse {
+        version_id: lock.version_id,
+        object_lock: lock.state,
+    }))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ObjectLockQuery {
+    #[serde(default)]
+    version_id: Option<record_store_core::VersionId>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct VersionLockResponse {
+    version_id: record_store_core::VersionId,
+    object_lock: ObjectLockState,
+}
+
+fn bucket_name(bucket: String, request_id: &RequestId) -> Result<BucketName, ApiError> {
+    BucketName::new(bucket).map_err(|_| {
+        ApiError::bad_request(
+            request_id.clone(),
+            "INVALID_BUCKET_NAME",
+            "Invalid bucket name",
+        )
+    })
 }
 
 #[derive(Deserialize)]

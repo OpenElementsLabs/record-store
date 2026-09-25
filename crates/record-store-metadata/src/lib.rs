@@ -19,9 +19,10 @@ pub use redb_store::RedbMetadataRepository;
 pub use repository::MetadataRepository;
 pub use schema::METADATA_SCHEMA_VERSION;
 pub use snapshot::{MetadataEntry, export_tx, import_tx};
+pub use tx::LockRelease;
 pub use types::{
     BucketUsageSummary, DeleteObjectResult, DeleteVersionResult, ListMultipartUploadsRequest,
-    ListObjectVersionsRequest, ListObjectsRequest, ListedObjectVersion, MultipartCleanupResult,
-    MultipartUploadPage, ObjectCommitResult, ObjectMetadataPage, ObjectVersionPage,
-    PayloadReferencePage,
+    ListObjectVersionsRequest, ListObjectsRequest, ListedObjectVersion, LockedVersion,
+    LockedVersionPage, MultipartCleanupResult, MultipartUploadPage, ObjectCommitResult,
+    ObjectMetadataPage, ObjectVersionPage, PayloadReferencePage,
 };

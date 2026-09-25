@@ -26,11 +26,22 @@ test.describe('standalone deployment', () => {
     await expect(signedIn.getByText('Stored data').locator('..')).not.toContainText('—');
   });
 
-  test('system health reports readiness and capacity', async ({ signedIn }) => {
+  test('system health separates readiness from liveness and says what it proved', async ({
+    signedIn,
+  }) => {
     await signedIn.goto('/system');
     await expect(signedIn.getByRole('heading', { name: 'System health' })).toBeVisible();
-    // 'Ready' now appears in both the summary strip and the subsystem list.
+
+    // Readiness is its own labelled fact, not a generic "responding" badge: the
+    // server ran a real write probe against its storage path to answer it.
+    await expect(signedIn.getByText('Service readiness')).toBeVisible();
     await expect(signedIn.getByText('Ready').first()).toBeVisible();
+    await expect(signedIn.getByText(/write, synchronise, and delete probe/)).toBeVisible();
+    // And it must not be allowed to imply anything about stored objects.
+    await expect(
+      signedIn.getByText(/says nothing about the integrity of objects already stored/),
+    ).toBeVisible();
+
     await expect(signedIn.getByText('Disk capacity')).toBeVisible();
   });
 
@@ -107,9 +118,23 @@ test.describe('standalone deployment', () => {
     await page.goto('/metrics');
 
     await expect(page.getByRole('heading', { name: 'Metrics' })).toBeVisible();
-    // One counter reading is not a rate, so the first paint says so.
-    await expect(page.getByText('Collecting…').first()).toBeVisible();
     await expect(page.getByText(/Requests served|Requests/).first()).toBeVisible();
+
+    // A rate needs two readings. The server takes its own, so the screen is
+    // seeded with readings somebody already waited for and shows a measured
+    // rate rather than standing at "Collecting…" until it has watched two polls
+    // go by itself.
+    //
+    // This used to assert "Collecting…" was visible. That became a race the
+    // moment the window could be seeded — whether the placeholder ever painted
+    // depended on which of the two reads resolved first — so it now asserts the
+    // guarantee that actually holds.
+    await expect(page.getByText(/req\/s/).first()).toBeVisible();
+
+    // Still nothing invented: the screen reports the span it actually measured,
+    // so a short window is never presented as a long-run average. Matched with
+    // its value, because the page description mentions the phrase too.
+    await expect(page.getByText(/Observed window \d/)).toBeVisible();
   });
 
   test('health reports disabled cluster parts as not enabled, not failed', async ({ signedIn }) => {

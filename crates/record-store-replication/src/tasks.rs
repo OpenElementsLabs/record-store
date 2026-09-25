@@ -141,28 +141,33 @@ impl TaskExecutor {
         let mut executed = 0;
         let mut running = Vec::new();
         for task in mine {
+            // The claim is what grants this node the right to act, and the fence
+            // token it returns is what proves that right is still current later.
+            // Claiming without reading the token back would leave the executor
+            // unable to tell its own work from a claim that has since moved on.
             let claimed = self
                 .context
-                .commit(ClusterWrite::cluster(ClusterCommand::ClaimTask {
-                    task_id: task.id,
-                    node_id: self.context.node_id,
-                    lease_seconds: limits.lease.as_secs(),
-                    at: Utc::now(),
-                }))
+                .claim_task(task.id, self.context.node_id, limits.lease.as_secs())
                 .await;
-            if let Err(error) = claimed {
-                debug!(task = %task.id, %error, "another node claimed the task first");
-                continue;
+            match claimed {
+                Ok(Some(fence)) => running.push((task, fence)),
+                Ok(None) => {
+                    debug!(task = %task.id, "another node claimed the task first");
+                }
+                Err(error) => {
+                    debug!(task = %task.id, %error, "the task could not be claimed");
+                }
             }
-            running.push(task);
         }
-        for task in running {
-            let outcome = self.execute(&task, limits).await;
+        for (task, fence) in running {
+            let outcome = self.execute(&task, fence, limits).await;
             let command = match outcome {
                 Ok(()) => {
                     executed += 1;
                     ClusterCommand::CompleteTask {
                         task_id: task.id,
+                        node_id: Some(self.context.node_id),
+                        fence,
                         at: Utc::now(),
                     }
                 }
@@ -170,6 +175,8 @@ impl TaskExecutor {
                     warn!(task = %task.id, kind = %task.kind, %reason, "replica movement failed");
                     ClusterCommand::FailTask {
                         task_id: task.id,
+                        node_id: Some(self.context.node_id),
+                        fence,
                         reason,
                         maximum_attempts: limits.maximum_attempts,
                         at: Utc::now(),
@@ -183,10 +190,15 @@ impl TaskExecutor {
         executed
     }
 
-    async fn execute(&self, task: &ReplicaTask, limits: MovementLimits) -> Result<(), String> {
+    async fn execute(
+        &self,
+        task: &ReplicaTask,
+        fence: u64,
+        limits: MovementLimits,
+    ) -> Result<(), String> {
         match task.kind {
             ReplicaTaskKind::Delete => self.execute_delete(task).await,
-            _ => self.execute_copy(task, limits).await,
+            _ => self.execute_copy(task, fence, limits).await,
         }
     }
 
@@ -214,7 +226,12 @@ impl TaskExecutor {
         Ok(())
     }
 
-    async fn execute_copy(&self, task: &ReplicaTask, limits: MovementLimits) -> Result<(), String> {
+    async fn execute_copy(
+        &self,
+        task: &ReplicaTask,
+        fence: u64,
+        limits: MovementLimits,
+    ) -> Result<(), String> {
         let placement = self
             .context
             .placement_for(task.object_id)
@@ -232,10 +249,23 @@ impl TaskExecutor {
                 .await
             {
                 Ok(destination) => {
+                    // Publishing the new replica is additive and therefore safe
+                    // to repeat, but releasing the source is not: it deletes
+                    // bytes. A transfer that outlived its lease may be acting on
+                    // a placement decision the cluster has already replaced, so
+                    // the claim is re-checked against committed state before
+                    // anything is destroyed.
+                    self.ensure_still_claimed(task, fence).await?;
                     self.commit_replica(&placement, destination).await?;
                     if task.kind.removes_source()
                         && let Some(release) = task.source_node
                     {
+                        // Checked again immediately before the one step that
+                        // destroys bytes. The claim was already verified before
+                        // the replica was published, but publishing is additive
+                        // and releasing is not, so the destructive step gets its
+                        // own check as close to itself as possible.
+                        self.ensure_still_claimed(task, fence).await?;
                         self.release_source(&placement, release, task.source_device)
                             .await?;
                     }
@@ -299,6 +329,29 @@ impl TaskExecutor {
             .await
             .map(|_| destination)
             .map_err(|error| error.to_string())
+    }
+
+    /// Fails the task unless this node still holds the claim it started under.
+    ///
+    /// The check reads committed state behind a read barrier rather than the
+    /// node's own copy of the task: a worker that has been partitioned long
+    /// enough to lose its lease is exactly the worker whose local view is stale.
+    async fn ensure_still_claimed(&self, task: &ReplicaTask, fence: u64) -> Result<(), String> {
+        let current = self
+            .context
+            .committed_task(task.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "the task no longer exists".to_owned())?;
+        if current.holds_claim(self.context.node_id, fence) {
+            return Ok(());
+        }
+        Err(format!(
+            "the execution lease was lost before the movement could be committed; the task is \
+             now at fence {} in state {}",
+            current.fence,
+            current.state.name()
+        ))
     }
 
     async fn commit_replica(

@@ -6,6 +6,7 @@ use std::{
     path::PathBuf,
 };
 
+use record_store_core::{CoreError, TrustedProxies};
 use serde::Deserialize;
 
 use crate::*;
@@ -32,11 +33,34 @@ pub struct ServerConfig {
     pub rpc_advertise: Option<String>,
     /// Maximum graceful-shutdown drain time.
     pub shutdown_grace_period_seconds: u64,
+    /// Reverse-proxy hops whose `X-Forwarded-For` header may be believed.
+    ///
+    /// Addresses or CIDR blocks, for example `10.0.0.0/8`. Empty by default,
+    /// which means the header is ignored and every request is attributed to
+    /// the socket it arrived on. That is the safe default and the wrong one
+    /// behind a proxy: until a hop is named here, every visitor arriving
+    /// through it shares one identity, and abuse controls and audit records
+    /// say the proxy's address rather than the caller's.
+    ///
+    /// Naming a hop that is not actually in front of Record Store hands
+    /// anybody who can reach the listener from that address the ability to
+    /// choose their own identity, so the list should contain the proxy and
+    /// nothing else.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 impl ServerConfig {
     /// Port reserved for the future web console. Nothing binds it today.
     pub const RESERVED_CONSOLE_PORT: u16 = 7_602;
+
+    /// Returns the parsed trusted-proxy policy.
+    ///
+    /// Parsing here rather than at use time means a malformed entry is a
+    /// start-up failure, not a silent decision to trust nothing.
+    pub fn parsed_trusted_proxies(&self) -> Result<TrustedProxies, CoreError> {
+        TrustedProxies::parse(&self.trusted_proxies)
+    }
 
     /// Returns the address peers should use for internal RPC.
     ///
@@ -59,6 +83,7 @@ impl Default for ServerConfig {
             rpc_bind: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 7_603)),
             rpc_advertise: None,
             shutdown_grace_period_seconds: 30,
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -185,6 +210,13 @@ impl Default for AuthConfig {
 pub struct LimitsConfig {
     /// Maximum simultaneously executing storage operations.
     pub maximum_concurrent_operations: usize,
+    /// How long an operation may wait for a concurrency permit before it is
+    /// refused with a retryable "slow down" rather than queued.
+    ///
+    /// The concurrency limit bounds the work in flight. This bounds the work
+    /// waiting to be in flight, which is what otherwise grows without limit
+    /// under sustained overload.
+    pub admission_wait_limit_seconds: u32,
     /// Maximum number of `x-amz-meta-*` entries on one object.
     pub maximum_custom_metadata_entries: usize,
     /// Maximum aggregate custom-metadata bytes on one object.
@@ -197,6 +229,10 @@ impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             maximum_concurrent_operations: 256,
+            // Long enough that an ordinary burst queues and clears, short
+            // enough that a client learns the deployment is saturated while the
+            // answer is still useful to it.
+            admission_wait_limit_seconds: 15,
             maximum_custom_metadata_entries: 64,
             maximum_custom_metadata_bytes: 16 * 1024,
             maximum_header_bytes: 64 * 1024,
@@ -247,6 +283,35 @@ impl Default for LifecycleConfig {
         Self {
             interval_seconds: 3_600,
             batch_size: 100,
+        }
+    }
+}
+
+/// Object Lock clock settings.
+///
+/// A retention date is only as trustworthy as the clock that judges it, so
+/// Record Store remembers the furthest point in time it has ever observed and
+/// stops releasing retained versions when the clock falls behind it. These two
+/// settings decide how often that mark is refreshed and how much ordinary drift
+/// is tolerated before the refusal kicks in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectLockConfig {
+    /// Seconds between refreshes of the observed-time high-water mark.
+    ///
+    /// This is what lets an idle deployment still notice a clock that went
+    /// backwards while nothing was being written.
+    pub clock_watermark_interval_seconds: u64,
+    /// Seconds the clock may lag the high-water mark before retention stops
+    /// being released. Ordinary NTP correction fits inside this; a jump does not.
+    pub clock_backwards_tolerance_seconds: u32,
+}
+
+impl Default for ObjectLockConfig {
+    fn default() -> Self {
+        Self {
+            clock_watermark_interval_seconds: 60,
+            clock_backwards_tolerance_seconds: 5,
         }
     }
 }

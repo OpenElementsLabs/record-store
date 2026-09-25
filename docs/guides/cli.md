@@ -79,13 +79,14 @@ record-store storage repair --apply     # actually delete orphaned payloads
 ## Offline backup
 
 ```bash
-record-store server backup-metadata ./backup-2026-08-29
-record-store server restore-metadata ./backup-2026-08-29
+record-store server backup ./backup-2026-09-22
+record-store server verify-backup ./backup-2026-09-22 --level full
+record-store server restore ./backup-2026-09-22 --level full
 ```
 
 !!! danger "Stop the server first"
     These take an exclusive lock on the data directory and refuse to race a running
-    server. They back up **metadata only** — not object payloads. See
+    server. That lock is what makes the copy a single point in time. See
     [Backup and Restore](../operations/backup-and-restore.md).
 
 ## In a container

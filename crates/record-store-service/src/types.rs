@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use record_store_core::{
-    BucketName, Checksum, CompletedPart, MultipartUpload, ObjectKey, ObjectMetadata, PartNumber,
-    UploadId, VersionId,
+    BucketName, Checksum, CompletedPart, MultipartUpload, ObjectKey, ObjectLockState,
+    ObjectMetadata, PartNumber, UploadId, VersionId,
 };
 use record_store_metadata::ListedObjectVersion;
 use record_store_storage::{DownloadStream, UploadStream};
@@ -21,6 +21,11 @@ pub struct ServicePutRequest {
     pub custom_metadata: std::collections::BTreeMap<String, String>,
     /// Optional expected SHA-256 checksum.
     pub expected_checksum: Option<record_store_core::Checksum>,
+    /// Object Lock requested for the new version.
+    ///
+    /// `None` lets the bucket default apply. A request on a bucket without
+    /// Object Lock is refused rather than ignored.
+    pub object_lock: Option<ObjectLockState>,
     /// Streaming body.
     pub body: UploadStream,
 }
@@ -31,6 +36,8 @@ pub struct ServiceCreateMultipartRequest {
     pub key: ObjectKey,
     pub content_type: Option<String>,
     pub custom_metadata: std::collections::BTreeMap<String, String>,
+    /// Object Lock requested for the version completion will publish.
+    pub object_lock: Option<ObjectLockState>,
 }
 
 /// Streaming multipart-part parameters.

@@ -1,0 +1,52 @@
+name: Feature request
+description: Something Record Store should do and currently does not
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Some things are settled and will not be accepted: clustering,
+        replication, and erasure coding; any new external service such as a
+        database server or broker; and silently accepting an operation or header
+        that is not implemented. See
+        [CONTRIBUTING.md](https://github.com/OpenElementsLabs/record-store/blob/main/CONTRIBUTING.md).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What you are trying to do and where it breaks down. Describe the
+        situation rather than the solution — the fix may not be the one you have
+        in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >-
+        Workarounds you found, and why they are not enough. This is often the
+        most useful part of the report.
+
+  - type: dropdown
+    id: compatibility
+    attributes:
+      label: Is this an S3 compatibility gap?
+      description: >-
+        If a real client already expects this behaviour, say which. Matching an
+        existing S3 semantic is a much stronger case than a new one.
+      options:
+        - "Yes — a real S3 client expects this"
+        - "No — this would be new behaviour"
+        - "Not sure"
+    validations:
+      required: true

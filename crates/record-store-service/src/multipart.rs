@@ -7,12 +7,10 @@ use record_store_core::{
     BucketName, MultipartUpload, MultipartUploadState, ObjectKey, PartNumber, UploadId,
     UploadedPart,
 };
-use record_store_events::{StorageEvent, StorageEventType};
 use record_store_metadata::ListMultipartUploadsRequest as MetadataMultipartListRequest;
 use record_store_storage::{CompleteMultipartRequest, PutMultipartPartRequest, PutObjectResult};
 
 use crate::error::map_storage;
-use crate::events::publish_event;
 use crate::*;
 
 impl ObjectService {
@@ -25,12 +23,14 @@ impl ObjectService {
         self.validate_custom_metadata(&request.custom_metadata)?;
         let _permit = self.acquire().await?;
         let bucket = self.resolve_bucket(&request.bucket).await?;
+        let object_lock = ObjectLockService::initial_state(&bucket, request.object_lock)?;
         let upload = MultipartUpload {
             id: UploadId::new(),
             bucket_id: bucket.id,
             key: request.key,
             content_type: request.content_type,
             custom_metadata: request.custom_metadata,
+            object_lock,
             initiated_at: Utc::now(),
             state: MultipartUploadState::Active,
         };
@@ -151,15 +151,6 @@ impl ObjectService {
         self.metrics
             .upload_bytes
             .fetch_add(result.metadata.size, Ordering::Relaxed);
-        publish_event(
-            &self.events,
-            StorageEvent::new(StorageEventType::MultipartCompleted, bucket.name.as_str()).object(
-                result.metadata.key.as_str(),
-                Some(result.metadata.version_id),
-                Some(result.metadata.size),
-            ),
-        )
-        .await;
         Ok(result)
     }
 
@@ -185,15 +176,6 @@ impl ObjectService {
         if let Err(error) = self.storage.cleanup_pending(10_000).await {
             tracing::warn!(%error, %upload_id, "multipart abort payload cleanup deferred");
         }
-        publish_event(
-            &self.events,
-            StorageEvent::new(StorageEventType::MultipartAborted, bucket.name.as_str()).object(
-                key.as_str(),
-                None,
-                None,
-            ),
-        )
-        .await;
         Ok(())
     }
 
@@ -257,6 +239,7 @@ mod tests {
                 key: key(),
                 content_type: None,
                 custom_metadata: Default::default(),
+                object_lock: None,
             })
             .await
             .expect("create multipart");

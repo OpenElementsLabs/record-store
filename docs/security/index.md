@@ -6,6 +6,7 @@
 -   **[Authorization](authorization.md)** — what you are allowed to do
 -   **[Encryption](encryption.md)** — at rest and in transit
 -   **[Sharing Security](sharing-security.md)** — share and embed links
+-   **[Object Lock and Trust](object-lock.md)** — what a retention date proves
 -   **[Security Checklist](checklist.md)** — the short version
 
 </div>

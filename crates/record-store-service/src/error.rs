@@ -1,6 +1,6 @@
 //! Shared bucket and object application services.
 
-use record_store_core::{CoreError, VersionId};
+use record_store_core::{CoreError, LockBlock, LockChangeRefused, VersionId};
 use record_store_metadata::MetadataError;
 use record_store_storage::StorageError;
 use thiserror::Error;
@@ -41,6 +41,34 @@ pub enum ServiceError {
     /// Storage quota would be exceeded.
     #[error("storage quota exceeded")]
     QuotaExceeded,
+    /// Object Lock still holds the version the caller wanted to remove.
+    #[error("object version is held by {}", .0.label())]
+    ObjectLocked(LockBlock),
+    /// The requested lock change would have released a protected version.
+    #[error("object lock change refused: {}", .0.label())]
+    ObjectLockChangeRefused(LockChangeRefused),
+    /// A governance bypass was presented but could not be recorded.
+    ///
+    /// Refused rather than performed: a bypass is the one way a retained
+    /// version leaves before its date, and one nobody can account for
+    /// afterwards is worse than one that did not happen.
+    #[error("a governance bypass cannot be exercised without a durable audit record")]
+    BypassNotRecordable,
+    /// The bucket does not have Object Lock enabled.
+    #[error("object lock is not enabled on this bucket")]
+    ObjectLockNotEnabled,
+    /// The bucket has Object Lock enabled but no configuration to report.
+    #[error("object lock configuration was not found")]
+    ObjectLockConfigurationNotFound,
+    /// Object Lock requires version history, so versioning cannot be suspended.
+    #[error("bucket versioning cannot be suspended while object lock is enabled")]
+    ObjectLockRequiresVersioning,
+    /// Wall-clock time is behind the recorded high-water mark, so no retention
+    /// decision that would release an object can be trusted right now.
+    #[error(
+        "retention cannot be evaluated: the system clock is behind the recorded high-water mark"
+    )]
+    RetentionClockUnavailable,
     /// Custom metadata exceeded a configured bound.
     #[error("custom metadata exceeds configured limits")]
     MetadataTooLarge,
@@ -50,6 +78,13 @@ pub enum ServiceError {
     /// Metadata repository failure.
     #[error("metadata operation failed: {0}")]
     Metadata(#[from] MetadataError),
+    /// Stored bytes did not match what was committed for them.
+    ///
+    /// Kept apart from a generic storage failure because it is not a transient
+    /// condition a caller should retry: the durable bytes are wrong, and the
+    /// operator needs to see that rather than a 500 that looks like a blip.
+    #[error("stored object failed integrity verification")]
+    IntegrityMismatch,
     /// Storage engine failure.
     #[error("storage operation failed: {0}")]
     Storage(#[from] StorageError),
@@ -59,6 +94,13 @@ pub enum ServiceError {
     /// Backpressure subsystem is unavailable.
     #[error("service is unavailable")]
     Unavailable,
+    /// Too much work is already in flight for this operation to start.
+    ///
+    /// Distinct from [`ServiceError::Unavailable`] because the answers differ:
+    /// this one is the deployment working as configured, and the caller should
+    /// back off and retry rather than treat it as a fault.
+    #[error("too many operations are already in flight")]
+    Overloaded,
     /// The cluster cannot currently satisfy the operation.
     ///
     /// This is reported honestly as a retryable condition rather than being
@@ -77,6 +119,18 @@ pub(crate) fn map_metadata(error: MetadataError) -> ServiceError {
         MetadataError::BucketNotEmpty => ServiceError::BucketNotEmpty,
         MetadataError::MultipartUploadNotFound => ServiceError::MultipartUploadNotFound,
         MetadataError::QuotaExceeded => ServiceError::QuotaExceeded,
+        MetadataError::VersionLocked(block) => ServiceError::ObjectLocked(block),
+        MetadataError::ObjectLockChangeRefused(reason) => {
+            ServiceError::ObjectLockChangeRefused(reason)
+        }
+        MetadataError::ObjectLockNotEnabled => ServiceError::ObjectLockNotEnabled,
+        MetadataError::ObjectLockVersionNotFound => ServiceError::ObjectNotFound,
+        MetadataError::ObjectLockRequiresVersioning
+        | MetadataError::ObjectLockNotEnabledAtCreation => {
+            ServiceError::ObjectLockRequiresVersioning
+        }
+        MetadataError::ClockWentBackwards => ServiceError::RetentionClockUnavailable,
+        MetadataError::InvalidObjectLock(reason) => ServiceError::InvalidRequest(reason),
         error => ServiceError::Metadata(error),
     }
 }
@@ -90,6 +144,21 @@ pub(crate) fn map_storage(error: StorageError) -> ServiceError {
             ServiceError::MultipartUploadNotFound
         }
         StorageError::Metadata(MetadataError::QuotaExceeded) => ServiceError::QuotaExceeded,
+        // Object Lock is enforced inside the metadata transaction, so on the
+        // delete path it surfaces wrapped in a storage error. Left unmapped it
+        // would reach the client as a 500, telling them to retry something that
+        // is meant never to succeed.
+        StorageError::Metadata(error @ MetadataError::VersionLocked(_))
+        | StorageError::Metadata(error @ MetadataError::ClockWentBackwards)
+        | StorageError::Metadata(error @ MetadataError::ObjectLockChangeRefused(_))
+        | StorageError::Metadata(error @ MetadataError::ObjectLockNotEnabled)
+        | StorageError::Metadata(error @ MetadataError::ObjectLockVersionNotFound)
+        | StorageError::Metadata(error @ MetadataError::ObjectLockRequiresVersioning)
+        | StorageError::Metadata(error @ MetadataError::ObjectLockNotEnabledAtCreation)
+        | StorageError::Metadata(error @ MetadataError::InvalidObjectLock(_)) => {
+            map_metadata(error)
+        }
+        StorageError::IntegrityMismatch => ServiceError::IntegrityMismatch,
         StorageError::ClusterUnavailable(reason) => ServiceError::ClusterUnavailable(reason),
         StorageError::NoHealthyReplica => {
             ServiceError::ClusterUnavailable(StorageError::NoHealthyReplica.to_string())
@@ -211,8 +280,19 @@ mod tests {
     #[test]
     fn unrecognised_storage_failures_are_preserved_for_diagnosis() {
         assert!(matches!(
+            map_storage(StorageError::Coordination),
+            ServiceError::Storage(StorageError::Coordination)
+        ));
+    }
+
+    /// Corrupt stored bytes are not a generic backend failure. The category
+    /// has to survive the mapping or every protocol reports them as a retryable
+    /// internal error, which is the opposite of what an operator needs to see.
+    #[test]
+    fn an_integrity_failure_keeps_its_own_category() {
+        assert!(matches!(
             map_storage(StorageError::IntegrityMismatch),
-            ServiceError::Storage(StorageError::IntegrityMismatch)
+            ServiceError::IntegrityMismatch
         ));
     }
 }

@@ -54,7 +54,24 @@ Record Store derives the action from the request itself:
 
 A copy request carries `x-amz-copy-source`. It is checked twice: `s3:PutObject` on the
 destination and `s3:GetObject` on the source. An account that can write to the
-destination but not read the source cannot copy.
+destination but not read the source cannot copy. A copy that names a source version
+(`x-amz-copy-source: /<bucket>/<key>?versionId=<version>`) needs `s3:GetObjectVersion`
+on the source instead, as a `GET` with `?versionId` does.
+
+Some request headers add a permission on the same object, on top of the action above.
+A request that lacks one is refused before it runs:
+
+| Header | Also requires |
+| --- | --- |
+| `x-amz-object-lock-mode` or `x-amz-object-lock-retain-until-date` | `s3:PutObjectRetention` |
+| `x-amz-object-lock-legal-hold`, with either value | `s3:PutObjectLegalHold` |
+| `x-amz-bypass-governance-retention: true` | `s3:BypassGovernanceRetention` |
+
+The lock headers are held to this on `PutObject`, `CopyObject` and
+`CreateMultipartUpload` alike. A lock written with an object is as permanent as one set
+afterwards through `?retention` or `?legal-hold`, so it needs the same permission. A
+bucket's default retention needs none of them: it is applied when a request names no
+lock of its own. See [Object Lock](object-lock.md).
 
 ## Resources
 

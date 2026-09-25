@@ -20,10 +20,10 @@ export function MetricCard({
   readonly footer?: React.ReactNode;
 }) {
   return (
-    <Card className="p-5">
-      <p className="text-xs font-medium text-ink-muted">{label}</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-ink">{value}</p>
-      {detail ? <p className="mt-0.5 type-meta">{detail}</p> : null}
+    <Card className="relative p-5 sm:p-6">
+      <p className="text-sm font-medium text-ink-muted">{label}</p>
+      <p className="mt-3 type-metric text-ink">{value}</p>
+      {detail ? <p className="mt-2 type-meta">{detail}</p> : null}
       {footer ? <div className="mt-3">{footer}</div> : null}
     </Card>
   );

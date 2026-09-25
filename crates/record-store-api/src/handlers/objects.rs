@@ -375,6 +375,10 @@ pub(crate) async fn upload_bucket_object(
             content_type,
             custom_metadata: std::collections::BTreeMap::new(),
             expected_checksum: None,
+            // The management plane sets no lock explicitly, so a bucket with
+            // Object Lock enabled applies its default here exactly as it would
+            // to an S3 write.
+            object_lock: None,
             body: record_store_storage::upload_stream(stream),
         })
         .await
@@ -487,10 +491,17 @@ pub(crate) async fn list_bucket_object_versions(
 }
 
 /// Permanently removes one object version.
+///
+/// Object Lock applies here exactly as it does over S3, and the management
+/// plane offers no governance bypass. A bypass is an S3 policy permission, and
+/// giving the management roles a second door around it would make that
+/// permission meaningless: a caller who may not override a retention over S3
+/// must not be able to do it by changing port.
 pub(crate) async fn delete_bucket_object_version(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
     Query(query): Query<DeleteVersionQuery>,
+    Extension(principal): Extension<crate::auth::ManagementPrincipal>,
     Extension(request_id): Extension<RequestId>,
 ) -> Result<StatusCode, ApiError> {
     let name = parse_bucket_name(&bucket, &request_id)?;
@@ -498,7 +509,12 @@ pub(crate) async fn delete_bucket_object_version(
     state
         .services
         .objects
-        .delete_version(&name, key, query.version_id)
+        .delete_version(
+            &name,
+            key,
+            query.version_id,
+            &record_store_service::LockContext::principal(principal.audit_name()),
+        )
         .await
         .map(|()| StatusCode::NO_CONTENT)
         .map_err(|error| service_to_api_error(error, request_id))

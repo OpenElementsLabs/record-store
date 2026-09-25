@@ -195,6 +195,18 @@ pub enum ReplicaTaskState {
 }
 
 impl ReplicaTaskState {
+    /// Returns a stable short name for tracing and operator-facing messages.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running { .. } => "running",
+            Self::Completed { .. } => "completed",
+            Self::Parked { .. } => "parked",
+            Self::Cancelled { .. } => "cancelled",
+        }
+    }
+
     /// Returns whether the task still needs work.
     #[must_use]
     pub const fn active(&self) -> bool {
@@ -227,6 +239,18 @@ pub struct ReplicaTask {
     pub operation_id: Option<ClusterOperationId>,
     /// Payload size, used for progress accounting and throttling.
     pub size: u64,
+    /// Monotonic fence token, incremented by every claim.
+    ///
+    /// A worker records the token it was granted and presents it again when it
+    /// reports an outcome. Once the lease expires and the task is reclaimed, the
+    /// token moves on, so the previous worker — which may still be mid-transfer
+    /// — can no longer complete the task, release a source replica, or overwrite
+    /// the decision the new owner is acting on.
+    ///
+    /// Tasks written before fencing existed decode as token `0`, which no claim
+    /// ever issues, so they are refused rather than silently trusted.
+    #[serde(default)]
+    pub fence: u64,
     /// Current execution state.
     pub state: ReplicaTaskState,
     /// Failed attempts so far.
@@ -260,6 +284,7 @@ impl ReplicaTask {
             target_device: None,
             operation_id: None,
             size,
+            fence: 0,
             state: ReplicaTaskState::Queued,
             attempts: 0,
             last_error: None,
@@ -303,16 +328,37 @@ impl ReplicaTask {
         self
     }
 
-    /// Claims the task for a node under a lease.
-    pub fn claim(&mut self, node_id: NodeId, lease_seconds: u64, now: DateTime<Utc>) {
+    /// Claims the task for a node under a lease, issuing a fresh fence token.
+    ///
+    /// The token is what makes the claim exclusive in practice rather than only
+    /// in intent: it advances on every claim, so a worker holding an older token
+    /// is refused even while it is still running.
+    pub fn claim(&mut self, node_id: NodeId, lease_seconds: u64, now: DateTime<Utc>) -> u64 {
         let lease = TimeDelta::try_seconds(i64::try_from(lease_seconds).unwrap_or(600))
             .unwrap_or_else(TimeDelta::zero);
+        self.fence = self.fence.saturating_add(1);
         self.state = ReplicaTaskState::Running {
             node_id,
             started_at: now,
             lease_expires_at: now + lease,
         };
         self.updated_at = now;
+        self.fence
+    }
+
+    /// Returns whether this node still holds the task under the given token.
+    ///
+    /// Both halves matter. The token alone would accept a report from a node
+    /// that never held the claim, and the node alone would accept a report from
+    /// a worker whose lease expired and was re-granted to the same node.
+    #[must_use]
+    pub fn holds_claim(&self, node_id: NodeId, fence: u64) -> bool {
+        self.fence == fence
+            && fence != 0
+            && matches!(
+                &self.state,
+                ReplicaTaskState::Running { node_id: owner, .. } if *owner == node_id
+            )
     }
 
     /// Returns whether a running lease has expired and must be reclaimed.

@@ -671,24 +671,44 @@ async fn management_api_serves_the_console_surface() {
     );
     assert_eq!(download.bytes().await.expect("body").as_ref(), payload);
 
-    // Storage events are a separate feed from the audit trail.
-    let events = client
-        .get(format!("{base}/api/v1/events?limit=10"))
-        .bearer_auth(admin)
-        .send()
-        .await
-        .expect("event list")
-        .json::<serde_json::Value>()
-        .await
-        .expect("event JSON");
-    let names: Vec<&str> = events["events"]
-        .as_array()
-        .expect("array")
-        .iter()
-        .filter_map(|event| event["type"].as_str())
-        .collect();
-    assert!(names.contains(&"object.created"), "events: {names:?}");
-    assert!(names.contains(&"bucket.created"), "events: {names:?}");
+    // Storage events are a separate feed from the audit trail, and they are
+    // deliberately asynchronous: the catalog journals them inside the
+    // transaction that commits the mutation, and a background pass moves them
+    // into the delivery outbox. So this waits for the feed rather than
+    // expecting the event to be there the instant the write returns.
+    let mut names: Vec<String> = Vec::new();
+    for _ in 0..50 {
+        let events = client
+            .get(format!("{base}/api/v1/events?limit=10"))
+            .bearer_auth(admin)
+            .send()
+            .await
+            .expect("event list")
+            .json::<serde_json::Value>()
+            .await
+            .expect("event JSON");
+        names = events["events"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|event| event["type"].as_str())
+            .map(str::to_owned)
+            .collect();
+        if names.iter().any(|name| name == "object.created")
+            && names.iter().any(|name| name == "bucket.created")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        names.iter().any(|name| name == "object.created"),
+        "events: {names:?}"
+    );
+    assert!(
+        names.iter().any(|name| name == "bucket.created"),
+        "events: {names:?}"
+    );
 
     // Version history is exposed once versioning is enabled.
     let versioning = client

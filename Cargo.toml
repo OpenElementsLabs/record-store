@@ -15,6 +15,7 @@ members = [
     "crates/record-store-core",
     "crates/record-store-metadata",
     "crates/record-store-observability",
+    "crates/record-store-proof",
     "crates/record-store-protocol",
     "crates/record-store-replication",
     "crates/record-store-rpc",
@@ -41,6 +42,9 @@ base64 = "0.23.1"
 bytes = "1.10.1"
 chrono = { version = "0.4.41", features = ["serde"] }
 clap = { version = "4.5.47", features = ["derive", "env"] }
+# Flexible-checksum verification (x-amz-checksum-crc32 / -crc32c / -sha1).
+crc32c = "0.6"
+crc32fast = "1.5"
 criterion = { version = "0.8.2", features = ["async_tokio"] }
 futures-core = "0.3.31"
 futures-util = "0.3.31"
@@ -57,12 +61,19 @@ percent-encoding = "2.3.1"
 prost = "0.14.4"
 proptest = "1.9.0"
 protoc-bin-vendored = "3.2.0"
-redb = "2.6.3"
+redb = "4.2.0"
+# Test-only, to build a v2 database that the current redb can no longer write,
+# and prove the refusal names the release that converts it.
+redb-v2 = { package = "redb", version = "2.6.3" }
 reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls"] }
 quick-xml = { version = "0.42.0", features = ["serialize"] }
 reed-solomon-simd = "3.1.0"
+# Already present through rustls; used directly for Ed25519 signing and
+# verification so no advisory-carrying signature crate is needed.
+ring = "0.17.14"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
+sha1 = "0.11"
 sha2 = "0.11.0"
 subtle = "2.6.1"
 tempfile = "3.21.0"
@@ -78,7 +89,7 @@ tonic-prost-build = "0.14.6"
 tower = { version = "0.5.2", features = ["util"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
-uuid = { version = "1.18.0", features = ["serde", "v4"] }
+uuid = { version = "1.18.0", features = ["serde", "v4", "v5"] }
 zeroize = "1.8.1"
 
 [workspace.lints.rust]

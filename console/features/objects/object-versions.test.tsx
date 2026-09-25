@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ObjectVersions } from './object-versions';
 import { auditorPermissions, jsonResponse, renderWithProviders, session } from '@/test/render';
 
+const navigation = vi.hoisted(() => ({ push: vi.fn(), params: '' }));
+
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push: navigation.push, replace: vi.fn() }),
   usePathname: () => '/buckets/uploads',
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(navigation.params),
 }));
 
 function entry(overrides: Record<string, unknown> = {}) {
@@ -39,6 +41,8 @@ function respond(entries: Record<string, unknown>[]) {
 }
 
 beforeEach(() => {
+  navigation.params = '';
+  navigation.push.mockClear();
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -102,5 +106,40 @@ describe('ObjectVersions restore', () => {
 
     await userEvent.click(screen.getAllByRole('button', { name: /actions/i })[1]!);
     expect(screen.queryByRole('menuitem', { name: /restore as current/i })).toBeNull();
+  });
+});
+
+describe('version navigation', () => {
+  it('carries both server markers into the next page URL', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        versions: [entry()],
+        next_key_marker: 'reports/q1.pdf',
+        next_version_id_marker: 'older-version',
+      }),
+    );
+    renderWithProviders(<ObjectVersions bucket="uploads" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Next page' }));
+    const url = new URL(navigation.push.mock.calls[0]![0], 'http://localhost');
+    expect(url.searchParams.get('vkey')).toBe('reports/q1.pdf');
+    expect(url.searchParams.get('vid')).toBe('older-version');
+  });
+
+  it('requests the selected page and offers the first page', async () => {
+    navigation.params = 'vkey=reports%2Fq1.pdf&vid=older-version';
+    respond([entry()]);
+    renderWithProviders(<ObjectVersions bucket="uploads" />);
+    await screen.findByRole('button', { name: 'First page' });
+    const url = new URL(String(fetchMock.mock.calls[0]![0]), 'http://localhost');
+    expect(url.searchParams.get('key_marker')).toBe('reports/q1.pdf');
+    expect(url.searchParams.get('version_id_marker')).toBe('older-version');
+  });
+
+  it('does not mix neighbouring keys into object history', async () => {
+    respond([entry(), entry({ key: 'reports/q1.pdf.backup', version_id: 'other' })]);
+    renderWithProviders(<ObjectVersions bucket="uploads" prefixOverride="reports/q1.pdf" />);
+    await screen.findByText('reports/q1.pdf');
+    expect(screen.queryByText('reports/q1.pdf.backup')).toBeNull();
+    expect(screen.queryByRole('textbox')).toBeNull();
   });
 });

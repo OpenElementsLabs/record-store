@@ -32,7 +32,8 @@ use record_store_cluster::{
 };
 use record_store_consensus::{
     ClusterWrite, ClusterWriteResponse, ConsensusError, ConsensusSettings, LeaderForwarder,
-    MemberId, MemberNode, MetadataConsensus, RecordStoreTypeConfig,
+    MemberId, MemberNode, MetadataConsensus, RecordStoreTypeConfig, RecoveryError, RecoveryIntent,
+    SnapshotHealth,
 };
 use record_store_core::{
     Bucket, BucketName, BucketQuota, ClusterId, NodeId, OrganizationId, VersioningState,
@@ -187,7 +188,10 @@ impl LeaderForwarder for Forwarder {
             .get(&leader)
             .map(Arc::clone)
             .ok_or_else(|| ConsensusError::Forward("leader is not running".into()))?;
-        peer.write(command.clone()).await
+        // The production RPC handler proposes locally and refuses rather than
+        // relaying onward, so the harness has to do the same or it would not be
+        // modelling the wire behaviour it exists to test.
+        peer.write_without_forwarding(command.clone()).await
     }
 
     async fn forward_read_barrier(
@@ -314,6 +318,9 @@ fn identity() -> ClusterIdentity {
         cluster_id: ClusterId::new(),
         cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
         created_at: Utc::now(),
+        recovery_generation: 0,
+        recovery_id: None,
+        recovered_at: None,
     }
 }
 
@@ -327,6 +334,7 @@ fn bucket(name: &str) -> Bucket {
         quota: BucketQuota::default(),
         storage_class: None,
         durability_policy: None,
+        object_lock: None,
         cors: None,
     }
 }
@@ -337,6 +345,7 @@ fn registration() -> NodeRegistration {
         versions: NodeVersions::current("test"),
         rpc_address: "10.0.0.1:7603".into(),
         s3_endpoint: None,
+        management_endpoint: None,
         storage_class: StorageClass::default(),
         failure_domain: FailureDomain::parse("rack=a").expect("labels"),
         capacity: NodeCapacity {
@@ -862,4 +871,514 @@ async fn cluster_and_object_metadata_commit_together() {
     assert_eq!(raft_id, 1);
     let usage = leader.state().cluster().usage().await.expect("usage");
     assert_eq!(usage.payloads, 0);
+}
+
+/// A leader-elected scheduler must lose its authority the moment it loses
+/// leadership, not merely fail to notice.
+///
+/// An ordinary write forwards: the client only wants the write to land
+/// somewhere. A coordination write must not, because the thing that changed is
+/// exactly this node's right to decide. Forwarding one would let a deposed
+/// coordinator keep committing decisions through the node that replaced it, and
+/// the cluster would be scheduled twice from two views of the world.
+#[tokio::test]
+async fn a_follower_cannot_commit_a_leader_fenced_write_by_forwarding_it() {
+    let mut harness = Harness::new();
+    let leader = bootstrap(&mut harness, &[1, 2, 3]).await;
+    let term = leader
+        .leadership_term()
+        .await
+        .expect("the bootstrapped member leads");
+
+    let follower = harness
+        .members
+        .lock()
+        .expect("member registry")
+        .get(&3)
+        .map(Arc::clone)
+        .expect("follower is running");
+    assert_eq!(
+        follower.leadership_term().await,
+        None,
+        "a follower holds no leadership term"
+    );
+
+    // The same write that an ordinary client path would happily forward.
+    let forwarded = follower.write(ClusterWrite::Noop).await;
+    assert!(
+        forwarded.is_ok(),
+        "an ordinary write is expected to forward: {forwarded:?}"
+    );
+
+    let fenced = follower.write_as_leader(term, ClusterWrite::Noop).await;
+    assert!(
+        matches!(fenced, Err(ConsensusError::NoLeader)),
+        "a fenced write from a non-leader must be refused, not forwarded: {fenced:?}"
+    );
+}
+
+/// The term is what makes the fence a fence. A node that still leads, but in a
+/// later term than the pass began in, has already been through an election; the
+/// work that pass was doing was planned against a world that no longer holds.
+#[tokio::test]
+async fn a_write_fenced_to_a_stale_term_is_refused_by_the_current_leader() {
+    let mut harness = Harness::new();
+    let leader = bootstrap(&mut harness, &[1, 2, 3]).await;
+    let term = leader
+        .leadership_term()
+        .await
+        .expect("the bootstrapped member leads");
+
+    leader
+        .write_as_leader(term, ClusterWrite::Noop)
+        .await
+        .expect("the current term commits");
+
+    let stale = leader.write_as_leader(term - 1, ClusterWrite::Noop).await;
+    assert!(
+        matches!(stale, Err(ConsensusError::NoLeader)),
+        "a write fenced to a superseded term must be refused: {stale:?}"
+    );
+}
+
+/// A redirect must cost one hop, not a chain.
+///
+/// The node receiving a forwarded write was told "you are the leader". If that
+/// is no longer true, relaying the write onward is how a redirect becomes a
+/// cycle: A forwards to B, B to C, C back to A, each hop spending another
+/// request timeout and multiplying load precisely during the leader churn that
+/// caused it. The receiver must refuse and name the leader it knows instead.
+#[tokio::test]
+async fn a_forwarded_write_is_never_forwarded_a_second_time() {
+    let mut harness = Harness::new();
+    let leader = bootstrap(&mut harness, &[1, 2, 3]).await;
+    assert!(
+        leader.leadership_term().await.is_some(),
+        "member 1 must lead for this to test anything"
+    );
+
+    let first_follower = harness
+        .members
+        .lock()
+        .expect("member registry")
+        .get(&2)
+        .map(Arc::clone)
+        .expect("follower is running");
+    let second_follower = harness
+        .members
+        .lock()
+        .expect("member registry")
+        .get(&3)
+        .map(Arc::clone)
+        .expect("follower is running");
+
+    // What one follower would receive if another had forwarded to it by
+    // mistake, or because leadership moved between the lookup and the call.
+    let relayed = second_follower
+        .write_without_forwarding(ClusterWrite::Noop)
+        .await;
+    let Err(error) = relayed else {
+        panic!("a follower must not commit a write that was forwarded to it");
+    };
+    match error {
+        ConsensusError::NotLeader { leader, .. } => {
+            assert_eq!(leader, 1, "the refusal must name the leader it knows");
+        }
+        ConsensusError::NoLeader => {}
+        other => panic!("expected a redirect, got {other:?}"),
+    }
+
+    // And the ordinary client path still works, in exactly one hop.
+    first_follower
+        .write(ClusterWrite::Noop)
+        .await
+        .expect("an ordinary write still reaches the leader");
+}
+
+// ---------------------------------------------------------------------------
+// Disaster recovery
+//
+// These run against a real three-member group that is then reduced to one
+// survivor. Nothing is mocked: the log, the state machine, and the snapshots are
+// the same durable files a deployed member writes, and recovery is applied to
+// them offline exactly as an operator would.
+
+/// Builds a three-member cluster holding real object metadata, then keeps only
+/// member 1's directory — the survivor of a two-of-three loss.
+async fn cluster_reduced_to_one_survivor(
+    harness: &mut Harness,
+) -> (record_store_core::ClusterId, std::path::PathBuf) {
+    let leader = bootstrap(harness, &[1, 2, 3]).await;
+    let bucket_record = bucket("survivor");
+    leader
+        .write(ClusterWrite::metadata(MetadataCommand::CreateBucket {
+            bucket: Box::new(bucket_record.clone()),
+        }))
+        .await
+        .expect("create bucket");
+    let cluster_id = leader
+        .state()
+        .cluster()
+        .identity()
+        .await
+        .expect("read identity")
+        .expect("initialized")
+        .cluster_id;
+
+    // The quorum is gone: two of three members are permanently lost. Every
+    // handle has to go with them — recovery runs against a stopped node, and
+    // redb holds the data files exclusively for as long as one is alive.
+    drop(leader);
+    harness.stop(2).await;
+    harness.stop(3).await;
+    harness.stop(1).await;
+    (cluster_id, harness.directory(1))
+}
+
+/// Inspection is the step an operator runs on every survivor before choosing
+/// which one to rebuild from. It must change nothing and must report enough to
+/// make that choice — above all the applied position, which is what decides
+/// which survivor is furthest ahead.
+#[tokio::test]
+async fn inspecting_a_survivor_reports_its_position_without_changing_it() {
+    let mut harness = Harness::new();
+    let (cluster_id, directory) = cluster_reduced_to_one_survivor(&mut harness).await;
+
+    let first = record_store_consensus::recovery::inspect(&directory)
+        .await
+        .expect("inspect the survivor");
+    assert!(first.recoverable, "{first:?}");
+    assert_eq!(
+        first.cluster.as_ref().map(|identity| identity.cluster_id),
+        Some(cluster_id)
+    );
+    assert!(
+        first.last_applied.is_some(),
+        "the applied position is what an operator chooses a survivor by: {first:?}"
+    );
+    assert_eq!(
+        first.voters.len(),
+        3,
+        "the survivor still records the group it belonged to: {first:?}"
+    );
+
+    let second = record_store_consensus::recovery::inspect(&directory)
+        .await
+        .expect("inspect again");
+    assert_eq!(
+        first, second,
+        "inspection must not change what it reports on"
+    );
+}
+
+/// The procedure itself: one survivor, offline, rebuilt into a cluster that
+/// elects and serves — carrying its object history, its identity, and a record
+/// that authority was rebuilt.
+#[tokio::test]
+async fn recovering_a_survivor_restores_a_working_cluster_with_its_history() {
+    let mut harness = Harness::new();
+    let (cluster_id, directory) = cluster_reduced_to_one_survivor(&mut harness).await;
+
+    let report = record_store_consensus::recovery::recover_single_member(
+        &directory,
+        RecoveryIntent {
+            cluster_id,
+            member_id: 1,
+            address: "member-1:7603".to_owned(),
+            reason: "two of three voters were lost".to_owned(),
+            accept_data_loss: true,
+        },
+    )
+    .await
+    .expect("recover the survivor");
+
+    assert_eq!(report.cluster_id, cluster_id);
+    assert_eq!(report.member_id, 1);
+    assert_eq!(
+        report.recovery_generation, 1,
+        "the first rebuild of this cluster's authority"
+    );
+    assert_eq!(
+        report.removed_voters,
+        vec![2, 3],
+        "the lost voters must be named, not silently dropped: {report:?}"
+    );
+
+    // The recovered member starts, elects alone, and still holds its history.
+    let recovered = harness.start(1).await;
+    recovered
+        .wait_for_leader(Duration::from_secs(10))
+        .await
+        .expect("the recovered member must be able to elect");
+    recovered
+        .ensure_read_consistency()
+        .await
+        .expect("the recovered cluster must be readable");
+
+    let buckets = recovered
+        .state()
+        .metadata()
+        .list_buckets()
+        .await
+        .expect("read the restored catalog");
+    assert!(
+        buckets
+            .iter()
+            .any(|bucket| bucket.name.as_str() == "survivor"),
+        "recovery rebuilds authority, it does not discard object history: {buckets:?}"
+    );
+
+    let identity = recovered
+        .state()
+        .cluster()
+        .identity()
+        .await
+        .expect("read identity")
+        .expect("initialized");
+    assert_eq!(
+        identity.cluster_id, cluster_id,
+        "a recovered cluster keeps its identity rather than becoming a new one"
+    );
+    assert_eq!(identity.recovery_generation, 1);
+    assert_eq!(identity.recovery_id, Some(report.recovery_id));
+
+    // And it accepts new writes, which is the whole point of recovering.
+    recovered
+        .write(ClusterWrite::metadata(MetadataCommand::CreateBucket {
+            bucket: Box::new(bucket("after-recovery")),
+        }))
+        .await
+        .expect("the recovered cluster must accept writes");
+}
+
+/// The mistake that cannot be undone is recovering two survivors separately:
+/// that leaves two clusters wearing one identifier. A single node cannot
+/// prevent it, so each recovery stamps a distinct lineage, and the two are then
+/// distinguishable rather than silently interchangeable.
+#[tokio::test]
+async fn two_independent_recoveries_of_one_cluster_are_distinguishable() {
+    let mut harness = Harness::new();
+    let leader = bootstrap(&mut harness, &[1, 2, 3]).await;
+    let cluster_id = leader
+        .state()
+        .cluster()
+        .identity()
+        .await
+        .expect("read identity")
+        .expect("initialized")
+        .cluster_id;
+    // Both followers must have applied the cluster's initialization before the
+    // group is torn down, or neither is a recoverable survivor.
+    for member in [2, 3] {
+        let follower = harness
+            .members
+            .lock()
+            .expect("member registry")
+            .get(&member)
+            .map(Arc::clone)
+            .expect("member is running");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while follower
+            .state()
+            .cluster()
+            .identity()
+            .await
+            .expect("read identity")
+            .is_none()
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "member {member} never replicated the cluster identity"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+    drop(leader);
+    for member in [1, 2, 3] {
+        harness.stop(member).await;
+    }
+
+    let mut lineages = Vec::new();
+    for member in [2, 3] {
+        let report = record_store_consensus::recovery::recover_single_member(
+            harness.directory(member),
+            RecoveryIntent {
+                cluster_id,
+                member_id: member,
+                address: format!("member-{member}:7603"),
+                reason: "an operator recovered this survivor".to_owned(),
+                accept_data_loss: true,
+            },
+        )
+        .await
+        .expect("recover");
+        lineages.push(report.recovery_id);
+    }
+
+    assert_ne!(
+        lineages[0], lineages[1],
+        "two independent recoveries must not share a lineage, or the split they created \
+         would be undetectable"
+    );
+
+    let first = record_store_consensus::recovery::inspect(harness.directory(2))
+        .await
+        .expect("inspect")
+        .cluster
+        .expect("identity");
+    let second = record_store_consensus::recovery::inspect(harness.directory(3))
+        .await
+        .expect("inspect")
+        .cluster
+        .expect("identity");
+    assert_eq!(
+        first.cluster_id, second.cluster_id,
+        "they are still the same cluster by name, which is exactly the trap"
+    );
+    assert!(
+        !first.same_lineage(&second),
+        "and they must not be treated as the same cluster: {first:?} vs {second:?}"
+    );
+}
+
+/// Recovery is refused, specifically, whenever it would invent authority rather
+/// than rebuild it. Each of these is a different operator mistake, and each has
+/// to fail with a reason that names the mistake.
+#[tokio::test]
+async fn unsafe_recovery_attempts_are_refused_with_a_specific_reason() {
+    let mut harness = Harness::new();
+    let (cluster_id, directory) = cluster_reduced_to_one_survivor(&mut harness).await;
+
+    let intent = |mutate: fn(&mut RecoveryIntent)| {
+        let mut intent = RecoveryIntent {
+            cluster_id,
+            member_id: 1,
+            address: "member-1:7603".to_owned(),
+            reason: "test".to_owned(),
+            accept_data_loss: true,
+        };
+        mutate(&mut intent);
+        intent
+    };
+
+    // Not acknowledging the loss.
+    let refused = record_store_consensus::recovery::recover_single_member(
+        &directory,
+        intent(|intent| intent.accept_data_loss = false),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(RecoveryError::LossNotAcknowledged)),
+        "{refused:?}"
+    );
+
+    // Naming a different cluster, which is how a wrong data directory shows up.
+    let refused = record_store_consensus::recovery::recover_single_member(
+        &directory,
+        intent(|intent| intent.cluster_id = record_store_core::ClusterId::new()),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(RecoveryError::ClusterMismatch { .. })),
+        "{refused:?}"
+    );
+
+    // Recovering as a member the group never had.
+    let refused = record_store_consensus::recovery::recover_single_member(
+        &directory,
+        intent(|intent| intent.member_id = 99),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(RecoveryError::NotAMember { .. })),
+        "{refused:?}"
+    );
+
+    // A directory that holds no consensus state at all.
+    let empty = tempfile::tempdir().expect("temporary directory");
+    let refused =
+        record_store_consensus::recovery::recover_single_member(empty.path(), intent(|_| {})).await;
+    assert!(
+        matches!(refused, Err(RecoveryError::NoConsensusState(_))),
+        "{refused:?}"
+    );
+
+    // Every refusal must have left the survivor exactly as it was, or a failed
+    // attempt would make the next one worse.
+    let assessment = record_store_consensus::recovery::inspect(&directory)
+        .await
+        .expect("inspect");
+    assert_eq!(assessment.voters.len(), 3, "{assessment:?}");
+    assert_eq!(
+        assessment
+            .cluster
+            .as_ref()
+            .map(|identity| identity.recovery_generation),
+        Some(0),
+        "a refused recovery must not have advanced the lineage"
+    );
+}
+
+/// A member that has applied nothing holds no authority to rebuild. Recovering
+/// from it would produce an empty cluster wearing the old cluster's name, which
+/// is worse than failing: it looks like it worked.
+#[tokio::test]
+async fn a_member_that_applied_nothing_cannot_be_recovered_from() {
+    let mut harness = Harness::new();
+    harness.start(9).await;
+    harness.stop(9).await;
+
+    let refused = record_store_consensus::recovery::recover_single_member(
+        harness.directory(9),
+        RecoveryIntent {
+            cluster_id: record_store_core::ClusterId::new(),
+            member_id: 9,
+            address: "member-9:7603".to_owned(),
+            reason: "test".to_owned(),
+            accept_data_loss: true,
+        },
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(RecoveryError::NothingApplied)),
+        "{refused:?}"
+    );
+}
+
+/// A snapshot transfer or publication that was interrupted leaves a pointer
+/// naming a file that is not there. The member still starts — the state machine,
+/// not the snapshot, is what it restarts from — but an operator diagnosing the
+/// failure has to be told, rather than shown a clean bill of health.
+#[tokio::test]
+async fn an_interrupted_snapshot_is_reported_rather_than_hidden() {
+    let mut harness = Harness::new();
+    let (_cluster_id, directory) = cluster_reduced_to_one_survivor(&mut harness).await;
+    let snapshots = directory.join("snapshots");
+    std::fs::create_dir_all(&snapshots).expect("snapshot directory");
+    std::fs::write(
+        snapshots.join("current.json"),
+        br#"{"snapshot_id":"interrupted-1","last_applied":null,"last_membership":null}"#,
+    )
+    .expect("write a pointer to a snapshot that never landed");
+
+    let assessment = record_store_consensus::recovery::inspect(&directory)
+        .await
+        .expect("inspect");
+    let SnapshotHealth::Damaged { reason } = &assessment.snapshot else {
+        panic!("an interrupted snapshot must be reported: {assessment:?}");
+    };
+    assert!(
+        reason.contains("interrupted-1"),
+        "the reason must name what is missing: {reason}"
+    );
+
+    // And the member still starts, because the snapshot is not what it restarts
+    // from. A damaged snapshot is a diagnostic, not a wedge.
+    let restarted = harness.start(1).await;
+    restarted
+        .state()
+        .metadata()
+        .list_buckets()
+        .await
+        .expect("the member still reads its own applied state");
 }

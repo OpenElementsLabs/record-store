@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://openelementslabs.github.io/record-store/
+    about: Find installation, configuration, and usage instructions before opening an issue.
+  - name: Troubleshooting
+    url: https://openelementslabs.github.io/record-store/troubleshooting/
+    about: Check answers for authentication, uploads, networking, Docker, and Coolify.
+  - name: Report a security vulnerability
+    url: https://github.com/OpenElementsLabs/record-store/security/advisories/new
+    about: Report vulnerabilities privately to the maintainers.

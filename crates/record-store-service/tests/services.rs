@@ -4,7 +4,9 @@ use bytes::Bytes;
 use futures_util::{TryStreamExt, stream};
 use record_store_core::{BucketName, ObjectKey, OrganizationId};
 use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
-use record_store_service::{ServiceError, ServiceLimits, ServicePutRequest, Services};
+use record_store_service::{
+    ObjectLockLimits, ServiceError, ServiceLimits, ServicePutRequest, Services,
+};
 use record_store_storage::{LocalFilesystemStore, ObjectStore, upload_stream};
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -33,8 +35,10 @@ async fn services() -> (TempDir, Services) {
         OrganizationId::new(),
         ServiceLimits {
             maximum_concurrent_operations: 8,
+            admission_wait_limit_seconds: 5,
             maximum_custom_metadata_entries: 8,
             maximum_custom_metadata_bytes: 1_024,
+            object_lock: ObjectLockLimits::default(),
         },
     );
     (directory, services)
@@ -58,6 +62,7 @@ async fn active_streams_hold_bucket_lifecycle_but_survive_object_deletion() {
             content_type: Some("text/plain".into()),
             custom_metadata: BTreeMap::new(),
             expected_checksum: None,
+            object_lock: None,
             body: upload_stream(stream::once(async {
                 Ok(Bytes::from_static(b"stable open read"))
             })),

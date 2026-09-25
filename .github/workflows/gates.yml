@@ -1,0 +1,481 @@
+# Release gates (release/gates.toml), run for one stage and evaluated once.
+#
+# Called by ci.yml (stage pr or integration) and release.yml (integration before
+# anything is published; candidate against the binaries extracted from the
+# published image). Runs on its own weekly, and by hand for a
+# release-candidate evaluation of any ref.
+#
+# Every gate job uploads its result records whether it passed or not, and the
+# report job always runs and evaluates the whole stage. A job that failed, was
+# skipped or was cancelled leaves no result, and the evaluator reports that gate
+# MISSING: a green summary cannot be produced over a gate that did not run.
+#
+# Nothing here publishes, tags or deploys, and no job holds a secret or a write
+# permission: the workflow is safe to run on untrusted pull requests.
+name: Gates
+
+on:
+  workflow_call:
+    inputs:
+      stage:
+        description: pr, integration, scheduled or candidate
+        required: true
+        type: string
+      candidate-artifact:
+        description: >
+          Name of an artifact in the calling run holding
+          record-store-*-linux-amd64.tar.gz to adopt as the candidate instead
+          of building one (release.yml passes the published image's binaries).
+        required: false
+        type: string
+        default: ""
+      defer:
+        description: Space-separated gate ids evaluated later by the caller.
+        required: false
+        type: string
+        default: ""
+      enforce-findings:
+        description: Apply release rules (open findings block, no known-failure downgrade) outside the candidate stage.
+        required: false
+        type: boolean
+        default: false
+      prefix:
+        description: Artifact-name prefix, so one run can call this workflow more than once.
+        required: false
+        type: string
+        default: gate
+      skip:
+        description: Space-separated gate ids not to run here (reported MISSING or reused).
+        required: false
+        type: string
+        default: ""
+    outputs:
+      decision:
+        description: The evaluator's decision for the stage.
+        value: ${{ jobs.report.outputs.decision }}
+  schedule:
+    # Weekly: extended crash recovery and 300 s fuzzing.
+    - cron: "43 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Stage to evaluate
+        type: choice
+        options: [integration, scheduled, candidate]
+        default: candidate
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  STAGE: ${{ inputs.stage || 'scheduled' }}
+  # Stable across jobs of one run so seeded scenarios are reproducible from the record.
+  GATE_SEED: ${{ github.run_id }}
+  PREFIX: ${{ inputs.prefix || 'gate' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      stage: ${{ steps.plan.outputs.stage }}
+      gates: ${{ steps.plan.outputs.gates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: plan
+        env:
+          SKIP: ${{ inputs.skip }}
+        run: |
+          set -euo pipefail
+          stage="$STAGE"
+          python3 - "$stage" "$SKIP" >> "$GITHUB_OUTPUT" <<'EOF'
+          import sys, tomllib
+          stage, skip = sys.argv[1], set(sys.argv[2].split())
+          gates = [g["id"] for g in tomllib.load(open("release/gates.toml", "rb"))["gate"]
+                   if stage in g["stages"] and g["id"] not in skip]
+          print(f"stage={stage}")
+          print("gates=" + " ".join(gates))
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+  candidate:
+    needs: plan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        if: inputs.candidate-artifact == ''
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: inputs.candidate-artifact == ''
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: inputs.candidate-artifact != ''
+        with:
+          name: ${{ inputs.candidate-artifact }}
+          path: published
+      # The candidate is either built here from this commit and Cargo.lock, or
+      # adopted from the published image's archive. Either way its digests are
+      # recorded once and every artifact-bound gate is checked against them.
+      - name: Build or adopt the candidate
+        run: |
+          set -euo pipefail
+          if [[ -d published ]]; then
+            mkdir -p adopted
+            tar -xzf published/record-store-*-linux-amd64.tar.gz -C adopted
+            CANDIDATE_BIN_DIR="$PWD/adopted" tests/gates/build-candidate.sh out/candidate
+          else
+            tests/gates/build-candidate.sh out/candidate
+          fi
+          tar -czf candidate.tar.gz -C out candidate
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.PREFIX }}-candidate
+          path: candidate.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # The real previous release, built from its tag, cached by tag.
+  previous:
+    needs: plan
+    # CMP-UPGRADE upgrades from it.
+    if: contains(needs.plan.outputs.gates, 'CMP-UPGRADE')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: v0.1.3
+          path: previous-src
+      - id: cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: previous/bin
+          key: record-store-v0.1.3-linux-amd64-v2
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          toolchain: 1.97.1
+      - if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: previous-src
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --bin record-store-server --bin record-store
+          mkdir -p ../previous/bin
+          cp target/release/record-store target/release/record-store-server ../previous/bin/
+      # The previous release's own example configuration travels with its
+      # binaries, so CMP-UPGRADE never depends on tags being fetched.
+      - run: cp previous-src/record-store.example.toml previous/
+      - run: previous/bin/record-store --version
+      - run: tar -czf previous.tar.gz previous
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.PREFIX }}-previous
+          path: previous.tar.gz
+          retention-days: 7
+
+  rust:
+    needs: [plan, candidate]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@de5687a3b26eb438afcf64719052c77a7f728817 # cargo-audit
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: "${{ env.PREFIX }}-candidate" }
+      - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
+      - name: Standalone gates
+        env:
+          GATES: ${{ needs.plan.outputs.gates }}
+        run: |
+          set -euo pipefail
+          selected=()
+          for gate in COR-LINT COR-UNIT COR-SKIPS SEC-AUDIT-RUST GATES-SELFTEST; do
+            [[ " $GATES " == *" $gate "* ]] && selected+=("$gate")
+          done
+          [[ ${#selected[@]} -eq 0 ]] || GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out "${selected[@]}"
+      # Internal cluster readiness, evaluated in the report job against its own
+      # matrix. CL-EVIDENCE is checked against the test run above.
+      - name: Internal cluster gates
+        if: always() && needs.plan.outputs.stage != 'pr'
+        run: |
+          set -euo pipefail
+          mkdir -p out-cluster && cp -R out/candidate out-cluster/
+          COR_UNIT_LOG="$PWD/out/results/evidence/COR-UNIT/attempt-1/output.log" GATE_EVALUATE=0 \
+            GATE_MATRIX=internal/cluster/gates.toml tests/gates/run-stage.sh "$STAGE" out-cluster \
+            $( [[ "$STAGE" == candidate ]] && echo CL-SUITES CL-EVIDENCE CL-G9-MULTIPROCESS CL-G10-HISTORY CL-G6-PARTITIONS CL-G7-REPAIR-FAULTS || echo CL-SUITES CL-EVIDENCE ) \
+            || echo "::notice::internal cluster gates are not all passing; see the internal cluster report"
+          # Deliberately not failing the job: cluster readiness is decided by the
+          # internal cluster report and must never block a standalone release.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-rust
+          path: |
+            out/results
+            out-cluster/results
+          retention-days: 90
+
+  binary:
+    needs: [plan, candidate, previous]
+    if: >-
+      always() && needs.candidate.result == 'success' &&
+      (needs.previous.result == 'success' || needs.previous.result == 'skipped') &&
+      needs.plan.outputs.stage != 'pr'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { pattern: "${{ env.PREFIX }}-{candidate,previous}", merge-multiple: true }
+      - run: |
+          mkdir -p out && tar -xzf candidate.tar.gz -C out
+          if [[ -f previous.tar.gz ]]; then tar -xzf previous.tar.gz; fi
+      - name: Real-binary gates
+        env:
+          GATES: ${{ needs.plan.outputs.gates }}
+        run: |
+          set -euo pipefail
+          selected=()
+          for gate in ART-IDENTITY COR-INTEGRITY COR-PAGINATION CMP-UNSUPPORTED REC-BACKUP CMP-UPGRADE SEC-REDACT; do
+            [[ " $GATES " == *" $gate "* ]] && selected+=("$gate")
+          done
+          [[ ${#selected[@]} -eq 0 ]] || PREVIOUS_BIN_DIR="$PWD/previous/bin" GATE_EVALUATE=0 \
+            tests/gates/run-stage.sh "$STAGE" out "${selected[@]}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-binary
+          path: out/results
+          retention-days: 90
+
+  # The longest real-binary gate, on its own runner so it does not queue behind
+  # the binary job: REC-CRASH takes about 7 minutes at the candidate stage.
+  crash:
+    needs: [plan, candidate]
+    if: needs.plan.outputs.stage != 'pr' && contains(needs.plan.outputs.gates, 'REC-CRASH')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: "${{ env.PREFIX }}-candidate" }
+      - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
+      - run: GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out REC-CRASH
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-crash
+          path: out/results
+          retention-days: 90
+
+  sdk:
+    needs: [plan, candidate]
+    if: needs.plan.outputs.stage != 'pr' && contains(needs.plan.outputs.gates, 'CMP-S3-SDK')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tests/compatibility/go/go.mod
+          cache-dependency-path: tests/compatibility/go/go.sum
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: tests/compatibility/java/pom.xml
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: "${{ env.PREFIX }}-candidate" }
+      - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
+      - run: GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out CMP-S3-SDK
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-sdk
+          path: out/results
+          retention-days: 90
+
+  console:
+    needs: [plan, candidate]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: "${{ env.PREFIX }}-candidate" }
+      - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
+      - name: Console gates
+        env:
+          GATES: ${{ needs.plan.outputs.gates }}
+        run: |
+          set -euo pipefail
+          selected=()
+          for gate in COR-CONSOLE SEC-AUDIT-NPM CMP-CONSOLE-E2E; do
+            [[ " $GATES " == *" $gate "* ]] && selected+=("$gate")
+          done
+          [[ ${#selected[@]} -eq 0 ]] || GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out "${selected[@]}"
+      - name: Internal cluster console E2E
+        if: always() && needs.plan.outputs.stage != 'pr'
+        run: |
+          mkdir -p out-cluster && cp -R out/candidate out-cluster/
+          GATE_EVALUATE=0 GATE_MATRIX=internal/cluster/gates.toml tests/gates/run-stage.sh "$STAGE" out-cluster CL-CONSOLE-E2E \
+            || echo "::notice::internal cluster console E2E is not passing; see the internal cluster report"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-console
+          path: |
+            out/results
+            out-cluster/results
+            console/playwright-report
+          if-no-files-found: ignore
+          retention-days: 90
+
+  repository:
+    needs: [plan, candidate]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # SEC-SECRETS scans every commit at the candidate stage.
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install --requirement requirements-docs.txt
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: "${{ env.PREFIX }}-candidate" }
+      - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
+      - run: GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out DOC-BOUNDARY SEC-SECRETS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-repository
+          path: out/results
+          retention-days: 90
+
+  fuzz:
+    needs: [plan, candidate]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # cargo-fuzz needs nightly; nothing this job builds ships.
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            .
+            fuzz
+      - run: cargo install cargo-fuzz --locked
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: "${{ env.PREFIX }}-candidate" }
+      - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
+      - run: |
+          if [[ "$STAGE" == scheduled ]]; then export FUZZ_SECONDS=300; fi
+          GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out SEC-FUZZ
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-fuzz
+          path: |
+            out/results
+            fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 90
+
+  # The upgrade guide, followed with real images: the published previous
+  # release and one built here from this commit.
+  container:
+    needs: plan
+    if: needs.plan.outputs.stage != 'pr' && contains(needs.plan.outputs.gates, 'CMP-UPGRADE-CONTAINER')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: python3 tests/gates/record.py --gate CMP-UPGRADE-CONTAINER --stage "$STAGE" --results out/results
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-results-container
+          path: out/results
+          retention-days: 90
+
+  report:
+    needs: [plan, candidate, previous, rust, binary, crash, sdk, console, repository, fuzz, container]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      decision: ${{ steps.evaluate.outputs.decision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ${{ env.PREFIX }}-*
+          path: collected
+      - id: evaluate
+        env:
+          DEFER: ${{ inputs.defer }}
+          ENFORCE: ${{ inputs.enforce-findings }}
+        run: |
+          # GitHub runs steps with bash -e. A BLOCKED decision exits 1, and the
+          # summary, the outputs and the report must still be written after it.
+          set +e
+          set -uo pipefail
+          mkdir -p collected/candidate-x && tar -xzf "collected/${PREFIX}-candidate/candidate.tar.gz" -C collected/candidate-x || true
+          defer_args=()
+          for gate in $DEFER; do defer_args+=(--defer "$gate"); done
+          if [[ "$ENFORCE" == "true" ]]; then defer_args+=(--enforce-findings); fi
+          results=()
+          for directory in "collected/${PREFIX}-results-"*; do [[ -d "$directory" ]] && results+=(--results "$directory"); done
+          python3 tests/gates/evaluate.py --stage "$STAGE" --candidate collected/candidate-x/candidate \
+            "${results[@]}" ${defer_args[@]+"${defer_args[@]}"} --out report
+          status=$?
+          echo "decision=$(python3 -c 'import json; print(json.load(open("report/report.json"))["decision"])')" >> "$GITHUB_OUTPUT"
+          cat report/report.md >> "$GITHUB_STEP_SUMMARY"
+          # Internal cluster readiness: evaluated, kept as an artifact, and not
+          # written to the public step summary.
+          if [[ "$STAGE" != pr ]]; then
+            python3 tests/gates/evaluate.py --matrix internal/cluster/gates.toml --stage "$STAGE" \
+              --candidate collected/candidate-x/candidate "${results[@]}" --out cluster-report || true
+          fi
+          exit "$status"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ${{ env.PREFIX }}-report
+          path: |
+            report
+            cluster-report
+          if-no-files-found: ignore
+          retention-days: 400

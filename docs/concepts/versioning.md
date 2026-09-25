@@ -67,6 +67,11 @@ history where it happened.
 Deleting a specific *version* does remove that version. If it was the current one, the
 next most recent version is promoted.
 
+That difference is what [Object Lock](../administration/object-lock.md) acts on: a
+retained version refuses a version delete with `403 AccessDenied`, while a delete marker
+over it stays allowed. The marker hides the object without destroying anything, so there
+is nothing for a retention to refuse.
+
 ## Restore
 
 Restoring an old version does not move a pointer backwards. It **copies that version's

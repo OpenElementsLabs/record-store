@@ -19,6 +19,7 @@ pub(crate) fn bucket(name: &str) -> Bucket {
         quota: BucketQuota::default(),
         storage_class: None,
         durability_policy: None,
+        object_lock: None,
         cors: None,
     }
 }
@@ -82,6 +83,7 @@ pub(crate) fn upload(bucket_id: BucketId, key: &str) -> record_store_core::Multi
         key: ObjectKey::new(key).expect("key"),
         content_type: None,
         custom_metadata: BTreeMap::new(),
+        object_lock: None,
         initiated_at: Utc::now(),
         state: record_store_core::MultipartUploadState::Active,
     }

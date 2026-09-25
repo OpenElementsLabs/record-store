@@ -83,6 +83,27 @@ pub enum Action {
     DeleteObjectVersion,
     #[serde(rename = "s3:ManageBucket")]
     ManageBucket,
+    /// Read a version's retention. Separate from reading the object, because an
+    /// auditor may need the retention without the payload.
+    #[serde(rename = "s3:GetObjectRetention")]
+    GetObjectRetention,
+    /// Place or change a version's retention.
+    #[serde(rename = "s3:PutObjectRetention")]
+    PutObjectRetention,
+    /// Read a version's legal hold.
+    #[serde(rename = "s3:GetObjectLegalHold")]
+    GetObjectLegalHold,
+    /// Place or remove a version's legal hold.
+    #[serde(rename = "s3:PutObjectLegalHold")]
+    PutObjectLegalHold,
+    /// Override a GOVERNANCE retention.
+    ///
+    /// This is its own permission rather than part of the delete or retention
+    /// actions, so that the ability to delete an object and the ability to
+    /// overrule its retention can be granted separately. It never applies to a
+    /// COMPLIANCE retention or to a legal hold, which have no bypass at all.
+    #[serde(rename = "s3:BypassGovernanceRetention")]
+    BypassGovernanceRetention,
 }
 
 /// Requested action and canonical resource such as `bucket:name/prefix`.

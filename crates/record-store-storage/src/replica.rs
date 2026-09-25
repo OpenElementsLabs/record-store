@@ -1,13 +1,9 @@
 //! Streaming object storage boundary and local filesystem implementation.
 
-use std::{
-    io,
-    sync::{Arc, Mutex},
-};
+use std::io;
 
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures_util::{StreamExt, TryStreamExt, stream};
+use futures_util::StreamExt;
 use record_store_core::{ByteRange, Checksum, ObjectId, PayloadFormat, ResolvedByteRange};
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -348,12 +344,9 @@ impl ReplicaStore for LocalFilesystemStore {
                 request.size,
                 request.payload_format,
                 request.range,
+                request.expected_checksum,
             )
             .await?;
-        let body = match request.expected_checksum {
-            Some(expected) if range.is_none() => verifying_stream(body, expected),
-            _ => body,
-        };
         Ok(ReplicaReadResult {
             size: request.size,
             range,
@@ -376,14 +369,29 @@ impl ReplicaStore for LocalFilesystemStore {
         payload_format: PayloadFormat,
         expected: Checksum,
     ) -> Result<ReplicaVerification, StorageError> {
+        // No expectation is passed to the reader: this operation exists to
+        // report what the stored bytes actually hash to, including when that
+        // disagrees with the expectation, so it must not be short-circuited by
+        // the read path failing the stream first.
         let opened = self
-            .open_payload(object_id, size, payload_format, None)
+            .open_payload(object_id, size, payload_format, None, None)
             .await;
         let mut body = match opened {
             Ok((_, body)) => body,
             Err(StorageError::InconsistentState) => {
                 return Ok(ReplicaVerification {
                     present: false,
+                    matches: false,
+                    size: 0,
+                    checksum: None,
+                });
+            }
+            // A replica whose physical length disagrees with its committed
+            // size is corrupt, not a failure of the verification operation:
+            // reporting it as a mismatch is what lets repair act on it.
+            Err(StorageError::IntegrityMismatch) => {
+                return Ok(ReplicaVerification {
+                    present: true,
                     matches: false,
                     size: 0,
                     checksum: None,
@@ -503,46 +511,4 @@ impl ReplicaStore for LocalFilesystemStore {
         }
         Ok(found.into_iter().collect())
     }
-}
-
-/// Wraps a download stream so a mismatch fails the read instead of the client
-/// silently receiving corrupt bytes.
-pub(crate) fn verifying_stream(body: DownloadStream, expected: Checksum) -> DownloadStream {
-    struct State {
-        hasher: Sha256,
-        expected: Checksum,
-    }
-    let state = Arc::new(Mutex::new(Some(State {
-        hasher: Sha256::new(),
-        expected,
-    })));
-    let finish = Arc::clone(&state);
-    let verified = body
-        .map(move |chunk| {
-            let chunk = chunk?;
-            let mut guard = state.lock().map_err(|_| StorageError::Coordination)?;
-            if let Some(state) = guard.as_mut() {
-                state.hasher.update(&chunk);
-            }
-            Ok(chunk)
-        })
-        .chain(stream::once(async move {
-            let taken = finish
-                .lock()
-                .map_err(|_| StorageError::Coordination)?
-                .take();
-            match taken {
-                Some(state) => {
-                    let actual = Checksum::sha256(state.hasher.finalize().into());
-                    if actual == state.expected {
-                        Ok(Bytes::new())
-                    } else {
-                        Err(StorageError::IntegrityMismatch)
-                    }
-                }
-                None => Ok(Bytes::new()),
-            }
-        }))
-        .try_filter(|chunk| std::future::ready(!chunk.is_empty()));
-    Box::pin(verified)
 }

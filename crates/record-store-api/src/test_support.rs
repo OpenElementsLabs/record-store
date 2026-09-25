@@ -15,7 +15,7 @@ use record_store_auth::CredentialManager;
 use record_store_core::OrganizationId;
 use record_store_events::{EventRepository, RedbEventRepository};
 use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
-use record_store_service::{ServiceLimits, Services};
+use record_store_service::{ObjectLockLimits, ServiceLimits, Services};
 use record_store_storage::{DeviceStore, LocalFilesystemStore, ObjectStore};
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -38,6 +38,18 @@ const SHARING_KEY: &[u8] = b"sharing-master-key-at-least-32-bytes-long";
 
 /// Builds the management router over real catalog, storage, and audit backends.
 pub(crate) async fn api() -> (TempDir, Router) {
+    let (directory, router, _audit) = api_with_audit(None).await;
+    (directory, router)
+}
+
+/// Builds the same router over a caller-supplied audit trail.
+///
+/// Taking the trail from outside is what lets a test make it fail: the
+/// behaviour when the trail cannot be written is a guarantee, so it has to be
+/// exercised rather than reasoned about.
+pub(crate) async fn api_with_audit(
+    supplied: Option<Arc<dyn AuditRepository>>,
+) -> (TempDir, Router, Arc<dyn AuditRepository>) {
     let directory = tempfile::tempdir().expect("temporary directory");
     let metadata: Arc<dyn MetadataRepository> = Arc::new(
         RedbMetadataRepository::open(directory.path().join("metadata.redb"))
@@ -53,11 +65,14 @@ pub(crate) async fn api() -> (TempDir, Router) {
         .await
         .expect("filesystem store"),
     );
-    let audit: Arc<dyn AuditRepository> = Arc::new(
-        RedbAuditRepository::open(directory.path().join("audit.redb"))
-            .await
-            .expect("audit repository"),
-    );
+    let audit: Arc<dyn AuditRepository> = match supplied {
+        Some(audit) => audit,
+        None => Arc::new(
+            RedbAuditRepository::open(directory.path().join("audit.redb"))
+                .await
+                .expect("audit repository"),
+        ),
+    };
     let events: Arc<dyn EventRepository> = Arc::new(
         RedbEventRepository::open(
             directory.path().join("events.redb"),
@@ -91,8 +106,10 @@ pub(crate) async fn api() -> (TempDir, Router) {
         owner,
         ServiceLimits {
             maximum_concurrent_operations: 8,
+            admission_wait_limit_seconds: 5,
             maximum_custom_metadata_entries: 8,
             maximum_custom_metadata_bytes: 1_024,
+            object_lock: ObjectLockLimits::default(),
         },
     );
     let state = AppState::new(
@@ -100,7 +117,7 @@ pub(crate) async fn api() -> (TempDir, Router) {
         metadata,
         services,
         credentials,
-        audit,
+        Arc::clone(&audit),
         owner,
         "0.0.0-test",
     )
@@ -123,7 +140,7 @@ pub(crate) async fn api() -> (TempDir, Router) {
         Some(AUDITOR_TOKEN.as_bytes()),
     ))
     .with_metrics_auth(MetricsAuth::bearer_token(METRICS_TOKEN.as_bytes()));
-    (directory, router(state))
+    (directory, router(state), audit)
 }
 
 /// Sends a request as the system administrator.
@@ -430,8 +447,10 @@ pub(crate) async fn clustered_api() -> (TempDir, Router) {
         owner,
         ServiceLimits {
             maximum_concurrent_operations: 8,
+            admission_wait_limit_seconds: 5,
             maximum_custom_metadata_entries: 8,
             maximum_custom_metadata_bytes: 1_024,
+            object_lock: ObjectLockLimits::default(),
         },
     );
 
@@ -447,6 +466,9 @@ pub(crate) async fn clustered_api() -> (TempDir, Router) {
                 cluster_id: record_store_core::ClusterId::new(),
                 cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
                 created_at: chrono::Utc::now(),
+                recovery_generation: 0,
+                recovery_id: None,
+                recovered_at: None,
             },
             config: Box::new(record_store_cluster::ClusterConfig::default()),
         })
@@ -459,6 +481,7 @@ pub(crate) async fn clustered_api() -> (TempDir, Router) {
                 versions: record_store_cluster::NodeVersions::current("test"),
                 rpc_address: "127.0.0.1:17603".to_owned(),
                 s3_endpoint: None,
+                management_endpoint: None,
                 storage_class: record_store_cluster::StorageClass::new("standard")
                     .expect("storage class"),
                 failure_domain: record_store_cluster::FailureDomain::default(),

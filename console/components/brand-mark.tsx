@@ -50,7 +50,7 @@ export function BrandLockup({ className, size = 'default', tone = 'brand' }: Bra
       <BrandMark className={cn(compact ? 'w-8' : large ? 'w-16' : 'w-12')} />
       <span
         className={cn(
-          'flex flex-col font-sans uppercase leading-none',
+          'flex flex-col font-display uppercase leading-none',
           tone === 'inverse' ? 'text-white' : 'text-brand-navy dark:text-foreground',
         )}
       >

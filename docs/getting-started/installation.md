@@ -221,6 +221,25 @@ RECORD_STORE_API_URL=http://127.0.0.1:7601 npm run dev
 The console then listens on <http://localhost:7602>. See
 [Web Console](../guides/web-console.md).
 
+## Check the machine before starting
+
+```bash
+record-store server --config /etc/record-store/config.toml doctor
+```
+
+This reports everything that would stop the deployment working — an unwritable data
+directory, an occupied port, a temporary directory on the wrong filesystem, a missing
+encryption key — without starting anything and without printing any secret. It exits
+0 when nothing failed and 7 when something did.
+
+Every failure names its corrective action:
+
+```text
+FAIL  atomic_publication            /mnt/fast/tmp and /var/lib/record-store/objects are on different filesystems
+                                    -> put storage.temporary_directory on the same filesystem as the data
+                                       directory; a payload cannot be published atomically across a mount boundary
+```
+
 ## Verify the installation
 
 ```bash
@@ -230,6 +249,9 @@ curl http://127.0.0.1:7601/health
 ```json
 {"status":"ok"}
 ```
+
+See [Health and Readiness](../operations/health-and-readiness.md) for what `/health`,
+`/ready`, and `doctor` each answer, and why they are three different questions.
 
 ## Next
 

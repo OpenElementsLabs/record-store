@@ -94,7 +94,7 @@ A filesystem snapshot of a running deployment can catch metadata mid-write. Use 
 built-in backup, which takes the data lock and records a checksum per file:
 
 ```bash
-record-store server backup-metadata --output /backups/2026-08-29
+record-store server backup /backups/2026-09-22
 ```
 
 That covers `metadata/`. Back up `objects/` with your normal file backup — payloads
@@ -107,7 +107,7 @@ Restoring requires an **empty** `metadata/` directory, verifies every checksum, 
 refuses a backup from an incompatible format or a newer schema:
 
 ```bash
-record-store server restore-metadata /backups/2026-08-29
+record-store server restore /backups/2026-09-22 --level full
 ```
 
 Both commands take the exclusive data lock, so the server must be stopped.
@@ -123,7 +123,9 @@ temporary_directory = "/var/lib/record-store/tmp"
 ```
 
 Only worth setting to move `tmp/` somewhere with different characteristics — and only
-on the same filesystem as `objects/`, for the rename reason above.
+on the same filesystem as `objects/`, for the rename reason above. Both
+`record-store server doctor` and start-up compare the two filesystems and refuse a
+deployment that has them apart, so this can no longer be got wrong silently.
 
 ## What must never be in the data directory
 

@@ -50,8 +50,12 @@ means multipart uploads are being started and not finished — see
 [Multipart Uploads](../guides/multipart-uploads.md).
 
 Prometheus equivalents: `record_store_storage_logical_bytes`,
-`record_store_storage_physical_bytes`, and `record_store_multipart_bytes`. None of
-them reports free disk — that comes from a host exporter.
+`record_store_storage_physical_bytes`, `record_store_multipart_bytes`,
+`record_store_temporary_bytes`, `record_store_filesystem_capacity_bytes`, and
+`record_store_filesystem_available_bytes`.
+
+The filesystem figures are read from the filesystem itself, so they account for
+everything on it, not only what Record Store put there.
 
 ## Sizing the disk
 

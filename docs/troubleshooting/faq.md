@@ -5,7 +5,7 @@
 **Is Record Store a drop-in replacement for S3?**
 
 For the [supported operations](../reference/s3-compatibility.md), yes — point your SDK
-at the endpoint and use path-style addressing. Access control lists, Object Lock,
+at the endpoint and use path-style addressing. Access control lists,
 `UploadPartCopy`, and server-side-encryption request headers are not supported.
 
 **What happens if the machine dies?**
@@ -128,14 +128,23 @@ RECORD_STORE_SHARING_EMBEDS_ENABLED=false
 
 **How do I back up?**
 
-`record-store server backup-metadata` for metadata, your usual file backup for
-`objects/`. Both from the same point in time, plus the master key kept separately. See
-[Backup and Restore](../operations/backup-and-restore.md).
+`record-store server backup <destination>`, with the server stopped. It copies
+payloads, metadata, and system records into one destination with a manifest and a
+checksum per file. The credential master key is deliberately not in it and is kept
+separately. See [Backup and Restore](../operations/backup-and-restore.md).
 
 **Can I back up while the server runs?**
 
-Not with `backup-metadata` — it takes the exclusive data lock. Either stop the server
-briefly, or take a filesystem snapshot and run the backup against that.
+No. The command takes the exclusive data lock, which is what makes the copy a single
+point in time rather than a catalog caught mid-write. Either stop the server briefly,
+or take a filesystem snapshot and run the backup against that.
+
+**How do I know a backup is good?**
+
+`record-store server verify-backup <destination> --level full`. The levels are
+`manifest` (structure only, reads no contents), `checksums` (every file's bytes), and
+`full` (also cross-checks that the catalog and the payloads agree). An interrupted
+backup is marked `INCOMPLETE` on disk and is refused by both verify and restore.
 
 **Is the audit log pruned?**
 

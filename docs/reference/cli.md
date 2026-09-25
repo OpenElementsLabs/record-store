@@ -69,22 +69,50 @@ record-store server --config /etc/record-store/config.toml check-config
 Loads the file, applies the environment, validates, and exits. Binds nothing and writes
 nothing.
 
-### `server backup-metadata`
+### `server doctor`
 
 ```bash
-record-store server backup-metadata /backups/2026-08-29
+record-store server --config /etc/record-store/config.toml doctor
 ```
 
+Reports whether this machine can run the configured deployment: the data directory and
+its permissions, whether the temporary directory allows atomic publication, the on-disk
+storage format, free space, the configured addresses, and which key material is
+present. Starts nothing, opens no database, prints no secret value.
+
+Exits 0 when nothing failed and 7 when something did. `--json` emits the report.
+
+### `server backup`
+
+```bash
+record-store server backup /backups/2026-09-22 [--replace-incomplete]
+```
+
+Copies payloads, metadata, and system records into one destination with a manifest.
 Takes the exclusive data lock, so **the server must be stopped**. The destination must
-not already exist.
+be empty or absent; a destination holding a completed backup is never overwritten.
 
-### `server restore-metadata`
+### `server verify-backup`
 
 ```bash
-record-store server restore-metadata /backups/2026-08-29
+record-store server verify-backup /backups/2026-09-22 --level full
 ```
 
-Requires an empty `metadata/` directory and verifies every checksum. See
+Checks a backup without restoring it, at level `manifest`, `checksums` (the default),
+or `full`. Exits 3 when the backup is not usable.
+
+### `server restore`
+
+```bash
+record-store server restore /backups/2026-09-22 --level full
+```
+
+Verifies the backup, then stages and restores every component into an empty data
+directory. Refuses to write into a data directory that already holds one.
+
+### `server backup-metadata`, `server restore-metadata`
+
+Deprecated. They copy metadata only, and warn on use. See
 [Backup and Restore](../operations/backup-and-restore.md).
 
 ## `status`
@@ -107,10 +135,45 @@ record-store bucket delete <name> --endpoint <endpoint>
 record-store bucket versioning get <name> --endpoint <endpoint>
 record-store bucket versioning enable <name> --endpoint <endpoint>
 record-store bucket versioning suspend <name> --endpoint <endpoint>
+
+record-store bucket object-lock show <name> --endpoint <endpoint>
+record-store bucket object-lock set-default <name> --mode GOVERNANCE --days 365 --endpoint <endpoint>
+record-store bucket object-lock set-default <name> --mode COMPLIANCE --years 7 --endpoint <endpoint>
+record-store bucket object-lock status <name> <key> [--version-id <id>] --endpoint <endpoint>
 ```
+
+## `audit-export`
+
+```bash
+record-store audit-export export --from <rfc3339> --to <rfc3339> \
+  --format json|csv --out <dir> --endpoint <endpoint>
+record-store audit-export retention-report --endpoint <endpoint>
+record-store audit-export verify-chain [--from <sequence>] [--limit <n>] --endpoint <endpoint>
+```
+
+`export` writes a directory holding the records, a manifest, the covering
+checkpoint roots, and a `SHA256SUMS` over all three. The range is `[from, to)`,
+so adjacent exports tile without duplicating a boundary record.
+
+`verify-chain` recomputes the audit hash chain and reports whether the log still
+verifies. A long log is walked in spans: follow `next_from` until it is absent. What
+it does and does not establish is set out in
+[Audit Log](../administration/audit-log.md#checking-the-log-has-not-been-edited).
+
+All three are readable with the auditor token. See
+[Audit Export](../administration/audit-export.md).
 
 `delete` requires the bucket to be empty. There is no `versioning disable` — see
 [Versioning](../concepts/versioning.md).
+
+Object Lock is enabled when a bucket is created, over S3, and never afterwards. These
+commands read it and set the bucket default; `set-default` takes exactly one of `--days`
+or `--years`.
+
+`object-lock status` is read-only, and there is deliberately no command to place or
+release a retention. That is an S3 action governed by S3 policy, and a management-plane
+equivalent would let a caller refused over S3 succeed simply by changing port. See
+[Object Lock](../administration/object-lock.md).
 
 ## `service-account`
 

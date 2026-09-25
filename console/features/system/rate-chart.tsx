@@ -12,7 +12,14 @@ import dynamic from 'next/dynamic';
  */
 const RateChartBody = dynamic(
   () => import('@/features/system/rate-chart-body').then((module) => module.RateChartBody),
-  { ssr: false, loading: () => <div className="h-24" aria-hidden /> },
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-60 items-center justify-center type-meta" role="status">
+        Loading chart…
+      </div>
+    ),
+  },
 );
 
 export function RateChart(props: React.ComponentProps<typeof RateChartBody>) {

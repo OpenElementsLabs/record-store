@@ -1,11 +1,53 @@
 # Health and Readiness
 
-Two endpoints, both unauthenticated, both on the management port.
+Three questions, asked in three different places, because they have three different
+answers.
 
-| Endpoint | Answers | Use for |
+| Where | Answers | Use for |
 | --- | --- | --- |
+| `record-store server doctor` | Can this machine run the deployment at all? | Before starting, and when it will not start |
 | `/health` | Is the process alive? | Liveness probe |
 | `/ready` | Can it serve requests? | Readiness probe, load balancer |
+
+Conflating the last two is the common mistake; conflating any of them with the first
+is why a deployment that was never going to work spends a minute starting before it
+says so.
+
+## `record-store server doctor`
+
+```bash
+record-store server --config /etc/record-store/config.toml doctor
+```
+
+```text
+ok    configuration                 every configured value is within range
+ok    data_directory                /var/lib/record-store exists and is writable
+ok    atomic_publication            .../tmp and .../objects are on one filesystem, so payloads publish with a rename
+ok    storage_format                on-disk storage format 1
+ok    restore_state                 no interrupted restore
+ok    free_space                    62% of the data filesystem is free (74724573184 bytes)
+ok    s3_listener                   0.0.0.0:7600 is free
+ok    management_listener           0.0.0.0:7601 is free
+ok    credential_master_key         a credential master key is configured
+warn  metrics_token                 no metrics scrape token is configured; the metrics endpoint stays closed
+                                    -> set RECORD_STORE_METRICS_SCRAPE_TOKEN if you intend to scrape metrics
+```
+
+It starts nothing, opens no database, and never prints a secret value — checks about
+key material report only whether a key is present and whether it matches what is
+already on disk. Every failure carries the corrective action.
+
+It exits 0 when nothing failed and 7 when something did. `--json` emits the same
+report for automation.
+
+The checks that would otherwise be discovered halfway through start-up — an unwritable
+data directory, a temporary directory on the wrong filesystem, an unfinished restore —
+also run automatically when the server starts, before anything durable is opened. The
+listeners are bound before initialization for the same reason, so an occupied address
+fails immediately rather than after every subsystem is already running.
+
+`record-store server check-config` remains for the narrower question of whether the
+configuration *values* are valid, with no reference to the machine.
 
 ## `/health`
 

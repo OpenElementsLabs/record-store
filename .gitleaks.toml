@@ -1,0 +1,16 @@
+# gitleaks configuration for SEC-SECRETS (tests/gates/secret_scan.sh).
+#
+# Extends the default rules. An allowlist entry is a place the scanner no
+# longer looks, so each one is narrow and says why. Review this file like code.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Build and dependency output, never committed"
+paths = ['''(^|/)target/''', '''(^|/)node_modules/''', '''(^|/)site/''', '''(^|/)\.next/''']
+
+[[allowlists]]
+description = "Quick-start trial credentials: fixed, published values no real deployment uses"
+condition = "AND"
+paths = ['''docs/getting-started/quick-start\.md$''']
+regexes = ['''trial-[A-Za-z0-9-]+''']

@@ -63,6 +63,25 @@ rebuild of this one.
 
 ## Verification
 
+Every image and every binary archive carries signed build provenance, naming the
+workflow, the repository and the commit that produced it. The release refuses to
+publish if any of it is missing.
+
+\`\`\`bash
+gh attestation verify oci://$SERVER_IMAGE@$SERVER_DIGEST --repo $REPOSITORY
+gh attestation verify record-store-$VERSION-linux-amd64.tar.gz --repo $REPOSITORY
+\`\`\`
+
+The same provenance is attached here as \`record-store-$VERSION-provenance.intoto.jsonl\`,
+so it can be kept alongside the bytes and checked without asking GitHub about a
+file GitHub is also hosting:
+
+\`\`\`bash
+gh attestation verify record-store-$VERSION-linux-amd64.tar.gz \\
+  --bundle record-store-$VERSION-provenance.intoto.jsonl \\
+  --repo $REPOSITORY
+\`\`\`
+
 Confirm the image reports the version it is tagged with:
 
 \`\`\`bash
@@ -99,6 +118,9 @@ cat <<NOTES
 | \`record-store-$VERSION-1.ARCH.rpm\` | The same for RHEL, Rocky, Fedora and openSUSE. |
 | \`record-store-$VERSION.tgz\` | The Helm chart, for installs that cannot reach a registry. |
 | \`*.spdx.json\` | An SPDX SBOM per image and per architecture. |
+| \`record-store-$VERSION-provenance.intoto.jsonl\` | SLSA provenance for the glibc archives. |
+| \`record-store-$VERSION-release-gates.json\` / \`.md\` | The release gate decision that allowed this release. |
+| \`SHA256SUMS\` | Checksums for every asset here. |
 
 \`ARCH\` is \`amd64\` or \`arm64\` (\`x86_64\`/\`aarch64\` for the rpm). Both archives
 contain \`record-store\` and \`record-store-server\`.
@@ -106,17 +128,19 @@ contain \`record-store\` and \`record-store-server\`.
 The packages carry statically linked binaries and declare no libc dependency, so
 they install on Debian 11 and RHEL 8 onwards.
 
+The provenance covers the glibc archives, which are extracted from the attested
+image. The static archives and the packages are compiled separately and carry no
+provenance yet; verify them against \`SHA256SUMS\`.
+
+The release tag is signed too. See
+[Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/).
+
+macOS builds are not published; build from source with \`cargo build --release\`.
+
 ## Helm chart
 
 \`\`\`bash
 helm install record-store \\
   oci://ghcr.io/openelementslabs/charts/record-store --version $VERSION
 \`\`\`
-
-Images are published unsigned: GitHub's artifact attestation service is not
-available to this repository, so there is no \`gh attestation verify\` to run. The
-release tag is signed, and \`SHA256SUMS\` covers every asset here. See
-[Verifying a Release](https://openelementslabs.github.io/record-store/deployment/verifying-releases/).
-
-macOS builds are not published; build from source with \`cargo build --release\`.
 NOTES

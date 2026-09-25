@@ -13,9 +13,9 @@ import { createHash } from 'node:crypto';
 
 import { expect, MANAGEMENT_TOKEN, test, uniqueBucket } from './fixtures';
 
-const MANAGEMENT_URL = process.env.RECORD_STORE_E2E_MANAGEMENT_URL ?? 'http://127.0.0.1:47601';
+const MANAGEMENT_URL = process.env.RECORD_STORE_E2E_MANAGEMENT_URL ?? 'http://127.0.0.1:27601';
 /** Where object bytes are published, and therefore where embeds resolve. */
-const STORAGE_URL = `http://127.0.0.1:${process.env.RECORD_STORE_E2E_S3_PORT ?? '47600'}`;
+const STORAGE_URL = `http://127.0.0.1:${process.env.RECORD_STORE_E2E_S3_PORT ?? '27600'}`;
 
 /** A one-pixel PNG, which a browser will genuinely decode. */
 const PNG = Buffer.from(

@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::backend;
 use crate::schema::{
-    BUCKET_NAMES, BUCKET_USAGE, BUCKETS, CLEANUP, COUNTERS, LIFECYCLE_RULES, MARKERS, MULTIPART,
-    MULTIPART_ORDER, NULL_VERSIONS, OBJECTS, PARTS, SCHEMA, VERSION_ORDER, VERSIONS,
+    BUCKET_NAMES, BUCKET_USAGE, BUCKETS, CLEANUP, CLOCK, COUNTERS, LIFECYCLE_RULES, MARKERS,
+    MULTIPART, MULTIPART_ORDER, MUTATION_EVENTS, NULL_VERSIONS, OBJECT_LOCKS, OBJECTS, PARTS,
+    SCHEMA, VERSION_ORDER, VERSIONS,
 };
 use crate::*;
 
@@ -33,6 +34,11 @@ pub(crate) const BYTE_TABLES: &[TableDefinition<'static, &'static [u8], &'static
     PARTS,
     BUCKET_USAGE,
     LIFECYCLE_RULES,
+    // Object Lock state is authoritative retention. A snapshot that omitted it
+    // would let a member restored from that snapshot answer "unlocked" for every
+    // version, because an absent lock record reads as no lock — so a WORM-retained
+    // version would become deletable the moment such a member gained authority.
+    OBJECT_LOCKS,
 ];
 
 /// Exports the whole object catalog for a consensus snapshot.
@@ -83,6 +89,41 @@ pub fn export_tx(write: &redb::ReadTransaction) -> Result<Vec<MetadataEntry>, Me
             });
         }
     }
+    {
+        // Journalled mutation events are committed intents that the outbox has
+        // not yet delivered. A member that catches up by snapshot and later takes
+        // over would otherwise have no record of them, and the events would be
+        // lost without anything reporting a gap.
+        let table = write
+            .open_table(MUTATION_EVENTS)
+            .map_err(|e| backend("open snapshot mutation events", e))?;
+        for item in table
+            .iter()
+            .map_err(|e| backend("scan mutation events", e))?
+        {
+            let (key, value) = item.map_err(|e| backend("read mutation event", e))?;
+            entries.push(MetadataEntry {
+                table: MUTATION_EVENTS.name().to_owned(),
+                key: key.value().to_be_bytes().to_vec(),
+                value: value.value().to_vec(),
+            });
+        }
+    }
+    {
+        // The observed clock high-water mark is what refuses a backwards clock.
+        // Losing it re-opens the window the mark exists to close.
+        let table = write
+            .open_table(CLOCK)
+            .map_err(|e| backend("open snapshot clock", e))?;
+        for item in table.iter().map_err(|e| backend("scan clock", e))? {
+            let (key, value) = item.map_err(|e| backend("read clock", e))?;
+            entries.push(MetadataEntry {
+                table: CLOCK.name().to_owned(),
+                key: key.value().as_bytes().to_vec(),
+                value: value.value().to_be_bytes().to_vec(),
+            });
+        }
+    }
     for definition in [COUNTERS, SCHEMA] {
         let table = write
             .open_table(definition)
@@ -128,6 +169,22 @@ pub fn import_tx(
             .retain(|_, _| false)
             .map_err(|e| backend("clear cleanup", e))?;
     }
+    {
+        let mut table = write
+            .open_table(MUTATION_EVENTS)
+            .map_err(|e| backend("open snapshot mutation events", e))?;
+        table
+            .retain(|_, _| false)
+            .map_err(|e| backend("clear mutation events", e))?;
+    }
+    {
+        let mut table = write
+            .open_table(CLOCK)
+            .map_err(|e| backend("open snapshot clock", e))?;
+        table
+            .retain(|_, _| false)
+            .map_err(|e| backend("clear clock", e))?;
+    }
     for definition in [COUNTERS, SCHEMA] {
         let mut table = write
             .open_table(definition)
@@ -172,6 +229,42 @@ pub fn import_tx(
             table
                 .insert(entry.key.as_slice(), flag)
                 .map_err(|e| backend("restore cleanup record", e))?;
+        } else if entry.table == MUTATION_EVENTS.name() {
+            let bytes: [u8; 8] =
+                entry
+                    .key
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| MetadataError::Database {
+                        operation: "restore mutation event",
+                        reason: "mutation event sequence must be eight bytes".into(),
+                    })?;
+            let mut table = write
+                .open_table(MUTATION_EVENTS)
+                .map_err(|e| backend("open snapshot mutation events", e))?;
+            table
+                .insert(u64::from_be_bytes(bytes), entry.value.as_slice())
+                .map_err(|e| backend("restore mutation event", e))?;
+        } else if entry.table == CLOCK.name() {
+            let name = std::str::from_utf8(&entry.key).map_err(|_| MetadataError::Database {
+                operation: "restore clock",
+                reason: "clock key is not valid UTF-8".into(),
+            })?;
+            let bytes: [u8; 8] =
+                entry
+                    .value
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| MetadataError::Database {
+                        operation: "restore clock",
+                        reason: "clock value must be eight bytes".into(),
+                    })?;
+            let mut table = write
+                .open_table(CLOCK)
+                .map_err(|e| backend("open snapshot clock", e))?;
+            table
+                .insert(name, i64::from_be_bytes(bytes))
+                .map_err(|e| backend("restore clock", e))?;
         } else if entry.table == COUNTERS.name() || entry.table == SCHEMA.name() {
             let name = std::str::from_utf8(&entry.key).map_err(|_| MetadataError::Database {
                 operation: "restore counter",
@@ -209,6 +302,8 @@ pub fn import_tx(
 
 #[cfg(test)]
 mod tests {
+    use record_store_core::WriteOrigin;
+    use redb::ReadableDatabase;
     use tempfile::tempdir;
 
     use super::*;
@@ -224,7 +319,9 @@ mod tests {
         let bucket_record = bucket("snapshot-bucket");
         repo.create_bucket(&bucket_record).await.expect("bucket");
         let stored = object(bucket_record.id, "nested/key", 42);
-        repo.put_object(&stored).await.expect("put");
+        repo.put_object(&stored, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
         let database = repo.database();
         let entries = tokio::task::spawn_blocking(move || {
             let read = database.begin_read().expect("begin");
@@ -279,11 +376,19 @@ mod tests {
             .await
             .expect("enable versioning");
         source
-            .put_object(&object(source_bucket.id, "a.txt", 10))
+            .put_object(
+                &object(source_bucket.id, "a.txt", 10),
+                None,
+                WriteOrigin::Direct,
+            )
             .await
             .expect("put");
         source
-            .put_object(&object(source_bucket.id, "b.txt", 20))
+            .put_object(
+                &object(source_bucket.id, "b.txt", 20),
+                None,
+                WriteOrigin::Direct,
+            )
             .await
             .expect("put");
         let upload_record = upload(source_bucket.id, "big.bin");
@@ -360,7 +465,11 @@ mod tests {
     async fn an_import_replaces_the_targets_existing_state() {
         let (source_directory, source, source_bucket) = catalog_with_bucket("kept").await;
         source
-            .put_object(&object(source_bucket.id, "kept.txt", 1))
+            .put_object(
+                &object(source_bucket.id, "kept.txt", 1),
+                None,
+                WriteOrigin::Direct,
+            )
             .await
             .expect("put");
         drop(source);
@@ -373,7 +482,11 @@ mod tests {
 
         let (target_directory, target, stale_bucket) = catalog_with_bucket("stale").await;
         target
-            .put_object(&object(stale_bucket.id, "stale.txt", 1))
+            .put_object(
+                &object(stale_bucket.id, "stale.txt", 1),
+                None,
+                WriteOrigin::Direct,
+            )
             .await
             .expect("put");
         drop(target);

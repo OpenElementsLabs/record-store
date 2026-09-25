@@ -29,11 +29,28 @@ The ones that matter most:
 | Metric | Watch for |
 | --- | --- |
 | `record_store_errors_total` | A rising rate relative to requests |
+| `record_store_operations_rejected_total` | Any sustained rate: the deployment is turning work away |
+| `record_store_operations_active` / `record_store_operations_concurrency_limit` | The first approaching the second |
+| `record_store_operations_queued` | Depth that does not return to zero |
+| `record_store_filesystem_available_bytes` | Falling toward zero |
+| `record_store_temporary_bytes` | Growth that does not come back down |
 | `record_store_storage_physical_bytes` | Growing faster than you are adding disk |
 | `record_store_share_access_denied_total` | A sustained rate — probing, or a broken link |
 
-Free disk space is not among them: Record Store reports what it has stored, not what
-the filesystem has left. Watch free space with a host exporter alongside these.
+Three of these are about the operating envelope rather than about failures.
+
+`record_store_operations_active` against `record_store_operations_concurrency_limit`
+is saturation: a gauge on its own says nothing without the ceiling beside it.
+`record_store_operations_queued` is the work waiting to start, and
+`record_store_operations_rejected_total` counts what waited too long and was refused
+with a retryable `SlowDown`. A deployment that is rejecting work is not broken — it is
+doing what `limits.maximum_concurrent_operations` was set to make it do — but a
+sustained rate means the limit no longer matches the load.
+
+`record_store_temporary_bytes` is the growth object counts cannot show you: every
+upload in flight, every multipart part not yet completed, and anything abandoned that
+cleanup has not reclaimed. It should track concurrent uploads and return to roughly
+zero when they finish.
 
 ## Logs
 

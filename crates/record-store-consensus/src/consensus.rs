@@ -87,6 +87,38 @@ impl ConsensusError {
             Self::NoLeader | Self::QuorumUnavailable(_) | Self::Forward(_)
         )
     }
+
+    /// Returns whether the command provably never reached the replicated log.
+    ///
+    /// This is the distinction between a definite failure and an ambiguous one,
+    /// and it is load-bearing: a caller that streamed a payload before proposing
+    /// its metadata may only release those bytes when the commit definitely did
+    /// not happen. A forwarded write whose response was lost, or a leadership
+    /// change between append and commit, may still commit afterwards, so those
+    /// are reported as ambiguous and the payload is kept.
+    ///
+    /// The classification is deliberately conservative: anything not known to
+    /// have stopped before the proposal counts as ambiguous.
+    #[must_use]
+    pub const fn definitely_not_committed(&self) -> bool {
+        match self {
+            // Application rejections are replicated as ordinary responses and
+            // change nothing, and the remaining cases all fail before a proposal
+            // is ever handed to consensus.
+            Self::Rejected(_)
+            | Self::NoLeader
+            | Self::NotLeader { .. }
+            | Self::Configuration(_)
+            | Self::LogStore(_)
+            | Self::State(_) => true,
+            // Forwarding, a stopped engine, a lost quorum, or an internal fault
+            // can all happen after the entry was appended.
+            Self::Forward(_)
+            | Self::Stopped(_)
+            | Self::QuorumUnavailable(_)
+            | Self::Internal(_) => false,
+        }
+    }
 }
 
 /// Forwards metadata operations to the current leader.
@@ -452,6 +484,34 @@ impl MetadataConsensus {
         }
     }
 
+    /// Proposes a write on this member only, never forwarding it onward.
+    ///
+    /// This is what a node must use when it is *already* handling a forwarded
+    /// write. The sender forwarded because it believed this node leads; if that
+    /// is no longer true, relaying the write a second time is how a redirect
+    /// becomes a cycle — A forwards to B, B to C, C back to A — with each hop
+    /// spending another request timeout and multiplying load exactly when the
+    /// cluster is least able to absorb it.
+    ///
+    /// Refusing instead keeps redirection to one hop per attempt. The error
+    /// names the leader this node currently knows, so the original caller can
+    /// retry against it with fresh information rather than chasing a chain.
+    pub async fn write_without_forwarding(
+        &self,
+        command: ClusterWrite,
+    ) -> Result<ClusterWriteResponse, ConsensusError> {
+        match self.raft.client_write(command).await {
+            Ok(response) => Ok(response.data),
+            Err(RaftError::APIError(ClientWriteError::ForwardToLeader(forward))) => {
+                Err(Self::forward_error(&forward))
+            }
+            Err(RaftError::APIError(ClientWriteError::ChangeMembershipError(error))) => {
+                Err(ConsensusError::Configuration(error.to_string()))
+            }
+            Err(RaftError::Fatal(fatal)) => Err(Self::fatal_error(&fatal)),
+        }
+    }
+
     /// Ensures a subsequent local read observes every committed write.
     ///
     /// On the leader this confirms leadership with a quorum and waits for the
@@ -543,6 +603,46 @@ impl MetadataConsensus {
 
     fn fatal_error(fatal: &Fatal<MemberId>) -> ConsensusError {
         ConsensusError::Stopped(fatal.to_string())
+    }
+
+    /// Returns this member's leadership term, or `None` if it is not the leader.
+    ///
+    /// The term is a fence for work that a leader schedules for the cluster.
+    /// Holding leadership at the start of a pass is not enough: a pass takes
+    /// long enough to lose leadership partway through, and every write below
+    /// this layer would then be forwarded to the *new* leader, so a deposed
+    /// coordinator would keep committing decisions the current one is also
+    /// making. Capturing the term makes that detectable.
+    pub async fn leadership_term(&self) -> Option<u64> {
+        let metrics = self.raft.metrics().borrow().clone();
+        (metrics.state == ServerState::Leader && metrics.current_leader == Some(metrics.id))
+            .then_some(metrics.current_term)
+    }
+
+    /// Proposes a write that is only valid while this member leads a given term.
+    ///
+    /// Unlike [`Self::write`], this never forwards. Forwarding is right for a
+    /// client request, which only wants the write to happen somewhere; it is
+    /// wrong for a leader-elected scheduler, whose authority to decide is
+    /// exactly what it just lost.
+    pub async fn write_as_leader(
+        &self,
+        term: u64,
+        command: ClusterWrite,
+    ) -> Result<ClusterWriteResponse, ConsensusError> {
+        if self.leadership_term().await != Some(term) {
+            return Err(ConsensusError::NoLeader);
+        }
+        match self.raft.client_write(command).await {
+            Ok(response) => Ok(response.data),
+            Err(RaftError::APIError(ClientWriteError::ForwardToLeader(_))) => {
+                Err(ConsensusError::NoLeader)
+            }
+            Err(RaftError::APIError(ClientWriteError::ChangeMembershipError(error))) => {
+                Err(ConsensusError::Configuration(error.to_string()))
+            }
+            Err(RaftError::Fatal(fatal)) => Err(Self::fatal_error(&fatal)),
+        }
     }
 
     /// Returns whether this member is currently the leader.
@@ -734,6 +834,42 @@ mod tests {
         let settings = settings();
         settings.validate().expect("defaults must validate");
         settings.raft_config().expect("raft must accept defaults");
+    }
+
+    /// Releasing a streamed payload is only safe when the commit provably never
+    /// entered the log. Every error that can occur *after* an entry was appended
+    /// has to classify as ambiguous, or an ambiguous outcome would be treated as
+    /// a failure and the payload of a committed object would be deleted.
+    #[test]
+    fn only_failures_that_precede_the_proposal_are_treated_as_definite() {
+        let definite: Vec<ConsensusError> = vec![
+            ConsensusError::NoLeader,
+            ConsensusError::NotLeader {
+                leader: 2,
+                address: "127.0.0.1:7603".into(),
+            },
+            ConsensusError::Configuration("bad".into()),
+            rejection_error(RejectionKind::BucketNotFound, "no such bucket"),
+        ];
+        for error in definite {
+            assert!(
+                error.definitely_not_committed(),
+                "{error} stops before the proposal and must be definite"
+            );
+        }
+
+        let ambiguous: Vec<ConsensusError> = vec![
+            ConsensusError::Forward("response lost".into()),
+            ConsensusError::Stopped("engine stopped".into()),
+            ConsensusError::QuorumUnavailable("no quorum".into()),
+            ConsensusError::Internal("unexpected".into()),
+        ];
+        for error in ambiguous {
+            assert!(
+                !error.definitely_not_committed(),
+                "{error} can happen after the entry was appended and must stay ambiguous"
+            );
+        }
     }
 
     #[test]

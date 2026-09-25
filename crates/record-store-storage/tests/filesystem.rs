@@ -6,6 +6,7 @@ use futures_util::{StreamExt, TryStreamExt, stream};
 use record_store_core::{
     Bucket, BucketId, BucketName, BucketQuota, ByteRange, MultipartUpload, MultipartUploadState,
     ObjectId, ObjectKey, OrganizationId, PartNumber, PayloadFormat, UploadId, VersioningState,
+    WriteOrigin,
 };
 use record_store_metadata::{MetadataRepository, RedbMetadataRepository};
 use record_store_storage::{
@@ -37,6 +38,7 @@ async fn store() -> (
         quota: BucketQuota::default(),
         storage_class: None,
         durability_policy: None,
+        object_lock: None,
         cors: None,
     };
     repository
@@ -66,6 +68,8 @@ fn put_request(bucket_id: BucketId, key: &str, chunks: &[&'static [u8]]) -> PutO
         expected_checksum: None,
         object_id: None,
         protocol_etag: None,
+        object_lock: None,
+        origin: WriteOrigin::Direct,
         body: upload_stream(stream::iter(chunks)),
     }
 }
@@ -186,6 +190,8 @@ async fn cancelled_upload_cleans_its_temporary_file() {
         expected_checksum: None,
         object_id: None,
         protocol_etag: None,
+        object_lock: None,
+        origin: WriteOrigin::Direct,
         body: upload_stream(body),
     };
 
@@ -261,6 +267,8 @@ async fn empty_and_large_generated_objects_remain_streaming() {
             expected_checksum: None,
             object_id: None,
             protocol_etag: None,
+            object_lock: None,
+            origin: WriteOrigin::Direct,
             body: upload_stream(body),
         })
         .await
@@ -365,6 +373,8 @@ async fn concurrent_reads_and_same_key_writes_publish_only_complete_objects() {
                     expected_checksum: None,
                     object_id: None,
                     protocol_etag: None,
+                    object_lock: None,
+                    origin: WriteOrigin::Direct,
                     body: upload_stream(stream::once(async move { Ok(payload) })),
                 })
                 .await
@@ -472,6 +482,7 @@ async fn envelope_encryption_streams_ranges_survives_restart_and_detects_tamperi
         quota: BucketQuota::default(),
         storage_class: None,
         durability_policy: None,
+        object_lock: None,
         cors: None,
     };
     repository
@@ -499,6 +510,8 @@ async fn envelope_encryption_streams_ranges_survives_restart_and_detects_tamperi
             expected_checksum: None,
             object_id: None,
             protocol_etag: None,
+            object_lock: None,
+            origin: WriteOrigin::Direct,
             body: upload_stream(stream::iter(
                 plaintext
                     .chunks(7_919)
@@ -611,6 +624,7 @@ async fn envelope_encryption_covers_durable_multipart_parts_and_completion() {
         quota: BucketQuota::default(),
         storage_class: None,
         durability_policy: None,
+        object_lock: None,
         cors: None,
     };
     repository
@@ -623,6 +637,7 @@ async fn envelope_encryption_covers_durable_multipart_parts_and_completion() {
         key: ObjectKey::new("multipart/secret.bin").expect("key"),
         content_type: None,
         custom_metadata: BTreeMap::new(),
+        object_lock: None,
         initiated_at: Utc::now(),
         state: MultipartUploadState::Active,
     };
@@ -714,5 +729,311 @@ async fn enabling_encryption_preserves_existing_plaintext_objects() {
     assert_eq!(
         collect(opened.body).await.expect("legacy body"),
         b"legacy bytes"
+    );
+}
+
+/// The guarantee an ordinary download makes is that the bytes it hands over are
+/// the bytes that were committed. A same-length edit is the case a size check
+/// cannot see and the one a silent read would pass through unnoticed, so the
+/// digest recorded at commit has to be recomputed on the way out.
+#[tokio::test]
+async fn a_same_length_edit_fails_an_ordinary_plaintext_download() {
+    let (directory, storage, _repository, bucket) = store().await;
+    let committed = storage
+        .put(put_request(
+            bucket.id,
+            "ledger.txt",
+            &[b"approved-total-100"],
+        ))
+        .await
+        .expect("put");
+    let path = payload_path(directory.path(), committed.metadata.id);
+
+    // Same length, different content: nothing about the file's shape changed.
+    std::fs::write(&path, b"approved-total-999").expect("edit payload in place");
+    assert_eq!(
+        std::fs::metadata(&path).expect("stat").len(),
+        committed.metadata.size,
+        "the fixture must keep the payload's length, or it tests the length check instead"
+    );
+
+    let opened = storage
+        .get(GetObjectRequest {
+            bucket_id: bucket.id,
+            key: ObjectKey::new("ledger.txt").expect("key"),
+            range: None,
+        })
+        .await
+        .expect("a same-length edit is only visible once the bytes are read");
+    assert!(
+        matches!(
+            collect(opened.body).await,
+            Err(StorageError::IntegrityMismatch)
+        ),
+        "the read must fail rather than complete with edited bytes"
+    );
+}
+
+/// Truncation is what storage corruption usually looks like, and it is visible
+/// before a single byte is released. Failing at `get` rather than mid-stream is
+/// the difference between an error a client can see and a short body it would
+/// mistake for the whole object.
+#[tokio::test]
+async fn a_truncated_or_extended_payload_is_refused_before_any_byte_is_released() {
+    let (directory, storage, _repository, bucket) = store().await;
+    let committed = storage
+        .put(put_request(bucket.id, "report.bin", &[b"0123456789"]))
+        .await
+        .expect("put");
+    let path = payload_path(directory.path(), committed.metadata.id);
+
+    for (label, content) in [
+        ("truncated", b"01234".as_slice()),
+        ("extended", b"0123456789extra".as_slice()),
+    ] {
+        std::fs::write(&path, content).expect("rewrite payload");
+        let outcome = storage
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: ObjectKey::new("report.bin").expect("key"),
+                range: None,
+            })
+            .await;
+        assert!(
+            matches!(outcome, Err(StorageError::IntegrityMismatch)),
+            "a {label} payload must be refused at open time"
+        );
+    }
+}
+
+/// A range read cannot be compared against a whole-payload digest, so the
+/// length check is the guarantee it gets. It has to be a real one: a ranged
+/// read of a truncated payload must fail rather than return a short slice.
+#[tokio::test]
+async fn a_ranged_read_of_a_truncated_payload_is_refused() {
+    let (directory, storage, _repository, bucket) = store().await;
+    let committed = storage
+        .put(put_request(bucket.id, "video.bin", &[b"0123456789"]))
+        .await
+        .expect("put");
+    std::fs::write(
+        payload_path(directory.path(), committed.metadata.id),
+        b"012",
+    )
+    .expect("truncate payload");
+
+    assert!(matches!(
+        storage
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: ObjectKey::new("video.bin").expect("key"),
+                range: Some(ByteRange::new(1, 2).expect("range")),
+            })
+            .await,
+        Err(StorageError::IntegrityMismatch)
+    ));
+}
+
+/// A historical version is read through the same path as a current one, so the
+/// guarantee has to hold there too. It is pinned separately because a reader
+/// asking for an old version is often the one who cares most about it.
+#[tokio::test]
+async fn a_historical_version_read_verifies_its_committed_digest() {
+    let directory = tempdir().expect("temporary directory");
+    let repository = Arc::new(
+        RedbMetadataRepository::open(directory.path().join("metadata/catalog.redb"))
+            .await
+            .expect("metadata repository"),
+    );
+    let bucket = Bucket {
+        id: BucketId::new(),
+        organization_id: OrganizationId::new(),
+        name: BucketName::new("versioned-bucket").expect("bucket name"),
+        created_at: Utc::now(),
+        versioning: VersioningState::Enabled,
+        quota: BucketQuota::default(),
+        storage_class: None,
+        durability_policy: None,
+        object_lock: None,
+        cors: None,
+    };
+    repository
+        .create_bucket(&bucket)
+        .await
+        .expect("create bucket");
+    let storage = LocalFilesystemStore::open(
+        directory.path(),
+        directory.path().join("tmp"),
+        repository.clone(),
+    )
+    .await
+    .expect("local store");
+
+    let first = storage
+        .put(put_request(bucket.id, "history.txt", &[b"first-version"]))
+        .await
+        .expect("put first");
+    storage
+        .put(put_request(bucket.id, "history.txt", &[b"second-versio"]))
+        .await
+        .expect("put second");
+
+    std::fs::write(
+        payload_path(directory.path(), first.metadata.id),
+        b"EDITED-BYTES!",
+    )
+    .expect("edit the historical payload in place");
+
+    let opened = storage
+        .get_version(record_store_storage::GetObjectVersionRequest {
+            bucket_id: bucket.id,
+            key: ObjectKey::new("history.txt").expect("key"),
+            version_id: first.metadata.version_id,
+            range: None,
+        })
+        .await
+        .expect("open historical version");
+    assert!(matches!(
+        collect(opened.body).await,
+        Err(StorageError::IntegrityMismatch)
+    ));
+}
+
+/// Completion assembles an object out of parts that were written earlier and
+/// may have rotted since. Each part carries the checksum recorded when it was
+/// uploaded, so assembly is the moment to check it rather than to trust it.
+#[tokio::test]
+async fn a_multipart_completion_refuses_a_part_whose_stored_bytes_changed() {
+    let (directory, storage, repository, bucket) = store().await;
+    let upload = MultipartUpload {
+        id: UploadId::new(),
+        bucket_id: bucket.id,
+        key: ObjectKey::new("assembled.bin").expect("key"),
+        content_type: None,
+        custom_metadata: BTreeMap::new(),
+        object_lock: None,
+        initiated_at: Utc::now(),
+        state: MultipartUploadState::Active,
+    };
+    repository
+        .create_multipart_upload(&upload)
+        .await
+        .expect("create upload");
+
+    let part = storage
+        .put_multipart_part(PutMultipartPartRequest {
+            upload_id: upload.id,
+            number: PartNumber::new(1).expect("part number"),
+            expected_checksum: None,
+            body: upload_stream(stream::once(async {
+                Ok(Bytes::from_static(b"part-one-bytes"))
+            })),
+        })
+        .await
+        .expect("put part");
+
+    std::fs::write(
+        payload_path(directory.path(), part.object_id),
+        b"part-ONE-bytes",
+    )
+    .expect("edit the stored part in place");
+
+    let outcome = storage
+        .complete_multipart(CompleteMultipartRequest {
+            upload,
+            parts: vec![part],
+        })
+        .await;
+    assert!(
+        outcome.is_err(),
+        "assembling an object from a part that no longer matches its checksum must fail"
+    );
+    assert!(
+        matches!(
+            storage
+                .head(HeadObjectRequest {
+                    bucket_id: bucket.id,
+                    key: ObjectKey::new("assembled.bin").expect("key"),
+                })
+                .await,
+            Err(StorageError::ObjectNotFound)
+        ),
+        "a refused completion must not publish a partial object"
+    );
+}
+
+/// The same guarantee, on an encrypted store. Here the per-chunk authentication
+/// tag is what catches the edit, which means it is caught for a ranged read as
+/// well — the one case the plaintext path cannot cover.
+#[tokio::test]
+async fn an_encrypted_payload_detects_an_edit_on_whole_and_ranged_reads() {
+    let directory = tempdir().expect("temporary directory");
+    let repository = Arc::new(
+        RedbMetadataRepository::open(directory.path().join("metadata/catalog.redb"))
+            .await
+            .expect("metadata repository"),
+    );
+    let bucket = Bucket {
+        id: BucketId::new(),
+        organization_id: OrganizationId::new(),
+        name: BucketName::new("encrypted-bucket").expect("bucket name"),
+        created_at: Utc::now(),
+        versioning: VersioningState::Disabled,
+        quota: BucketQuota::default(),
+        storage_class: None,
+        durability_policy: None,
+        object_lock: None,
+        cors: None,
+    };
+    repository
+        .create_bucket(&bucket)
+        .await
+        .expect("create bucket");
+    let storage = LocalFilesystemStore::open_encrypted(
+        directory.path(),
+        directory.path().join("tmp"),
+        repository.clone(),
+        b"an-object-encryption-master-key-32-bytes",
+    )
+    .await
+    .expect("encrypted store");
+
+    let committed = storage
+        .put(put_request(bucket.id, "secret.bin", &[b"0123456789"]))
+        .await
+        .expect("put");
+    let path = payload_path(directory.path(), committed.metadata.id);
+    let mut bytes = std::fs::read(&path).expect("read ciphertext");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x01;
+    std::fs::write(&path, &bytes).expect("flip one ciphertext bit");
+
+    let whole = storage
+        .get(GetObjectRequest {
+            bucket_id: bucket.id,
+            key: ObjectKey::new("secret.bin").expect("key"),
+            range: None,
+        })
+        .await
+        .expect("open");
+    assert!(matches!(
+        collect(whole.body).await,
+        Err(StorageError::IntegrityMismatch)
+    ));
+
+    let ranged = storage
+        .get(GetObjectRequest {
+            bucket_id: bucket.id,
+            key: ObjectKey::new("secret.bin").expect("key"),
+            range: Some(ByteRange::new(2, 3).expect("range")),
+        })
+        .await
+        .expect("open range");
+    assert!(
+        matches!(
+            collect(ranged.body).await,
+            Err(StorageError::IntegrityMismatch)
+        ),
+        "an authenticated payload catches an edit on a ranged read too"
     );
 }

@@ -14,11 +14,12 @@ use md5::Md5;
 use record_store_core::{
     BucketId, ByteRange, Checksum, CoreError, ETag, MultipartUploadState, ObjectId, ObjectKey,
     ObjectMetadata, ObjectVersionRecord, PayloadFormat, ResolvedByteRange, UploadedPart, VersionId,
+    WriteOrigin,
 };
 use record_store_metadata::{
     DeleteObjectResult, MetadataError, MetadataRepository, NewDeleteMarker,
 };
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use tokio::{
     fs::{self, File, OpenOptions},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom},
@@ -32,6 +33,7 @@ use crate::encryption::{
     WrittenPayload, initialize_object_encryption, open_encrypted_payload, write_encrypted_payload,
     write_plaintext_payload,
 };
+use crate::integrity::{verify_physical_length, verifying_stream};
 use crate::layout::{ObjectEncryption, PublicationRecord, StorageLayout};
 use crate::maintenance::filesystem;
 use crate::maintenance::{
@@ -292,19 +294,39 @@ impl LocalFilesystemStore {
             let encoded = fs::read(entry.path())
                 .await
                 .map_err(|source| filesystem("read publication record", source))?;
-            let record: PublicationRecord = serde_json::from_slice(&encoded)?;
-            if record.object_id.as_uuid() != filename_id {
-                return Err(filesystem(
-                    "decode publication record",
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "publication filename and record do not match",
-                    ),
-                ));
-            }
-            let committed = self.metadata.payload_referenced(record.object_id).await?;
+            // A record that does not decode was interrupted while it was being
+            // written -- by a crash in a release that wrote it in place, or by
+            // power loss. Its payload is renamed into place only after the
+            // record is complete and synchronized, so the payload was never
+            // published. The file name carries the same object id, so recovery
+            // proceeds exactly as it would from the record; refusing to start
+            // would turn one interrupted write into an outage.
+            let object_id = match serde_json::from_slice::<PublicationRecord>(&encoded) {
+                Ok(record) => {
+                    if record.object_id.as_uuid() != filename_id {
+                        return Err(filesystem(
+                            "decode publication record",
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "publication filename and record do not match",
+                            ),
+                        ));
+                    }
+                    record.object_id
+                }
+                Err(error) => {
+                    warn!(
+                        record = %entry.path().display(),
+                        bytes = encoded.len(),
+                        %error,
+                        "publication record is incomplete; recovering by its file name"
+                    );
+                    ObjectId::from_uuid(filename_id)
+                }
+            };
+            let committed = self.metadata.payload_referenced(object_id).await?;
             if !committed {
-                let path = self.layout.payload_path(record.object_id);
+                let path = self.layout.payload_path(object_id);
                 match fs::remove_file(path).await {
                     Ok(()) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -339,12 +361,28 @@ impl LocalFilesystemStore {
         }
     }
 
+    /// Opens a payload for streaming, checking what can be checked up front.
+    ///
+    /// `expected_checksum` is the digest committed metadata records for these
+    /// bytes. When it is supplied and a whole plaintext payload is being read,
+    /// the stream recomputes it and fails rather than completing with bytes
+    /// nobody vouched for. A ranged read cannot be checked that way, so it is
+    /// not: what it does get is the physical-length check below, which happens
+    /// before a single byte is released and is what catches the truncation that
+    /// storage corruption actually looks like.
+    ///
+    /// An encrypted payload is not digested a second time. Each chunk's tag
+    /// binds it to this object, its index and its length, and the header binds
+    /// the size, so a damaged chunk fails decryption before it is released --
+    /// prevention rather than detection. Recomputing SHA-256 on top cost
+    /// encrypted whole-object reads a third of their throughput.
     pub(crate) async fn open_payload(
         &self,
         object_id: ObjectId,
         size: u64,
         payload_format: PayloadFormat,
         range: Option<ByteRange>,
+        expected_checksum: Option<Checksum>,
     ) -> Result<(Option<ResolvedByteRange>, DownloadStream), StorageError> {
         let mut file = File::open(self.layout.payload_path(object_id))
             .await
@@ -355,6 +393,17 @@ impl LocalFilesystemStore {
         let resolved_range = range.map(|range| range.resolve(size)).transpose()?;
         let body = match payload_format {
             PayloadFormat::Plaintext => {
+                // A plaintext payload occupies exactly its logical size, so a
+                // file that does not is corrupt regardless of what any later
+                // digest would say. Refusing here, before the response is
+                // opened, is the difference between an error and a short body
+                // a client would take for the whole object.
+                let physical = file
+                    .metadata()
+                    .await
+                    .map_err(|source| filesystem("inspect payload", source))?
+                    .len();
+                verify_physical_length(physical, size)?;
                 if let Some(range) = resolved_range {
                     file.seek(SeekFrom::Start(range.offset))
                         .await
@@ -377,6 +426,14 @@ impl LocalFilesystemStore {
                     .ok_or(StorageError::EncryptionKeyRequired)?;
                 open_encrypted_payload(file, object_id, size, resolved_range, encryption).await?
             }
+        };
+        let body = match expected_checksum {
+            Some(expected)
+                if resolved_range.is_none() && payload_format == PayloadFormat::Plaintext =>
+            {
+                verifying_stream(body, expected)
+            }
+            _ => body,
         };
         Ok((resolved_range, body))
     }
@@ -408,7 +465,13 @@ impl LocalFilesystemStore {
         range: Option<ByteRange>,
     ) -> Result<GetObjectResult, StorageError> {
         let (resolved_range, body) = self
-            .open_payload(metadata.id, metadata.size, metadata.payload_format, range)
+            .open_payload(
+                metadata.id,
+                metadata.size,
+                metadata.payload_format,
+                range,
+                Some(metadata.checksum.clone()),
+            )
             .await?;
         Ok(GetObjectResult {
             metadata,
@@ -509,7 +572,11 @@ impl ObjectStore for LocalFilesystemStore {
         };
 
         let _publication_guard = key_lock.write().await;
-        let commit = match self.metadata.put_object(&metadata).await {
+        let commit = match self
+            .metadata
+            .put_object(&metadata, request.object_lock, request.origin)
+            .await
+        {
             Ok(commit) => commit,
             Err(error) => {
                 if cleanup_file(&payload_path).await {
@@ -675,7 +742,17 @@ impl ObjectStore for LocalFilesystemStore {
                 let part_store = part_store.clone();
                 async move {
                     part_store
-                        .open_payload(part.object_id, part.size, part.payload_format, None)
+                        .open_payload(
+                            part.object_id,
+                            part.size,
+                            part.payload_format,
+                            None,
+                            // Each part is verified against the checksum
+                            // recorded when it was uploaded, so a completion
+                            // cannot assemble an object out of a part that
+                            // rotted between upload and completion.
+                            Some(part.checksum.clone()),
+                        )
                         .await
                         .map(|(_, body)| body.map_err(io::Error::other))
                         .map_err(io::Error::other)
@@ -691,6 +768,14 @@ impl ObjectStore for LocalFilesystemStore {
                 expected_checksum: None,
                 object_id: Some(object_id),
                 protocol_etag: Some(protocol_etag),
+                // The lock captured when the upload was created, not whatever
+                // the bucket default says now: a multipart upload can outlive a
+                // change to that default, and the caller was told the terms at
+                // initiation.
+                object_lock: persisted.object_lock,
+                // The event this commit owes is a completion, not an ordinary
+                // upload, and the catalog has no other way to tell.
+                origin: WriteOrigin::MultipartCompletion,
                 body: upload_stream(body),
             })
             .await?;
@@ -760,7 +845,12 @@ impl ObjectStore for LocalFilesystemStore {
         let _guard = key_lock.write().await;
         let result = self
             .metadata
-            .delete_object_version(request.bucket_id, &request.key, request.version_id)
+            .delete_object_version(
+                request.bucket_id,
+                &request.key,
+                request.version_id,
+                request.release,
+            )
             .await?
             .ok_or(StorageError::ObjectNotFound)?;
         if let Some(metadata) = result.cleanup {
@@ -773,15 +863,20 @@ impl ObjectStore for LocalFilesystemStore {
         let key_lock = self.key_lock(request.bucket_id, &request.key)?;
         let _guard = key_lock.read().await;
         let metadata = self.metadata_for(request.bucket_id, &request.key).await?;
+        // Verification is the ordinary read drained to the end rather than a
+        // second, separately maintained implementation of it. That read
+        // recomputes the committed digest only for plaintext; an encrypted one
+        // relies on its chunk tags, so verification adds the digest back and
+        // still proves the bytes are the ones the catalog recorded.
         let opened = self.open_metadata(metadata.clone(), None).await?;
-        let mut body = opened.body;
-        let mut hasher = Sha256::new();
+        let mut body = match metadata.payload_format {
+            PayloadFormat::Plaintext => opened.body,
+            PayloadFormat::Aes256GcmEnvelopeV1 => {
+                verifying_stream(opened.body, metadata.checksum.clone())
+            }
+        };
         while let Some(chunk) = body.next().await {
-            hasher.update(chunk?);
-        }
-        let actual = Checksum::sha256(hasher.finalize().into());
-        if actual != metadata.checksum {
-            return Err(StorageError::IntegrityMismatch);
+            chunk?;
         }
         Ok(metadata)
     }
@@ -929,6 +1024,34 @@ mod tests {
         ObjectKey::new(value).expect("key")
     }
 
+    /// Recovering from a torn publication record must never cost a
+    /// committed object: when the catalog references the payload the record
+    /// names, the payload stays and the object reads back unchanged.
+    #[tokio::test]
+    async fn a_torn_record_for_a_committed_object_leaves_the_object_intact() {
+        let (directory, store, bucket) = store().await;
+        let committed = put(&store, &bucket, "kept.txt", b"committed bytes").await;
+        let metadata = Arc::clone(&store.metadata);
+        let record = store.layout.publication_path(committed.metadata.id);
+        drop(store);
+        fs::write(&record, b"").await.expect("torn record");
+
+        let store =
+            LocalFilesystemStore::open(directory.path(), directory.path().join("tmp"), metadata)
+                .await
+                .expect("start-up recovers");
+        assert!(!record.exists());
+        let fetched = store
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key("kept.txt"),
+                range: None,
+            })
+            .await
+            .expect("the committed object is still there");
+        assert_eq!(read(fetched).await, b"committed bytes");
+    }
+
     /// The bytes a caller reads back must be exactly the bytes it wrote, and the
     /// checksum recorded at commit has to describe them.
     #[tokio::test]
@@ -990,6 +1113,8 @@ mod tests {
                 expected_checksum: Some(Checksum::sha256([0_u8; 32])),
                 object_id: None,
                 protocol_etag: None,
+                object_lock: None,
+                origin: WriteOrigin::Direct,
                 body: crate::upload_stream(futures_util::stream::once(async move { Ok(body) })),
             })
             .await;
@@ -1236,6 +1361,7 @@ mod tests {
             key: key("big.bin"),
             content_type: None,
             custom_metadata: Default::default(),
+            object_lock: None,
             initiated_at: chrono::Utc::now(),
             state: record_store_core::MultipartUploadState::Active,
         };
@@ -1293,6 +1419,7 @@ mod tests {
             key: key("big.bin"),
             content_type: None,
             custom_metadata: Default::default(),
+            object_lock: None,
             initiated_at: chrono::Utc::now(),
             state: record_store_core::MultipartUploadState::Active,
         };
@@ -1326,6 +1453,7 @@ mod tests {
             key: key("big.bin"),
             content_type: None,
             custom_metadata: Default::default(),
+            object_lock: None,
             initiated_at: chrono::Utc::now(),
             state: record_store_core::MultipartUploadState::Active,
         };

@@ -19,7 +19,7 @@ use record_store_cluster::{
 use record_store_consensus::ClusterWrite;
 use record_store_core::{
     CoreError, DurabilityProfile, ETag, MultipartUploadState, ObjectId, ObjectMetadata,
-    ObjectVersionRecord, PayloadFormat, ReplicationProfile, UploadedPart, VersionId,
+    ObjectVersionRecord, PayloadFormat, ReplicationProfile, UploadedPart, VersionId, WriteOrigin,
 };
 use record_store_metadata::{
     DeleteObjectResult, MetadataCommand, MetadataError, NewDeleteMarker, ObjectCommitResult,
@@ -57,6 +57,36 @@ impl DistributedSettings {
             payload_format,
         }
     }
+}
+
+/// A commit attempt that did not return success, and whether that is conclusive.
+///
+/// `definite` is only set when the command provably never entered the replicated
+/// log. Everything else is ambiguous and must be resolved before any payload is
+/// released.
+struct CommitFailure {
+    error: StorageError,
+    definite: bool,
+}
+
+impl CommitFailure {
+    /// Records a failure that provably changed nothing.
+    const fn definite(error: StorageError) -> Self {
+        Self {
+            error,
+            definite: true,
+        }
+    }
+}
+
+/// What a failed commit turned out to mean once it was resolved.
+enum CommitResolution {
+    /// The commit provably did not happen; the payload has been released.
+    NotCommitted(StorageError),
+    /// The commit did happen even though its response was lost.
+    Committed,
+    /// The outcome is still unknown; the payload has deliberately been kept.
+    Unresolved(StorageError),
 }
 
 /// The replicated object store.
@@ -179,37 +209,113 @@ impl DistributedObjectStore {
     async fn commit_object(
         &self,
         metadata: &ObjectMetadata,
+        object_lock: Option<record_store_core::ObjectLockState>,
+        origin: WriteOrigin,
         placement: &PayloadPlacement,
-    ) -> Result<ObjectCommitResult, StorageError> {
-        let consensus = self.context.consensus.as_ref().ok_or_else(|| {
-            StorageError::ClusterUnavailable("this node has no metadata consensus".to_owned())
-        })?;
+    ) -> Result<ObjectCommitResult, CommitFailure> {
         let write = ClusterWrite::batch([
             ClusterWrite::metadata(MetadataCommand::PutObject {
                 metadata: Box::new(metadata.clone()),
+                object_lock,
+                origin,
             }),
             ClusterWrite::cluster(ClusterCommand::PutPlacement {
                 placement: Box::new(placement.clone()),
             }),
         ]);
-        let response = consensus.write(write).await.map_err(|error| match error {
-            record_store_consensus::ConsensusError::Rejected(rejection) => {
-                StorageError::Metadata(rejection.into_metadata_error())
-            }
-            other => StorageError::ClusterUnavailable(other.to_string()),
+        let response = self.propose(write).await?;
+        let responses = response.into_batch().map_err(|rejection| {
+            CommitFailure::definite(StorageError::Metadata(rejection.into_metadata_error()))
         })?;
-        let responses = response
-            .into_batch()
-            .map_err(|rejection| StorageError::Metadata(rejection.into_metadata_error()))?;
         let first = responses
             .into_iter()
             .next()
-            .ok_or(StorageError::InconsistentState)?;
+            .ok_or_else(|| CommitFailure::definite(StorageError::InconsistentState))?;
         first
             .into_metadata()
-            .map_err(StorageError::Metadata)?
-            .into_object_commit()
-            .map_err(StorageError::Metadata)
+            .and_then(record_store_metadata::MetadataOutcome::into_object_commit)
+            .map_err(|error| CommitFailure::definite(StorageError::Metadata(error)))
+    }
+
+    /// Proposes a replicated write, classifying failure as definite or ambiguous.
+    async fn propose(
+        &self,
+        write: ClusterWrite,
+    ) -> Result<record_store_consensus::ClusterWriteResponse, CommitFailure> {
+        let consensus = self.context.consensus.as_ref().ok_or_else(|| {
+            CommitFailure::definite(StorageError::ClusterUnavailable(
+                "this node has no metadata consensus".to_owned(),
+            ))
+        })?;
+        consensus.write(write).await.map_err(|error| {
+            let definite = error.definitely_not_committed();
+            let storage = match error {
+                record_store_consensus::ConsensusError::Rejected(rejection) => {
+                    StorageError::Metadata(rejection.into_metadata_error())
+                }
+                other => StorageError::ClusterUnavailable(other.to_string()),
+            };
+            CommitFailure {
+                error: storage,
+                definite,
+            }
+        })
+    }
+
+    /// Decides what to do with a streamed payload whose commit did not succeed.
+    ///
+    /// Releasing the bytes is only safe when the commit provably did not happen.
+    /// An ambiguous outcome — a forwarded response that was lost, or a leader
+    /// change between append and commit — is resolved by reading the placement
+    /// back behind a read barrier rather than guessed at.
+    ///
+    /// The barrier is what makes a negative answer conclusive. Establishing it
+    /// forces the current leader to commit an entry of its own term, which
+    /// commits or discards every entry that preceded it, so a placement that is
+    /// still absent afterwards can never appear later. If the barrier itself
+    /// cannot be established the outcome stays unresolved, and the payload is
+    /// deliberately kept: the orphan collector reclaims it after its grace
+    /// period, whereas deleting it would destroy the only copy of an object that
+    /// is visible in committed metadata.
+    async fn resolve_failed_commit(
+        &self,
+        object_id: ObjectId,
+        durable_devices: &[(record_store_core::NodeId, record_store_core::DeviceId)],
+        failure: CommitFailure,
+    ) -> CommitResolution {
+        if failure.definite {
+            rollback(&self.context, object_id, durable_devices).await;
+            return CommitResolution::NotCommitted(failure.error);
+        }
+        match self.context.placement_committed(object_id).await {
+            Ok(true) => {
+                warn!(
+                    %object_id,
+                    error = %failure.error,
+                    "the metadata commit landed even though the response was lost; the write is \
+                     reported as successful and the payload is kept"
+                );
+                CommitResolution::Committed
+            }
+            Ok(false) => {
+                rollback(&self.context, object_id, durable_devices).await;
+                CommitResolution::NotCommitted(failure.error)
+            }
+            Err(barrier) => {
+                warn!(
+                    %object_id,
+                    error = %failure.error,
+                    %barrier,
+                    "the metadata commit outcome could not be resolved; the payload is kept so a \
+                     committed object cannot lose its bytes"
+                );
+                CommitResolution::Unresolved(StorageError::ClusterUnavailable(format!(
+                    "the write may or may not have been committed: {}; the outcome could not be \
+                     confirmed because {barrier}. Re-read the object before retrying.",
+                    failure.error
+                )))
+            }
+        }
     }
 
     /// Retires payloads that an object commit made unreachable.
@@ -388,13 +494,27 @@ impl ObjectStore for DistributedObjectStore {
             created_at: now,
             modified_at: now,
         };
-        let commit = match self.commit_object(&metadata, &placement).await {
+        let commit = match self
+            .commit_object(&metadata, request.object_lock, request.origin, &placement)
+            .await
+        {
             Ok(commit) => commit,
-            Err(error) => {
-                // Nothing is visible, so the replicas that were written must be
-                // released rather than left as silent garbage.
-                rollback(&self.context, object_id, &outcome.durable_devices).await;
-                return Err(error);
+            Err(failure) => {
+                // The replicas may only be released once the commit is known not
+                // to have happened; otherwise a visible object would lose its
+                // only copy of the bytes.
+                match self
+                    .resolve_failed_commit(object_id, &outcome.durable_devices, failure)
+                    .await
+                {
+                    // The object is committed and visible. Superseded payloads
+                    // were not identified because the response was lost, so the
+                    // collector retires them instead of this path.
+                    CommitResolution::Committed => return Ok(PutObjectResult { metadata }),
+                    CommitResolution::NotCommitted(error) | CommitResolution::Unresolved(error) => {
+                        return Err(error);
+                    }
+                }
             }
         };
         self.retire_payloads(&commit.cleanup).await;
@@ -445,11 +565,8 @@ impl ObjectStore for DistributedObjectStore {
             etag: outcome.etag,
             modified_at: Utc::now(),
         };
-        let consensus = self.context.consensus.as_ref().ok_or_else(|| {
-            StorageError::ClusterUnavailable("this node has no metadata consensus".to_owned())
-        })?;
-        let response = consensus
-            .write(ClusterWrite::batch([
+        let response = match self
+            .propose(ClusterWrite::batch([
                 ClusterWrite::metadata(MetadataCommand::PutMultipartPart {
                     part: Box::new(part.clone()),
                 }),
@@ -457,17 +574,22 @@ impl ObjectStore for DistributedObjectStore {
                     placement: Box::new(placement.clone()),
                 }),
             ]))
-            .await;
-        let response = match response {
+            .await
+        {
             Ok(response) => response,
-            Err(error) => {
-                rollback(&self.context, object_id, &outcome.durable_devices).await;
-                return Err(match error {
-                    record_store_consensus::ConsensusError::Rejected(rejection) => {
-                        StorageError::Metadata(rejection.into_metadata_error())
+            Err(failure) => {
+                match self
+                    .resolve_failed_commit(object_id, &outcome.durable_devices, failure)
+                    .await
+                {
+                    // The part is committed and belongs to the upload. The
+                    // superseded part, if any, is retired by the collector
+                    // because the response that named it was lost.
+                    CommitResolution::Committed => return Ok(part),
+                    CommitResolution::NotCommitted(error) | CommitResolution::Unresolved(error) => {
+                        return Err(error);
                     }
-                    other => StorageError::ClusterUnavailable(other.to_string()),
-                });
+                }
             }
         };
         let responses = match response.into_batch() {
@@ -622,11 +744,31 @@ impl ObjectStore for DistributedObjectStore {
             created_at: now,
             modified_at: now,
         };
-        let commit = match self.commit_object(&metadata, &placement).await {
+        let commit = match self
+            .commit_object(
+                &metadata,
+                persisted.object_lock,
+                WriteOrigin::MultipartCompletion,
+                &placement,
+            )
+            .await
+        {
             Ok(commit) => commit,
-            Err(error) => {
-                rollback(&self.context, object_id, &outcome.durable_devices).await;
-                return Err(error);
+            Err(failure) => {
+                match self
+                    .resolve_failed_commit(object_id, &outcome.durable_devices, failure)
+                    .await
+                {
+                    CommitResolution::Committed => {
+                        // The completion is committed and the object is visible.
+                        // The upload's own cleanup is idempotent and is retried
+                        // by multipart recovery rather than forced here.
+                        return Ok(PutObjectResult { metadata });
+                    }
+                    CommitResolution::NotCommitted(error) | CommitResolution::Unresolved(error) => {
+                        return Err(error);
+                    }
+                }
             }
         };
         self.retire_payloads(&commit.cleanup).await;
@@ -694,7 +836,12 @@ impl ObjectStore for DistributedObjectStore {
         let result = self
             .context
             .metadata
-            .delete_object_version(request.bucket_id, &request.key, request.version_id)
+            .delete_object_version(
+                request.bucket_id,
+                &request.key,
+                request.version_id,
+                request.release,
+            )
             .await?
             .ok_or(StorageError::ObjectNotFound)?;
         if let Some(metadata) = result.cleanup {
@@ -874,5 +1021,428 @@ impl ClusterContext {
         inspection.orphan_payload_samples = samples;
         inspection.missing_payload_samples = missing;
         Ok(inspection)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use record_store_cluster::{
+        CapacityAwarePlacement, ClusterCommand, ClusterConfig, ClusterIdentity, DeviceRecord,
+        Replica,
+    };
+    use record_store_consensus::{
+        ClusterStore, ConsensusSettings, MetadataConsensus, ReplicatedClusterStore,
+        ReplicatedMetadataRepository,
+    };
+    use record_store_core::{Checksum, ClusterId, DeviceId, NodeId, ObjectId};
+    use record_store_rpc::{
+        ConsensusNetwork, PeerHeaders, PeerPool, ReplicaTarget, ReplicaTransport, RpcClientError,
+        RpcClientSettings, TlsSettings, TransferExpectation, TransferStream,
+    };
+    use record_store_storage::{
+        DeviceStore, LocalFilesystemStore, ReplicaStore, WriteReplicaRequest, upload_stream,
+    };
+
+    use super::*;
+
+    /// The commit-resolution decision never reaches a peer: every fixture here
+    /// keeps its replicas on the local node so the assertion is about bytes on
+    /// this disk rather than about a transport.
+    struct NoTransport;
+
+    fn refused(target: &ReplicaTarget) -> RpcClientError {
+        RpcClientError::Unreachable {
+            address: target.address.clone(),
+            reason: "no peer transport in this fixture".to_owned(),
+        }
+    }
+
+    #[async_trait]
+    impl ReplicaTransport for NoTransport {
+        async fn write_replica(
+            &self,
+            target: &ReplicaTarget,
+            _operation_id: &str,
+            _object_id: ObjectId,
+            _expectation: TransferExpectation,
+            _body: TransferStream,
+        ) -> Result<record_store_rpc::RemoteReplicaWrite, RpcClientError> {
+            Err(refused(target))
+        }
+
+        async fn read_replica(
+            &self,
+            target: &ReplicaTarget,
+            _object_id: ObjectId,
+            _size: u64,
+            _checksum: &Checksum,
+        ) -> Result<record_store_rpc::RemoteReadStream, RpcClientError> {
+            Err(refused(target))
+        }
+
+        async fn delete_replica(
+            &self,
+            target: &ReplicaTarget,
+            _object_id: ObjectId,
+        ) -> Result<bool, RpcClientError> {
+            Err(refused(target))
+        }
+
+        async fn verify_replica(
+            &self,
+            target: &ReplicaTarget,
+            _object_id: ObjectId,
+            _size: u64,
+            _checksum: &Checksum,
+        ) -> Result<record_store_rpc::RemoteReplicaVerification, RpcClientError> {
+            Err(refused(target))
+        }
+
+        async fn list_local_payloads(
+            &self,
+            target: &ReplicaTarget,
+            _after: Option<ObjectId>,
+            _limit: usize,
+        ) -> Result<Vec<ObjectId>, RpcClientError> {
+            Err(refused(target))
+        }
+    }
+
+    /// One node with real consensus, a real catalog, and a real disk.
+    ///
+    /// `initialized` decides whether the consensus group ever forms. An
+    /// uninitialized group has no leader, so its read barrier cannot be
+    /// established, which is exactly the condition under which a commit outcome
+    /// stays unresolved.
+    struct Fixture {
+        _directory: tempfile::TempDir,
+        store: DistributedObjectStore,
+        context: Arc<ClusterContext>,
+        device_id: DeviceId,
+        node_id: NodeId,
+    }
+
+    impl Fixture {
+        async fn new(initialized: bool) -> Self {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let node_id = NodeId::new();
+            let consensus = MetadataConsensus::start(
+                ConsensusSettings::new(1, "127.0.0.1:7603", directory.path().join("consensus")),
+                ConsensusNetwork::new(PeerPool::new(RpcClientSettings::new(
+                    PeerHeaders {
+                        node_id,
+                        cluster_id: None,
+                        versions: record_store_cluster::NodeVersions::current("test"),
+                        credential: None,
+                    },
+                    TlsSettings::default(),
+                ))),
+            )
+            .await
+            .expect("start consensus");
+            if initialized {
+                consensus
+                    .initialize_single_member()
+                    .await
+                    .expect("initialize consensus");
+                consensus
+                    .wait_for_leader(std::time::Duration::from_secs(10))
+                    .await
+                    .expect("elect a leader");
+                consensus
+                    .write(ClusterWrite::cluster(ClusterCommand::InitializeCluster {
+                        identity: ClusterIdentity {
+                            cluster_id: ClusterId::new(),
+                            cluster_format_version: record_store_cluster::CLUSTER_FORMAT_VERSION,
+                            created_at: Utc::now(),
+                            recovery_generation: 0,
+                            recovery_id: None,
+                            recovered_at: None,
+                        },
+                        config: Box::new(ClusterConfig::default()),
+                    }))
+                    .await
+                    .expect("initialize the cluster");
+            }
+
+            let metadata: Arc<dyn record_store_metadata::MetadataRepository> =
+                Arc::new(consensus.state().metadata().clone());
+            let root = directory.path().join("data");
+            let local = LocalFilesystemStore::open(&root, root.join("tmp"), Arc::clone(&metadata))
+                .await
+                .expect("local store");
+            let device_id = DeviceRecord::legacy_id(node_id);
+            let context = Arc::new(ClusterContext {
+                node_id,
+                cluster: Arc::new(ReplicatedClusterStore::new(Arc::clone(&consensus)))
+                    as Arc<dyn ClusterStore>,
+                metadata: Arc::new(ReplicatedMetadataRepository::new(Arc::clone(&consensus))),
+                local: Arc::new(DeviceStore::single(
+                    device_id,
+                    Arc::new(local) as Arc<dyn ReplicaStore>,
+                )),
+                transport: Arc::new(NoTransport),
+                placement: Arc::new(CapacityAwarePlacement::default()),
+                consensus: Some(Arc::clone(&consensus)),
+            });
+            let store = DistributedObjectStore::new(
+                Arc::clone(&context),
+                DistributedSettings::new(PayloadFormat::Plaintext),
+            );
+            Self {
+                _directory: directory,
+                store,
+                context,
+                device_id,
+                node_id,
+            }
+        }
+
+        /// Writes real bytes for a payload and returns its identifier.
+        async fn stage_payload(&self, bytes: &[u8]) -> ObjectId {
+            let object_id = ObjectId::new();
+            let checksum = Checksum::sha256(sha2::Sha256::digest(bytes).into());
+            let body = futures_util::stream::once({
+                let bytes = bytes::Bytes::copy_from_slice(bytes);
+                async move { Ok(bytes) }
+            });
+            self.context
+                .local
+                .for_device(self.device_id)
+                .expect("device")
+                .write_replica(WriteReplicaRequest::known(
+                    format!("stage-{}", object_id.as_uuid().simple()),
+                    object_id,
+                    bytes.len() as u64,
+                    checksum,
+                    upload_stream(body),
+                ))
+                .await
+                .expect("stage the payload");
+            object_id
+        }
+
+        async fn payload_present(&self, object_id: ObjectId) -> bool {
+            self.context
+                .local
+                .for_device(self.device_id)
+                .expect("device")
+                .stat_replica(object_id)
+                .await
+                .expect("stat the replica")
+                .is_some()
+        }
+
+        /// Publishes placement for a payload, as a successful commit would.
+        async fn commit_placement(&self, object_id: ObjectId, size: u64, checksum: Checksum) {
+            let placement = PayloadPlacement::new(
+                object_id,
+                size,
+                checksum.clone(),
+                1,
+                self.context.default_storage_class(),
+                vec![Replica::healthy_on(
+                    self.node_id,
+                    self.device_id,
+                    size,
+                    checksum,
+                    Utc::now(),
+                )],
+                Utc::now(),
+            );
+            self.context
+                .commit(ClusterWrite::cluster(ClusterCommand::PutPlacement {
+                    placement: Box::new(placement),
+                }))
+                .await
+                .expect("commit placement");
+        }
+
+        fn devices(&self) -> Vec<(NodeId, DeviceId)> {
+            vec![(self.node_id, self.device_id)]
+        }
+    }
+
+    /// Reconciliation is the one background pass that deletes local bytes, and
+    /// it decides what is garbage from cluster reads that are normally served
+    /// from this member's own applied state without a barrier.
+    ///
+    /// A member that cannot establish that barrier is, by definition, a member
+    /// that cannot confirm what the cluster has committed — the partitioned one,
+    /// the one still catching up, the one whose metadata quorum is gone. That is
+    /// the worst possible moment to act on "this payload has no placement", so
+    /// the pass must report and not destroy.
+    #[tokio::test]
+    async fn reconciliation_deletes_nothing_while_it_cannot_confirm_cluster_state() {
+        let fixture = Fixture::new(false).await;
+        let object_id = fixture.stage_payload(b"survivor").await;
+
+        crate::runtime::reconcile(
+            &fixture.context,
+            PayloadFormat::Plaintext,
+            64,
+            // Zero grace: the payload qualifies as an orphan on age alone, so
+            // only the barrier stands between it and deletion.
+            chrono::TimeDelta::zero(),
+        )
+        .await
+        .expect("the pass runs rather than failing");
+
+        assert!(
+            fixture.payload_present(object_id).await,
+            "a member that cannot confirm it is current must not delete payloads"
+        );
+    }
+
+    /// The counterpart: once the member can confirm it is reading current
+    /// cluster state, an unreferenced payload past its grace period really is
+    /// garbage and is collected. Without this the fix above would just be a leak.
+    #[tokio::test]
+    async fn reconciliation_collects_a_confirmed_orphan() {
+        let fixture = Fixture::new(true).await;
+        let object_id = fixture.stage_payload(b"genuine orphan").await;
+
+        crate::runtime::reconcile(
+            &fixture.context,
+            PayloadFormat::Plaintext,
+            64,
+            chrono::TimeDelta::zero(),
+        )
+        .await
+        .expect("reconcile");
+
+        assert!(
+            !fixture.payload_present(object_id).await,
+            "a payload the cluster has never heard of, past its grace period, is garbage"
+        );
+    }
+
+    /// A commit that provably never entered the log leaves nothing behind: the
+    /// object is not visible, so its bytes are garbage and are released.
+    #[tokio::test]
+    async fn a_commit_that_definitely_failed_releases_the_payload() {
+        let fixture = Fixture::new(true).await;
+        let object_id = fixture.stage_payload(b"definite failure").await;
+        assert!(fixture.payload_present(object_id).await);
+
+        let resolution = fixture
+            .store
+            .resolve_failed_commit(
+                object_id,
+                &fixture.devices(),
+                CommitFailure::definite(StorageError::Metadata(MetadataError::BucketNotFound)),
+            )
+            .await;
+
+        assert!(matches!(resolution, CommitResolution::NotCommitted(_)));
+        assert!(
+            !fixture.payload_present(object_id).await,
+            "a payload for a write that never committed must not be left behind"
+        );
+    }
+
+    /// This is the data-loss case the classification exists for. The response
+    /// was lost, but the commit landed, so the object is visible in committed
+    /// metadata. Releasing its bytes here would destroy the only copy of a live
+    /// object, so the write is reported as the success it actually was.
+    #[tokio::test]
+    async fn an_ambiguous_commit_that_actually_landed_keeps_its_payload() {
+        let fixture = Fixture::new(true).await;
+        let bytes = b"the response was lost";
+        let object_id = fixture.stage_payload(bytes).await;
+        fixture
+            .commit_placement(
+                object_id,
+                bytes.len() as u64,
+                Checksum::sha256(sha2::Sha256::digest(bytes).into()),
+            )
+            .await;
+
+        let resolution = fixture
+            .store
+            .resolve_failed_commit(
+                object_id,
+                &fixture.devices(),
+                CommitFailure {
+                    error: StorageError::ClusterUnavailable("forwarded response lost".to_owned()),
+                    definite: false,
+                },
+            )
+            .await;
+
+        assert!(
+            matches!(resolution, CommitResolution::Committed),
+            "a commit that landed must be resolved as committed"
+        );
+        assert!(
+            fixture.payload_present(object_id).await,
+            "a committed object must keep the bytes it is visible for"
+        );
+    }
+
+    /// A read barrier forces the current leader to commit an entry of its own
+    /// term, which decides the fate of everything before it. A placement that is
+    /// still absent afterwards can never appear, so releasing the payload is
+    /// safe and leaving it would be a leak.
+    #[tokio::test]
+    async fn an_ambiguous_commit_that_the_barrier_disproves_releases_the_payload() {
+        let fixture = Fixture::new(true).await;
+        let object_id = fixture.stage_payload(b"never committed").await;
+
+        let resolution = fixture
+            .store
+            .resolve_failed_commit(
+                object_id,
+                &fixture.devices(),
+                CommitFailure {
+                    error: StorageError::ClusterUnavailable("forwarded response lost".to_owned()),
+                    definite: false,
+                },
+            )
+            .await;
+
+        assert!(matches!(resolution, CommitResolution::NotCommitted(_)));
+        assert!(
+            !fixture.payload_present(object_id).await,
+            "a barrier that proves the commit never happened must release the payload"
+        );
+    }
+
+    /// When the barrier itself cannot be established the outcome is genuinely
+    /// unknown. Keeping the bytes risks an orphan the collector will reclaim;
+    /// deleting them risks losing a committed object. The safe direction is not
+    /// symmetric, so the payload is kept and the caller is told the truth.
+    #[tokio::test]
+    async fn an_unresolvable_commit_keeps_its_payload_and_says_so() {
+        let fixture = Fixture::new(false).await;
+        let object_id = fixture.stage_payload(b"unknown fate").await;
+
+        let resolution = fixture
+            .store
+            .resolve_failed_commit(
+                object_id,
+                &fixture.devices(),
+                CommitFailure {
+                    error: StorageError::ClusterUnavailable("forwarded response lost".to_owned()),
+                    definite: false,
+                },
+            )
+            .await;
+
+        let CommitResolution::Unresolved(error) = resolution else {
+            panic!("an unreachable barrier must leave the outcome unresolved");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("may or may not"),
+            "the caller has to be told the outcome is ambiguous: {message}"
+        );
+        assert!(
+            fixture.payload_present(object_id).await,
+            "an unresolved outcome must never delete a payload that may be committed"
+        );
     }
 }

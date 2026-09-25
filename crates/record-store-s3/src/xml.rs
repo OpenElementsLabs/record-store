@@ -1,4 +1,8 @@
-use record_store_core::{CorsConfiguration, CorsMethod, CorsPattern, CorsRule};
+use chrono::{DateTime, Utc};
+use record_store_core::{
+    CoreError, CorsConfiguration, CorsMethod, CorsPattern, CorsRule, DefaultRetention,
+    ObjectLockConfiguration, Retention, RetentionMode, RetentionPeriod,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -403,4 +407,214 @@ pub(crate) struct ObjectEntry<'a> {
 pub(crate) struct CommonPrefix {
     #[serde(rename = "Prefix")]
     pub(crate) prefix: String,
+}
+
+/// Bucket Object Lock configuration as S3 sends it.
+///
+/// `Days` and `Years` are mutually exclusive in S3, and a document naming both
+/// or neither is a malformed request rather than a value with a default.
+#[derive(Deserialize)]
+#[serde(rename = "ObjectLockConfiguration")]
+pub(crate) struct ObjectLockConfigurationDocument {
+    #[serde(rename = "ObjectLockEnabled")]
+    pub(crate) object_lock_enabled: Option<String>,
+    #[serde(rename = "Rule")]
+    pub(crate) rule: Option<ObjectLockRuleDocument>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ObjectLockRuleDocument {
+    #[serde(rename = "DefaultRetention")]
+    pub(crate) default_retention: Option<DefaultRetentionDocument>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DefaultRetentionDocument {
+    #[serde(rename = "Mode")]
+    pub(crate) mode: Option<String>,
+    #[serde(rename = "Days")]
+    pub(crate) days: Option<u16>,
+    #[serde(rename = "Years")]
+    pub(crate) years: Option<u16>,
+}
+
+impl TryFrom<ObjectLockConfigurationDocument> for ObjectLockConfiguration {
+    type Error = CoreError;
+
+    fn try_from(document: ObjectLockConfigurationDocument) -> Result<Self, Self::Error> {
+        if document
+            .object_lock_enabled
+            .as_deref()
+            .is_some_and(|value| value != "Enabled")
+        {
+            return Err(CoreError::InvalidObjectLock(
+                "ObjectLockEnabled must be Enabled".into(),
+            ));
+        }
+        let default_retention = document
+            .rule
+            .and_then(|rule| rule.default_retention)
+            .map(|retention| {
+                let mode = RetentionMode::parse(retention.mode.as_deref().unwrap_or_default())?;
+                let period = match (retention.days, retention.years) {
+                    (Some(days), None) => RetentionPeriod::days(days)?,
+                    (None, Some(years)) => RetentionPeriod::years(years)?,
+                    _ => {
+                        return Err(CoreError::InvalidObjectLock(
+                            "a default retention names exactly one of Days or Years".into(),
+                        ));
+                    }
+                };
+                Ok(DefaultRetention { mode, period })
+            })
+            .transpose()?;
+        Self { default_retention }.validate()
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename = "ObjectLockConfiguration")]
+pub(crate) struct ObjectLockConfigurationResult<'a> {
+    #[serde(rename = "@xmlns")]
+    pub(crate) xmlns: &'a str,
+    #[serde(rename = "ObjectLockEnabled")]
+    pub(crate) object_lock_enabled: &'a str,
+    #[serde(rename = "Rule", skip_serializing_if = "Option::is_none")]
+    pub(crate) rule: Option<ObjectLockRuleResult>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ObjectLockRuleResult {
+    #[serde(rename = "DefaultRetention")]
+    pub(crate) default_retention: DefaultRetentionResult,
+}
+
+#[derive(Serialize)]
+pub(crate) struct DefaultRetentionResult {
+    #[serde(rename = "Mode")]
+    pub(crate) mode: &'static str,
+    #[serde(rename = "Days", skip_serializing_if = "Option::is_none")]
+    pub(crate) days: Option<u16>,
+    #[serde(rename = "Years", skip_serializing_if = "Option::is_none")]
+    pub(crate) years: Option<u16>,
+}
+
+impl<'a> ObjectLockConfigurationResult<'a> {
+    pub(crate) fn new(xmlns: &'a str, configuration: &ObjectLockConfiguration) -> Self {
+        Self {
+            xmlns,
+            object_lock_enabled: "Enabled",
+            rule: configuration
+                .default_retention
+                .map(|default| ObjectLockRuleResult {
+                    default_retention: match default.period {
+                        RetentionPeriod::Days(days) => DefaultRetentionResult {
+                            mode: default.mode.as_str(),
+                            days: Some(days),
+                            years: None,
+                        },
+                        RetentionPeriod::Years(years) => DefaultRetentionResult {
+                            mode: default.mode.as_str(),
+                            days: None,
+                            years: Some(years),
+                        },
+                    },
+                }),
+        }
+    }
+}
+
+/// Per-version retention as S3 sends it.
+///
+/// An empty document removes the retention, which is how S3 expresses a
+/// governance release, so both fields are optional and their absence is
+/// meaningful rather than an error.
+#[derive(Deserialize)]
+#[serde(rename = "Retention")]
+pub(crate) struct RetentionDocument {
+    #[serde(rename = "Mode")]
+    pub(crate) mode: Option<String>,
+    #[serde(rename = "RetainUntilDate")]
+    pub(crate) retain_until_date: Option<String>,
+}
+
+impl TryFrom<RetentionDocument> for Option<Retention> {
+    type Error = CoreError;
+
+    fn try_from(document: RetentionDocument) -> Result<Self, Self::Error> {
+        match (document.mode, document.retain_until_date) {
+            (None, None) => Ok(None),
+            (Some(mode), Some(date)) => Ok(Some(Retention {
+                mode: RetentionMode::parse(&mode)?,
+                retain_until: parse_retain_until(&date)?,
+            })),
+            _ => Err(CoreError::InvalidObjectLock(
+                "a retention names both Mode and RetainUntilDate, or neither".into(),
+            )),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename = "Retention")]
+pub(crate) struct RetentionResult<'a> {
+    #[serde(rename = "@xmlns")]
+    pub(crate) xmlns: &'a str,
+    #[serde(rename = "Mode")]
+    pub(crate) mode: &'static str,
+    #[serde(rename = "RetainUntilDate")]
+    pub(crate) retain_until_date: String,
+}
+
+/// Per-version legal hold as S3 sends it.
+#[derive(Deserialize)]
+#[serde(rename = "LegalHold")]
+pub(crate) struct LegalHoldDocument {
+    #[serde(rename = "Status")]
+    pub(crate) status: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename = "LegalHold")]
+pub(crate) struct LegalHoldResult<'a> {
+    #[serde(rename = "@xmlns")]
+    pub(crate) xmlns: &'a str,
+    #[serde(rename = "Status")]
+    pub(crate) status: &'static str,
+}
+
+/// Renders the legal-hold status S3 uses on the wire.
+pub(crate) const fn legal_hold_status(legal_hold: bool) -> &'static str {
+    if legal_hold { "ON" } else { "OFF" }
+}
+
+/// Parses the legal-hold status S3 sends.
+pub(crate) fn parse_legal_hold(value: &str) -> Result<bool, CoreError> {
+    match value {
+        "ON" => Ok(true),
+        "OFF" => Ok(false),
+        other => Err(CoreError::InvalidObjectLock(format!(
+            "legal hold status must be ON or OFF, not {other}"
+        ))),
+    }
+}
+
+/// Parses an Object Lock date.
+///
+/// S3 sends ISO 8601 here rather than the RFC 1123 form used by HTTP date
+/// headers, and clients vary in how many fractional digits they include, so
+/// this accepts any RFC 3339 instant and normalizes it to UTC.
+pub(crate) fn parse_retain_until(value: &str) -> Result<DateTime<Utc>, CoreError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|parsed| parsed.with_timezone(&Utc))
+        .map_err(|_| {
+            CoreError::InvalidObjectLock(format!(
+                "retain-until date is not an RFC 3339 instant: {value}"
+            ))
+        })
+}
+
+/// Renders an Object Lock date the way S3 does, with millisecond precision.
+pub(crate) fn format_retain_until(value: DateTime<Utc>) -> String {
+    value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }

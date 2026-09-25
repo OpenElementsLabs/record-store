@@ -3,8 +3,9 @@
 use async_trait::async_trait;
 use record_store_core::{
     Bucket, BucketId, BucketName, BucketQuota, CorsConfiguration, LifecycleRule, LifecycleRuleId,
-    MultipartUpload, ObjectId, ObjectKey, ObjectMetadata, ObjectVersionRecord, PartNumber,
-    StorageUsage, UploadId, UploadedPart, VersionId, VersioningState,
+    MultipartUpload, MutationEvent, ObjectId, ObjectKey, ObjectLockConfiguration, ObjectLockState,
+    ObjectMetadata, ObjectVersionRecord, PartNumber, StorageUsage, UploadId, UploadedPart,
+    VersionId, VersioningState, WriteOrigin,
 };
 
 use crate::*;
@@ -30,11 +31,40 @@ pub trait MetadataRepository: Send + Sync {
         id: BucketId,
         configuration: Option<CorsConfiguration>,
     ) -> Result<Bucket, MetadataError>;
+    /// Replaces the default retention of a bucket that already has Object Lock
+    /// enabled. Lock cannot be turned on here: that happens only at creation.
+    async fn set_bucket_object_lock(
+        &self,
+        id: BucketId,
+        configuration: ObjectLockConfiguration,
+    ) -> Result<Bucket, MetadataError>;
     async fn delete_bucket(&self, name: &BucketName) -> Result<Bucket, MetadataError>;
+    /// Publishes a version together with the Object Lock state it is born
+    /// with, in one transaction, so a crash cannot durably lose the retention a
+    /// write was accepted under.
+    /// Publishes a version, with the reason it is being written.
+    ///
+    /// The origin is not decoration: the event a subscriber receives is derived
+    /// from it inside the committing transaction, and a copy, a restore, and a
+    /// completed multipart upload are otherwise indistinguishable there.
     async fn put_object(
         &self,
         metadata: &ObjectMetadata,
+        object_lock: Option<ObjectLockState>,
+        origin: WriteOrigin,
     ) -> Result<ObjectCommitResult, MetadataError>;
+    /// Returns journalled storage events after `after`, in commit order.
+    ///
+    /// These are the events committed mutations still owe. They stay until an
+    /// outbox has taken them, so this is what a restart resumes from.
+    async fn pending_mutation_events(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<MutationEvent>, MetadataError>;
+    /// Removes journalled events an outbox has taken, up to and including
+    /// `through_sequence`.
+    async fn prune_mutation_events(&self, through_sequence: u64) -> Result<(), MetadataError>;
     async fn get_object(
         &self,
         bucket: BucketId,
@@ -61,12 +91,38 @@ pub trait MetadataRepository: Send + Sync {
         key: &ObjectKey,
         marker: NewDeleteMarker,
     ) -> Result<DeleteObjectResult, MetadataError>;
+    /// Permanently removes one version, refusing while Object Lock holds it.
     async fn delete_object_version(
         &self,
         bucket: BucketId,
         key: &ObjectKey,
         version: VersionId,
+        release: LockRelease,
     ) -> Result<Option<DeleteVersionResult>, MetadataError>;
+    /// Returns the Object Lock state of one version. An unlocked version and a
+    /// version that was never locked are the same answer.
+    async fn get_object_lock(&self, version: VersionId) -> Result<ObjectLockState, MetadataError>;
+    /// Replaces the Object Lock state of one version, enforcing the mode rules.
+    async fn put_object_lock(
+        &self,
+        bucket: BucketId,
+        key: &ObjectKey,
+        version: VersionId,
+        requested: ObjectLockState,
+        release: LockRelease,
+    ) -> Result<ObjectLockState, MetadataError>;
+    /// Advances the observed-time high-water mark retention is judged against.
+    async fn observe_clock(&self, release: LockRelease) -> Result<(), MetadataError>;
+    /// Returns a bounded page of the versions Object Lock holds a record for.
+    ///
+    /// This scans the lock table rather than every version, because that table
+    /// contains only locked versions and is therefore already the right index.
+    /// A deployment with a million objects and ten locks pays for ten.
+    async fn list_object_locks(
+        &self,
+        after: Option<VersionId>,
+        limit: usize,
+    ) -> Result<LockedVersionPage, MetadataError>;
     async fn list_objects(
         &self,
         request: ListObjectsRequest,

@@ -28,7 +28,7 @@ export function Table({ className, ...props }: React.ComponentProps<'table'>) {
 }
 
 export function TableHeader({ className, ...props }: React.ComponentProps<'thead'>) {
-  return <thead className={cn('border-b border-border', className)} {...props} />;
+  return <thead className={cn('border-b border-border bg-surface-subtle', className)} {...props} />;
 }
 
 export function TableBody({ className, ...props }: React.ComponentProps<'tbody'>) {
@@ -44,7 +44,7 @@ export function TableHead({ className, ...props }: React.ComponentProps<'th'>) {
     <th
       scope="col"
       className={cn(
-        'whitespace-nowrap px-3 py-2 text-left text-xs font-medium text-ink-muted',
+        'whitespace-nowrap px-4 py-3 text-left text-xs font-medium text-ink-muted',
         className,
       )}
       {...props}
@@ -53,5 +53,5 @@ export function TableHead({ className, ...props }: React.ComponentProps<'th'>) {
 }
 
 export function TableCell({ className, ...props }: React.ComponentProps<'td'>) {
-  return <td className={cn('px-3 py-2 align-middle text-ink', className)} {...props} />;
+  return <td className={cn('px-4 py-3 align-middle text-ink', className)} {...props} />;
 }

@@ -113,3 +113,58 @@ describe('AuditScreen filters', () => {
     expect(within(dialog).queryByRole('button', { name: /Show every event/ })).toBeNull();
   });
 });
+
+describe('AuditScreen honesty about what the server said', () => {
+  it('shows an announced change as attempted rather than as a failure', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        jsonResponse({
+          events: [event({ result: 'attempted' })],
+          next_time: null,
+          next_id: null,
+          scan_truncated: false,
+        }),
+      ),
+    );
+    renderWithProviders(<AuditScreen />);
+
+    await screen.findByText('PutObject');
+    // An announcement is the record written *before* a change. Rendering it as
+    // a failure would be the console asserting an outcome the server never
+    // recorded — and an operation whose outcome is unknown is precisely the one
+    // an operator needs to notice.
+    expect(screen.getByText('Attempted')).toBeTruthy();
+    expect(screen.queryByText('Failure')).toBeNull();
+  });
+
+  it('says so when the server stopped scanning before the end of the range', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        jsonResponse({
+          events: [],
+          next_time: '2026-08-23T09:00:00Z',
+          next_id: 'evt-9',
+          scan_truncated: true,
+        }),
+      ),
+    );
+    renderWithProviders(<AuditScreen />);
+
+    // "No matches" and "the server gave up looking" are different answers, and
+    // reading the second as the first hides activity.
+    expect(await screen.findByText('No matches in this window')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Next page/ })).not.toHaveProperty('disabled', true);
+  });
+
+  it('reports an exhausted range as genuinely empty', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        jsonResponse({ events: [], next_time: null, next_id: null, scan_truncated: false }),
+      ),
+    );
+    renderWithProviders(<AuditScreen />);
+
+    expect(await screen.findByText('No audit events')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Next page/ })).toHaveProperty('disabled', true);
+  });
+});

@@ -20,7 +20,7 @@ use aes_gcm::{
 };
 use chrono::{DateTime, Utc};
 use record_store_core::{BucketId, EmbedLinkId, ObjectKey, ShareLinkId, open_database};
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 use uuid::Uuid;

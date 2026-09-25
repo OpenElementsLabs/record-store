@@ -5,9 +5,10 @@ use std::{collections::BTreeMap, io, pin::Pin};
 use bytes::Bytes;
 use futures_core::Stream;
 use record_store_core::{
-    BucketId, ByteRange, Checksum, ETag, MultipartUpload, ObjectId, ObjectKey, ObjectMetadata,
-    PartNumber, ResolvedByteRange, UploadId, UploadedPart, VersionId,
+    BucketId, ByteRange, Checksum, ETag, MultipartUpload, ObjectId, ObjectKey, ObjectLockState,
+    ObjectMetadata, PartNumber, ResolvedByteRange, UploadId, UploadedPart, VersionId, WriteOrigin,
 };
+use record_store_metadata::LockRelease;
 
 use crate::*;
 
@@ -41,6 +42,17 @@ pub struct PutObjectRequest {
     pub object_id: Option<ObjectId>,
     /// Protocol ETag override kept independent from the strong checksum.
     pub protocol_etag: Option<ETag>,
+    /// Object Lock state the committed version is born with.
+    ///
+    /// It travels with the payload so that the retention is published in the
+    /// same metadata transaction as the version it protects.
+    pub object_lock: Option<ObjectLockState>,
+    /// Why this version is being written.
+    ///
+    /// Reaches the catalog unchanged, where the storage event the commit owes
+    /// is derived from it. A copy and a restore both arrive here as a stream of
+    /// bytes and a key; only the caller can say which one this is.
+    pub origin: WriteOrigin,
     /// Incoming payload chunks.
     pub body: UploadStream,
 }
@@ -134,6 +146,8 @@ pub struct DeleteObjectVersionRequest {
     pub key: ObjectKey,
     /// Stable version identifier.
     pub version_id: VersionId,
+    /// Clock and bypass inputs for the Object Lock decision.
+    pub release: LockRelease,
 }
 
 /// Parameters for an explicit on-demand integrity verification.

@@ -169,6 +169,27 @@ pub(crate) fn service_to_api_error(error: ServiceError, request_id: RequestId) -
         | ServiceError::MetadataTooLarge => {
             ApiError::bad_request(request_id, "INVALID_REQUEST", "Invalid request")
         }
+        // Named rather than folded into the generic internal error: an
+        // operator reading this needs to know the stored bytes are wrong, not
+        // that something unspecified went wrong on the server.
+        ServiceError::IntegrityMismatch => {
+            error!(request_id = %request_id, "stored object failed integrity verification");
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OBJECT_INTEGRITY_FAILED",
+                "Stored object bytes do not match the checksum recorded when they were committed",
+                request_id,
+            )
+        }
+        // Overload is the deployment working as configured, not a fault, so it
+        // is answered with a retryable status rather than logged as an internal
+        // error somebody will go looking for.
+        ServiceError::Overloaded => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "TOO_MANY_OPERATIONS",
+            "Too many operations are already in flight; retry shortly",
+            request_id,
+        ),
         error => internal_service_error(error, request_id),
     }
 }

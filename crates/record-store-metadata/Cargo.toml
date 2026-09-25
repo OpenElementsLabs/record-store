@@ -18,6 +18,9 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The schema-4 migration fixture is written as raw JSON, not through the types
+# under test, so it cannot drift along with them.
+serde_json.workspace = true
 
 [lints]
 workspace = true

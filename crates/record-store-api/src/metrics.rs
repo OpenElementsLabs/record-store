@@ -26,6 +26,8 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) upload_bytes: u64,
     /// Bytes served to clients since this process started.
     pub(crate) download_bytes: u64,
+    /// What the deployment is doing right now, against its configured ceiling.
+    pub(crate) operations: OperationMetrics,
     pub(crate) storage: StorageMetrics,
     /// Preview, share, and embed activity.
     pub(crate) sharing: CapabilityMetrics,
@@ -50,6 +52,23 @@ pub(crate) struct CapabilityMetrics {
     pub(crate) embeds_active: u64,
 }
 
+/// Admission control as an operator sees it.
+///
+/// Saturation is only readable if the ceiling is reported next to the gauge,
+/// and overload is only diagnosable if refusals are counted separately from
+/// errors. Both are here for that reason.
+#[derive(Debug, Serialize)]
+pub(crate) struct OperationMetrics {
+    /// Operations holding a concurrency permit.
+    pub(crate) active: u64,
+    /// Operations waiting for one.
+    pub(crate) queued: u64,
+    /// Operations refused since start-up for waiting too long.
+    pub(crate) rejected: u64,
+    /// The configured ceiling on concurrent operations.
+    pub(crate) concurrency_limit: u64,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct StorageMetrics {
     pub(crate) object_count: u64,
@@ -58,6 +77,16 @@ pub(crate) struct StorageMetrics {
     pub(crate) logical_bytes: u64,
     pub(crate) physical_bytes: u64,
     pub(crate) multipart_bytes: u64,
+    /// Bytes the filesystem holding the data directory can store in total.
+    pub(crate) filesystem_capacity_bytes: u64,
+    /// Bytes still free on it.
+    pub(crate) filesystem_available_bytes: u64,
+    /// Bytes held by in-progress uploads that have not been published.
+    ///
+    /// This is the growth an operator cannot see from object counts: every
+    /// abandoned upload and every multipart part sits here until its cleanup
+    /// runs.
+    pub(crate) temporary_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -228,11 +257,32 @@ pub(crate) async fn gather_metrics(
         }
     }
 
+    // A capacity read failure must not fail the whole scrape, for the same
+    // reason a cluster read failure does not: the process counters are still
+    // worth having.
+    let capacity = match state.storage.status().await {
+        Ok(status) => status,
+        Err(error) => {
+            error!(%error, "filesystem capacity could not be collected");
+            record_store_storage::StorageStatus {
+                capacity_bytes: 0,
+                available_bytes: 0,
+                temporary_upload_bytes: 0,
+            }
+        }
+    };
+
     Ok(MetricsSnapshot {
         requests: metrics.requests,
         errors: metrics.errors,
         upload_bytes: metrics.upload_bytes,
         download_bytes: metrics.download_bytes,
+        operations: OperationMetrics {
+            active: metrics.active_operations,
+            queued: metrics.queued_operations,
+            rejected: metrics.rejected_operations,
+            concurrency_limit: metrics.concurrency_limit,
+        },
         storage: StorageMetrics {
             object_count: usage.object_count,
             bucket_count: usage.bucket_count,
@@ -240,6 +290,9 @@ pub(crate) async fn gather_metrics(
             logical_bytes: usage.bytes_used,
             physical_bytes: usage.physical_bytes,
             multipart_bytes: usage.temporary_multipart_bytes,
+            filesystem_capacity_bytes: capacity.capacity_bytes,
+            filesystem_available_bytes: capacity.available_bytes,
+            temporary_bytes: capacity.temporary_upload_bytes,
         },
         sharing: sharing_metrics,
         cluster: cluster_metrics,
@@ -259,6 +312,41 @@ pub(crate) fn prometheus_exposition(snapshot: &MetricsSnapshot) -> String {
     );
     gauge("record_store_requests_total", "counter", snapshot.requests);
     gauge("record_store_errors_total", "counter", snapshot.errors);
+    gauge(
+        "record_store_operations_active",
+        "gauge",
+        snapshot.operations.active,
+    );
+    gauge(
+        "record_store_operations_queued",
+        "gauge",
+        snapshot.operations.queued,
+    );
+    gauge(
+        "record_store_operations_rejected_total",
+        "counter",
+        snapshot.operations.rejected,
+    );
+    gauge(
+        "record_store_operations_concurrency_limit",
+        "gauge",
+        snapshot.operations.concurrency_limit,
+    );
+    gauge(
+        "record_store_filesystem_capacity_bytes",
+        "gauge",
+        snapshot.storage.filesystem_capacity_bytes,
+    );
+    gauge(
+        "record_store_filesystem_available_bytes",
+        "gauge",
+        snapshot.storage.filesystem_available_bytes,
+    );
+    gauge(
+        "record_store_temporary_bytes",
+        "gauge",
+        snapshot.storage.temporary_bytes,
+    );
     gauge(
         "record_store_objects_total",
         "gauge",
@@ -465,6 +553,17 @@ pub(crate) async fn system_metrics(
     gather_metrics(&state, &request_id).await.map(Json)
 }
 
+/// Returns the counter history the metrics screen seeds its charts from.
+///
+/// The server has been sampling since it started, so this answers the first
+/// paint with a window somebody already waited for. The console still polls for
+/// live readings; this is only what it starts from.
+pub(crate) async fn system_metrics_history(
+    State(state): State<AppState>,
+) -> Json<crate::history::MetricsHistoryResponse> {
+    Json(state.metrics_history.response())
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -610,6 +709,12 @@ mod tests {
             errors: 0,
             upload_bytes: 0,
             download_bytes: 0,
+            operations: OperationMetrics {
+                active: 0,
+                queued: 0,
+                rejected: 0,
+                concurrency_limit: 8,
+            },
             storage: StorageMetrics {
                 object_count: 0,
                 bucket_count: 0,
@@ -617,6 +722,9 @@ mod tests {
                 logical_bytes: 0,
                 physical_bytes: 0,
                 multipart_bytes: 0,
+                filesystem_capacity_bytes: 0,
+                filesystem_available_bytes: 0,
+                temporary_bytes: 0,
             },
             sharing: CapabilityMetrics::default(),
             cluster: Some(ClusterMetrics {

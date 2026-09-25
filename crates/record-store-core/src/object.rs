@@ -35,6 +35,14 @@ pub struct Bucket {
     /// replication in cluster mode. Changing this never changes old versions.
     #[serde(default)]
     pub durability_policy: Option<DurabilityProfile>,
+    /// Object Lock configuration, present exactly when lock is enabled.
+    ///
+    /// `None` means Object Lock was never enabled on this bucket, which is what
+    /// every bucket created before Object Lock existed decodes to. It can only
+    /// be set when the bucket is created, so this field never starts holding
+    /// versions that were written before it appeared.
+    #[serde(default)]
+    pub object_lock: Option<ObjectLockConfiguration>,
     /// Which web origins may reach this bucket's objects from a browser.
     ///
     /// `None` means none of them, which is the only safe default: a bucket
@@ -203,6 +211,12 @@ pub struct MultipartUpload {
     pub content_type: Option<String>,
     /// Custom metadata selected at initiation.
     pub custom_metadata: BTreeMap<String, String>,
+    /// Object Lock state to apply to the version completion publishes.
+    ///
+    /// Captured at initiation, because that is where S3 puts the lock headers
+    /// and an upload can outlive a change to the bucket default.
+    #[serde(default)]
+    pub object_lock: Option<ObjectLockState>,
     /// Creation timestamp.
     pub initiated_at: DateTime<Utc>,
     /// Crash-recovery state.

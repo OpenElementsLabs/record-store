@@ -249,15 +249,25 @@ pub(crate) async fn cleanup_file(path: &Path) -> bool {
     }
 }
 
+/// Suffix of a publication record that is still being written.
+///
+/// A record only ever appears under its `.publish` name complete: it is written
+/// here, synchronized, and renamed into place. A crash before the rename leaves
+/// this file behind, which start-up discards like any abandoned upload.
+pub(crate) const PARTIAL_PUBLICATION_SUFFIX: &str = ".publish.partial";
+
 pub(crate) async fn write_publication_record(
     path: &Path,
     record: &PublicationRecord,
 ) -> Result<(), StorageError> {
     let encoded = serde_json::to_vec(record)?;
+    let mut partial_name = path.as_os_str().to_owned();
+    partial_name.push(".partial");
+    let partial = std::path::PathBuf::from(partial_name);
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)
+        .open(&partial)
         .await
         .map_err(|source| filesystem("create publication record", source))?;
     file.write_all(&encoded)
@@ -267,6 +277,9 @@ pub(crate) async fn write_publication_record(
         .await
         .map_err(|source| filesystem("synchronize publication record", source))?;
     drop(file);
+    fs::rename(&partial, path)
+        .await
+        .map_err(|source| filesystem("publish publication record", source))?;
     let parent = path.parent().ok_or_else(|| {
         filesystem(
             "resolve publication directory",
@@ -293,6 +306,11 @@ pub(crate) fn filesystem(operation: &'static str, source: io::Error) -> StorageE
 
 pub(crate) fn is_recognized_upload_name(name: &str) -> bool {
     if let Some(id) = name.strip_suffix(".upload") {
+        return Uuid::parse_str(id).is_ok();
+    }
+    // A publication record interrupted before it was renamed into place: the
+    // payload it would have guarded was never moved, so it is only residue.
+    if let Some(id) = name.strip_suffix(PARTIAL_PUBLICATION_SUFFIX) {
         return Uuid::parse_str(id).is_ok();
     }
     // An abandoned replica transfer is recognized so that a restart cleans it up
@@ -338,6 +356,7 @@ mod tests {
             quota: BucketQuota::default(),
             storage_class: None,
             durability_policy: None,
+            object_lock: None,
             cors: None,
         };
         metadata
@@ -378,6 +397,115 @@ mod tests {
             .expect("recover store");
         assert!(!payload.exists());
         assert!(!publication.exists());
+    }
+
+    /// A store over a fresh catalog with one bucket, for the recovery tests.
+    async fn recovery_fixture(
+        directory: &std::path::Path,
+    ) -> (LocalFilesystemStore, Arc<dyn MetadataRepository>) {
+        let metadata = Arc::new(
+            RedbMetadataRepository::open(directory.join("metadata.redb"))
+                .await
+                .expect("metadata repository"),
+        );
+        let repository: Arc<dyn MetadataRepository> = metadata;
+        let store =
+            LocalFilesystemStore::open(directory, directory.join("tmp"), Arc::clone(&repository))
+                .await
+                .expect("store");
+        (store, repository)
+    }
+
+    /// A crash between creating a publication record and writing it used to
+    /// leave an empty record that stopped every later start-up. The
+    /// payload it guards is only moved into place after the record is complete,
+    /// so recovery by the record's file name is exact, and start-up proceeds.
+    #[tokio::test]
+    async fn a_torn_publication_record_is_recovered_by_its_file_name() {
+        for torn in [&b""[..], &b"{\"object_id\":"[..], &b"\x00\x00\x00"[..]] {
+            let directory = tempdir().expect("temporary directory");
+            let (store, repository) = recovery_fixture(directory.path()).await;
+            let object_id = ObjectId::new();
+            let payload = store.layout.payload_path(object_id);
+            fs::create_dir_all(payload.parent().expect("payload parent"))
+                .await
+                .expect("payload parent directory");
+            fs::write(&payload, b"never committed")
+                .await
+                .expect("orphan payload");
+            let publication = store.layout.publication_path(object_id);
+            fs::write(&publication, torn).await.expect("torn record");
+            drop(store);
+
+            LocalFilesystemStore::open(directory.path(), directory.path().join("tmp"), repository)
+                .await
+                .expect("a torn publication record must not prevent start-up");
+            assert!(!publication.exists(), "the torn record is removed");
+            assert!(
+                !payload.exists(),
+                "the uncommitted payload it named is removed"
+            );
+        }
+    }
+
+    /// The record is written under a partial name and renamed into place, so a
+    /// crash mid-write leaves only the partial file, which start-up discards.
+    #[tokio::test]
+    async fn an_interrupted_record_write_leaves_only_residue_that_start_up_discards() {
+        let directory = tempdir().expect("temporary directory");
+        let (store, repository) = recovery_fixture(directory.path()).await;
+        let object_id = ObjectId::new();
+        let mut partial = store.layout.publication_path(object_id).into_os_string();
+        partial.push(".partial");
+        let partial = std::path::PathBuf::from(partial);
+        fs::write(&partial, b"{\"obj")
+            .await
+            .expect("partial record");
+        drop(store);
+
+        LocalFilesystemStore::open(directory.path(), directory.path().join("tmp"), repository)
+            .await
+            .expect("start-up");
+        assert!(!partial.exists());
+    }
+
+    /// Writing a record leaves no partial file behind, and the record decodes.
+    #[tokio::test]
+    async fn a_written_publication_record_is_complete_under_its_final_name() {
+        let directory = tempdir().expect("temporary directory");
+        std::fs::create_dir_all(directory.path().join("tmp")).expect("tmp");
+        let object_id = ObjectId::new();
+        let path = directory
+            .path()
+            .join("tmp")
+            .join(format!("{}.publish", object_id.as_uuid().simple()));
+        write_publication_record(
+            &path,
+            &PublicationRecord {
+                object_id,
+                bucket_id: None,
+                key: None,
+            },
+        )
+        .await
+        .expect("write");
+        let names: Vec<_> = std::fs::read_dir(directory.path().join("tmp"))
+            .expect("list")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .into_string()
+                    .expect("utf-8")
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![format!("{}.publish", object_id.as_uuid().simple())]
+        );
+        let decoded: PublicationRecord =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("decodes");
+        assert_eq!(decoded.object_id, object_id);
     }
 
     #[tokio::test]

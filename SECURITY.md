@@ -16,9 +16,14 @@ fixes, and fixes ship in a new release rather than as backports to an earlier li
 
 | Version | Supported |
 | --- | --- |
-| 0.1.1 (latest release) | ✅ |
-| 0.1.0 | ❌ — upgrade to the latest release |
+| 0.1.3 (latest release) | ✅ |
+| 0.1.2 and earlier | ❌ — upgrade to the latest release |
 | `main` (unreleased) | ✅ — report it; the fix lands here first |
+
+This table names a specific version on purpose, so it is wrong the moment it goes
+stale rather than vague enough to stay true. If it disagrees with
+[the latest release](https://github.com/OpenElementsLabs/record-store/releases/latest),
+trust the release and please open an issue.
 
 Container images are published per release to the GitHub Container Registry. Running
 an image older than the latest release means running without published security fixes.

@@ -19,6 +19,7 @@
 mod command;
 mod consensus;
 mod log_store;
+pub mod recovery;
 mod repository;
 mod state_machine;
 mod types;
@@ -35,6 +36,10 @@ pub use consensus::{
     MetadataQuorum, rejection_error,
 };
 pub use log_store::{LogStoreError, RedbLogStore};
+pub use recovery::{
+    RecoveryAssessment, RecoveryError, RecoveryIntent, RecoveryReport, SnapshotHealth,
+    holds_consensus_state,
+};
 pub use repository::{
     ClusterStore, LocalClusterStore, ReplicatedClusterStore, ReplicatedMetadataRepository,
 };

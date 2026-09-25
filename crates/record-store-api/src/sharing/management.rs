@@ -15,6 +15,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{extract::ConnectInfo, http::header};
+use record_store_core::TrustedProxies;
 use record_store_sharing::{CapabilityToken, SharingService};
 
 /// The sharing dependencies an API instance needs.
@@ -85,36 +86,27 @@ impl SharingManagement {
     }
 }
 
-/// Extracts the identity abuse controls are applied to.
+/// Extracts the identity abuse controls and audit records are applied to.
 ///
-/// `X-Forwarded-For` is honoured because public capability traffic reaches Record Store
-/// through the console or a reverse proxy, and the socket address would
-/// otherwise be that hop for every visitor in the world. The header is only
-/// meaningful when the management listener is not itself internet-facing, which
-/// is how Record Store is meant to be deployed; when it is absent the socket address is
-/// used and the limits simply apply more coarsely. The value is bounded and
-/// sanitised because it is attacker-influenced either way, and it is never used
-/// for anything but partitioning a counter.
+/// `X-Forwarded-For` is believed only when the request actually arrived from a
+/// hop the operator named in `server.trusted_proxies`. Without that condition
+/// the header is a value the caller chooses, and every per-client limit becomes
+/// a limit on something the attacker can rotate at will — which is not a limit.
+///
+/// With no trusted hop configured the socket address is used, which is correct
+/// for a direct deployment and coarse behind a proxy: every visitor shares the
+/// proxy's identity until the operator names it.
 pub(crate) fn client_identity(
+    trusted: &TrustedProxies,
     headers: &header::HeaderMap,
     connect: Option<&ConnectInfo<SocketAddr>>,
 ) -> String {
     let forwarded = headers
         .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-        .filter(|value| {
-            !value.is_empty()
-                && value.len() <= 64
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b".:[]-_".contains(&byte))
-        });
-    match forwarded {
-        Some(value) => value.to_owned(),
-        None => connect.map_or_else(|| "unknown".to_owned(), |info| info.0.ip().to_string()),
-    }
+        .and_then(|value| value.to_str().ok());
+    trusted
+        .client_address(connect.map(|info| info.0.ip()), forwarded)
+        .map_or_else(|| "unknown".to_owned(), |address| address.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -124,32 +116,75 @@ pub(crate) fn client_identity(
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderValue, header};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use super::*;
 
-    #[test]
-    fn client_identity_prefers_a_forwarded_address_and_sanitises_it() {
+    fn connect(address: &str) -> ConnectInfo<SocketAddr> {
+        ConnectInfo(SocketAddr::new(
+            address.parse::<IpAddr>().expect("address"),
+            51_234,
+        ))
+    }
+
+    fn forwarded(value: &str) -> header::HeaderMap {
         let mut headers = header::HeaderMap::new();
         headers.insert(
             "x-forwarded-for",
-            HeaderValue::from_static("203.0.113.7, 10.0.0.1"),
+            HeaderValue::from_str(value).expect("header"),
         );
-        assert_eq!(client_identity(&headers, None), "203.0.113.7");
+        headers
+    }
 
-        let mut hostile = header::HeaderMap::new();
-        hostile.insert(
-            "x-forwarded-for",
-            HeaderValue::from_static("not an address at all"),
+    /// The default refuses to let a caller name itself. Without this, a single
+    /// attacker rotates the header and every per-client limit on the public
+    /// surface stops applying to them.
+    #[test]
+    fn a_forwarded_header_is_ignored_until_a_proxy_is_trusted() {
+        let untrusted = TrustedProxies::default();
+        assert_eq!(
+            client_identity(
+                &untrusted,
+                &forwarded("203.0.113.7"),
+                Some(&connect("198.51.100.4"))
+            ),
+            "198.51.100.4"
         );
-        assert_eq!(client_identity(&hostile, None), "unknown");
+    }
 
-        let mut oversized = header::HeaderMap::new();
-        oversized.insert(
-            "x-forwarded-for",
-            HeaderValue::from_str(&"1".repeat(200)).expect("header"),
+    #[test]
+    fn a_forwarded_header_from_a_trusted_proxy_names_the_visitor() {
+        let trusted = TrustedProxies::parse(&["10.0.0.0/8"]).expect("policy");
+        assert_eq!(
+            client_identity(
+                &trusted,
+                &forwarded("203.0.113.7, 10.0.0.9"),
+                Some(&connect("10.0.0.9"))
+            ),
+            "203.0.113.7"
         );
-        assert_eq!(client_identity(&oversized, None), "unknown");
+    }
 
-        assert_eq!(client_identity(&header::HeaderMap::new(), None), "unknown");
+    /// The same header arriving directly, not through the proxy, must not work.
+    #[test]
+    fn the_same_header_from_somewhere_else_is_still_ignored() {
+        let trusted = TrustedProxies::parse(&["10.0.0.0/8"]).expect("policy");
+        assert_eq!(
+            client_identity(
+                &trusted,
+                &forwarded("203.0.113.7"),
+                Some(&connect("198.51.100.4"))
+            ),
+            "198.51.100.4"
+        );
+    }
+
+    #[test]
+    fn a_request_with_no_socket_address_is_attributed_to_nobody() {
+        assert_eq!(
+            client_identity(&TrustedProxies::default(), &header::HeaderMap::new(), None),
+            "unknown"
+        );
+        let _ = Ipv4Addr::LOCALHOST;
     }
 }

@@ -20,6 +20,8 @@ tests.
 | `CopyObject` | Server-side copy |
 | `RangeAndConditionalReads` | `Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since` |
 | `ClientSha256Checksums` | `x-amz-content-sha256` |
+| `ClientBodyDigests` | `Content-MD5` and `x-amz-checksum-crc32`, `-crc32c`, `-sha1`, `-sha256` are verified against the body; a mismatch is `400 BadDigest` and stores nothing. A verified `x-amz-checksum-*` is echoed in the response |
+| `ObjectLock` | Retention (`GOVERNANCE`/`COMPLIANCE`), legal holds, bucket defaults, governance bypass |
 
 ## Unsupported
 
@@ -28,12 +30,26 @@ tests.
 | `UploadPartCopy` | Download and re-upload the part |
 | `ServerSideEncryptionHeaders` | [Encryption](../security/encryption.md) is a deployment setting, not per request |
 | `AccessControlLists` | [Policies](../administration/policies.md) |
-| `ObjectLock` | Versioning plus a deny policy on `s3:DeleteObjectVersion` |
 | `AwsChunkedEncoding` | Configure the SDK to send unsigned or fully-signed payloads |
+| `Crc64NvmeChecksums` | Use CRC32, CRC32C, SHA-1 or SHA-256; an unverifiable checksum is refused rather than ignored |
 
 Requests for an unsupported operation return `501 NotImplemented`.
 
 ## Client requirements
+
+### Signed headers
+
+Every `x-amz-*` header a request carries must be covered by its signature, as in AWS.
+A request with an unsigned one is refused with `403 AccessDenied`, `There were headers
+present in the request which were not signed`, before its credential is looked up. For
+header authentication this includes `x-amz-date` and `x-amz-content-sha256`. For a
+presigned URL, sign it with every `x-amz-*` header the uploader will send, such as
+`x-amz-meta-*` or an Object Lock header. The URL's own `X-Amz-*` query parameters are
+not headers and are unaffected. `Content-MD5` may be left unsigned: it can only make the
+server refuse a body, never change what is stored.
+
+The AWS SDKs sign every `x-amz-*` header they send, so this affects only hand-built
+requests and presigned URLs whose holder adds headers.
 
 ### Path-style addressing
 
@@ -60,8 +76,15 @@ conventional choice.
 
 ### Checksums
 
-Newer AWS SDKs default to `aws-chunked` trailing checksums, which Record Store does
-not accept. If uploads fail with `NotImplemented`:
+A checksum sent as a header — `Content-MD5`, or `x-amz-checksum-crc32`, `-crc32c`,
+`-sha1` or `-sha256` — is verified against the body before the object is committed. A
+body that does not match is refused with `400 BadDigest` and nothing is stored.
+CRC64NVME is refused with `NotImplemented` rather than accepted unverified.
+
+Newer AWS SDKs default to calculating a checksum on every upload. Sent as a header, as
+they do over plain HTTP, it is verified. Sent as an `aws-chunked` trailer, as they
+typically do over HTTPS, it is refused with `NotImplemented`, because Record Store does
+not accept `aws-chunked` payloads. If uploads fail that way:
 
 ```bash
 export AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED

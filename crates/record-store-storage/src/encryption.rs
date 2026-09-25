@@ -458,6 +458,17 @@ pub(crate) async fn initialize_object_encryption(
     }
 }
 
+/// Returns the public reference a master key derives, for checking a key
+/// against a data directory without decrypting anything.
+///
+/// The reference is a truncated digest of a derived key, not the key, so a
+/// diagnostic may print or compare it freely. This is what lets a restore prove
+/// the supplied master key is the one the payloads were written under, rather
+/// than discovering the mismatch when the first object will not decrypt.
+pub fn object_key_reference(master_key: &[u8]) -> Result<String, StorageError> {
+    derive_object_encryption(master_key).map(|encryption| hex::encode(encryption.key_reference))
+}
+
 pub(crate) fn derive_object_encryption(
     master_key: &[u8],
 ) -> Result<ObjectEncryption, StorageError> {

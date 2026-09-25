@@ -22,6 +22,9 @@ pub(crate) fn identity() -> ClusterIdentity {
         cluster_id: ClusterId::new(),
         cluster_format_version: CLUSTER_FORMAT_VERSION,
         created_at: Utc::now(),
+        recovery_generation: 0,
+        recovery_id: None,
+        recovered_at: None,
     }
 }
 
@@ -31,6 +34,7 @@ pub(crate) fn registration() -> NodeRegistration {
         versions: NodeVersions::current("test"),
         rpc_address: "10.0.0.1:7603".into(),
         s3_endpoint: Some("http://10.0.0.1:7600".into()),
+        management_endpoint: None,
         storage_class: StorageClass::default(),
         failure_domain: FailureDomain::parse("rack=a").expect("labels"),
         capacity: NodeCapacity {

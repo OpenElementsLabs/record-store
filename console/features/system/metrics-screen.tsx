@@ -33,7 +33,7 @@ export function MetricsScreen() {
     <>
       <PageHeader
         title="Metrics"
-        description={`Counters are read every ${Math.round(SAMPLE_INTERVAL_MS / 1000)} seconds. Rates are measured across the window this page has been open.`}
+        description={`Counters are read every ${Math.round(SAMPLE_INTERVAL_MS / 1000)} seconds. Startup readings are 2 seconds apart; rates use the observed window.`}
         actions={
           <Button
             size="sm"
@@ -49,12 +49,20 @@ export function MetricsScreen() {
         }
       />
 
-      {observation.error ? (
+      {observation.error && !current ? (
         <Card>
           <ErrorState error={observation.error} onRetry={observation.refetch} />
         </Card>
       ) : (
         <div className="space-y-4">
+          {observation.error ? (
+            <div
+              role="alert"
+              className="rounded-control border border-warn bg-warn-soft px-4 py-3 text-sm text-ink"
+            >
+              Refresh failed. Showing the last successful readings; automatic refresh will retry.
+            </div>
+          ) : null}
           <Window observation={observation} />
 
           <Section
@@ -170,6 +178,15 @@ function Window({ observation }: { readonly observation: ReturnType<typeof useMe
   return (
     <Card>
       <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-1.5 type-meta py-3">
+        <span role="status">
+          {observation.isPending
+            ? 'Reading counters…'
+            : observation.isFetching
+              ? 'Refreshing counters…'
+              : observation.requests === null
+                ? 'Measuring the first interval…'
+                : 'Live samples'}
+        </span>
         <span>
           Last read{' '}
           {observedAt ? (
@@ -265,6 +282,7 @@ function RateCard({
       footer={
         <RateChart
           series={rate?.series ?? []}
+          secondsAgo={rate?.secondsAgo ?? []}
           label={label}
           tone={tone}
           format={(value) =>

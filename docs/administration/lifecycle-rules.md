@@ -39,6 +39,22 @@ flowchart LR
 
 See [Versioning](../concepts/versioning.md).
 
+## Object Lock takes precedence
+
+A version under retention or a legal hold is skipped rather than expired. The scan writes
+an audit record naming the rule and the reason, then carries on with the next key —
+aborting at the first retained version would stop every later key in the bucket from ever
+expiring.
+
+```bash
+record-store audit --limit 100   # operation: lifecycle.skip-locked-version
+```
+
+A lifecycle scan never carries a governance bypass: a background worker is not a person
+exercising a permission. Expiry gives way to retention, not the other way around. A rule
+that appears to expire nothing on a locked bucket is usually working exactly as intended
+— the skip records say so. See [Object Lock](object-lock.md).
+
 ## Creating a rule
 
 ```bash

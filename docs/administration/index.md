@@ -11,7 +11,9 @@ and the trails that tell you what happened.
 -   **[Temporary Credentials](temporary-credentials.md)** — expiring credentials
 -   **[Quotas](quotas.md)** — bounding a bucket's size
 -   **[Lifecycle Rules](lifecycle-rules.md)** — expiring objects on a schedule
+-   **[Object Lock](object-lock.md)** — retention and legal holds
 -   **[Audit Log](audit-log.md)** — administrative history
+-   **[Audit Export](audit-export.md)** — exports and the retention report
 -   **[Events and Webhooks](events-and-webhooks.md)** — storage events, delivered
 -   **[Metrics](metrics.md)** — Prometheus scraping
 

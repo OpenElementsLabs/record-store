@@ -1,0 +1,210 @@
+{
+  "merkle_domain": "record-store/audit-merkle/v1",
+  "leaf_prefix": "0x00",
+  "node_prefix": "0x01",
+  "root_prefix": "0x02",
+  "record_hash_source": "SHA-256(\"record-{index}\") for index in 0..leaf_count",
+  "leaf_count": 9,
+  "record_hashes": [
+    "b512b2dd10a5444b38811e7eb9487baaadad0e9da59ef29a0c34c24603e349df",
+    "b7462d6ced2c15add3dbe47755277fa9618aceb17c68f507128896d622d4c5ee",
+    "7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4",
+    "22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
+    "161fcc53e5674fa7b6660f0742c8e4d3eb8996bfd341b49bf57800a06b1d3e56",
+    "cd5490828d0d83401cec15212d4b1a8c9fd471c6e0a8c7c01a829fe4b8e89d4a",
+    "7681c6696c666fdc3718ff5e9e234917b66ae23bac9947c398bce5673422890c",
+    "1268d916bfefa28f636f4ad7967697fbfc8adc1f700c7d183ed310e9206a01b0",
+    "390b619fa8fe9c6ed900e214a984b05d371ff57f494c31936c2ce9191010398e"
+  ],
+  "leaf_hashes": [
+    "acfd05fadf5193b0dac9abca287c0aada5aabbbed6682e306624d76fa2279f28",
+    "5bc5223b321bf98c9db18bacc93bb56e2e7ec392bdf779ba36909ced33d39656",
+    "f9b5d7f663d488e97c08944a6558a51822bdddfcb641d7afc644c11d43edbce2",
+    "7cae29041c04523bd499db4a4b9456aab493e543ad083f39f6f313a9d005146e",
+    "def3072e2de816a1aaab08481fa3e147f5bf7feb429d66bc31b568c0432e4937",
+    "33b195b459989d0d10a5a9de90f8b3d920982f29981789ec211f300652b7d780",
+    "dbd17925bdc8c555e6193502e2bc5e3647075dc9a5c161ad3c365e30793fdb9c",
+    "a8880f30f2855cecb1e1276eff640c994b96ef9d5040ed15c96dbd8f7210bc21",
+    "8ae584a4c7d6d5ba559ef8f76dc15f58da96f5016ca7d6e38e6ed441cbe1bf9e"
+  ],
+  "root": "c1356c4e2cb10ed39d86bb6ae53929f7d1fab10cba141fa45a767e8819808475",
+  "inclusion_paths": [
+    {
+      "index": 0,
+      "steps": [
+        {
+          "side": "right",
+          "hash": "5bc5223b321bf98c9db18bacc93bb56e2e7ec392bdf779ba36909ced33d39656"
+        },
+        {
+          "side": "right",
+          "hash": "32937d7d5743a9275452816844c28aee0af347c2da2b947fb28878da91ee98c0"
+        },
+        {
+          "side": "right",
+          "hash": "28804369df6ad7f1de06b1a8fdb65c6c5a72330a2803cd44ad9cacdf0bb6e5a2"
+        },
+        {
+          "side": "right",
+          "hash": "8ae584a4c7d6d5ba559ef8f76dc15f58da96f5016ca7d6e38e6ed441cbe1bf9e"
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "steps": [
+        {
+          "side": "left",
+          "hash": "acfd05fadf5193b0dac9abca287c0aada5aabbbed6682e306624d76fa2279f28"
+        },
+        {
+          "side": "right",
+          "hash": "32937d7d5743a9275452816844c28aee0af347c2da2b947fb28878da91ee98c0"
+        },
+        {
+          "side": "right",
+          "hash": "28804369df6ad7f1de06b1a8fdb65c6c5a72330a2803cd44ad9cacdf0bb6e5a2"
+        },
+        {
+          "side": "right",
+          "hash": "8ae584a4c7d6d5ba559ef8f76dc15f58da96f5016ca7d6e38e6ed441cbe1bf9e"
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "steps": [
+        {
+          "side": "right",
+          "hash": "7cae29041c04523bd499db4a4b9456aab493e543ad083f39f6f313a9d005146e"
+        },
+        {
+          "side": "left",
+          "hash": "3e90be0f97167205612c86d3efea4f18744748204c8d8c8c4dce9d969ed3b0fa"
+        },
+        {
+          "side": "right",
+          "hash": "28804369df6ad7f1de06b1a8fdb65c6c5a72330a2803cd44ad9cacdf0bb6e5a2"
+        },
+        {
+          "side": "right",
+          "hash": "8ae584a4c7d6d5ba559ef8f76dc15f58da96f5016ca7d6e38e6ed441cbe1bf9e"
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "steps": [
+        {
+          "side": "left",
+          "hash": "f9b5d7f663d488e97c08944a6558a51822bdddfcb641d7afc644c11d43edbce2"
+        },
+        {
+          "side": "left",
+          "hash": "3e90be0f97167205612c86d3efea4f18744748204c8d8c8c4dce9d969ed3b0fa"
+        },
+        {
+          "side": "right",
+          "hash": "28804369df6ad7f1de06b1a8fdb65c6c5a72330a2803cd44ad9cacdf0bb6e5a2"
+        },
+        {
+          "side": "right",
+          "hash": "8ae584a4c7d6d5ba559ef8f76dc15f58da96f5016ca7d6e38e6ed441cbe1bf9e"
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "steps": [
+        {
+          "side": "right",
+          "hash": "33b195b459989d0d10a5a9de90f8b3d920982f29981789ec211f300652b7d780"
+        },
+        {
+          "side": "right",
+          "hash": "47edac5a8b4bf07bc3224280d35c211d6399fb27bd86c6ad278eb8fbdaa6fcaf"
+        },
+        {
+          "side": "left",
+          "hash": "7f3ab10a353c3faf0cf0253700b87dcb377f4478989c0f39378dc827350f36c5"
+        },
+        {
+          "side": "right",
+          "hash": "8ae584a4c7d6d5ba559ef8f76dc15f58da96f5016ca7d6e38e6ed441cbe1bf9e"
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "steps": [
+        {
+          "side": "left",
+          "hash": "def3072e2de816a1aaab08481fa3e147f5bf7feb429d66bc31b568c0432e4937"
+        },
+        {
+          "side": "right",
+          "hash": "47edac5a8b4bf07bc3224280d35c211d6399fb27bd86c6ad278eb8fbdaa6fcaf"
+        },
+        {
+          "side": "left",
+          "hash": "7f3ab10a353c3faf0cf0253700b87dcb377f4478989c0f39378dc827350f36c5"
+        },
+        {
+          "side": "right",
+          "hash": "8ae584a4c7d6d5ba559ef8f76dc15f58da96f5016ca7d6e38e6ed441cbe1bf9e"
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "steps": [
+        {
+          "side": "right",
+          "hash": "a8880f30f2855cecb1e1276eff640c994b96ef9d5040ed15c96dbd8f7210bc21"
+        },
+        {
+          "side": "left",
+          "hash": "2b165cef6abf339812fe4d06b9aea7c2cc70e0374997b5f061bd27d912edc392"
+        },
+        {
+          "side": "left",
+          "hash": "7f3ab10a353c3faf0cf0253700b87dcb377f4478989c0f39378dc827350f36c5"
+        },
+        {
+          "side": "right",
+          "hash": "8ae584a4c7d6d5ba559ef8f76dc15f58da96f5016ca7d6e38e6ed441cbe1bf9e"
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "steps": [
+        {
+          "side": "left",
+          "hash": "dbd17925bdc8c555e6193502e2bc5e3647075dc9a5c161ad3c365e30793fdb9c"
+        },
+        {
+          "side": "left",
+          "hash": "2b165cef6abf339812fe4d06b9aea7c2cc70e0374997b5f061bd27d912edc392"
+        },
+        {
+          "side": "left",
+          "hash": "7f3ab10a353c3faf0cf0253700b87dcb377f4478989c0f39378dc827350f36c5"
+        },
+        {
+          "side": "right",
+          "hash": "8ae584a4c7d6d5ba559ef8f76dc15f58da96f5016ca7d6e38e6ed441cbe1bf9e"
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "steps": [
+        {
+          "side": "left",
+          "hash": "1e906ddd795ba7a57c804402e591b28b7cc84975612de31b5123c10a1d782d87"
+        }
+      ]
+    }
+  ]
+}

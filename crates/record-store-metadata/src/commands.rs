@@ -3,8 +3,9 @@
 use chrono::{DateTime, Utc};
 use record_store_core::{
     Bucket, BucketId, BucketName, BucketQuota, CorsConfiguration, DeleteMarker, LifecycleRule,
-    LifecycleRuleId, MultipartUpload, MultipartUploadState, ObjectId, ObjectKey, ObjectMetadata,
-    ObjectVersionRecord, UploadId, UploadedPart, VersionId, VersioningState,
+    LifecycleRuleId, MultipartUpload, MultipartUploadState, ObjectId, ObjectKey,
+    ObjectLockConfiguration, ObjectLockState, ObjectMetadata, ObjectVersionRecord,
+    StorageEventType, UploadId, UploadedPart, VersionId, VersioningState, WriteOrigin,
 };
 use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
@@ -17,10 +18,11 @@ use crate::schema::{
     PHYSICAL_BYTES, VERSION_BYTES, VERSION_COUNT, VERSIONS,
 };
 use crate::tx::{
-    adjust_counter, as_object, clear_null, current_version, has_multipart, insert_version,
-    latest_version, list_parts_tx, publish_current, queue_cleanup, read_bucket, read_bucket_usage,
-    read_tx, record_matches, remove_current, remove_version, set_null, take_null, update_bucket_tx,
-    write_bucket_usage,
+    LockRelease, adjust_counter, as_object, clear_null, current_version, enforce_deletable,
+    has_multipart, insert_version, journal_event, latest_version, list_parts_tx, observe_clock,
+    prune_mutation_events_tx, publish_current, queue_cleanup, read_bucket, read_bucket_usage,
+    read_object_lock, read_tx, record_matches, remove_current, remove_object_lock, remove_version,
+    set_null, take_null, update_bucket_tx, write_bucket_usage, write_object_lock,
 };
 use crate::types::BucketUsage;
 use crate::*;
@@ -86,11 +88,43 @@ pub enum MetadataCommand {
     DeleteBucket {
         /// Bucket name.
         name: BucketName,
+        /// Time the deletion event is recorded at.
+        ///
+        /// Carried in the command rather than read from the clock at apply time:
+        /// the event journal is replicated state, so a member that reads its own
+        /// clock would write a different journal than its peers for the same log
+        /// entry, and a snapshot taken on one member would not match another's
+        /// replayed state. Entries written before this field existed decode as
+        /// the epoch, which is visibly wrong rather than quietly divergent.
+        #[serde(default)]
+        at: DateTime<Utc>,
+    },
+    /// Replace or remove a bucket's Object Lock default retention.
+    SetBucketObjectLock {
+        /// Bucket to change. It must already have Object Lock enabled.
+        bucket_id: BucketId,
+        /// Complete replacement configuration.
+        configuration: ObjectLockConfiguration,
     },
     /// Publish an immutable object version and make it current.
     PutObject {
         /// Object metadata to publish.
         metadata: Box<ObjectMetadata>,
+        /// Object Lock state the new version is born with.
+        ///
+        /// It is applied in the same transaction that publishes the version, so
+        /// a crash cannot leave a version that was written under retention
+        /// durably unretained.
+        object_lock: Option<ObjectLockState>,
+        /// Why this version is being written.
+        ///
+        /// A copy, a restore, and a completed multipart upload all publish a
+        /// version and are indistinguishable once they arrive, but they are
+        /// different events to a subscriber. The caller knows which it is, so
+        /// it says; defaulted so a command written before origins existed still
+        /// decodes as the ordinary upload it was.
+        #[serde(default)]
+        origin: WriteOrigin,
     },
     /// Apply ordinary delete semantics for the current version of a key.
     DeleteObject {
@@ -109,6 +143,26 @@ pub enum MetadataCommand {
         key: ObjectKey,
         /// Version to remove.
         version_id: VersionId,
+        /// Clock and bypass inputs for the Object Lock decision.
+        release: LockRelease,
+    },
+    /// Replace the Object Lock state of one explicit version.
+    PutObjectLock {
+        /// Owning bucket.
+        bucket_id: BucketId,
+        /// Logical key.
+        key: ObjectKey,
+        /// Version to change.
+        version_id: VersionId,
+        /// Complete replacement state.
+        requested: ObjectLockState,
+        /// Clock and bypass inputs for the Object Lock decision.
+        release: LockRelease,
+    },
+    /// Advance the observed-time high-water mark.
+    ObserveClock {
+        /// Clock inputs. No bypass applies to an observation.
+        release: LockRelease,
     },
     /// Create a multipart upload.
     CreateMultipartUpload {
@@ -136,6 +190,9 @@ pub enum MetadataCommand {
     AbortMultipartUpload {
         /// Upload identifier.
         upload_id: UploadId,
+        /// Time the abort event is recorded at. See [`MetadataCommand::DeleteBucket`].
+        #[serde(default)]
+        at: DateTime<Utc>,
     },
     /// Reconcile multipart uploads interrupted mid-completion.
     RecoverMultipartCompletions,
@@ -154,6 +211,14 @@ pub enum MetadataCommand {
         /// Payload identifier.
         object_id: ObjectId,
     },
+    /// Drop journalled storage events an outbox has already taken.
+    ///
+    /// A catalog mutation like any other, so a replicated deployment prunes
+    /// every member's journal to the same point rather than letting them drift.
+    PruneMutationEvents {
+        /// Highest sequence that may be removed, inclusive.
+        through_sequence: u64,
+    },
 }
 
 impl MetadataCommand {
@@ -165,10 +230,13 @@ impl MetadataCommand {
             Self::SetBucketVersioning { .. } => "set_bucket_versioning",
             Self::SetBucketQuota { .. } => "set_bucket_quota",
             Self::SetBucketCors { .. } => "set_bucket_cors",
+            Self::SetBucketObjectLock { .. } => "set_bucket_object_lock",
             Self::DeleteBucket { .. } => "delete_bucket",
             Self::PutObject { .. } => "put_object",
             Self::DeleteObject { .. } => "delete_object",
             Self::DeleteObjectVersion { .. } => "delete_object_version",
+            Self::PutObjectLock { .. } => "put_object_lock",
+            Self::ObserveClock { .. } => "observe_clock",
             Self::CreateMultipartUpload { .. } => "create_multipart_upload",
             Self::PutMultipartPart { .. } => "put_multipart_part",
             Self::BeginMultipartCompletion { .. } => "begin_multipart_completion",
@@ -178,6 +246,7 @@ impl MetadataCommand {
             Self::PutLifecycleRule { .. } => "put_lifecycle_rule",
             Self::DeleteLifecycleRule { .. } => "delete_lifecycle_rule",
             Self::CompleteCleanup { .. } => "complete_cleanup",
+            Self::PruneMutationEvents { .. } => "prune_mutation_events",
         }
     }
 }
@@ -199,6 +268,8 @@ pub enum MetadataOutcome {
     /// Boxed because it is by far the largest outcome and would otherwise set
     /// the size of every command response.
     DeleteVersion(Option<Box<DeleteVersionResult>>),
+    /// The Object Lock state of one version after the command was applied.
+    ObjectLock(ObjectLockState),
     /// A multipart upload descriptor.
     MultipartUpload(Box<MultipartUpload>),
     /// The part a publish replaced, when it replaced one.
@@ -244,6 +315,14 @@ impl MetadataOutcome {
         match self {
             Self::DeleteVersion(result) => Ok(result.map(|result| *result)),
             _ => Err(unexpected("version delete")),
+        }
+    }
+
+    /// Returns the Object Lock state produced by the command.
+    pub fn into_object_lock(self) -> Result<ObjectLockState, MetadataError> {
+        match self {
+            Self::ObjectLock(state) => Ok(state),
+            _ => Err(unexpected("object lock")),
         }
     }
 
@@ -293,7 +372,34 @@ pub fn apply_command_tx(
                 {
                     return Err(MetadataError::InvalidVersioningTransition);
                 }
+                // Object Lock holds immutable versions. Suspending versioning
+                // would make the next write replace the null version in place,
+                // which is precisely the history a retained version is meant to
+                // be safe from, so the bucket keeps versioning for as long as
+                // lock is enabled on it.
+                if bucket.object_lock.is_some() && state != VersioningState::Enabled {
+                    return Err(MetadataError::ObjectLockRequiresVersioning);
+                }
                 bucket.versioning = state;
+                Ok(())
+            })?;
+            Ok(MetadataOutcome::Bucket(Box::new(bucket)))
+        }
+        MetadataCommand::SetBucketObjectLock {
+            bucket_id,
+            configuration,
+        } => {
+            let configuration = configuration
+                .validate()
+                .map_err(|error| MetadataError::InvalidObjectLock(error.to_string()))?;
+            let bucket = update_bucket_tx(write, bucket_id, move |bucket| {
+                // Enabling lock later would claim protection over versions that
+                // were written without it, so the answer is the bucket's whole
+                // lifetime or nothing.
+                if bucket.object_lock.is_none() {
+                    return Err(MetadataError::ObjectLockNotEnabled);
+                }
+                bucket.object_lock = Some(configuration);
                 Ok(())
             })?;
             Ok(MetadataOutcome::Bucket(Box::new(bucket)))
@@ -323,13 +429,20 @@ pub fn apply_command_tx(
             })?;
             Ok(MetadataOutcome::Bucket(Box::new(bucket)))
         }
-        MetadataCommand::DeleteBucket { name } => {
-            let bucket = delete_bucket_tx(write, &name)?;
+        MetadataCommand::DeleteBucket { name, at } => {
+            let bucket = delete_bucket_tx(write, &name, at)?;
             Ok(MetadataOutcome::Bucket(Box::new(bucket)))
         }
-        MetadataCommand::PutObject { metadata } => Ok(MetadataOutcome::ObjectCommit(
-            put_object_tx(write, &metadata)?,
-        )),
+        MetadataCommand::PutObject {
+            metadata,
+            object_lock,
+            origin,
+        } => Ok(MetadataOutcome::ObjectCommit(put_object_tx(
+            write,
+            &metadata,
+            object_lock,
+            origin,
+        )?)),
         MetadataCommand::DeleteObject {
             bucket_id,
             key,
@@ -341,9 +454,23 @@ pub fn apply_command_tx(
             bucket_id,
             key,
             version_id,
+            release,
         } => Ok(MetadataOutcome::DeleteVersion(
-            delete_object_version_tx(write, bucket_id, &key, version_id)?.map(Box::new),
+            delete_object_version_tx(write, bucket_id, &key, version_id, release)?.map(Box::new),
         )),
+        MetadataCommand::PutObjectLock {
+            bucket_id,
+            key,
+            version_id,
+            requested,
+            release,
+        } => Ok(MetadataOutcome::ObjectLock(put_object_lock_tx(
+            write, bucket_id, &key, version_id, requested, release,
+        )?)),
+        MetadataCommand::ObserveClock { release } => {
+            observe_clock(write, release)?;
+            Ok(MetadataOutcome::None)
+        }
         MetadataCommand::CreateMultipartUpload { upload } => {
             create_multipart_upload_tx(write, &upload)?;
             Ok(MetadataOutcome::None)
@@ -357,11 +484,16 @@ pub fn apply_command_tx(
         } => Ok(MetadataOutcome::MultipartUpload(Box::new(
             begin_multipart_completion_tx(write, upload_id, object_id)?,
         ))),
-        MetadataCommand::FinishMultipartUpload { upload_id } => Ok(
-            MetadataOutcome::MultipartCleanup(remove_multipart_tx(write, upload_id, true)?),
-        ),
-        MetadataCommand::AbortMultipartUpload { upload_id } => Ok(
-            MetadataOutcome::MultipartCleanup(remove_multipart_tx(write, upload_id, false)?),
+        MetadataCommand::FinishMultipartUpload { upload_id } => {
+            Ok(MetadataOutcome::MultipartCleanup(remove_multipart_tx(
+                write,
+                upload_id,
+                true,
+                DateTime::<Utc>::default(),
+            )?))
+        }
+        MetadataCommand::AbortMultipartUpload { upload_id, at } => Ok(
+            MetadataOutcome::MultipartCleanup(remove_multipart_tx(write, upload_id, false, at)?),
         ),
         MetadataCommand::RecoverMultipartCompletions => Ok(MetadataOutcome::MultipartCleanup(
             recover_multipart_completions_tx(write)?,
@@ -378,6 +510,10 @@ pub fn apply_command_tx(
             complete_cleanup_tx(write, object_id)?;
             Ok(MetadataOutcome::None)
         }
+        MetadataCommand::PruneMutationEvents { through_sequence } => {
+            prune_mutation_events_tx(write, through_sequence)?;
+            Ok(MetadataOutcome::None)
+        }
     }
 }
 
@@ -385,6 +521,17 @@ pub(crate) fn create_bucket_tx(
     write: &redb::WriteTransaction,
     bucket: &Bucket,
 ) -> Result<(), MetadataError> {
+    if let Some(configuration) = bucket.object_lock {
+        configuration
+            .validate()
+            .map_err(|error| MetadataError::InvalidObjectLock(error.to_string()))?;
+        // Object Lock protects immutable versions, so there has to be version
+        // history for it to protect. AWS enables versioning along with lock for
+        // the same reason.
+        if bucket.versioning != VersioningState::Enabled {
+            return Err(MetadataError::ObjectLockRequiresVersioning);
+        }
+    }
     let key = bucket_key(bucket.id);
     let encoded = serde_json::to_vec(bucket)?;
     {
@@ -423,12 +570,22 @@ pub(crate) fn create_bucket_tx(
             .map_err(|e| backend("index bucket", e))?;
     }
     write_bucket_usage(write, bucket.id, BucketUsage::default())?;
+    journal_event(
+        write,
+        StorageEventType::BucketCreated,
+        bucket.name.as_str(),
+        None,
+        None,
+        None,
+        bucket.created_at,
+    )?;
     adjust_counter(write, BUCKET_COUNT, 1)
 }
 
 pub(crate) fn delete_bucket_tx(
     write: &redb::WriteTransaction,
     name: &BucketName,
+    at: DateTime<Utc>,
 ) -> Result<Bucket, MetadataError> {
     let bucket: Bucket = {
         let table = write
@@ -490,12 +647,23 @@ pub(crate) fn delete_bucket_tx(
         }
     }
     adjust_counter(write, BUCKET_COUNT, -1)?;
+    journal_event(
+        write,
+        StorageEventType::BucketDeleted,
+        bucket.name.as_str(),
+        None,
+        None,
+        None,
+        at,
+    )?;
     Ok(bucket)
 }
 
 pub(crate) fn put_object_tx(
     write: &redb::WriteTransaction,
     metadata: &ObjectMetadata,
+    object_lock: Option<ObjectLockState>,
+    origin: WriteOrigin,
 ) -> Result<ObjectCommitResult, MetadataError> {
     let bucket = read_bucket(write, metadata.bucket_id)?.ok_or(MetadataError::BucketNotFound)?;
     let key = object_key(metadata.bucket_id, &metadata.key);
@@ -529,6 +697,16 @@ pub(crate) fn put_object_tx(
         return Err(MetadataError::QuotaExceeded);
     }
     if let Some(record) = &replaced {
+        // Unreachable by construction: a locked version only exists in a bucket
+        // with Object Lock enabled, such a bucket is always version-enabled,
+        // and a version-enabled bucket never replaces a null version here. It
+        // is asserted rather than assumed because the cost of the assumption
+        // being wrong is a silently destroyed retained version.
+        let lock = read_object_lock(write, record.version_id())?;
+        if let Some(block) = lock.deletion_block_at(metadata.created_at) {
+            return Err(MetadataError::VersionLocked(block));
+        }
+        remove_object_lock(write, record.version_id())?;
         remove_version(write, record)?;
     }
     let record = ObjectVersionRecord::Object {
@@ -536,6 +714,12 @@ pub(crate) fn put_object_tx(
         is_null,
     };
     insert_version(write, &record)?;
+    if let Some(state) = object_lock.filter(|state| !state.is_unlocked()) {
+        if bucket.object_lock.is_none() {
+            return Err(MetadataError::ObjectLockNotEnabled);
+        }
+        write_object_lock(write, metadata.version_id, state)?;
+    }
     if is_null {
         set_null(write, &key, metadata.version_id)?;
     }
@@ -587,6 +771,33 @@ pub(crate) fn put_object_tx(
     for old in &cleanup {
         queue_cleanup(write, old.id)?;
     }
+    // Whether this is a creation or an update is known here, inside the
+    // transaction, from the object that was actually replaced. Asking before
+    // the write — which is what a caller would have to do — answers a question
+    // about a moment that has already passed.
+    let created_or_updated = if previous.is_none() {
+        StorageEventType::ObjectCreated
+    } else {
+        StorageEventType::ObjectUpdated
+    };
+    let journalled = match origin {
+        WriteOrigin::MultipartCompletion => vec![StorageEventType::MultipartCompleted],
+        // A restore publishes a version *and* is a restore. Both events are
+        // emitted because both are true and subscribers already receive both.
+        WriteOrigin::Restore => vec![created_or_updated, StorageEventType::ObjectRestored],
+        WriteOrigin::Direct | WriteOrigin::Copy => vec![created_or_updated],
+    };
+    for event_type in journalled {
+        journal_event(
+            write,
+            event_type,
+            bucket.name.as_str(),
+            Some(&metadata.key),
+            Some(metadata.version_id),
+            Some(metadata.size),
+            metadata.created_at,
+        )?;
+    }
     Ok(ObjectCommitResult { cleanup })
 }
 
@@ -607,6 +818,8 @@ pub(crate) fn delete_object_tx(
     match bucket_record.versioning {
         VersioningState::Disabled => {
             if let Some(record) = take_null(write, bucket, object_key_value)? {
+                assert_unlocked(write, &record, marker_values.created_at)?;
+                remove_object_lock(write, record.version_id())?;
                 remove_version(write, &record)?;
                 usage.versions -= 1;
                 adjust_counter(write, VERSION_COUNT, -1)?;
@@ -623,6 +836,8 @@ pub(crate) fn delete_object_tx(
         VersioningState::Enabled | VersioningState::Suspended => {
             let is_null = bucket_record.versioning == VersioningState::Suspended;
             if is_null && let Some(record) = take_null(write, bucket, object_key_value)? {
+                assert_unlocked(write, &record, marker_values.created_at)?;
+                remove_object_lock(write, record.version_id())?;
                 remove_version(write, &record)?;
                 usage.versions -= 1;
                 adjust_counter(write, VERSION_COUNT, -1)?;
@@ -677,6 +892,23 @@ pub(crate) fn delete_object_tx(
         adjust_counter(write, LOGICAL_BYTES, -i128::from(metadata.size))?;
     }
     write_bucket_usage(write, bucket, usage)?;
+    // A delete against a key that was already absent changes nothing, so it
+    // owes nothing: announcing it would tell subscribers about a mutation that
+    // did not happen.
+    if result.previously_visible || result.delete_marker.is_some() {
+        journal_event(
+            write,
+            StorageEventType::ObjectDeleted,
+            bucket_record.name.as_str(),
+            Some(object_key_value),
+            result
+                .delete_marker
+                .as_ref()
+                .map(|marker| marker.version_id),
+            None,
+            marker_values.created_at,
+        )?;
+    }
     Ok(result)
 }
 
@@ -685,6 +917,7 @@ pub(crate) fn delete_object_version_tx(
     bucket: BucketId,
     object_key_value: &ObjectKey,
     version: VersionId,
+    release: LockRelease,
 ) -> Result<Option<DeleteVersionResult>, MetadataError> {
     let Some(record): Option<ObjectVersionRecord> = read_tx(
         write,
@@ -698,8 +931,12 @@ pub(crate) fn delete_object_version_tx(
     if !record_matches(&record, bucket, object_key_value) {
         return Ok(None);
     }
+    // Inside the same transaction that removes the version, so a retention
+    // placed or extended concurrently cannot land between the two.
+    enforce_deletable(write, version, release)?;
     let key = object_key(bucket, object_key_value);
     let was_current = current_version(write, &key)? == Some(version);
+    remove_object_lock(write, version)?;
     remove_version(write, &record)?;
     if record.is_null() {
         clear_null(write, &key, version)?;
@@ -735,10 +972,88 @@ pub(crate) fn delete_object_version_tx(
         }
     }
     write_bucket_usage(write, bucket, usage)?;
+    if let Some(bucket_record) = read_bucket(write, bucket)? {
+        journal_event(
+            write,
+            StorageEventType::ObjectDeleted,
+            bucket_record.name.as_str(),
+            Some(object_key_value),
+            Some(version),
+            None,
+            release.observed_at,
+        )?;
+    }
     Ok(Some(DeleteVersionResult {
         removed: record,
         cleanup,
     }))
+}
+
+/// Refuses to destroy a version that Object Lock still holds.
+///
+/// Used on the paths that replace or remove the special null version, which a
+/// bucket with Object Lock enabled can never reach, because such a bucket is
+/// always version-enabled. The check makes that reasoning enforced rather than
+/// merely true.
+fn assert_unlocked(
+    write: &redb::WriteTransaction,
+    record: &ObjectVersionRecord,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), MetadataError> {
+    match read_object_lock(write, record.version_id())?.deletion_block_at(now) {
+        Some(block) => Err(MetadataError::VersionLocked(block)),
+        None => Ok(()),
+    }
+}
+
+/// Replaces the Object Lock state of one version, enforcing the mode rules.
+///
+/// The clock high-water mark is consulted for any change that could release
+/// something. A change that only ever adds protection is applied even when the
+/// clock is not trusted, because getting that wrong can only over-retain.
+pub(crate) fn put_object_lock_tx(
+    write: &redb::WriteTransaction,
+    bucket: BucketId,
+    object_key_value: &ObjectKey,
+    version: VersionId,
+    requested: ObjectLockState,
+    release: LockRelease,
+) -> Result<ObjectLockState, MetadataError> {
+    let bucket_record = read_bucket(write, bucket)?.ok_or(MetadataError::BucketNotFound)?;
+    if bucket_record.object_lock.is_none() {
+        return Err(MetadataError::ObjectLockNotEnabled);
+    }
+    let Some(record): Option<ObjectVersionRecord> = read_tx(
+        write,
+        VERSIONS,
+        version.as_uuid().as_bytes().as_slice(),
+        "read version",
+    )?
+    else {
+        return Err(MetadataError::ObjectLockVersionNotFound);
+    };
+    if !record_matches(&record, bucket, object_key_value) {
+        return Err(MetadataError::ObjectLockVersionNotFound);
+    }
+    // A delete marker holds no payload, so there is nothing for a retention to
+    // protect and AWS does not accept one either.
+    if record.is_delete_marker() {
+        return Err(MetadataError::ObjectLockVersionNotFound);
+    }
+    let current = read_object_lock(write, version)?;
+    if !current.change_only_tightens(&requested) {
+        observe_clock(write, release)?;
+    }
+    let updated = current
+        .with_retention(
+            requested.retention,
+            release.observed_at,
+            release.bypass_governance,
+        )
+        .map_err(MetadataError::ObjectLockChangeRefused)?
+        .with_legal_hold(requested.legal_hold);
+    write_object_lock(write, version, updated)?;
+    Ok(updated)
 }
 
 pub(crate) fn create_multipart_upload_tx(
@@ -867,6 +1182,7 @@ pub(crate) fn remove_multipart_tx(
     write: &redb::WriteTransaction,
     id: UploadId,
     require_completing: bool,
+    at: DateTime<Utc>,
 ) -> Result<MultipartCleanupResult, MetadataError> {
     let upload: MultipartUpload = read_tx(
         write,
@@ -918,6 +1234,20 @@ pub(crate) fn remove_multipart_tx(
     for part in &parts {
         queue_cleanup(write, part.object_id)?;
     }
+    // A completion's event belongs to the version it published, which the
+    // PutObject that preceded this already journalled. Only an abort has an
+    // event of its own.
+    if !require_completing {
+        journal_event(
+            write,
+            StorageEventType::MultipartAborted,
+            &bucket_name_of(write, upload.bucket_id)?,
+            Some(&upload.key),
+            None,
+            None,
+            at,
+        )?;
+    }
     Ok(MultipartCleanupResult { parts })
 }
 
@@ -947,7 +1277,11 @@ pub(crate) fn recover_multipart_completions_tx(
         let committed = read_tx::<ObjectMetadata>(write, OBJECTS, &key, "read current object")?
             .is_some_and(|metadata| metadata.id == object_id);
         if committed {
-            cleaned.extend(remove_multipart_tx(write, upload.id, true)?.parts);
+            // A completing upload is finished, not aborted, so this path
+            // journals nothing and needs no timestamp of its own.
+            cleaned.extend(
+                remove_multipart_tx(write, upload.id, true, DateTime::<Utc>::default())?.parts,
+            );
         } else {
             let mut reset = upload;
             reset.state = MultipartUploadState::Active;
@@ -1012,9 +1346,22 @@ pub(crate) fn complete_cleanup_tx(
     Ok(())
 }
 
+/// Returns a bucket's name, for the events a mutation of it owes.
+///
+/// A bucket that has already gone leaves its identifier: an event naming
+/// nothing at all would be worse than one naming what the catalog still has.
+fn bucket_name_of(
+    write: &redb::WriteTransaction,
+    bucket_id: BucketId,
+) -> Result<String, MetadataError> {
+    Ok(read_bucket(write, bucket_id)?
+        .map_or_else(|| bucket_id.to_string(), |bucket| bucket.name.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use record_store_core::VersioningState;
+    use redb::ReadableDatabase;
     use tempfile::tempdir;
 
     use super::*;
@@ -1044,9 +1391,13 @@ mod tests {
             },
             MetadataCommand::PutObject {
                 metadata: Box::new(first_object.clone()),
+                object_lock: None,
+                origin: WriteOrigin::Direct,
             },
             MetadataCommand::PutObject {
                 metadata: Box::new(second_object.clone()),
+                object_lock: None,
+                origin: WriteOrigin::Direct,
             },
             MetadataCommand::DeleteObject {
                 bucket_id: bucket_record.id,
@@ -1076,6 +1427,66 @@ mod tests {
         assert_eq!(
             snapshots[0], snapshots[1],
             "replaying identical commands must produce identical durable state"
+        );
+    }
+
+    /// The commands that write to the event journal are the ones that used to
+    /// read the wall clock while applying, which made two members produce
+    /// different durable state for the same log entry. The determinism test
+    /// above never reached them, which is precisely why it went unnoticed, so
+    /// they get their own coverage here.
+    ///
+    /// Divergence here is not cosmetic: the journal is exported in snapshots, so
+    /// a member that installs a snapshot would hold different bytes than a member
+    /// that replayed the log, and the two would disagree about what happened.
+    #[tokio::test]
+    async fn journalling_commands_are_deterministic_across_members() {
+        let bucket_record = bucket("journalled");
+        let upload_record = upload(bucket_record.id, "interrupted");
+        // One fixed instant, decided by the proposer and carried in the command,
+        // stands in for the leader's clock at proposal time.
+        let at = DateTime::from_timestamp(1_700_000_000, 0).expect("timestamp");
+        let commands = vec![
+            MetadataCommand::CreateBucket {
+                bucket: Box::new(bucket_record.clone()),
+            },
+            MetadataCommand::CreateMultipartUpload {
+                upload: Box::new(upload_record.clone()),
+            },
+            MetadataCommand::AbortMultipartUpload {
+                upload_id: upload_record.id,
+                at,
+            },
+            MetadataCommand::DeleteBucket {
+                name: bucket_record.name.clone(),
+                at,
+            },
+        ];
+
+        let mut snapshots = Vec::new();
+        for _ in 0..2 {
+            let dir = tempdir().expect("temp");
+            let repo = RedbMetadataRepository::open(dir.path().join("catalog.redb"))
+                .await
+                .expect("repo");
+            for command in commands.clone() {
+                repo.command(command).await.expect("apply command");
+            }
+            let database = repo.database();
+            let entries = tokio::task::spawn_blocking(move || {
+                let read = database.begin_read().expect("begin");
+                export_tx(&read).expect("export")
+            })
+            .await
+            .expect("join");
+            snapshots.push(entries);
+            // A gap between the two replays is what a clock read would turn into
+            // a difference. Applying the same commands must not care.
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            snapshots[0], snapshots[1],
+            "a command that journals an event must record the timestamp it carries, not the              clock of whichever member is applying it"
         );
     }
 
@@ -1118,12 +1529,15 @@ mod tests {
             (
                 MetadataCommand::DeleteBucket {
                     name: bucket_record.name.clone(),
+                    at: Utc::now(),
                 },
                 "delete_bucket",
             ),
             (
                 MetadataCommand::PutObject {
                     metadata: Box::new(object(bucket_record.id, "a", 1)),
+                    object_lock: None,
+                    origin: WriteOrigin::Direct,
                 },
                 "put_object",
             ),
@@ -1156,6 +1570,8 @@ mod tests {
             },
             MetadataCommand::PutObject {
                 metadata: Box::new(object(bucket_record.id, "a", 1)),
+                object_lock: None,
+                origin: WriteOrigin::Direct,
             },
             MetadataCommand::DeleteObject {
                 bucket_id: bucket_record.id,
@@ -1245,6 +1661,7 @@ mod tests {
                 &write,
                 MetadataCommand::DeleteBucket {
                     name: BucketName::new("never-created").expect("name"),
+                    at: Utc::now(),
                 },
             ),
             Err(MetadataError::BucketNotFound)
@@ -1279,6 +1696,8 @@ mod tests {
                 },
                 MetadataCommand::PutObject {
                     metadata: Box::new(committed.clone()),
+                    object_lock: None,
+                    origin: WriteOrigin::Direct,
                 },
                 MetadataCommand::FinishMultipartUpload {
                     upload_id: upload_record.id,
@@ -1371,6 +1790,7 @@ mod tests {
             &write,
             MetadataCommand::AbortMultipartUpload {
                 upload_id: upload_record.id,
+                at: Utc::now(),
             },
         )
         .expect("apply");
@@ -1415,6 +1835,8 @@ mod tests {
                 },
                 MetadataCommand::PutObject {
                     metadata: Box::new(stored.clone()),
+                    object_lock: None,
+                    origin: WriteOrigin::Direct,
                 },
                 MetadataCommand::DeleteObject {
                     bucket_id: bucket_record.id,

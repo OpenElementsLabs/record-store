@@ -6,7 +6,7 @@ export function Card({ className, ...props }: React.ComponentProps<'section'>) {
   return (
     <section
       className={cn(
-        'overflow-hidden rounded-panel border border-border bg-surface transition-quiet',
+        'overflow-hidden rounded-panel border border-border bg-surface shadow-panel transition-quiet',
         className,
       )}
       {...props}

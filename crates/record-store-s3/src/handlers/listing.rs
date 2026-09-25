@@ -12,7 +12,7 @@ use record_store_service::{
 };
 
 use crate::error::{S3Error, S3ErrorKind, service_error};
-use crate::handlers::bucket::{get_bucket_cors, get_bucket_versioning};
+use crate::handlers::bucket::{get_bucket_cors, get_bucket_object_lock, get_bucket_versioning};
 use crate::response::{
     bucket_name, decode_continuation_token, encode_continuation_token, object_key, xml_response,
 };
@@ -292,6 +292,9 @@ pub(crate) async fn list_objects_v2(
     }
     if has_query_flag(raw_query.as_deref(), "versioning") {
         return get_bucket_versioning(state, bucket, request_id).await;
+    }
+    if has_query_flag(raw_query.as_deref(), "object-lock") {
+        return get_bucket_object_lock(state, bucket, request_id).await;
     }
     if has_query_flag(raw_query.as_deref(), "versions") {
         return list_object_versions(state, bucket, raw_query, request_id).await;

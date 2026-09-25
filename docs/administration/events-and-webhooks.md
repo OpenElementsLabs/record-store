@@ -36,6 +36,28 @@ Events are about **data**. For "who changed a setting", see the
 
 `object`, `version_id`, and `size` are absent for bucket-level events.
 
+## What an event is guaranteed to do
+
+**A committed change always produces its event.** The obligation to publish is
+written into the catalog inside the same transaction that commits the change, so a
+crash between the two loses neither: on restart the pending events are picked up and
+published. An event's `id` is allocated at that moment, so an event republished after
+a crash is recognisably the same event rather than a second one.
+
+Two consequences worth planning around:
+
+- **Events are asynchronous.** A background pass moves committed events into the
+  delivery queue about once a second, so an event can appear in
+  `GET /api/v1/events` and at a webhook shortly after the write that caused it
+  returns — not during it. A write that returns `200` has already produced its event
+  as far as durability is concerned; only the delivery lags.
+- **Delivery is at-least-once, never exactly-once.** See
+  [Retries](#retries): key your receiver on the event `id`.
+
+Events for changes committed before upgrading to this release are not reconstructed.
+The journal starts empty, because replaying history to every subscriber would be
+worse than the gap it papered over.
+
 ## Reading events
 
 ```bash
@@ -140,8 +162,14 @@ roughly `2^attempt` seconds plus a small deterministic jitter, up to
 `webhooks.maximum_attempts` (default 6). After that the delivery is permanently
 failed and is not retried.
 
-At-least-once delivery is the guarantee. **Make your receiver idempotent** — key on
-`x-record-store-event-id`, which is stable across retries of the same event.
+At-least-once delivery is the guarantee, and it is a guarantee about the *floor*:
+an event is never silently dropped, and it may arrive more than once. **Make your
+receiver idempotent** — key on `x-record-store-event-id`, which is stable across
+retries of the same event and across a restart that republished it.
+
+Exactly-once delivery is not offered and is not achievable across an HTTP boundary:
+a receiver that processes a delivery and then fails to answer is indistinguishable
+from one that never received it, so the delivery is retried.
 
 ### Delivery log
 

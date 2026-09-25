@@ -20,7 +20,7 @@ import { RecentActivity } from '@/features/overview/recent-activity';
 import { queryKeys, useStorageStatus, useStorageUsage } from '@/hooks/use-system';
 import { fetchClusterHealth } from '@/lib/api/cluster';
 import { fetchSystemMetrics } from '@/lib/api/system';
-import { formatBytes, formatBytesOf, formatCount, formatRatio } from '@/lib/format';
+import { formatBytes, formatCount, formatRatio } from '@/lib/format';
 
 /**
  * The operational landing screen.
@@ -92,14 +92,12 @@ export function OverviewScreen() {
             label="Disk capacity"
             value={
               status.data ? (
-                formatBytesOf(
-                  status.data.capacity_bytes - status.data.available_bytes,
-                  status.data.capacity_bytes,
-                )
+                formatBytes(status.data.capacity_bytes - status.data.available_bytes)
               ) : (
                 <Skeleton className="h-7 w-32" />
               )
             }
+            detail={status.data ? `of ${formatBytes(status.data.capacity_bytes)} total` : undefined}
             footer={
               status.data ? (
                 <UsageBar

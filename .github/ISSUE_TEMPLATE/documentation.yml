@@ -1,0 +1,19 @@
+name: Documentation issue
+description: Report incorrect, unclear, or missing documentation
+labels: ["documentation"]
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page URL or file path
+      description: If a page is missing, say where you expected to find it.
+      placeholder: docs/getting-started/installation.md
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What needs to change?
+      description: Describe the problem and suggest a correction if you have one.
+    validations:
+      required: true

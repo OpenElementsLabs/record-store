@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 mod device_store;
 mod encryption;
 mod error;
+mod integrity;
 mod layout;
 mod local_store;
 mod maintenance;
@@ -21,6 +22,7 @@ mod types;
 mod test_support;
 
 pub use device_store::DeviceStore;
+pub use encryption::object_key_reference;
 pub use error::StorageError;
 pub use local_store::LocalFilesystemStore;
 pub use object_store::ObjectStore;

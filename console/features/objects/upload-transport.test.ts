@@ -148,12 +148,14 @@ describe('singleRequestUpload', () => {
     singleRequestUpload({ bucket: 'uploads', key: 'a', file: hugeFile(1) }, observer());
     only().respond(200);
 
+    only().onerror?.();
+    only().onabort?.();
     expect(settled).toEqual([{ status: 'done' }]);
   });
 
   it('surfaces the management API’s own message on a rejected upload', () => {
     singleRequestUpload({ bucket: 'uploads', key: 'a', file: hugeFile(1) }, observer());
-    only().respond(507, JSON.stringify({ error: { message: 'Bucket quota exceeded' } }));
+    only().respond(403, JSON.stringify({ error: { message: 'Bucket quota exceeded' } }));
 
     expect(settled).toEqual([{ status: 'failed', reason: 'Bucket quota exceeded' }]);
   });
@@ -162,20 +164,20 @@ describe('singleRequestUpload', () => {
     singleRequestUpload({ bucket: 'uploads', key: 'a', file: hugeFile(1) }, observer());
     only().respond(502, '<html>Bad gateway</html>');
 
-    expect(settled).toEqual([{ status: 'failed', reason: 'The server answered with status 502.' }]);
+    expect(settled).toEqual([expect.objectContaining({ status: 'unknown' })]);
   });
 
-  it('settles as failed when the connection drops mid-transfer', () => {
+  it('does not assume a dropped connection means the object was not committed', () => {
     singleRequestUpload({ bucket: 'uploads', key: 'a', file: hugeFile(1) }, observer());
     const request = only();
     request.upload.onprogress?.({ loaded: 500, total: 1_000, lengthComputable: true });
     request.onerror?.();
 
-    // There is no resume: a dropped connection is a failed upload, not a paused one.
-    expect(settled).toEqual([{ status: 'failed', reason: 'The connection failed.' }]);
+    // Without an operation identity, a dropped response cannot establish commit status.
+    expect(settled).toEqual([expect.objectContaining({ status: 'unknown' })]);
   });
 
-  it('settles as cancelled when the handle is aborted', () => {
+  it('does not assume abort rolls back a server commit', () => {
     const handle = singleRequestUpload(
       { bucket: 'uploads', key: 'a', file: hugeFile(1) },
       observer(),
@@ -183,6 +185,6 @@ describe('singleRequestUpload', () => {
 
     handle.abort();
 
-    expect(settled).toEqual([{ status: 'cancelled' }]);
+    expect(settled).toEqual([expect.objectContaining({ status: 'unknown' })]);
   });
 });

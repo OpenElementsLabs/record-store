@@ -1,0 +1,20 @@
+name: Question
+description: Ask about using or deploying Record Store
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Check the [documentation](https://openelementslabs.github.io/record-store/)
+        and [troubleshooting guide](https://openelementslabs.github.io/record-store/troubleshooting/) first.
+  - type: textarea
+    id: question
+    attributes:
+      label: What would you like to know?
+      description: Describe what you are trying to do and what you have already tried. Remove any secrets from examples.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Version and deployment method (if relevant)
+      placeholder: "0.1.3, Docker Compose"

@@ -255,10 +255,20 @@ impl ManagementPrincipal {
                         || path == "/api/v1/system/info"
                         || path == "/api/v1/events"
                         || path == "/api/v1/audit/events"
+                        // Exporting the trail and reading what is retained are
+                        // the questions an auditor exists to ask.
+                        || path.starts_with("/api/v1/audit/export")
+                        // Checking the trail has not been edited is the
+                        // auditor's question above all others.
+                        || path == "/api/v1/audit/chain"
+                        || path == "/api/v1/reports/retention"
                         || path == "/api/v1/storage/status"
                         || path == "/api/v1/storage/usage"
                         || path == "/api/v1/storage/inspect"
                         || path == "/api/v1/buckets"
+                        // Which records are retained, and until when, is
+                        // exactly the question an auditor is there to answer.
+                        || path.contains("/object-lock")
                         || path == "/api/v1/webhooks"
                         || path == "/api/v1/webhook-deliveries"
                         || path.starts_with("/api/v1/cluster")

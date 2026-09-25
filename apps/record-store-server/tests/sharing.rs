@@ -573,6 +573,115 @@ async fn repeated_password_guesses_are_throttled_without_locking_the_link() {
     record_store.stop().await;
 }
 
+/// Throttling is only a control if the attacker cannot choose which bucket
+/// they are counted in. `X-Forwarded-For` is written by whoever sent the
+/// request, so a deployment that has named no trusted proxy must ignore it: a
+/// guesser rotating the header would otherwise get an unlimited allowance.
+#[tokio::test]
+async fn a_spoofed_forwarding_header_does_not_buy_a_fresh_throttling_allowance() {
+    let record_store = Harness::start_with(|config| {
+        config.sharing.password_attempts_per_minute = 3;
+        // Deliberately none: this is the default, and the point is that the
+        // default does not believe the header.
+        config.server.trusted_proxies = Vec::new();
+    })
+    .await;
+    record_store.create_bucket("spoofing").await;
+    record_store
+        .upload("spoofing", "vault.txt", "text/plain", b"nothing here\n")
+        .await;
+    let issued = record_store
+        .create_share(
+            "spoofing",
+            "vault.txt",
+            json!({ "label": "Guarded", "password": "correct horse battery" }),
+        )
+        .await;
+    let token = token_of(issued["url"].as_str().expect("url")).to_owned();
+
+    let mut throttled = false;
+    for attempt in 0..8 {
+        // A different claimed client on every single request.
+        let response = record_store
+            .client
+            .post(record_store.url(&format!("/s/{token}/unlock")))
+            .header("x-forwarded-for", format!("203.0.113.{attempt}"))
+            .json(&json!({ "password": format!("guess-{attempt}") }))
+            .send()
+            .await
+            .expect("guess");
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            throttled = true;
+            break;
+        }
+    }
+    assert!(
+        throttled,
+        "rotating X-Forwarded-For must not evade per-client throttling"
+    );
+
+    record_store.stop().await;
+}
+
+/// The other half of the same rule: behind a named proxy the header is the
+/// only way to tell visitors apart, so it has to be believed there. Two
+/// different visitors must not share one allowance.
+#[tokio::test]
+async fn behind_a_named_proxy_each_visitor_gets_its_own_allowance() {
+    let record_store = Harness::start_with(|config| {
+        config.sharing.password_attempts_per_minute = 2;
+        config.server.trusted_proxies = vec!["127.0.0.0/8".to_owned()];
+    })
+    .await;
+    record_store.create_bucket("proxied").await;
+    record_store
+        .upload("proxied", "vault.txt", "text/plain", b"nothing here\n")
+        .await;
+    let issued = record_store
+        .create_share(
+            "proxied",
+            "vault.txt",
+            json!({ "label": "Guarded", "password": "correct horse battery" }),
+        )
+        .await;
+    let token = token_of(issued["url"].as_str().expect("url")).to_owned();
+
+    // Spend the first visitor's allowance.
+    let mut first_throttled = false;
+    for attempt in 0..6 {
+        let response = record_store
+            .client
+            .post(record_store.url(&format!("/s/{token}/unlock")))
+            .header("x-forwarded-for", "203.0.113.10")
+            .json(&json!({ "password": format!("guess-{attempt}") }))
+            .send()
+            .await
+            .expect("guess");
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            first_throttled = true;
+            break;
+        }
+    }
+    assert!(first_throttled, "the first visitor must be throttled");
+
+    // A genuinely different visitor, arriving through the same proxy, is not.
+    let other = record_store
+        .client
+        .post(record_store.url(&format!("/s/{token}/unlock")))
+        .header("x-forwarded-for", "203.0.113.11")
+        .json(&json!({ "password": "another guess" }))
+        .send()
+        .await
+        .expect("guess");
+    assert_ne!(
+        other.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "one visitor's guessing must not lock out another behind the same proxy"
+    );
+
+    record_store.stop().await;
+}
+
 #[tokio::test]
 async fn a_share_serves_byte_ranges_so_media_can_be_seeked() {
     let record_store = Harness::start().await;

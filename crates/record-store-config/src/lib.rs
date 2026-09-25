@@ -58,8 +58,8 @@ pub use cluster::{ClusterConfig, ClusterTlsConfig};
 pub use deployment::DeploymentMode;
 pub use error::ConfigError;
 pub use sections::{
-    AuthConfig, LifecycleConfig, LimitsConfig, ObservabilityConfig, ServerConfig, StorageConfig,
-    StorageDeviceConfig, WebhookConfig,
+    AuthConfig, LifecycleConfig, LimitsConfig, ObjectLockConfig, ObservabilityConfig, ServerConfig,
+    StorageConfig, StorageDeviceConfig, WebhookConfig,
 };
 pub use sharing::SharingConfig;
 /// Fully resolved and validated Record Store configuration.
@@ -78,6 +78,8 @@ pub struct Config {
     pub webhooks: WebhookConfig,
     /// Incremental object expiration settings.
     pub lifecycle: LifecycleConfig,
+    /// Object Lock clock settings.
+    pub object_lock: ObjectLockConfig,
     /// Share-link and embed-link policy.
     pub sharing: SharingConfig,
     /// Node-local cluster settings.

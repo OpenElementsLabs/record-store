@@ -1,11 +1,17 @@
 //! Durable single-node metadata catalog.
 
 use record_store_core::{
-    BucketId, MultipartUpload, ObjectKey, ObjectVersionRecord, PartNumber, UploadId,
+    BucketId, MultipartUpload, ObjectKey, ObjectVersionRecord, PartNumber, UploadId, VersionId,
 };
 
 pub(crate) fn bucket_key(id: BucketId) -> Vec<u8> {
     id.as_uuid().as_bytes().as_slice().to_vec()
+}
+/// Object Lock state is keyed by version alone, like the version record it
+/// annotates: a version identifier is already globally unique, and keying by
+/// bucket as well would let the two tables disagree about which one owns it.
+pub(crate) fn lock_key(version: VersionId) -> Vec<u8> {
+    version.as_uuid().as_bytes().as_slice().to_vec()
 }
 pub(crate) fn object_key(bucket: BucketId, key: &ObjectKey) -> Vec<u8> {
     object_prefix(bucket, key.as_str())

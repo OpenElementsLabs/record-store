@@ -261,3 +261,18 @@ describe('useUploadManager', () => {
     expect(screen.getByTitle('docs/two.txt')).toBeTruthy();
   });
 });
+
+it('does not offer a blind retry for an ambiguous commit', async () => {
+  await add([file('notes.txt')]);
+  act(() =>
+    harness.attempts[0]?.observer.onSettled({
+      status: 'unknown',
+      reason: 'Check the object before sending again.',
+    }),
+  );
+  expect(within(row('notes.txt')).getByText(/Upload outcome unknown/)).toBeTruthy();
+  expect(
+    within(row('notes.txt')).queryByRole('button', { name: /again from the beginning/ }),
+  ).toBeNull();
+  expect(within(row('notes.txt')).getByRole('link', { name: 'Check object history' })).toBeTruthy();
+});

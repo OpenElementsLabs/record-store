@@ -23,6 +23,7 @@ record-store-core = { path = "../../crates/record-store-core" }
 record-store-events = { path = "../../crates/record-store-events" }
 record-store-lifecycle = { path = "../../crates/record-store-lifecycle" }
 record-store-metadata = { path = "../../crates/record-store-metadata" }
+record-store-proof = { path = "../../crates/record-store-proof" }
 record-store-observability = { path = "../../crates/record-store-observability" }
 record-store-protocol = { path = "../../crates/record-store-protocol" }
 record-store-replication = { path = "../../crates/record-store-replication" }

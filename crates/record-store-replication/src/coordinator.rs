@@ -49,6 +49,8 @@ pub struct Coordinator {
     consensus: Arc<MetadataConsensus>,
     settings: CoordinatorSettings,
     cursor: Mutex<Option<ObjectId>>,
+    /// Leadership term the current pass is fenced to.
+    term: Mutex<Option<u64>>,
 }
 
 impl Coordinator {
@@ -64,6 +66,7 @@ impl Coordinator {
             consensus,
             settings,
             cursor: Mutex::new(None),
+            term: Mutex::new(None),
         }
     }
 
@@ -72,9 +75,16 @@ impl Coordinator {
     /// Returns whether the pass ran. A node that is not the leader does nothing,
     /// which is what keeps exactly one scheduler active.
     pub async fn run_once(&self) -> bool {
-        if !self.consensus.is_leader().await {
+        let Some(term) = self.consensus.leadership_term().await else {
             return false;
-        }
+        };
+        // The term is pinned for the whole pass. A pass can outlive the
+        // leadership that started it, and without this every decision made after
+        // that point would simply be forwarded to the new leader — two
+        // coordinators scheduling the same cluster, each unaware of the other.
+        // Losing the term aborts the pass instead; the new leader re-derives the
+        // same work from replicated state on its own next pass.
+        *self.term.lock().await = Some(term);
         if let Err(error) = self.detect_failures().await {
             warn!(%error, "failure detection pass failed");
         }
@@ -405,14 +415,18 @@ impl Coordinator {
             } else {
                 Some(format!("{remaining} replica(s) still to move"))
             };
-            self.apply(ClusterCommand::UpdateOperation {
-                operation_id: operation.id,
-                state,
-                progress,
-                message,
-                at: Utc::now(),
-            })
-            .await?;
+            // Evacuating the data and retiring the consensus membership are two
+            // different jobs, and only the first was being done. A node marked
+            // decommissioned but still in the voter set counts toward every
+            // quorum for ever: decommission three of five and the cluster
+            // silently needs a majority of a group that no longer exists.
+            //
+            // The membership change is therefore a precondition of calling the
+            // operation complete, not a step after it. Doing it the other way
+            // round means a transient failure here leaves an operation that is
+            // already Completed — which later passes skip — and the node keeps
+            // its vote with nothing left to notice.
+            let mut state = state;
             if state == ClusterOperationState::Completed
                 && operation.kind == ClusterOperationKind::Decommission
             {
@@ -423,9 +437,68 @@ impl Coordinator {
                     at: Utc::now(),
                 })
                 .await?;
+                if let Err(error) = self.retire_membership(node_id).await {
+                    warn!(
+                        node = %node_id,
+                        %error,
+                        "the decommissioned node could not be retired from the metadata group; \
+                         the operation stays outstanding so the next pass retries it"
+                    );
+                    state = ClusterOperationState::Moving;
+                }
             }
+            self.apply(ClusterCommand::UpdateOperation {
+                operation_id: operation.id,
+                state,
+                progress,
+                message,
+                at: Utc::now(),
+            })
+            .await?;
         }
         Ok(())
+    }
+
+    /// Removes a decommissioned node from the metadata consensus group.
+    ///
+    /// Ordering matters and is the reason this is a separate step: the node is
+    /// demoted to a learner before it is removed, so the voter set shrinks
+    /// through the consensus library's own joint-consensus protocol rather than
+    /// by editing membership. Removing the last voter is refused outright — a
+    /// cluster with no metadata authority cannot be recovered by consensus
+    /// alone.
+    ///
+    /// This is idempotent. A leader change partway through leaves the node
+    /// either still a voter or already gone, and the next coordination pass on
+    /// the surviving leader repeats the step from whichever state it finds.
+    async fn retire_membership(&self, node_id: NodeId) -> Result<(), String> {
+        let Some(node) = self.context.cluster.node(node_id).await.map_err(display)? else {
+            return Ok(());
+        };
+        match self.consensus.remove_member(node.raft_id).await {
+            Ok(()) => {
+                info!(
+                    node = %node_id,
+                    member = node.raft_id,
+                    "retired a decommissioned node from the metadata consensus group"
+                );
+                Ok(())
+            }
+            Err(record_store_consensus::ConsensusError::Configuration(reason)) => {
+                // The only configuration refusal here is "that was the last
+                // voter". Reporting it is right: silently leaving the node in
+                // the group would be the original defect, and silently removing
+                // it would destroy the cluster's metadata authority.
+                warn!(
+                    node = %node_id,
+                    member = node.raft_id,
+                    %reason,
+                    "refusing to retire the node from consensus"
+                );
+                Err(reason)
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     async fn progress_rebalance(
@@ -466,6 +539,14 @@ impl Coordinator {
         &self,
         operation_id: Option<record_store_core::ClusterOperationId>,
     ) -> Result<usize, String> {
+        // Planning reads the whole placement table and then queues movement for
+        // it. That is scheduling, so it is fenced to one term for the same
+        // reason a pass is: half a plan from a deposed leader interleaved with a
+        // fresh plan from the new one would move the same replicas twice.
+        let term = self.consensus.leadership_term().await.ok_or_else(|| {
+            "rebalancing requires metadata leadership; this node does not hold it".to_owned()
+        })?;
+        *self.term.lock().await = Some(term);
         let topology = self.context.topology().await.map_err(display)?;
         let page = self
             .context
@@ -598,11 +679,46 @@ impl Coordinator {
         .unwrap_or(u32::MAX))
     }
 
+    /// Commits a coordination decision, but only while this node still leads.
+    ///
+    /// Coordination writes are deliberately not forwarded. A client write only
+    /// needs to reach whichever node can commit it; a scheduler's write is an
+    /// exercise of authority this node may no longer hold, and forwarding it
+    /// would launder a deposed leader's decision through the current one.
     async fn apply(&self, command: ClusterCommand) -> Result<(), String> {
-        self.context
-            .commit(ClusterWrite::cluster(command))
+        let pinned = *self.term.lock().await;
+        let term = match pinned {
+            Some(term) => term,
+            // Called outside a pass, by an operator-initiated action. Planning
+            // still belongs to the leader — a follower that planned and then
+            // forwarded would be a second scheduler — so the term is acquired
+            // here instead, and a follower is refused rather than forwarded.
+            None => self.consensus.leadership_term().await.ok_or_else(|| {
+                "cluster coordination requires metadata leadership; this node does not hold it"
+                    .to_owned()
+            })?,
+        };
+        let name = command.name();
+        match self
+            .consensus
+            .write_as_leader(term, ClusterWrite::cluster(command))
             .await
-            .map_err(display)
+        {
+            Ok(record_store_consensus::ClusterWriteResponse::Rejected(rejection)) => {
+                Err(rejection.message)
+            }
+            Ok(_) => Ok(()),
+            Err(record_store_consensus::ConsensusError::NoLeader) => {
+                // Not an error worth alarming about: leadership moved, and the
+                // node that holds it now will schedule the same work.
+                debug!(
+                    command = name,
+                    "leadership changed during the coordination pass"
+                );
+                Err("leadership changed during the coordination pass".to_owned())
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
 }
 

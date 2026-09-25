@@ -3,6 +3,17 @@
 Every object is stored with a SHA-256 checksum recorded at write time. Verification
 reads the bytes back and compares.
 
+!!! note "Ordinary reads already check"
+    A download does not need a separate verification pass to be safe: a whole-object
+    read recomputes the stored checksum as it streams and fails rather than returning
+    bytes that disagree with it, and every read refuses a payload whose length on disk
+    does not match its metadata before sending anything.
+
+    What the commands here add is checking objects **nobody has read**, and covering
+    the one case an ordinary read cannot: a same-length edit inside a ranged read of
+    an unencrypted payload. See
+    [Durability](../concepts/durability.md#integrity) for the exact boundaries.
+
 ## Verifying one object
 
 ```bash

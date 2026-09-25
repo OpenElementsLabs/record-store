@@ -76,6 +76,7 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::Utc;
+    use redb::ReadableDatabase;
 
     use super::*;
     use crate::catalog::test_support::*;

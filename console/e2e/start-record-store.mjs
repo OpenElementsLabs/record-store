@@ -10,11 +10,11 @@ import { fileURLToPath } from 'node:url';
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
 const dataDirectory = mkdtempSync(join(tmpdir(), 'record-store-e2e-standalone-'));
 const host = '127.0.0.1';
-const s3Port = port('RECORD_STORE_E2E_S3_PORT', 47_600);
-const apiPort = port('RECORD_STORE_E2E_API_PORT', 47_601);
-const consolePort = port('RECORD_STORE_E2E_CONSOLE_PORT', 47_602);
-const rpcPort = port('RECORD_STORE_E2E_RPC_PORT', 47_603);
-const harnessPort = port('RECORD_STORE_E2E_HARNESS_PORT', 47_604);
+const s3Port = port('RECORD_STORE_E2E_S3_PORT', 27_600);
+const apiPort = port('RECORD_STORE_E2E_API_PORT', 27_601);
+const consolePort = port('RECORD_STORE_E2E_CONSOLE_PORT', 27_602);
+const rpcPort = port('RECORD_STORE_E2E_RPC_PORT', 27_603);
+const harnessPort = port('RECORD_STORE_E2E_HARNESS_PORT', 27_604);
 const managementToken =
   process.env.RECORD_STORE_E2E_TOKEN ?? 'e2e-management-system-token-32-bytes-long';
 

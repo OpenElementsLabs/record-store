@@ -28,7 +28,8 @@ section says what to do.
 | Signal | Where | Concerning when |
 | --- | --- | --- |
 | Readiness | `/ready` | Anything but 200 |
-| Disk headroom | A host exporter on the data directory's filesystem | Below 20% |
+| Disk headroom | `record_store_filesystem_available_bytes` | Below 20% of capacity |
+| Work turned away | `record_store_operations_rejected_total` | Any sustained rate |
 | Error rate | `record_store_errors_total` / `record_store_requests_total` | Above a few percent |
 | Missing payloads | `metadata_without_data` in `storage inspect` | Above 0 |
 | Storage growth | `record_store_storage_physical_bytes` | Outpacing the disk you have |

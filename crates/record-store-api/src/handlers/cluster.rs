@@ -158,13 +158,42 @@ pub(crate) async fn repair_status(
 pub(crate) async fn start_rebalance(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
-) -> Result<Json<record_store_cluster::ClusterOperation>, ApiError> {
-    let operation = cluster_management(&state, request_id.clone())?
+) -> Result<axum::response::Response, ApiError> {
+    match cluster_management(&state, request_id.clone())?
         .operations
         .rebalance()
         .await
-        .map_err(|error| cluster_operation_error(error, request_id))?;
-    Ok(Json(operation))
+    {
+        Ok(operation) => Ok(Json(operation).into_response()),
+        // Planning is a leader-only operation, so a follower sends the caller to
+        // the leader rather than planning on its behalf. A temporary redirect is
+        // the accurate status: the request is valid, this is simply not the
+        // member that can serve it, and leadership moves.
+        Err(OperationError::NotLeader {
+            management_endpoint: Some(endpoint),
+            ..
+        }) => Ok(redirect_to_leader(&endpoint, "/api/v1/rebalance")),
+        Err(error) => Err(cluster_operation_error(error, request_id)),
+    }
+}
+
+/// Builds a temporary redirect to the leader's management API.
+///
+/// The endpoint comes from cluster metadata, which the leader itself published,
+/// so it is the address that member says it is reachable at rather than
+/// something inferred from the connection.
+fn redirect_to_leader(endpoint: &str, path: &str) -> axum::response::Response {
+    let base = endpoint.trim_end_matches('/');
+    let location = if base.contains("://") {
+        format!("{base}{path}")
+    } else {
+        format!("http://{base}{path}")
+    };
+    (
+        StatusCode::TEMPORARY_REDIRECT,
+        [(axum::http::header::LOCATION, location)],
+    )
+        .into_response()
 }
 
 pub(crate) async fn rebalance_status(
@@ -668,7 +697,10 @@ pub(crate) fn cluster_operation_error(
         | OperationError::InvalidDeviceTransition { .. }
         | OperationError::StoragePolicyInUse { .. }
         | OperationError::DurabilityAtRisk(_) => StatusCode::CONFLICT,
-        OperationError::Cluster(_) => StatusCode::SERVICE_UNAVAILABLE,
+        // A leader exists but does not advertise a management endpoint, so the
+        // caller cannot be redirected and is told where to go instead.
+        OperationError::NotLeader { .. } => StatusCode::CONFLICT,
+        OperationError::Cluster(_) | OperationError::NoLeader => StatusCode::SERVICE_UNAVAILABLE,
     };
     let code = match error_value {
         OperationError::NodeNotFound(_) => "NODE_NOT_FOUND",
@@ -678,6 +710,8 @@ pub(crate) fn cluster_operation_error(
         OperationError::InvalidTransition { .. } => "INVALID_NODE_TRANSITION",
         OperationError::InvalidDeviceTransition { .. } => "INVALID_DEVICE_TRANSITION",
         OperationError::DurabilityAtRisk(_) => "DURABILITY_AT_RISK",
+        OperationError::NotLeader { .. } => "NOT_METADATA_LEADER",
+        OperationError::NoLeader => "NO_METADATA_LEADER",
         OperationError::Cluster(_) => "CLUSTER_UNAVAILABLE",
     };
     ApiError::new(status, code, error_value.to_string(), request_id)
@@ -688,7 +722,72 @@ mod tests {
     use axum::http::StatusCode;
     use serde_json::json;
 
+    use super::{cluster_operation_error, redirect_to_leader};
+    use crate::RequestId;
     use crate::test_support::{admin, api, call, clustered_api, expect_status};
+    use record_store_core::NodeId;
+    use record_store_replication::OperationError;
+
+    /// Planning a rebalance belongs to the member holding metadata leadership,
+    /// so any other member sends the caller there instead of planning on its
+    /// behalf. A temporary redirect is the accurate answer: the request is
+    /// valid, this is simply not the member that can serve it, and leadership
+    /// moves — so the redirect must not be cached as permanent.
+    #[test]
+    fn a_leader_only_operation_redirects_to_the_leader_it_names() {
+        let response = redirect_to_leader("10.0.0.7:7601", "/api/v1/rebalance");
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("http://10.0.0.7:7601/api/v1/rebalance"),
+            "a bare host:port is reachable over http unless it says otherwise"
+        );
+    }
+
+    /// An endpoint an operator configured with a scheme is used as given: it may
+    /// be behind TLS or a proxy, and rewriting it would send the caller
+    /// somewhere the leader never advertised.
+    #[test]
+    fn a_configured_scheme_on_the_leader_endpoint_is_preserved() {
+        for endpoint in ["https://manage.example.com", "https://manage.example.com/"] {
+            let response = redirect_to_leader(endpoint, "/api/v1/rebalance");
+            assert_eq!(
+                response
+                    .headers()
+                    .get(axum::http::header::LOCATION)
+                    .and_then(|value| value.to_str().ok()),
+                Some("https://manage.example.com/api/v1/rebalance"),
+                "{endpoint} must be used as configured, without a doubled slash"
+            );
+        }
+    }
+
+    /// A leader that advertises no management endpoint cannot be redirected to.
+    /// The caller is told which node to go to rather than being left with a bare
+    /// failure, and the code is stable so automation can branch on it.
+    #[test]
+    fn a_leader_without_a_management_endpoint_is_named_rather_than_redirected_to() {
+        let node = NodeId::new();
+        let error = cluster_operation_error(
+            OperationError::NotLeader {
+                node,
+                management_endpoint: None,
+            },
+            RequestId::new(),
+        );
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("NOT_METADATA_LEADER"),
+            "automation branches on the code: {rendered}"
+        );
+        assert!(
+            rendered.contains(&node.to_string()),
+            "an operator needs to be told which node to use: {rendered}"
+        );
+    }
 
     /// A deployment with no cluster wired in must say the feature is absent
     /// rather than reporting an empty cluster, which reads as a healthy one.

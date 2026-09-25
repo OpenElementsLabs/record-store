@@ -33,11 +33,20 @@ empty, TOML is the only way to set it. See
 | `s3_bind` | socket address | `0.0.0.0:7600` | `RECORD_STORE_S3_BIND` |
 | `api_bind` | socket address | `0.0.0.0:7601` | `RECORD_STORE_API_BIND` |
 | `shutdown_grace_period_seconds` | integer 1–300 | `30` | `RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS` |
+| `trusted_proxies` | list of IPs or CIDR blocks, at most 64 | `[]` | `RECORD_STORE_SERVER_TRUSTED_PROXIES` (comma-separated) |
 
 Constraints:
 
 - The listeners must differ from each other.
 - None may use port `7602`, which is reserved for the web console.
+- Every `trusted_proxies` entry must parse as an IP address or CIDR block; a
+  malformed entry stops start-up rather than being ignored.
+
+`trusted_proxies` names the reverse-proxy hops whose `X-Forwarded-For` header may be
+believed. While it is empty the header is ignored entirely and every request is
+attributed to the socket it arrived on — safe everywhere, and behind a proxy it means
+rate limits and audit records all name the proxy. See
+[Reverse Proxy and TLS](../deployment/reverse-proxy.md#client-address-headers).
 
 `api_bind` is unrestricted administrative access. Do not publish it. See
 [Ports](ports.md).
@@ -49,6 +58,11 @@ Constraints:
 | `data_directory` | path | `./data` | `RECORD_STORE_STORAGE_DATA_DIRECTORY` |
 | `temporary_directory` | path | `<data_directory>/tmp` | `RECORD_STORE_STORAGE_TEMPORARY_DIRECTORY` |
 | `encryption_enabled` | boolean | `false` | `RECORD_STORE_STORAGE_ENCRYPTION_ENABLED` |
+
+`temporary_directory` must be on the same filesystem as the data directory. A payload
+is published by renaming it out of there, and a rename cannot cross a mount boundary.
+`record-store server doctor` and start-up both refuse a deployment that gets this
+wrong, rather than letting it fail on the first upload.
 
 `encryption_enabled` requires `auth.credential_master_key`. It applies to newly
 committed payloads; it does not re-encrypt existing objects. See
@@ -88,11 +102,19 @@ Constraints:
 | Key | Type | Default | Environment |
 | --- | --- | --- | --- |
 | `maximum_concurrent_operations` | integer > 0 | `256` | `RECORD_STORE_MAX_CONCURRENT_OPERATIONS` |
+| `admission_wait_limit_seconds` | integer 1–300 | `15` | `RECORD_STORE_ADMISSION_WAIT_LIMIT_SECONDS` |
 | `maximum_custom_metadata_entries` | integer ≤ 1024 | `64` | — |
 | `maximum_custom_metadata_bytes` | integer 1–1048576 | `16384` | — |
 | `maximum_header_bytes` | integer 1024–1048576 | `65536` | `RECORD_STORE_MAX_HEADER_BYTES` |
 
 `maximum_custom_metadata_*` bound `x-amz-meta-*` on a single object.
+
+`maximum_concurrent_operations` bounds the work in flight;
+`admission_wait_limit_seconds` bounds the work waiting to be. An operation that waits
+longer than the limit is refused with `SlowDown` over S3 and `TOO_MANY_OPERATIONS`
+over the management API, both `503` and both retryable, and counted by
+`record_store_operations_rejected_total`. Without the second limit the first one only
+moves unbounded growth from memory in flight to a queue nothing measures.
 
 ## `[webhooks]`
 
@@ -119,6 +141,19 @@ deliberately internal receiver. See
 
 `batch_size` bounds one pass per rule, not total work. See
 [Lifecycle Rules](../administration/lifecycle-rules.md).
+
+## `[object_lock]`
+
+| Key | Type | Default | Environment |
+| --- | --- | --- | --- |
+| `clock_watermark_interval_seconds` | integer 1–3600 | `60` | `RECORD_STORE_OBJECT_LOCK_CLOCK_WATERMARK_INTERVAL_SECONDS` |
+| `clock_backwards_tolerance_seconds` | integer 0–300 | `5` | `RECORD_STORE_OBJECT_LOCK_CLOCK_BACKWARDS_TOLERANCE_SECONDS` |
+
+A retention date is only as trustworthy as the clock judging it, so Record Store keeps a
+monotonic high-water mark of observed time and refuses to release a retained version when
+the clock falls behind it. The interval is how often that mark is refreshed while the
+node is idle; the tolerance absorbs ordinary NTP correction. See
+[Object Lock and Trust](../security/object-lock.md#the-clock).
 
 ## `[sharing]`
 
@@ -173,6 +208,9 @@ not from the file.
 s3_bind = "0.0.0.0:7600"
 api_bind = "127.0.0.1:7601"
 shutdown_grace_period_seconds = 30
+# The proxy in front of this deployment, so per-visitor rate limits and audit
+# records name the caller rather than the proxy.
+trusted_proxies = ["10.0.0.0/8"]
 
 [storage]
 data_directory = "/var/lib/record-store"
@@ -180,6 +218,7 @@ encryption_enabled = true
 
 [limits]
 maximum_concurrent_operations = 256
+admission_wait_limit_seconds = 15
 maximum_header_bytes = 65536
 
 [webhooks]
@@ -190,6 +229,10 @@ maximum_attempts = 6
 [lifecycle]
 interval_seconds = 3600
 batch_size = 100
+
+[object_lock]
+clock_watermark_interval_seconds = 60
+clock_backwards_tolerance_seconds = 5
 
 [sharing]
 require_expiration = true

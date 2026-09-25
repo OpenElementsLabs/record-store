@@ -19,6 +19,7 @@ record-store-consensus = { path = "../record-store-consensus" }
 record-store-core = { path = "../record-store-core" }
 record-store-events = { path = "../record-store-events" }
 record-store-metadata = { path = "../record-store-metadata" }
+record-store-proof = { path = "../record-store-proof" }
 record-store-replication = { path = "../record-store-replication" }
 record-store-service = { path = "../record-store-service" }
 record-store-sharing = { path = "../record-store-sharing" }

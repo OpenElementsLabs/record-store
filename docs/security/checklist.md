@@ -77,6 +77,20 @@ server-side fetch. Turning them on makes webhook creation a privileged operation
 record-store audit --limit 100 --endpoint https://management.example.com
 ```
 
+## Object Lock
+
+Only if you use it. See [Object Lock and Trust](object-lock.md).
+
+- [ ] `COMPLIANCE` is used only where nothing may release a record early — including the
+      root credential, including you
+- [ ] `s3:BypassGovernanceRetention` is granted separately from `s3:DeleteObjectVersion`,
+      and to as few principals as possible
+- [ ] Bypass audit records are reviewed: `record-store audit | grep object-lock.bypass`
+- [ ] Lifecycle skip records are reviewed, so a rule expiring nothing is visible
+- [ ] NTP is running, and the clock-behind-high-water-mark warning is alerted on
+- [ ] Filesystem access to the data directory is treated as equivalent to the ability to
+      delete retained records, because it is
+
 ## Ongoing
 
 - [ ] Dependencies and the base image are updated on a schedule

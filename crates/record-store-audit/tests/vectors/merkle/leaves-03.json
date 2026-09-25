@@ -1,0 +1,56 @@
+{
+  "merkle_domain": "record-store/audit-merkle/v1",
+  "leaf_prefix": "0x00",
+  "node_prefix": "0x01",
+  "root_prefix": "0x02",
+  "record_hash_source": "SHA-256(\"record-{index}\") for index in 0..leaf_count",
+  "leaf_count": 3,
+  "record_hashes": [
+    "b512b2dd10a5444b38811e7eb9487baaadad0e9da59ef29a0c34c24603e349df",
+    "b7462d6ced2c15add3dbe47755277fa9618aceb17c68f507128896d622d4c5ee",
+    "7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4"
+  ],
+  "leaf_hashes": [
+    "acfd05fadf5193b0dac9abca287c0aada5aabbbed6682e306624d76fa2279f28",
+    "5bc5223b321bf98c9db18bacc93bb56e2e7ec392bdf779ba36909ced33d39656",
+    "f9b5d7f663d488e97c08944a6558a51822bdddfcb641d7afc644c11d43edbce2"
+  ],
+  "root": "47fa39c6153969ee2a062be28a9768fcc9db8418eb5d04a8b04a0adaff362c36",
+  "inclusion_paths": [
+    {
+      "index": 0,
+      "steps": [
+        {
+          "side": "right",
+          "hash": "5bc5223b321bf98c9db18bacc93bb56e2e7ec392bdf779ba36909ced33d39656"
+        },
+        {
+          "side": "right",
+          "hash": "f9b5d7f663d488e97c08944a6558a51822bdddfcb641d7afc644c11d43edbce2"
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "steps": [
+        {
+          "side": "left",
+          "hash": "acfd05fadf5193b0dac9abca287c0aada5aabbbed6682e306624d76fa2279f28"
+        },
+        {
+          "side": "right",
+          "hash": "f9b5d7f663d488e97c08944a6558a51822bdddfcb641d7afc644c11d43edbce2"
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "steps": [
+        {
+          "side": "left",
+          "hash": "3e90be0f97167205612c86d3efea4f18744748204c8d8c8c4dce9d969ed3b0fa"
+        }
+      ]
+    }
+  ]
+}

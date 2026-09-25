@@ -51,6 +51,9 @@ pub enum CoreError {
     /// A replication profile was internally inconsistent.
     #[error("invalid replication profile: {0}")]
     InvalidReplicationProfile(String),
+    /// An Object Lock retention or configuration value was incoherent.
+    #[error("invalid object lock: {0}")]
+    InvalidObjectLock(String),
     /// A bucket CORS rule was malformed or unsafe.
     #[error("invalid CORS rule: {0}")]
     InvalidCorsRule(String),

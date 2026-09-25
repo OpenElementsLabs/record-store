@@ -1,0 +1,31 @@
+[package]
+name = "record-store-proof"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+hex.workspace = true
+hkdf.workspace = true
+record-store-audit = { path = "../record-store-audit" }
+record-store-core = { path = "../record-store-core" }
+# Already in the tree through rustls. Chosen over the `rsa`/`ed25519-dalek`
+# family because it needs no crate carrying an unpatched advisory, which
+# `tests/rust-audit.sh` would refuse.
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

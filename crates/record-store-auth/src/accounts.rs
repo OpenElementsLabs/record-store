@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use record_store_core::{OrganizationId, ServiceAccountId, open_database};
-use redb::ReadableTable;
+use redb::{ReadableDatabase, ReadableTable};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 

@@ -5,7 +5,7 @@ use std::{
 
 use async_trait::async_trait;
 use chrono::Utc;
-use redb::Database;
+use redb::{Database, ReadableDatabase};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;

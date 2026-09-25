@@ -34,7 +34,7 @@ export default async function LoginPage({
             <span aria-hidden className="size-2 rotate-45 bg-brand-gold" />
             Record Store Console
           </p>
-          <h1 className="max-w-xl text-4xl font-semibold leading-[1.08] tracking-[-0.045em] text-balance xl:text-5xl">
+          <h1 className="max-w-xl font-display text-4xl font-semibold leading-[1.08] tracking-[-0.045em] text-balance xl:text-5xl">
             Object storage, clearly under control.
           </h1>
           <p className="mt-6 max-w-xl text-base leading-7 text-white/72 xl:text-lg xl:leading-8">

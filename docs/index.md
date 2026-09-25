@@ -72,9 +72,13 @@ Being precise about this is more useful than a longer feature list.
   underneath it gives you, so use redundant disks and take
   [backups](operations/backup-and-restore.md). If the machine is gone, the service is
   down until you restore it.
-- **ACLs, Object Lock, `UploadPartCopy`, server-side encryption headers, and AWS
-  `aws-chunked` trailing checksums are not implemented.** Unsupported operations
-  return an S3 `NotImplemented` error rather than being silently accepted.
+- **ACLs, `UploadPartCopy`, server-side encryption headers, and AWS `aws-chunked`
+  trailing checksums are not implemented.** Unsupported operations return an S3
+  `NotImplemented` error rather than being silently accepted.
+- **[Object Lock](administration/object-lock.md) is enforced by Record Store, not by
+  the filesystem.** It stops deletions through the API, including by the root
+  credential. It does not stop someone with access to the data directory. See
+  [Object Lock and Trust](security/object-lock.md).
 - **Browser uploads through the console are not resumable.** An interrupted upload
   must be sent again from the first byte.
 

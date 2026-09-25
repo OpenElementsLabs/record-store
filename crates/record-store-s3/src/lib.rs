@@ -14,10 +14,12 @@ use axum::{
 use chrono::Duration;
 use record_store_audit::AuditRepository;
 use record_store_auth::{Authorizer, SigningCredentialProvider};
+use record_store_core::TrustedProxies;
 use record_store_service::Services;
 
 mod auth;
 mod capabilities;
+mod checksum;
 mod cors;
 mod error;
 #[cfg(feature = "fuzzing")]
@@ -56,6 +58,7 @@ pub struct S3State {
     pub(crate) allowed_clock_skew: Duration,
     pub(crate) maximum_presign_seconds: i64,
     pub(crate) maximum_header_bytes: usize,
+    pub(crate) trusted_proxies: Arc<TrustedProxies>,
 }
 
 impl S3State {
@@ -71,7 +74,20 @@ impl S3State {
             allowed_clock_skew: Duration::minutes(15),
             maximum_presign_seconds: 604_800,
             maximum_header_bytes: 64 * 1024,
+            trusted_proxies: Arc::new(TrustedProxies::default()),
         }
+    }
+
+    /// Names the reverse-proxy hops whose forwarding headers may be believed.
+    ///
+    /// The S3 surface is the one most often published through a proxy, and the
+    /// address it records is what an operator reads out of the audit trail when
+    /// asking where a request came from. Until a hop is named, that address is
+    /// the socket the request arrived on.
+    #[must_use]
+    pub fn with_trusted_proxies(mut self, trusted_proxies: TrustedProxies) -> Self {
+        self.trusted_proxies = Arc::new(trusted_proxies);
+        self
     }
 
     /// Enables durable S3 security auditing.

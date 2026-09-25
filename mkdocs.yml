@@ -90,6 +90,7 @@ nav:
       - Installation: getting-started/installation.md
       - Quick Start: getting-started/quick-start.md
       - First Bucket and Object: getting-started/first-object.md
+      - Migrating from MinIO: getting-started/migrating-from-minio.md
   - Concepts:
       - concepts/index.md
       - Buckets and Objects: concepts/buckets-and-objects.md
@@ -124,7 +125,9 @@ nav:
       - Temporary Credentials: administration/temporary-credentials.md
       - Quotas: administration/quotas.md
       - Lifecycle Rules: administration/lifecycle-rules.md
+      - Object Lock: administration/object-lock.md
       - Audit Log: administration/audit-log.md
+      - Audit Export: administration/audit-export.md
       - Events and Webhooks: administration/events-and-webhooks.md
       - Metrics: administration/metrics.md
   - Deployment:
@@ -145,6 +148,7 @@ nav:
       - Authorization: security/authorization.md
       - Encryption: security/encryption.md
       - Sharing Security: security/sharing-security.md
+      - Object Lock and Trust: security/object-lock.md
       - Security Checklist: security/checklist.md
   - Operations:
       - operations/index.md
@@ -161,6 +165,8 @@ nav:
       - Environment Variables: reference/environment-variables.md
       - Ports: reference/ports.md
       - S3 Compatibility: reference/s3-compatibility.md
+      - Proof Bundle Format: reference/proof-bundle.md
+      - Audit Chain and Checkpoints: reference/audit-chain.md
       - Management API: reference/management-api.md
       - Error Reference: reference/errors.md
       - Glossary: reference/glossary.md
@@ -176,4 +182,5 @@ nav:
       - Development Setup: contributing/development-setup.md
       - Repository Structure: contributing/repository-structure.md
       - Testing: contributing/testing.md
+      - Release Gates: contributing/release-gates.md
       - Releasing: contributing/releasing.md

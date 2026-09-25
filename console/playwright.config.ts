@@ -1,10 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const S3_PORT = testPort('RECORD_STORE_E2E_S3_PORT', 47_600);
-const API_PORT = testPort('RECORD_STORE_E2E_API_PORT', 47_601);
-const CONSOLE_PORT = testPort('RECORD_STORE_E2E_CONSOLE_PORT', 47_602);
-const RPC_PORT = testPort('RECORD_STORE_E2E_RPC_PORT', 47_603);
-const HARNESS_PORT = testPort('RECORD_STORE_E2E_HARNESS_PORT', 47_604);
+// Below 32768, outside Linux's ephemeral range: a port in that range can be
+// taken as the source port of any outgoing connection between the launcher's
+// free-port check and its listen, which failed CI with EADDRINUSE.
+const S3_PORT = testPort('RECORD_STORE_E2E_S3_PORT', 27_600);
+const API_PORT = testPort('RECORD_STORE_E2E_API_PORT', 27_601);
+const CONSOLE_PORT = testPort('RECORD_STORE_E2E_CONSOLE_PORT', 27_602);
+const RPC_PORT = testPort('RECORD_STORE_E2E_RPC_PORT', 27_603);
+const HARNESS_PORT = testPort('RECORD_STORE_E2E_HARNESS_PORT', 27_604);
 const CONSOLE_URL = `http://127.0.0.1:${CONSOLE_PORT}`;
 const MANAGEMENT_URL = `http://127.0.0.1:${API_PORT}`;
 const MANAGEMENT_TOKEN = 'e2e-management-system-token-32-bytes-long';

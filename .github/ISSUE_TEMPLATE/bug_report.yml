@@ -1,0 +1,44 @@
+name: Bug report
+description: Report unexpected behavior or a failure
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        For security vulnerabilities, use
+        [private reporting](https://github.com/OpenElementsLabs/record-store/security/advisories/new).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include steps to reproduce, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or image tag
+      description: A release version, container image tag or digest, or commit.
+      placeholder: "0.1.3 or ghcr.io/openelementslabs/record-store:0.1.3"
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How is it deployed?
+      options:
+        - Docker Compose
+        - Coolify
+        - Binary
+        - From source (cargo run)
+        - Other (describe above)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Paste logs around the failure, including a request ID if available. Remove secrets and share URLs. If no logs are available, say so.
+      render: text
+    validations:
+      required: true

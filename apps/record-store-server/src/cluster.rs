@@ -53,6 +53,43 @@ pub struct ClusterDependencies {
     pub process: ClusterProcess,
 }
 
+/// Restricts journal draining to the member that currently leads.
+///
+/// The storage-event journal is replicated, so every member can see every
+/// pending event. The delivery outbox is not: it is node-local. Draining from
+/// more than one member at a time would therefore put each event into several
+/// outboxes and deliver it several times.
+///
+/// Leadership is the gate because it is already the cluster's single
+/// serialization point and it moves on its own when a member fails. What it
+/// does *not* give is exactly-once delivery across a handover: the member
+/// taking over resumes from its own outbox position, which may be behind the
+/// one the previous leader had reached, so events near the handover can be
+/// delivered twice. Subscribers deduplicate on the event identifier, which is
+/// allocated when the mutation committed and is the same on every member.
+pub struct LeaderEventPumpGate {
+    consensus: Arc<MetadataConsensus>,
+}
+
+impl LeaderEventPumpGate {
+    /// Creates a gate over one member's consensus handle.
+    #[must_use]
+    pub const fn new(consensus: Arc<MetadataConsensus>) -> Self {
+        Self { consensus }
+    }
+}
+
+#[async_trait::async_trait]
+impl record_store_service::EventPumpGate for LeaderEventPumpGate {
+    async fn active(&self) -> bool {
+        // A read barrier succeeds only where leadership is confirmed by a
+        // quorum. A follower, a member in a minority partition, and a member
+        // that merely believes it leads all fail it, which is the answer this
+        // gate needs.
+        self.consensus.read_barrier_index().await.is_ok()
+    }
+}
+
 /// Running cluster-only services owned by the server process.
 pub struct ClusterProcess {
     runtime: ClusterRuntime,
@@ -101,6 +138,22 @@ impl ClusterProcess {
 pub async fn initialize(config: &Config) -> Result<ClusterDependencies, ClusterStartupError> {
     let data_directory = &config.storage.data_directory;
     let identity_store = NodeIdentityStore::new(data_directory);
+    let consensus_directory = data_directory.join("metadata").join("consensus");
+    // Checked before anything is created or bound. `load_or_create` would mint a
+    // replacement identity for a node that already owns durable cluster state,
+    // and that replacement is itself a durable change — made, as it happens, on
+    // the way to refusing to start. The order matters more than the check.
+    if !identity_store.exists()
+        && record_store_consensus::holds_consensus_state(&consensus_directory)
+    {
+        let cluster = record_store_consensus::recovery::inspect(&consensus_directory)
+            .await
+            .ok()
+            .and_then(|assessment| assessment.cluster)
+            .map(|identity| identity.cluster_id)
+            .unwrap_or_default();
+        return Err(ClusterStartupError::IdentityLost { cluster });
+    }
     let mut identity = identity_store.load_or_create(Utc::now())?;
     let versions = NodeVersions::current(env!("CARGO_PKG_VERSION"));
     let tls = tls_settings(config);
@@ -162,11 +215,8 @@ pub async fn initialize(config: &Config) -> Result<ClusterDependencies, ClusterS
         peer_headers(&identity, &versions, Some(credential.secret.clone())),
         tls.clone(),
     ));
-    let mut consensus_settings = ConsensusSettings::new(
-        member_id,
-        &advertise_address,
-        data_directory.join("metadata").join("consensus"),
-    );
+    let mut consensus_settings =
+        ConsensusSettings::new(member_id, &advertise_address, consensus_directory.clone());
     consensus_settings.heartbeat_interval_millis = config.cluster.consensus_heartbeat_millis;
     consensus_settings.election_timeout_min_millis = config.cluster.election_timeout_min_millis;
     consensus_settings.election_timeout_max_millis = config.cluster.election_timeout_max_millis;
@@ -199,6 +249,10 @@ pub async fn initialize(config: &Config) -> Result<ClusterDependencies, ClusterS
         Arc::new(ReplicatedMetadataRepository::new(Arc::clone(&consensus)));
     let cluster: Arc<dyn ClusterStore> =
         Arc::new(ReplicatedClusterStore::new(Arc::clone(&consensus)));
+    // Checked before anything is written, and on every start rather than only
+    // on the bootstrap path: a mismatch between a node's identity and its
+    // replicated state is just as wrong when seeds are configured.
+    refuse_to_invent_authority(config, &identity, &consensus).await?;
     if config.cluster.seeds.is_empty() {
         bootstrap_cluster(
             config,
@@ -374,6 +428,85 @@ pub async fn initialize(config: &Config) -> Result<ClusterDependencies, ClusterS
     })
 }
 
+/// Counts stored payloads, cheaply and only far enough to answer "any?".
+///
+/// The startup guard needs one fact: does this node hold data that a second,
+/// independent cluster would inherit? A full scan would be wasted — the answer
+/// stops mattering after the first few — so the walk is bounded.
+fn stored_payload_sample(data_directory: &Path, limit: usize) -> usize {
+    fn walk(directory: &Path, depth: usize, limit: usize, found: &mut usize) {
+        if *found >= limit || depth > 3 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if *found >= limit {
+                return;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => walk(&entry.path(), depth + 1, limit, found),
+                Ok(kind) if kind.is_file() => *found += 1,
+                _ => {}
+            }
+        }
+    }
+    let mut found = 0;
+    walk(&data_directory.join("objects"), 0, limit, &mut found);
+    found
+}
+
+/// Refuses to start when starting would invent authority rather than resume it.
+///
+/// Three situations are refused, and they are different mistakes:
+///
+/// * a node that belongs to a cluster, still holds its data, and has lost its
+///   consensus state — starting it alone would form a second cluster around that
+///   data, and two clusters holding one identity can never be reconciled;
+/// * a node whose identity file and replicated state name different clusters —
+///   one of the two was replaced, and serving either under the other's name is
+///   worse than not starting;
+/// * durable cluster state with no identity to own it — the identity file was
+///   lost, and a fresh one would silently adopt another node's data.
+///
+/// A node with seeds configured is exempt from the first: it has somewhere to
+/// learn the truth from, so rejoining is a recovery rather than an invention.
+async fn refuse_to_invent_authority(
+    config: &Config,
+    identity: &NodeIdentity,
+    consensus: &Arc<MetadataConsensus>,
+) -> Result<(), ClusterStartupError> {
+    let recorded = consensus.state().cluster().identity().await?;
+    match (identity.cluster_id, recorded.as_ref()) {
+        (Some(bound), Some(state)) if bound != state.cluster_id => {
+            return Err(ClusterStartupError::ClusterIdentityMismatch {
+                identity: bound,
+                state: state.cluster_id,
+            });
+        }
+        (None, Some(state)) => {
+            return Err(ClusterStartupError::IdentityLost {
+                cluster: state.cluster_id,
+            });
+        }
+        _ => {}
+    }
+
+    // The dangerous case: bound to a cluster, no metadata state left, nobody to
+    // ask, and data on disk to take hostage.
+    if let Some(cluster) = identity.cluster_id
+        && recorded.is_none()
+        && config.cluster.seeds.is_empty()
+    {
+        let payloads = stored_payload_sample(&config.storage.data_directory, 1);
+        if payloads > 0 {
+            return Err(ClusterStartupError::WouldFormSecondCluster { cluster, payloads });
+        }
+    }
+    Ok(())
+}
+
 async fn bootstrap_cluster(
     config: &Config,
     identity: &NodeIdentity,
@@ -401,6 +534,9 @@ async fn bootstrap_cluster(
                     cluster_id,
                     cluster_format_version: versions.cluster_format,
                     created_at: identity.created_at,
+                    recovery_generation: 0,
+                    recovery_id: None,
+                    recovered_at: None,
                 },
                 config: Box::new(cluster_config(config)),
             }),
@@ -511,6 +647,7 @@ async fn update_local_membership(
                 node_id: identity.node_id,
                 rpc_address: config.server.effective_rpc_advertise(),
                 s3_endpoint: config.cluster.s3_endpoint.clone(),
+                management_endpoint: config.cluster.management_endpoint.clone(),
                 versions: Box::new(versions.clone()),
                 storage_class: StorageClass::new(&config.cluster.storage_class)?,
                 failure_domain,
@@ -543,6 +680,7 @@ fn registration(
         versions: versions.clone(),
         rpc_address: config.server.effective_rpc_advertise(),
         s3_endpoint: config.cluster.s3_endpoint.clone(),
+        management_endpoint: None,
         storage_class: StorageClass::new(&config.cluster.storage_class)?,
         failure_domain: FailureDomain::new(profile.failure_domain.clone().into_iter().collect())?,
         capacity: NodeCapacity {
@@ -970,6 +1108,42 @@ pub enum ClusterStartupError {
     NodeNotRegistered(String),
     #[error("no configured seed accepted the cluster operation: {0}")]
     Seeds(String),
+    /// Starting would have formed a second cluster from a survivor's data.
+    #[error(
+        "this node already belongs to cluster {cluster}, holds {payloads} stored payload(s), and \
+         has no metadata consensus state left. Starting it would form a *second* cluster around \
+         that data, which can never be reconciled with the original. Either configure \
+         `cluster.seeds` so it rejoins the existing cluster, or, if the original cluster's quorum \
+         is genuinely unrecoverable, run the recovery procedure against a surviving member."
+    )]
+    WouldFormSecondCluster {
+        /// Cluster this node's durable identity is bound to.
+        cluster: record_store_core::ClusterId,
+        /// Payloads found on this node's disk.
+        payloads: usize,
+    },
+    /// The node's identity and its replicated state disagree about which cluster it is in.
+    #[error(
+        "this node's durable identity says it belongs to cluster {identity}, but its metadata \
+         state belongs to cluster {state}. One of the two was replaced. Refusing to start rather \
+         than serving one cluster's data under another's name."
+    )]
+    ClusterIdentityMismatch {
+        /// Cluster the identity file names.
+        identity: record_store_core::ClusterId,
+        /// Cluster the replicated state names.
+        state: record_store_core::ClusterId,
+    },
+    /// Durable cluster state exists but the node identity that owned it is gone.
+    #[error(
+        "this node holds metadata for cluster {cluster} but has no durable node identity; the \
+         identity file was lost or replaced. Restore it, or treat this node as permanently lost \
+         and admit a clean replacement."
+    )]
+    IdentityLost {
+        /// Cluster the replicated state names.
+        cluster: record_store_core::ClusterId,
+    },
     #[error("the internal RPC supervisor stopped unexpectedly: {0}")]
     RpcTask(String),
 }
@@ -982,6 +1156,7 @@ mod tests {
     use futures_util::{TryStreamExt, stream};
     use record_store_core::{
         Bucket, BucketId, BucketName, BucketQuota, ObjectKey, OrganizationId, VersioningState,
+        WriteOrigin,
     };
     use record_store_storage::{GetObjectRequest, PutObjectRequest, upload_stream};
     use tempfile::tempdir;
@@ -1110,6 +1285,514 @@ mod tests {
         (cancellation, task)
     }
 
+    /// Starts a node, then puts it down completely, returning its cluster.
+    ///
+    /// redb keeps a data directory exclusively locked for as long as any handle
+    /// to it is alive, so a test that restarts a node — or inspects its files
+    /// offline — has to release every handle, not just stop the supervisor.
+    async fn start_then_stop(config: &Config) -> record_store_core::ClusterId {
+        let node = initialize(config).await.expect("start the cluster node");
+        let cluster_id = node
+            .context
+            .cluster
+            .identity()
+            .await
+            .expect("read identity")
+            .expect("initialized")
+            .cluster_id;
+        let ClusterDependencies {
+            storage,
+            metadata,
+            context,
+            consensus,
+            operations,
+            task_health,
+            process,
+        } = node;
+        let (cancellation, task) = supervise(process);
+        cancellation.cancel();
+        let _ = task.await;
+        drop(storage);
+        drop(metadata);
+        drop(context);
+        drop(operations);
+        drop(task_health);
+        drop(consensus);
+        cluster_id
+    }
+
+    /// The disaster that has to be refused: a node that belonged to a cluster,
+    /// still holds its data, and has lost the metadata state that said what that
+    /// data meant.
+    ///
+    /// Starting it alone would form a *second* cluster around the surviving
+    /// payloads. Both would carry the same identifier and neither could ever be
+    /// reconciled with the other, so the failure has to happen at startup — not
+    /// after the node has served a read from data it has no authority over.
+    #[tokio::test]
+    async fn a_survivor_whose_metadata_state_is_gone_refuses_to_form_a_second_cluster() {
+        let directory = tempdir().expect("temporary cluster directory");
+        let data = directory.path().join("survivor");
+        let config = node_config(data.clone(), reserve_rpc_address(), "rack-a");
+
+        let cluster_id = start_then_stop(&config).await;
+
+        // The node's payloads survive; its consensus state does not. This is a
+        // lost disk, a botched restore, or a cleanup script.
+        std::fs::create_dir_all(data.join("objects").join("ab").join("cd")).expect("payload shard");
+        std::fs::write(
+            data.join("objects").join("ab").join("cd").join("payload"),
+            b"surviving bytes",
+        )
+        .expect("a payload that outlived the metadata");
+        std::fs::remove_dir_all(data.join("metadata").join("consensus"))
+            .expect("lose the consensus state");
+
+        let refused = initialize(&config).await.err();
+        let Some(ClusterStartupError::WouldFormSecondCluster { cluster, payloads }) = refused
+        else {
+            panic!("a survivor with data and no metadata must refuse to start: {refused:?}");
+        };
+        assert_eq!(cluster, cluster_id, "the refusal names the cluster at risk");
+        assert!(payloads > 0, "and says why it is refusing");
+    }
+
+    /// The same node, given somewhere to learn the truth from, is not inventing
+    /// authority — it is rejoining. Refusing that would turn an ordinary
+    /// recovery into an outage, so the guard is about being *alone*, not about
+    /// having lost state.
+    #[tokio::test]
+    async fn a_survivor_with_seeds_configured_is_allowed_to_rejoin_instead() {
+        let directory = tempdir().expect("temporary cluster directory");
+        let data = directory.path().join("survivor");
+        let mut config = node_config(data.clone(), reserve_rpc_address(), "rack-a");
+
+        start_then_stop(&config).await;
+
+        std::fs::create_dir_all(data.join("objects").join("ab").join("cd")).expect("payload shard");
+        std::fs::write(
+            data.join("objects").join("ab").join("cd").join("payload"),
+            b"surviving bytes",
+        )
+        .expect("payload");
+        std::fs::remove_dir_all(data.join("metadata").join("consensus"))
+            .expect("lose the consensus state");
+
+        // A seed it can ask. Startup will fail because nothing is listening
+        // there, but it must fail for *that* reason rather than by refusing to
+        // form a second cluster.
+        config.cluster.seeds = vec![reserve_rpc_address().to_string()];
+        let outcome = initialize(&config).await.err();
+        assert!(
+            !matches!(
+                outcome,
+                Some(ClusterStartupError::WouldFormSecondCluster { .. })
+            ),
+            "a node with a seed is rejoining, not inventing authority: {outcome:?}"
+        );
+    }
+
+    /// An identity file and a replicated state that name different clusters mean
+    /// one of the two was replaced. Serving either under the other's name is
+    /// worse than not starting, so neither is chosen.
+    #[tokio::test]
+    async fn a_node_whose_identity_and_state_disagree_refuses_to_pick_one() {
+        let directory = tempdir().expect("temporary cluster directory");
+        let data = directory.path().join("confused");
+        let config = node_config(data.clone(), reserve_rpc_address(), "rack-a");
+
+        start_then_stop(&config).await;
+
+        // Somebody restored the wrong identity file next to this data.
+        let identity_path = data.join("node-identity.json");
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&identity_path).expect("read identity"))
+                .expect("identity is JSON");
+        document["cluster_id"] =
+            serde_json::Value::String(record_store_core::ClusterId::new().to_string());
+        std::fs::write(
+            &identity_path,
+            serde_json::to_vec(&document).expect("encode identity"),
+        )
+        .expect("write a foreign identity");
+
+        let refused = initialize(&config).await.err();
+        assert!(
+            matches!(
+                refused,
+                Some(ClusterStartupError::ClusterIdentityMismatch { .. })
+            ),
+            "a node must not serve one cluster's data under another's name: {refused:?}"
+        );
+    }
+
+    /// Durable cluster state with no identity to own it means the identity file
+    /// was lost. A fresh one would silently adopt this data under a new node
+    /// identity, so the node stops and says what is missing.
+    #[tokio::test]
+    async fn a_node_that_lost_its_identity_file_refuses_to_adopt_its_own_data() {
+        let directory = tempdir().expect("temporary cluster directory");
+        let data = directory.path().join("orphaned");
+        let config = node_config(data.clone(), reserve_rpc_address(), "rack-a");
+
+        start_then_stop(&config).await;
+
+        std::fs::remove_file(data.join("node-identity.json")).expect("lose the identity file");
+
+        let refused = initialize(&config).await.err();
+        assert!(
+            matches!(refused, Some(ClusterStartupError::IdentityLost { .. })),
+            "a node with state but no identity must not invent one: {refused:?}"
+        );
+    }
+
+    /// Ordinary restart, which everything above must not have broken: the same
+    /// node, unchanged, starts again and still holds its cluster.
+    #[tokio::test]
+    async fn an_ordinary_restart_resumes_the_same_cluster() {
+        let directory = tempdir().expect("temporary cluster directory");
+        let data = directory.path().join("restarting");
+        let config = node_config(data, reserve_rpc_address(), "rack-a");
+
+        let cluster_id = start_then_stop(&config).await;
+
+        let second = initialize(&config).await.expect("restart the same node");
+        let restarted = second
+            .context
+            .cluster
+            .identity()
+            .await
+            .expect("read identity")
+            .expect("initialized");
+        assert_eq!(
+            restarted.cluster_id, cluster_id,
+            "a restart resumes the cluster rather than forming one"
+        );
+        assert_eq!(
+            restarted.recovery_generation, 0,
+            "an ordinary restart is not a recovery and must not look like one"
+        );
+        let (cancellation, task) = supervise(second.process);
+        cancellation.cancel();
+        let _ = task.await;
+    }
+
+    /// Loosens the capacity policy so a tiny test payload can be placed.
+    ///
+    /// CI and developer machines are often already above the default high
+    /// watermark, which would make placement fail for an environmental reason
+    /// that has nothing to do with what is being tested.
+    async fn relax_capacity_policy(operations: &ClusterOperations, context: &ClusterContext) {
+        let mut cluster_config = context
+            .config()
+            .await
+            .expect("read the initial cluster configuration");
+        cluster_config.watermarks = record_store_cluster::CapacityWatermarks {
+            low_percent: 98,
+            high_percent: 99,
+            critical_percent: 100,
+        };
+        cluster_config.capacity_safety_margin_bytes = 0;
+        cluster_config.unknown_upload_size_reservation_bytes = 1;
+        operations
+            .set_config(cluster_config)
+            .await
+            .expect("configure deterministic test capacity policy");
+    }
+
+    /// The whole of disaster recovery, end to end, against real nodes.
+    ///
+    /// A three-node cluster stores an object with three replicas. Two nodes are
+    /// then lost permanently, which takes the metadata quorum with them. The
+    /// survivor is recovered offline, restarted, and has to come back as a
+    /// coherent cluster: its own identity, its object history, and — the part
+    /// that actually matters — the object's bytes, verified against what was
+    /// written rather than merely a successful status code.
+    #[tokio::test]
+    async fn a_cluster_recovered_from_one_survivor_still_serves_its_verified_objects() {
+        let directory = tempdir().expect("temporary cluster directory");
+        let first_rpc = reserve_rpc_address();
+        let first_config = node_config(directory.path().join("first"), first_rpc, "rack-a");
+        let first = initialize(&first_config)
+            .await
+            .expect("initialize the first cluster node");
+        relax_capacity_policy(&first.operations, &first.context).await;
+
+        let second_token = first
+            .operations
+            .issue_join_token(300, "second node".into())
+            .await
+            .expect("issue a join token");
+        let third_token = first
+            .operations
+            .issue_join_token(300, "third node".into())
+            .await
+            .expect("issue a join token");
+
+        let mut second_config = node_config(
+            directory.path().join("second"),
+            reserve_rpc_address(),
+            "rack-b",
+        );
+        second_config.cluster.seeds = vec![first_rpc.to_string()];
+        second_config.cluster.join_token = Some(record_store_config::SecretValue::new(
+            second_token.token.expose(),
+        ));
+        let second = initialize(&second_config)
+            .await
+            .expect("join the second node");
+
+        let mut third_config = node_config(
+            directory.path().join("third"),
+            reserve_rpc_address(),
+            "rack-c",
+        );
+        third_config.cluster.seeds = vec![first_rpc.to_string()];
+        third_config.cluster.join_token = Some(record_store_config::SecretValue::new(
+            third_token.token.expose(),
+        ));
+        let third = initialize(&third_config)
+            .await
+            .expect("join the third node");
+
+        let bucket = Bucket {
+            id: BucketId::new(),
+            organization_id: OrganizationId::new(),
+            name: BucketName::new("recovered-bucket").expect("valid bucket name"),
+            created_at: Utc::now(),
+            versioning: VersioningState::Disabled,
+            quota: BucketQuota::default(),
+            storage_class: None,
+            durability_policy: None,
+            object_lock: None,
+            cors: None,
+        };
+        first
+            .metadata
+            .create_bucket(&bucket)
+            .await
+            .expect("commit bucket metadata");
+
+        const PAYLOAD: &[u8] = b"written before the quorum was lost, and readable after";
+        let key = ObjectKey::new("recovered/object.txt").expect("valid object key");
+        let put = first
+            .storage
+            .put(PutObjectRequest {
+                bucket_id: bucket.id,
+                key: key.clone(),
+                content_type: Some("text/plain".into()),
+                custom_metadata: BTreeMap::new(),
+                expected_checksum: None,
+                object_id: None,
+                protocol_etag: None,
+                object_lock: None,
+                origin: WriteOrigin::Direct,
+                body: upload_stream(stream::once(async {
+                    Ok::<Bytes, io::Error>(Bytes::from_static(PAYLOAD))
+                })),
+            })
+            .await
+            .expect("the write must satisfy its durability policy");
+        let committed_checksum = put.metadata.checksum.clone();
+        let cluster_id = first
+            .context
+            .cluster
+            .identity()
+            .await
+            .expect("read identity")
+            .expect("initialized")
+            .cluster_id;
+        let survivor_member = first.consensus.member_id();
+
+        // Every node stops, and every handle with it: recovery runs offline.
+        for node in [first, second, third] {
+            let ClusterDependencies {
+                storage,
+                metadata,
+                context,
+                consensus,
+                operations,
+                task_health,
+                process,
+            } = node;
+            let (cancellation, task) = supervise(process);
+            cancellation.cancel();
+            let _ = task.await;
+            drop(storage);
+            drop(metadata);
+            drop(context);
+            drop(operations);
+            drop(task_health);
+            drop(consensus);
+        }
+        // Two of three are gone for good.
+        std::fs::remove_dir_all(directory.path().join("second")).expect("lose the second node");
+        std::fs::remove_dir_all(directory.path().join("third")).expect("lose the third node");
+
+        // Without recovery, the survivor alone cannot elect: one of three voters
+        // is not a majority. That is the state an operator is recovering from,
+        // and it is correct rather than broken.
+        let consensus_directory = first_config
+            .storage
+            .data_directory
+            .join("metadata")
+            .join("consensus");
+        let assessment = record_store_consensus::recovery::inspect(&consensus_directory)
+            .await
+            .expect("inspect the survivor");
+        assert!(assessment.recoverable, "{assessment:?}");
+        assert_eq!(assessment.voters.len(), 3, "{assessment:?}");
+
+        let report = record_store_consensus::recovery::recover_single_member(
+            &consensus_directory,
+            record_store_consensus::RecoveryIntent {
+                cluster_id,
+                member_id: survivor_member,
+                address: first_rpc.to_string(),
+                reason: "two of three voters lost permanently".to_owned(),
+                accept_data_loss: true,
+            },
+        )
+        .await
+        .expect("rebuild authority around the survivor");
+        assert_eq!(report.recovery_generation, 1);
+        assert_eq!(
+            report.payloads_held_here, report.payloads_total,
+            "this survivor held a replica of everything, so nothing should be reported as \
+             needing another holder: {report:?}"
+        );
+
+        // The recovered node comes back as a working cluster.
+        let recovered = initialize(&first_config)
+            .await
+            .expect("the recovered member must start");
+        let identity = recovered
+            .context
+            .cluster
+            .identity()
+            .await
+            .expect("read identity")
+            .expect("initialized");
+        assert_eq!(
+            identity.cluster_id, cluster_id,
+            "recovery keeps the cluster's identity rather than creating a new one"
+        );
+        assert_eq!(identity.recovery_generation, 1);
+
+        // The object is still there — and its bytes are the bytes that were
+        // written, checked rather than assumed.
+        let read = recovered
+            .storage
+            .get(GetObjectRequest {
+                bucket_id: bucket.id,
+                key: key.clone(),
+                range: None,
+            })
+            .await
+            .expect("the recovered cluster must still serve the object");
+        assert_eq!(read.metadata.checksum, committed_checksum);
+        use futures_util::StreamExt as _;
+        let mut body = read.body;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = body.next().await {
+            bytes.extend_from_slice(&chunk.expect("read a payload chunk"));
+        }
+        assert_eq!(
+            bytes.as_slice(),
+            PAYLOAD,
+            "a recovered cluster must return the bytes that were written, not merely a 200"
+        );
+
+        // Writes are a different question from reads, and the answer is not the
+        // convenient one. A single member cannot satisfy a policy that requires
+        // two acknowledgements, and the cluster refuses rather than quietly
+        // acknowledging at one. That refusal is the guarantee working: an
+        // operator who wants writes back must restore capacity or deliberately
+        // lower the policy, not have it lowered for them.
+        assert!(
+            !report.writable_alone(),
+            "this cluster's policy needs more than one acknowledgement: {report:?}"
+        );
+        let refused = recovered
+            .storage
+            .put(PutObjectRequest {
+                bucket_id: bucket.id,
+                key: ObjectKey::new("recovered/after.txt").expect("valid object key"),
+                content_type: None,
+                custom_metadata: BTreeMap::new(),
+                expected_checksum: None,
+                object_id: None,
+                protocol_etag: None,
+                object_lock: None,
+                origin: WriteOrigin::Direct,
+                body: upload_stream(stream::once(async {
+                    Ok::<Bytes, io::Error>(Bytes::from_static(b"after recovery"))
+                })),
+            })
+            .await;
+        let Err(record_store_storage::StorageError::DurabilityNotMet {
+            required, achieved, ..
+        }) = refused
+        else {
+            panic!("a lone survivor must not acknowledge a write below its policy: {refused:?}");
+        };
+        assert!(
+            required > achieved,
+            "required {required}, achieved {achieved}"
+        );
+
+        // Recovery rebuilt metadata *authority*, not the data plane's view of who
+        // exists: the lost nodes are still recorded as members, and placement
+        // will keep choosing them until they are retired. Retiring them is an
+        // operator step, and a forced one, because their replicas are genuinely
+        // gone rather than movable.
+        for node_id in &report.other_nodes {
+            recovered
+                .operations
+                .decommission(*node_id, true)
+                .await
+                .expect("retire a node that is never coming back");
+        }
+
+        // Lowering the policy is a separate, explicit operator decision. Only
+        // with both done does the recovered cluster serve writes again.
+        let mut single_member_policy = recovered
+            .context
+            .config()
+            .await
+            .expect("read the cluster configuration");
+        single_member_policy.replication_factor = 1;
+        single_member_policy.write_acknowledgement =
+            record_store_cluster::WriteAcknowledgement::Count(1);
+        recovered
+            .operations
+            .set_config(single_member_policy)
+            .await
+            .expect("accept an explicitly lowered durability policy");
+        recovered
+            .storage
+            .put(PutObjectRequest {
+                bucket_id: bucket.id,
+                key: ObjectKey::new("recovered/after.txt").expect("valid object key"),
+                content_type: None,
+                custom_metadata: BTreeMap::new(),
+                expected_checksum: None,
+                object_id: None,
+                protocol_etag: None,
+                object_lock: None,
+                origin: WriteOrigin::Direct,
+                body: upload_stream(stream::once(async {
+                    Ok::<Bytes, io::Error>(Bytes::from_static(b"after recovery"))
+                })),
+            })
+            .await
+            .expect("the recovered cluster serves writes once its policy is satisfiable");
+
+        let (cancellation, task) = supervise(recovered.process);
+        cancellation.cancel();
+        let _ = task.await;
+    }
+
     #[tokio::test]
     async fn an_rf3_put_is_committed_on_three_joined_nodes_and_read_remotely() {
         let directory = tempdir().expect("temporary cluster directory");
@@ -1189,6 +1872,7 @@ mod tests {
             quota: BucketQuota::default(),
             storage_class: None,
             durability_policy: None,
+            object_lock: None,
             cors: None,
         };
         first_metadata
@@ -1207,6 +1891,8 @@ mod tests {
                 expected_checksum: None,
                 object_id: None,
                 protocol_etag: None,
+                object_lock: None,
+                origin: WriteOrigin::Direct,
                 body: upload_stream(stream::once(async {
                     Ok::<Bytes, io::Error>(Bytes::from_static(PAYLOAD))
                 })),

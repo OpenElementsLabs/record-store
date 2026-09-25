@@ -8,22 +8,14 @@
  * by an icon and a text label, so colour is never the only signal.
  */
 @theme {
-  /*
-   * Geist, with a real fallback stack behind it.
-   *
-   * It was designed for developer tooling: a tall x-height that stays legible at
-   * the small sizes a dense console lives at, and a mono companion whose digits
-   * align in a table. The fallbacks matter because the variable is also read
-   * before hydration.
-   */
-  --font-sans:
-    var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
-    'Helvetica Neue', Arial, sans-serif;
+  /* Public Sans for reading; Manrope for the heading and metric hierarchy. */
+  --font-sans: 'Public Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Manrope Variable', 'Public Sans Variable', sans-serif;
   --font-mono:
     var(--font-geist-mono), ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
     'Liberation Mono', monospace;
 
-  --color-canvas: oklch(0.99 0.002 250);
+  --color-canvas: oklch(0.975 0.004 190);
   --color-background: var(--color-canvas);
   --color-surface: oklch(1 0 0);
   --color-surface-subtle: oklch(0.975 0.003 250);
@@ -62,10 +54,10 @@
   --color-brand-teal: #0bb3b8;
   --color-brand-gold: #ffbb3d;
 
-  --color-accent: oklch(0.52 0.14 250);
-  --color-accent-hover: oklch(0.46 0.15 250);
+  --color-accent: oklch(0.45 0.08 195);
+  --color-accent-hover: oklch(0.39 0.075 195);
   --color-accent-ink: oklch(0.99 0 0);
-  --color-accent-soft: oklch(0.95 0.03 250);
+  --color-accent-soft: oklch(0.94 0.025 190);
   /* Named so focus styling is a decision recorded in one place rather than the
      accent colour reused by coincidence. */
   --color-focus-ring: var(--color-accent);
@@ -131,12 +123,10 @@
   --color-ink-muted: oklch(0.73 0.008 250);
   --color-ink-subtle: oklch(0.62 0.008 250);
 
-  --color-accent: oklch(0.68 0.13 250);
-  --color-accent-hover: oklch(0.75 0.12 250);
+  --color-accent: oklch(0.78 0.105 185);
+  --color-accent-hover: oklch(0.85 0.09 185);
   --color-accent-ink: oklch(0.17 0.01 255);
-  --color-accent-soft: oklch(0.28 0.05 250);
-  --color-focus-ring: oklch(0.68 0.13 250);
-  --color-selection: oklch(0.32 0.06 250);
+  --color-accent-soft: oklch(0.29 0.035 190);
   --color-focus-ring: var(--color-accent);
   --color-selection: var(--color-accent-soft);
 
@@ -168,6 +158,8 @@
     background-color: var(--color-canvas);
     color: var(--color-ink);
     font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    line-height: 1.6;
     -webkit-font-smoothing: antialiased;
   }
 
@@ -238,8 +230,9 @@
  * keeps a console compact without shouting.
  */
 @utility type-display {
-  font-size: 1.875rem;
-  line-height: 2.25rem;
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 3vw, 2.625rem);
+  line-height: 1.2;
   font-weight: 600;
   letter-spacing: -0.04em;
   color: var(--color-foreground);
@@ -247,8 +240,9 @@
 }
 
 @utility type-page-title {
-  font-size: 1.375rem;
-  line-height: 1.875rem;
+  font-family: var(--font-display);
+  font-size: clamp(1.75rem, 2.5vw, 2.125rem);
+  line-height: 1.25;
   font-weight: 600;
   /* The tight tracking the login sets at display size, eased off for the
      smaller page titles so the letters stay separable. */
@@ -258,13 +252,14 @@
 }
 
 @utility type-page-description {
-  font-size: 0.875rem;
-  line-height: 1.375rem;
+  font-size: 0.9375rem;
+  line-height: 1.625rem;
   color: var(--color-ink-muted);
 }
 
 @utility type-section-title {
-  font-size: 0.9375rem;
+  font-family: var(--font-display);
+  font-size: 1rem;
   line-height: 1.375rem;
   font-weight: 600;
   color: var(--color-ink);
@@ -277,8 +272,8 @@
 }
 
 @utility type-meta {
-  font-size: 0.75rem;
-  line-height: 1.125rem;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
   color: var(--color-ink-muted);
 }
 
@@ -290,26 +285,21 @@
 }
 
 @utility type-label {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   line-height: 1rem;
   font-weight: 500;
   color: var(--color-ink);
 }
 
-/* Section headings inside the sidebar and toolbars: small, spaced, quiet. */
-/*
- * The login's eyebrow: monospaced, widely tracked, uppercase. Two colours,
- * because the same treatment does two jobs — quiet section labels in the
- * sidebar, and one accented line above a page title.
- */
+/* Quiet sidebar labels; a monospaced accent for page-level context. */
 @utility type-eyebrow {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.6875rem;
   line-height: 1rem;
   font-weight: 500;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--color-foreground-subtle);
+  color: var(--color-foreground-muted);
 }
 
 @utility type-eyebrow-accent {
@@ -317,7 +307,7 @@
   font-size: 0.75rem;
   line-height: 1rem;
   font-weight: 500;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--color-primary);
 }
@@ -363,4 +353,19 @@
   transition-property: color, background-color, border-color, box-shadow, opacity, transform;
   transition-duration: 150ms;
   transition-timing-function: var(--ease-out-quiet);
+}
+
+/* A restrained lift separates working surfaces from the tinted canvas. */
+@utility shadow-panel {
+  box-shadow: 0 1px 3px color-mix(in oklch, var(--color-foreground) 4%, transparent);
+}
+
+@utility type-metric {
+  font-family: var(--font-display);
+  font-size: clamp(1.5rem, 2.2vw, 2rem);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.045em;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }

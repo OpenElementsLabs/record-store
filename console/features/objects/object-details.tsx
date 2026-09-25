@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { EmptyState } from '@/components/empty-state';
+import { ObjectProof } from '@/features/objects/object-proof';
 import { ObjectVersions } from '@/features/objects/object-versions';
 import { ObjectPreview } from '@/features/objects/object-preview';
 import { CreateEmbedDialog } from '@/features/sharing/create-embed-dialog';
@@ -287,7 +288,16 @@ export function ObjectDetails({
           ) : null}
 
           <TabsContent value="integrity">
-            <IntegrityTab bucket={bucket} objectKey={objectKey} record={object.data ?? null} />
+            <IntegrityTab
+              key={object.data?.version_id ?? versionId ?? 'current'}
+              bucket={bucket}
+              objectKey={objectKey}
+              record={object.data ?? null}
+              historical={Boolean(versionId)}
+            />
+            {object.data ? (
+              <ObjectProof key={object.data.version_id} bucket={bucket} record={object.data} />
+            ) : null}
           </TabsContent>
         </Tabs>
       )}
@@ -435,10 +445,12 @@ function IntegrityTab({
   bucket,
   objectKey,
   record,
+  historical,
 }: {
   readonly bucket: string;
   readonly objectKey: string;
   readonly record: ObjectSummary | null;
+  readonly historical: boolean;
 }) {
   const permissions = usePermissions();
   const verification = useMutation({
@@ -457,11 +469,16 @@ function IntegrityTab({
       </CardHeader>
       <CardContent className="space-y-3">
         <Row label="Recorded checksum" value={record?.checksum ?? null} mono />
-        {permissions.manage_storage ? (
+        {historical ? (
+          <p className="type-meta">
+            Server verification checks the current object only. To verify this historical version,
+            download its bytes and proof bundle and verify them offline.
+          </p>
+        ) : permissions.manage_storage ? (
           <Button
             size="sm"
             variant="secondary"
-            disabled={verification.isPending}
+            disabled={!record || verification.isPending}
             onClick={() => verification.mutate()}
           >
             {verification.isPending ? 'Verifying…' : 'Verify object'}
@@ -472,7 +489,10 @@ function IntegrityTab({
         {verification.error ? <ErrorState error={verification.error} /> : null}
         {verification.data ? (
           <p className="text-sm text-ok" role="status">
-            The stored bytes match the recorded checksum.
+            The stored bytes of version {verification.data.version_id} match its recorded checksum.
+            {verification.data.version_id !== record?.version_id
+              ? ' The current version changed since this page loaded.'
+              : ''}
           </p>
         ) : null}
       </CardContent>
@@ -488,10 +508,17 @@ function ActivityTab({
   readonly bucket: string;
   readonly objectKey: string;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const afterTime = readString(params, 'eventTime', '') || null;
+  const afterId = readString(params, 'eventId', '') || null;
   const events = useQuery({
-    queryKey: queryKeys.events(`object:${bucket}:${objectKey}`),
-    queryFn: ({ signal }) => fetchStorageEvents({ bucket, prefix: objectKey, limit: 25 }, signal),
+    queryKey: [...queryKeys.events(`object:${bucket}:${objectKey}`), afterTime, afterId],
+    queryFn: ({ signal }) =>
+      fetchStorageEvents({ bucket, prefix: objectKey, afterTime, afterId, limit: 25 }, signal),
   });
+  const entries = (events.data?.events ?? []).filter((event) => event.object === objectKey);
 
   return (
     <Card>
@@ -507,14 +534,18 @@ function ActivityTab({
           <ErrorState error={events.error} onRetry={() => void events.refetch()} />
         ) : events.isPending ? (
           <Skeleton className="h-20 w-full" />
-        ) : events.data.events.length === 0 ? (
+        ) : entries.length === 0 ? (
           <EmptyState
-            title="No recorded activity"
-            description="No storage events have been recorded for this object."
+            title="No matching activity on this page"
+            description={
+              events.data.next_id
+                ? 'More events are available. Continue to the next page.'
+                : 'No matching storage events remain in this listing.'
+            }
           />
         ) : (
           <ul className="divide-y divide-border">
-            {events.data.events.map((event) => (
+            {entries.map((event) => (
               <li key={event.id} className="flex flex-wrap items-baseline gap-x-3 py-2">
                 <Badge tone="neutral">{event.type}</Badge>
                 <span className="type-meta">
@@ -529,6 +560,31 @@ function ActivityTab({
             ))}
           </ul>
         )}
+        <nav aria-label="Activity pages" className="flex gap-2 pt-3">
+          {afterId ? (
+            <Button
+              variant="secondary"
+              onClick={() =>
+                router.push(`${pathname}${mergeSearch(params, { eventTime: null, eventId: null })}`)
+              }
+            >
+              First activity page
+            </Button>
+          ) : null}
+          {events.data?.next_id ? (
+            <Button
+              variant="secondary"
+              disabled={events.isFetching}
+              onClick={() =>
+                router.push(
+                  `${pathname}${mergeSearch(params, { eventTime: events.data.next_time, eventId: events.data.next_id })}`,
+                )
+              }
+            >
+              Next activity page
+            </Button>
+          ) : null}
+        </nav>
       </CardContent>
     </Card>
   );

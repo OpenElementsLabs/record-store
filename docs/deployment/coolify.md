@@ -184,7 +184,7 @@ Coolify's own backups do not know how to quiesce Record Store's metadata. Take
 metadata backups with the CLI as well:
 
 ```bash
-record-store server backup-metadata --output /var/lib/record-store/backup
+record-store server backup /var/lib/record-store/backup
 ```
 
 See [Backup and Restore](../operations/backup-and-restore.md) and

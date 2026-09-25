@@ -11,22 +11,33 @@ Pushing `vX.Y.Z` runs `.github/workflows/release.yml`:
 ```mermaid
 flowchart TB
     tag[Tag vX.Y.Z] --> validate[Validate tag against repository version]
-    validate --> rust[Rust: fmt, clippy, tests]
-    validate --> console[Console: format, lint, typecheck, tests, build]
-    rust --> server[Server image: amd64 + arm64 -> GHCR]
-    console --> server
-    rust --> web[Console image: amd64 + arm64 -> GHCR]
-    console --> web
+    validate --> gates[Release gates, integration stage, on a candidate built from the tag]
+    gates --> server[Server image: amd64 + arm64 -> GHCR]
+    gates --> web[Console image: amd64 + arm64 -> GHCR]
     server --> binaries[Binary archives from the published image]
-    server --> smoke[Smoke test the published images]
+    binaries --> artifact[Release gates, candidate stage, on the extracted binaries]
+    server --> smoke[Smoke test the published images on amd64 and arm64]
     web --> smoke
-    binaries --> release[GitHub Release + checksums + SBOMs]
-    smoke --> release
+    binaries --> provenance[Verify attestations]
+    server --> provenance
+    web --> provenance
+    artifact --> decision[Release decision over every result]
+    smoke --> decision
+    provenance --> decision
+    decision --> release[GitHub Release + checksums + SBOMs + gate report]
 ```
 
-The GitHub Release is created last and depends on everything before it, so a
-failed build never leaves a release behind. Images are pushed before the release
-exists, but only after every gate has passed and both architectures have built.
+The GitHub Release is created last and depends on the release decision, which
+evaluates every gate in [`release/gates.toml`](release-gates.md) for this
+candidate. A failed or missing gate, an open finding that blocks release, or an
+expired quarantine stops the release; the decision is attached to the release
+as `record-store-X.Y.Z-release-gates.json` and `.md`. Images are pushed only
+after the pre-publish gates pass; a failure after that point leaves a tagged
+image without a release, which is never repointed.
+
+Run the candidate evaluation before tagging, from the Actions tab (**Gates →
+Run workflow → candidate**) on the commit you intend to tag. It runs the same
+gates the release will, without publishing anything.
 
 ## The procedure
 
@@ -125,6 +136,57 @@ git tag -v vX.Y.Z
 ```
 
 See [Verifying a Release](../deployment/verifying-releases.md).
+
+## Release checklist
+
+The workflow enforces most of this; the list exists so a human can see what is
+being enforced and why. **Items marked *enforced* fail the run — the release is
+not created.**
+
+Before tagging:
+
+- [ ] `CHANGELOG.md` has a section for this version, written for the person
+      upgrading, with no entries left under `## [Unreleased]`
+- [ ] The workspace version matches the tag — *enforced by the `validate` job*
+- [ ] A **candidate** run of the Gates workflow on the commit to be tagged is
+      `READY` (or `READY WITH EXCEPTIONS`, each exception reviewed) — *the same
+      gates are enforced again by the release*
+- [ ] No open finding in `release/findings/` blocks release — *enforced*
+- [ ] Any upgrade step a deployment must take is stated in the changelog, not
+      only in a pull request description
+
+Produced by the run, and all *enforced*:
+
+- [ ] Every gate of the integration stage passes before any image is pushed
+- [ ] Both images built for `linux/amd64` and `linux/arm64`
+- [ ] **Signed provenance on the server image index**
+- [ ] **Signed provenance on the console image index**
+- [ ] **An SPDX SBOM attested per architecture**, bound to the platform manifest it
+      describes rather than to the index
+- [ ] **Signed provenance on every binary archive**
+- [ ] The candidate-stage gates pass against the binaries extracted from the
+      published image, including recovery, upgrade, integrity and redaction
+- [ ] The published images pass the smoke test on both architectures: correct
+      version, non-root, clean exit on SIGTERM, data persists across a restart
+- [ ] The release decision is `READY` and is attached to the release
+- [ ] `SHA256SUMS` covers every asset actually attached
+
+The four attestation items are checked by
+[`.github/scripts/verify-attestations.sh`](https://github.com/OpenElementsLabs/record-store/blob/main/.github/scripts/verify-attestations.sh)
+in the `provenance` job, which the `release` job depends on. It queries the same
+public attestation service a user would, so a pass means
+`gh attestation verify` will also pass for whoever downloads the release.
+
+If it fails, the release is not published and the run says exactly which subject
+had no attestation. **Fix the attest step; do not skip the check.** A release
+that claims signed provenance and does not carry it is worse than one that
+claims nothing, because the claim is what people act on.
+
+After the run:
+
+- [ ] Verify the release the way a consumer would — see
+      [Verifying a Release](../deployment/verifying-releases.md)
+- [ ] The release notes render correctly and the asset list is complete
 
 ## Never repoint a version tag
 

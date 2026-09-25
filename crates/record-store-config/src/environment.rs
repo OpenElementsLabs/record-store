@@ -81,6 +81,12 @@ impl Config {
             self.limits.maximum_concurrent_operations =
                 parse_environment("RECORD_STORE_MAX_CONCURRENT_OPERATIONS", value)?;
         }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_ADMISSION_WAIT_LIMIT_SECONDS")?
+        {
+            self.limits.admission_wait_limit_seconds =
+                parse_environment("RECORD_STORE_ADMISSION_WAIT_LIMIT_SECONDS", value)?;
+        }
         if let Some(value) = environment_value(environment, "RECORD_STORE_MAX_HEADER_BYTES")? {
             self.limits.maximum_header_bytes =
                 parse_environment("RECORD_STORE_MAX_HEADER_BYTES", value)?;
@@ -120,6 +126,24 @@ impl Config {
         if let Some(value) = environment_value(environment, "RECORD_STORE_LIFECYCLE_BATCH_SIZE")? {
             self.lifecycle.batch_size =
                 parse_environment("RECORD_STORE_LIFECYCLE_BATCH_SIZE", value)?;
+        }
+        if let Some(value) = environment_value(
+            environment,
+            "RECORD_STORE_OBJECT_LOCK_CLOCK_WATERMARK_INTERVAL_SECONDS",
+        )? {
+            self.object_lock.clock_watermark_interval_seconds = parse_environment(
+                "RECORD_STORE_OBJECT_LOCK_CLOCK_WATERMARK_INTERVAL_SECONDS",
+                value,
+            )?;
+        }
+        if let Some(value) = environment_value(
+            environment,
+            "RECORD_STORE_OBJECT_LOCK_CLOCK_BACKWARDS_TOLERANCE_SECONDS",
+        )? {
+            self.object_lock.clock_backwards_tolerance_seconds = parse_environment(
+                "RECORD_STORE_OBJECT_LOCK_CLOCK_BACKWARDS_TOLERANCE_SECONDS",
+                value,
+            )?;
         }
         if let Some(value) = environment_value(environment, "RECORD_STORE_SHARING_SHARES_ENABLED")?
         {
@@ -188,6 +212,15 @@ impl Config {
         {
             self.sharing.embed_base_url = Some(value.to_owned());
         }
+        if let Some(value) = environment_value(environment, "RECORD_STORE_SERVER_TRUSTED_PROXIES")?
+        {
+            self.server.trusted_proxies = value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
         if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_SEEDS")? {
             self.cluster.seeds = value
                 .split(',')
@@ -208,6 +241,11 @@ impl Config {
         }
         if let Some(value) = environment_value(environment, "RECORD_STORE_CLUSTER_S3_ENDPOINT")? {
             self.cluster.s3_endpoint = Some(value.to_owned());
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_CLUSTER_MANAGEMENT_ENDPOINT")?
+        {
+            self.cluster.management_endpoint = Some(value.to_owned());
         }
         if let Some(value) =
             environment_value(environment, "RECORD_STORE_CLUSTER_REPLICATION_FACTOR")?
@@ -417,6 +455,10 @@ mod exhaustive_tests {
             ("RECORD_STORE_RPC_ADVERTISE", "node-a:17603".into()),
             ("RECORD_STORE_API_BIND", "127.0.0.1:17601".into()),
             ("RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS", "45".into()),
+            (
+                "RECORD_STORE_SERVER_TRUSTED_PROXIES",
+                "10.0.0.0/8, 192.168.1.5".into(),
+            ),
             ("RECORD_STORE_STORAGE_DATA_DIRECTORY", "/srv/records".into()),
             (
                 "RECORD_STORE_STORAGE_TEMPORARY_DIRECTORY",
@@ -445,12 +487,21 @@ mod exhaustive_tests {
                 "metrics-token-at-least-thirty-two-byte".into(),
             ),
             ("RECORD_STORE_MAX_CONCURRENT_OPERATIONS", "64".into()),
+            ("RECORD_STORE_ADMISSION_WAIT_LIMIT_SECONDS", "20".into()),
             ("RECORD_STORE_MAX_HEADER_BYTES", "32768".into()),
             ("RECORD_STORE_WEBHOOK_ALLOW_HTTP", "true".into()),
             ("RECORD_STORE_WEBHOOK_ALLOW_PRIVATE_NETWORKS", "true".into()),
             ("RECORD_STORE_WEBHOOK_TIMEOUT_SECONDS", "9".into()),
             ("RECORD_STORE_WEBHOOK_MAXIMUM_ATTEMPTS", "7".into()),
             ("RECORD_STORE_WEBHOOK_POLL_INTERVAL_SECONDS", "11".into()),
+            (
+                "RECORD_STORE_OBJECT_LOCK_CLOCK_WATERMARK_INTERVAL_SECONDS",
+                "120".into(),
+            ),
+            (
+                "RECORD_STORE_OBJECT_LOCK_CLOCK_BACKWARDS_TOLERANCE_SECONDS",
+                "7".into(),
+            ),
             ("RECORD_STORE_LIFECYCLE_INTERVAL_SECONDS", "600".into()),
             ("RECORD_STORE_LIFECYCLE_BATCH_SIZE", "250".into()),
             ("RECORD_STORE_SHARING_SHARES_ENABLED", "true".into()),
@@ -484,6 +535,10 @@ mod exhaustive_tests {
             (
                 "RECORD_STORE_CLUSTER_S3_ENDPOINT",
                 "https://s3.example".into(),
+            ),
+            (
+                "RECORD_STORE_CLUSTER_MANAGEMENT_ENDPOINT",
+                "https://manage.example".into(),
             ),
             ("RECORD_STORE_CLUSTER_REPLICATION_FACTOR", "3".into()),
             (
@@ -582,6 +637,7 @@ mod exhaustive_tests {
         assert!(config.auth.metrics_scrape_token.is_some());
 
         assert_eq!(config.limits.maximum_concurrent_operations, 64);
+        assert_eq!(config.limits.admission_wait_limit_seconds, 20);
         assert_eq!(config.limits.maximum_header_bytes, 32_768);
 
         assert!(config.webhooks.allow_http);
@@ -592,6 +648,9 @@ mod exhaustive_tests {
 
         assert_eq!(config.lifecycle.interval_seconds, 600);
         assert_eq!(config.lifecycle.batch_size, 250);
+
+        assert_eq!(config.object_lock.clock_watermark_interval_seconds, 120);
+        assert_eq!(config.object_lock.clock_backwards_tolerance_seconds, 7);
 
         assert!(config.sharing.shares_enabled);
         assert!(config.sharing.embeds_enabled);
@@ -612,6 +671,10 @@ mod exhaustive_tests {
             Some("https://embed.example")
         );
 
+        assert_eq!(
+            config.server.trusted_proxies,
+            vec!["10.0.0.0/8".to_owned(), "192.168.1.5".to_owned()]
+        );
         assert_eq!(config.cluster.seeds, vec!["node-b:17603".to_owned()]);
         assert!(config.cluster.join_token.is_some());
         assert_eq!(config.cluster.storage_class, "standard");

@@ -36,7 +36,7 @@ import { formatDateTime } from '@/lib/format';
 import { mergeSearch, readEnum, readOptionalString, readTimestamp } from '@/lib/search-params';
 import type { AuditEvent, AuditResult } from '@/types/api';
 
-const RESULTS = ['success', 'denied', 'failure'] as const;
+const RESULTS = ['attempted', 'success', 'denied', 'failure'] as const;
 
 /**
  * The security audit trail: who asked for what, and what Record Store decided.
@@ -153,8 +153,12 @@ export function AuditScreen() {
           <TableSkeleton columns={5} />
         ) : audit.data.events.length === 0 ? (
           <EmptyState
-            title="No audit events"
-            description="No events match these filters. Clear them to see recent activity."
+            title={audit.data.scan_truncated ? 'No matches in this window' : 'No audit events'}
+            description={
+              audit.data.scan_truncated
+                ? 'The server stopped scanning before the end of the range. There may be matches further back — use Next page, or narrow the time range.'
+                : 'No events match these filters. Clear them to see recent activity.'
+            }
           />
         ) : (
           <TableShell>
@@ -195,6 +199,11 @@ export function AuditScreen() {
       </Card>
 
       <div className="flex items-center justify-end gap-2">
+        {audit.data?.scan_truncated ? (
+          <p className="mr-auto type-meta text-muted">
+            The scan stopped before the end of the range; more may match further back.
+          </p>
+        ) : null}
         <Button
           size="sm"
           variant="secondary"
@@ -252,6 +261,9 @@ function LabelledInput({
 function ResultBadge({ result }: { readonly result: AuditResult }) {
   if (result === 'success') return <StatusBadge level="healthy" label="Success" />;
   if (result === 'denied') return <StatusBadge level="warning" label="Denied" />;
+  // An announcement is neither a success nor a failure. Showing it as either
+  // would be the console asserting an outcome the server did not record.
+  if (result === 'attempted') return <StatusBadge level="pending" label="Attempted" />;
   return <StatusBadge level="critical" label="Failure" />;
 }
 

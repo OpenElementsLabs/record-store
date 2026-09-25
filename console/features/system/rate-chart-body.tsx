@@ -13,7 +13,6 @@ import {
   YAxis,
   type ChartConfig,
 } from '@/components/ui/chart';
-import { SAMPLE_INTERVAL_MS } from '@/features/system/use-metrics-samples';
 
 /**
  * The observed history of one derived rate.
@@ -25,22 +24,25 @@ import { SAMPLE_INTERVAL_MS } from '@/features/system/use-metrics-samples';
  */
 export function RateChartBody({
   series,
+  secondsAgo,
   label,
   tone = 'accent',
   format,
 }: {
   readonly series: readonly number[];
+  readonly secondsAgo: readonly number[];
   readonly label: string;
   readonly tone?: 'accent' | 'danger';
   readonly format: (value: number) => string;
 }) {
   const gradientId = React.useId().replace(/:/g, '');
 
-  // Two points are the minimum that can describe a direction.
-  if (series.length < 2) {
+  // Show the first measured interval as a point; subsequent intervals form a line.
+  if (series.length === 0) {
     return (
       <div className="flex min-h-60 items-center justify-center rounded-control border border-dashed border-border bg-surface-subtle/40 px-4 text-center type-meta-subtle">
-        Waiting for another sample to draw the trend.
+        The first rate appears after two readings. New readings arrive every 2 seconds during
+        startup.
       </div>
     );
   }
@@ -49,16 +51,15 @@ export function RateChartBody({
   const config: ChartConfig = { value: { label, color } };
 
   // Oldest first, labelled by how long ago the interval was measured.
-  const seconds = Math.round(SAMPLE_INTERVAL_MS / 1000);
   const data = series.map((value, index) => ({
-    secondsAgo: (series.length - 1 - index) * seconds,
+    secondsAgo: secondsAgo[index],
     value,
   }));
 
   return (
     <ChartContainer
       config={config}
-      className="min-h-60"
+      className="h-60"
       aria-label={`${label} rate over the observed window`}
     >
       <AreaChart accessibilityLayer data={data} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
@@ -73,6 +74,9 @@ export function RateChartBody({
         <CartesianGrid vertical={false} strokeDasharray="2 4" />
         <XAxis
           dataKey="secondsAgo"
+          type="number"
+          domain={series.length === 1 ? [0, 2] : ['dataMin', 'dataMax']}
+          reversed
           axisLine={false}
           tickLine={false}
           tickMargin={10}
@@ -93,14 +97,14 @@ export function RateChartBody({
           content={<ChartTooltipContent formatter={format} />}
         />
         <Area
-          type="monotone"
+          type="linear"
           dataKey="value"
           stroke="var(--color-value)"
           strokeWidth={2}
           fill={`url(#${gradientId})`}
           // A dot per sample would clutter a 40-point series; the hover cursor
           // is how a single interval is inspected.
-          dot={false}
+          dot={series.length === 1 ? { r: 3, strokeWidth: 0 } : false}
           activeDot={{ r: 3, strokeWidth: 0 }}
           isAnimationActive={false}
         />

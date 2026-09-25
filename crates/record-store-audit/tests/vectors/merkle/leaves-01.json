@@ -1,0 +1,21 @@
+{
+  "merkle_domain": "record-store/audit-merkle/v1",
+  "leaf_prefix": "0x00",
+  "node_prefix": "0x01",
+  "root_prefix": "0x02",
+  "record_hash_source": "SHA-256(\"record-{index}\") for index in 0..leaf_count",
+  "leaf_count": 1,
+  "record_hashes": [
+    "b512b2dd10a5444b38811e7eb9487baaadad0e9da59ef29a0c34c24603e349df"
+  ],
+  "leaf_hashes": [
+    "acfd05fadf5193b0dac9abca287c0aada5aabbbed6682e306624d76fa2279f28"
+  ],
+  "root": "e2d68c42b513a4fe6f404bbaa7837b0862b51f56c7907786e1185587544f6a1c",
+  "inclusion_paths": [
+    {
+      "index": 0,
+      "steps": []
+    }
+  ]
+}

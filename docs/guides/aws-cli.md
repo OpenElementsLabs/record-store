@@ -117,7 +117,6 @@ See [Presigned URLs](presigned-urls.md).
 | Command | Why |
 | --- | --- |
 | `aws s3api put-object-acl`, `get-object-acl` | ACLs are not implemented |
-| `aws s3api put-object-lock-configuration` | Object Lock is not implemented |
 | `aws s3api upload-part-copy` | `UploadPartCopy` is not implemented |
 | `--sse`, `--sse-kms-key-id` | Server-side encryption headers are not implemented |
 

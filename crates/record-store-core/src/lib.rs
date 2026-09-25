@@ -12,14 +12,17 @@ mod durability;
 mod error;
 mod ids;
 mod lifecycle;
+mod mutation_event;
 mod names;
 mod object;
+mod object_lock;
 mod preview;
 mod quota;
 mod range;
 mod redb_open;
 mod shard;
 mod storage_class;
+mod trusted_proxy;
 
 pub use checksum::{Checksum, ChecksumAlgorithm, ETag};
 pub use durability::{DurabilityProfile, ErasureProfile, ReplicationProfile};
@@ -30,11 +33,16 @@ pub use ids::{
     PolicyId, ReplicaTaskId, ServiceAccountId, ShardId, ShareLinkId, StripeId, UploadId, VersionId,
     WebhookId,
 };
-pub use lifecycle::{LifecycleRule, ObjectRetention, RetentionMode, StorageUsage};
+pub use lifecycle::{LifecycleRule, StorageUsage};
+pub use mutation_event::{MutationEvent, StorageEventType, WriteOrigin};
 pub use names::{BucketName, ObjectKey};
 pub use object::{
     Bucket, CompletedPart, DeleteMarker, MultipartUpload, MultipartUploadState, ObjectMetadata,
     ObjectVersion, ObjectVersionRecord, PayloadFormat, UploadedPart,
+};
+pub use object_lock::{
+    DefaultRetention, LockBlock, LockChangeRefused, ObjectLockConfiguration, ObjectLockState,
+    Retention, RetentionMode, RetentionPeriod,
 };
 pub use preview::{CONTENT_SIGNATURE_PROBE_BYTES, PreviewKind, content_signature_matches};
 pub use quota::{BucketQuota, ByteQuota, ExpirationDays, ObjectCountQuota, VersioningState};
@@ -42,3 +50,4 @@ pub use range::{ByteRange, PartNumber, ResolvedByteRange};
 pub use redb_open::open_database;
 pub use shard::{ShardIndex, ShardKind, ShardState};
 pub use storage_class::StorageClass;
+pub use trusted_proxy::TrustedProxies;

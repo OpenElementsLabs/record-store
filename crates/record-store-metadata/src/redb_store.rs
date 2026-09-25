@@ -5,21 +5,22 @@ use std::{path::Path, sync::Arc};
 use async_trait::async_trait;
 use record_store_core::{
     Bucket, BucketId, BucketName, BucketQuota, CorsConfiguration, LifecycleRule, LifecycleRuleId,
-    MultipartUpload, ObjectId, ObjectKey, ObjectMetadata, ObjectVersionRecord, PartNumber,
-    StorageUsage, UploadId, UploadedPart, VersionId, VersioningState, open_database,
+    MultipartUpload, MutationEvent, ObjectId, ObjectKey, ObjectLockConfiguration, ObjectLockState,
+    ObjectMetadata, ObjectVersionRecord, PartNumber, StorageUsage, UploadId, UploadedPart,
+    VersionId, VersioningState, WriteOrigin, open_database,
 };
-use redb::{Database, ReadableTable};
+use redb::{Database, ReadableDatabase, ReadableTable};
 
 use crate::error::backend;
 use crate::keys::{
-    bucket_key, multipart_order_key, object_key, object_prefix, part_key, prefix_successor,
-    version_order_key,
+    bucket_key, lock_key, multipart_order_key, object_key, object_prefix, part_key,
+    prefix_successor, version_order_key,
 };
 use crate::schema::{
     BUCKET_COUNT, BUCKET_NAMES, BUCKET_USAGE, BUCKETS, CLEANUP, COUNTERS, LIFECYCLE_RULES,
-    LOGICAL_BYTES, MULTIPART, MULTIPART_BYTES, MULTIPART_ORDER, NULL_VERSIONS, OBJECT_COUNT,
-    OBJECTS, PARTS, PHYSICAL_BYTES, VERSION_BYTES, VERSION_COUNT, VERSION_ORDER, VERSIONS,
-    initialize_schema,
+    LOGICAL_BYTES, MULTIPART, MULTIPART_BYTES, MULTIPART_ORDER, MUTATION_EVENTS, NULL_VERSIONS,
+    OBJECT_COUNT, OBJECT_LOCKS, OBJECTS, PARTS, PHYSICAL_BYTES, VERSION_BYTES, VERSION_COUNT,
+    VERSION_ORDER, VERSIONS, initialize_schema,
 };
 use crate::tx::{
     current_version_read, decode_optional, read_counter, read_encoded, record_matches,
@@ -185,21 +186,77 @@ impl MetadataRepository for RedbMetadataRepository {
         .into_bucket()
     }
 
+    async fn set_bucket_object_lock(
+        &self,
+        id: BucketId,
+        configuration: ObjectLockConfiguration,
+    ) -> Result<Bucket, MetadataError> {
+        self.command(MetadataCommand::SetBucketObjectLock {
+            bucket_id: id,
+            configuration,
+        })
+        .await?
+        .into_bucket()
+    }
+
     async fn delete_bucket(&self, name: &BucketName) -> Result<Bucket, MetadataError> {
-        self.command(MetadataCommand::DeleteBucket { name: name.clone() })
-            .await?
-            .into_bucket()
+        self.command(MetadataCommand::DeleteBucket {
+            name: name.clone(),
+            at: chrono::Utc::now(),
+        })
+        .await?
+        .into_bucket()
     }
 
     async fn put_object(
         &self,
         metadata: &ObjectMetadata,
+        object_lock: Option<ObjectLockState>,
+        origin: WriteOrigin,
     ) -> Result<ObjectCommitResult, MetadataError> {
         self.command(MetadataCommand::PutObject {
             metadata: Box::new(metadata.clone()),
+            object_lock,
+            origin,
         })
         .await?
         .into_object_commit()
+    }
+
+    async fn pending_mutation_events(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<MutationEvent>, MetadataError> {
+        let db = Arc::clone(&self.database);
+        let limit = limit.clamp(1, 10_000);
+        tokio::task::spawn_blocking(move || {
+            let read = db
+                .begin_read()
+                .map_err(|e| backend("begin read mutation events", e))?;
+            let table = read
+                .open_table(MUTATION_EVENTS)
+                .map_err(|e| backend("open mutation events", e))?;
+            let mut out = Vec::new();
+            for entry in table
+                .range(after.saturating_add(1)..)
+                .map_err(|e| backend("range mutation events", e))?
+            {
+                let (_, value) = entry.map_err(|e| backend("read mutation event", e))?;
+                out.push(serde_json::from_slice(value.value())?);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+            Ok(out)
+        })
+        .await?
+    }
+
+    async fn prune_mutation_events(&self, through_sequence: u64) -> Result<(), MetadataError> {
+        self.command(MetadataCommand::PruneMutationEvents { through_sequence })
+            .await
+            .map(|_| ())
     }
 
     async fn get_object(
@@ -286,14 +343,52 @@ impl MetadataRepository for RedbMetadataRepository {
         bucket: BucketId,
         key: &ObjectKey,
         version: VersionId,
+        release: LockRelease,
     ) -> Result<Option<DeleteVersionResult>, MetadataError> {
         self.command(MetadataCommand::DeleteObjectVersion {
             bucket_id: bucket,
             key: key.clone(),
             version_id: version,
+            release,
         })
         .await?
         .into_delete_version()
+    }
+
+    async fn get_object_lock(&self, version: VersionId) -> Result<ObjectLockState, MetadataError> {
+        let db = Arc::clone(&self.database);
+        tokio::task::spawn_blocking(move || {
+            Ok(
+                read_encoded(&db, OBJECT_LOCKS, &lock_key(version), "read object lock")?
+                    .unwrap_or_default(),
+            )
+        })
+        .await?
+    }
+
+    async fn put_object_lock(
+        &self,
+        bucket: BucketId,
+        key: &ObjectKey,
+        version: VersionId,
+        requested: ObjectLockState,
+        release: LockRelease,
+    ) -> Result<ObjectLockState, MetadataError> {
+        self.command(MetadataCommand::PutObjectLock {
+            bucket_id: bucket,
+            key: key.clone(),
+            version_id: version,
+            requested,
+            release,
+        })
+        .await?
+        .into_object_lock()
+    }
+
+    async fn observe_clock(&self, release: LockRelease) -> Result<(), MetadataError> {
+        self.command(MetadataCommand::ObserveClock { release })
+            .await
+            .map(|_| ())
     }
 
     async fn list_objects(
@@ -611,9 +706,12 @@ impl MetadataRepository for RedbMetadataRepository {
         &self,
         id: UploadId,
     ) -> Result<MultipartCleanupResult, MetadataError> {
-        self.command(MetadataCommand::AbortMultipartUpload { upload_id: id })
-            .await?
-            .into_multipart_cleanup()
+        self.command(MetadataCommand::AbortMultipartUpload {
+            upload_id: id,
+            at: chrono::Utc::now(),
+        })
+        .await?
+        .into_multipart_cleanup()
     }
 
     /// Reconciles crash-interrupted completion state before readiness.
@@ -774,6 +872,78 @@ impl MetadataRepository for RedbMetadataRepository {
         }).await?
     }
 
+    async fn list_object_locks(
+        &self,
+        after: Option<VersionId>,
+        limit: usize,
+    ) -> Result<LockedVersionPage, MetadataError> {
+        if limit == 0 || limit > 1_000 {
+            return Err(MetadataError::Database {
+                operation: "list object locks",
+                reason: "limit must be between 1 and 1000".into(),
+            });
+        }
+        let db = Arc::clone(&self.database);
+        tokio::task::spawn_blocking(move || {
+            let read = db
+                .begin_read()
+                .map_err(|e| backend("begin object lock list", e))?;
+            let locks = read
+                .open_table(OBJECT_LOCKS)
+                .map_err(|e| backend("open object locks", e))?;
+            let versions = read
+                .open_table(VERSIONS)
+                .map_err(|e| backend("open versions", e))?;
+            // The cursor is the previous page's last key, so the scan resumes
+            // immediately after it rather than re-reading it.
+            let start = after.map_or_else(Vec::new, |id| {
+                let mut key = lock_key(id);
+                key.push(0);
+                key
+            });
+            let mut page = LockedVersionPage::default();
+            for entry in locks
+                .range(start.as_slice()..)
+                .map_err(|e| backend("range object locks", e))?
+            {
+                let (key, value) = entry.map_err(|e| backend("read object lock", e))?;
+                if page.versions.len() == limit {
+                    page.next = page.versions.last().map(|locked| locked.version_id);
+                    break;
+                }
+                let state: ObjectLockState = serde_json::from_slice(value.value())?;
+                // The lock table stores state only, so identity is recovered
+                // from the version record it annotates. Keeping bucket and key
+                // in one place stops the two tables from disagreeing about
+                // which object a lock belongs to.
+                let Some(record) = versions
+                    .get(key.value())
+                    .map_err(|e| backend("resolve locked version", e))?
+                    .map(|value| serde_json::from_slice::<ObjectVersionRecord>(value.value()))
+                    .transpose()?
+                else {
+                    continue;
+                };
+                let (bucket_id, object_key) = match &record {
+                    ObjectVersionRecord::Object { metadata, .. } => {
+                        (metadata.bucket_id, metadata.key.clone())
+                    }
+                    ObjectVersionRecord::DeleteMarker { marker, .. } => {
+                        (marker.bucket_id, marker.key.clone())
+                    }
+                };
+                page.versions.push(LockedVersion {
+                    bucket_id,
+                    key: object_key,
+                    version_id: record.version_id(),
+                    state,
+                });
+            }
+            Ok(page)
+        })
+        .await?
+    }
+
     async fn list_payload_references(
         &self,
         after: Option<ObjectId>,
@@ -887,8 +1057,12 @@ mod tests {
             .expect("enable");
         let first = object(bucket.id, "report", 10);
         let second = object(bucket.id, "report", 20);
-        repo.put_object(&first).await.expect("first");
-        repo.put_object(&second).await.expect("second");
+        repo.put_object(&first, None, WriteOrigin::Direct)
+            .await
+            .expect("first");
+        repo.put_object(&second, None, WriteOrigin::Direct)
+            .await
+            .expect("second");
         repo.delete_object(bucket.id, &first.key, NewDeleteMarker::generate())
             .await
             .expect("delete");
@@ -950,6 +1124,7 @@ mod tests {
             key: ObjectKey::new("large").expect("key"),
             content_type: None,
             custom_metadata: BTreeMap::new(),
+            object_lock: None,
             initiated_at: Utc::now(),
             state: MultipartUploadState::Active,
         };
@@ -1039,7 +1214,7 @@ mod tests {
     async fn a_bucket_holding_objects_cannot_be_deleted() {
         let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
         catalog
-            .put_object(&object(bucket.id, "a.txt", 10))
+            .put_object(&object(bucket.id, "a.txt", 10), None, WriteOrigin::Direct)
             .await
             .expect("put");
 
@@ -1105,7 +1280,7 @@ mod tests {
         let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
         for key in ["a/1", "a/2", "a/3", "b/1"] {
             catalog
-                .put_object(&object(bucket.id, key, 1))
+                .put_object(&object(bucket.id, key, 1), None, WriteOrigin::Direct)
                 .await
                 .expect("put");
         }
@@ -1159,11 +1334,11 @@ mod tests {
         assert_eq!(summary.logical_bytes, 0);
 
         catalog
-            .put_object(&object(bucket.id, "a.txt", 512))
+            .put_object(&object(bucket.id, "a.txt", 512), None, WriteOrigin::Direct)
             .await
             .expect("put");
         catalog
-            .put_object(&object(bucket.id, "b.txt", 512))
+            .put_object(&object(bucket.id, "b.txt", 512), None, WriteOrigin::Direct)
             .await
             .expect("put");
 
@@ -1202,8 +1377,8 @@ mod tests {
             enabled: true,
             expiration: Some(ExpirationDays::new(30).expect("days")),
             noncurrent_version_expiration: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
         };
         catalog.put_lifecycle_rule(&rule).await.expect("put rule");
 
@@ -1306,7 +1481,10 @@ mod tests {
     async fn deleted_payloads_are_queued_for_cleanup_once_unreferenced() {
         let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
         let stored = object(bucket.id, "a.txt", 64);
-        catalog.put_object(&stored).await.expect("put");
+        catalog
+            .put_object(&stored, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
         assert!(
             catalog
                 .payload_referenced(stored.id)
@@ -1353,8 +1531,14 @@ mod tests {
         let key = ObjectKey::new("note.txt").expect("key");
         let first = object(bucket.id, "note.txt", 3);
         let second = object(bucket.id, "note.txt", 5);
-        catalog.put_object(&first).await.expect("put");
-        catalog.put_object(&second).await.expect("put");
+        catalog
+            .put_object(&first, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
+        catalog
+            .put_object(&second, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
 
         assert_eq!(
             catalog
@@ -1418,11 +1602,22 @@ mod tests {
         let key = ObjectKey::new("note.txt").expect("key");
         let first = object(bucket.id, "note.txt", 3);
         let second = object(bucket.id, "note.txt", 5);
-        catalog.put_object(&first).await.expect("put");
-        catalog.put_object(&second).await.expect("put");
+        catalog
+            .put_object(&first, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
+        catalog
+            .put_object(&second, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
 
         let removed = catalog
-            .delete_object_version(bucket.id, &key, first.version_id)
+            .delete_object_version(
+                bucket.id,
+                &key,
+                first.version_id,
+                LockRelease::new(Utc::now(), 5),
+            )
             .await
             .expect("delete version");
         assert!(removed.is_some());
@@ -1444,7 +1639,12 @@ mod tests {
 
         assert!(
             catalog
-                .delete_object_version(bucket.id, &key, VersionId::new())
+                .delete_object_version(
+                    bucket.id,
+                    &key,
+                    VersionId::new(),
+                    LockRelease::new(Utc::now(), 5),
+                )
                 .await
                 .expect("delete version")
                 .is_none(),
@@ -1463,7 +1663,10 @@ mod tests {
             .expect("enable");
         let key = ObjectKey::new("note.txt").expect("key");
         let versioned = object(bucket.id, "note.txt", 3);
-        catalog.put_object(&versioned).await.expect("put");
+        catalog
+            .put_object(&versioned, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
 
         catalog
             .set_bucket_versioning(bucket.id, VersioningState::Suspended)
@@ -1471,8 +1674,14 @@ mod tests {
             .expect("suspend");
         let first_null = object(bucket.id, "note.txt", 5);
         let second_null = object(bucket.id, "note.txt", 7);
-        catalog.put_object(&first_null).await.expect("put");
-        catalog.put_object(&second_null).await.expect("put");
+        catalog
+            .put_object(&first_null, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
+        catalog
+            .put_object(&second_null, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
 
         assert!(
             catalog
@@ -1502,7 +1711,7 @@ mod tests {
             .expect("enable");
         for _ in 0..3 {
             catalog
-                .put_object(&object(bucket.id, "note.txt", 1))
+                .put_object(&object(bucket.id, "note.txt", 1), None, WriteOrigin::Direct)
                 .await
                 .expect("put");
         }
@@ -1545,8 +1754,14 @@ mod tests {
         let key = ObjectKey::new("note.txt").expect("key");
         let first = object(bucket.id, "note.txt", 3);
         let second = object(bucket.id, "note.txt", 5);
-        catalog.put_object(&first).await.expect("put");
-        catalog.put_object(&second).await.expect("put");
+        catalog
+            .put_object(&first, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
+        catalog
+            .put_object(&second, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
 
         assert!(catalog.payload_referenced(first.id).await.expect("read"));
         assert!(catalog.payload_referenced(second.id).await.expect("read"));
@@ -1559,7 +1774,12 @@ mod tests {
         assert!(page.object_ids.contains(&second.id), "{page:?}");
 
         catalog
-            .delete_object_version(bucket.id, &key, first.version_id)
+            .delete_object_version(
+                bucket.id,
+                &key,
+                first.version_id,
+                LockRelease::new(Utc::now(), 5),
+            )
             .await
             .expect("delete version");
         assert!(
@@ -1693,12 +1913,20 @@ mod tests {
             .expect("set quota");
 
         catalog
-            .put_object(&object(bucket.id, "small.txt", 60))
+            .put_object(
+                &object(bucket.id, "small.txt", 60),
+                None,
+                WriteOrigin::Direct,
+            )
             .await
             .expect("a write inside the budget is accepted");
         assert!(matches!(
             catalog
-                .put_object(&object(bucket.id, "large.txt", 60))
+                .put_object(
+                    &object(bucket.id, "large.txt", 60),
+                    None,
+                    WriteOrigin::Direct
+                )
                 .await,
             Err(MetadataError::QuotaExceeded)
         ));
@@ -1719,12 +1947,20 @@ mod tests {
             .expect("set quota");
 
         catalog
-            .put_object(&object(bucket.id, "first.txt", 1))
+            .put_object(
+                &object(bucket.id, "first.txt", 1),
+                None,
+                WriteOrigin::Direct,
+            )
             .await
             .expect("first");
         assert!(matches!(
             catalog
-                .put_object(&object(bucket.id, "second.txt", 1))
+                .put_object(
+                    &object(bucket.id, "second.txt", 1),
+                    None,
+                    WriteOrigin::Direct
+                )
                 .await,
             Err(MetadataError::QuotaExceeded)
         ));
@@ -1736,7 +1972,7 @@ mod tests {
     async fn a_quota_below_current_usage_is_refused() {
         let (_directory, catalog, bucket) = catalog_with_bucket("occupied").await;
         catalog
-            .put_object(&object(bucket.id, "a.txt", 500))
+            .put_object(&object(bucket.id, "a.txt", 500), None, WriteOrigin::Direct)
             .await
             .expect("put");
 
@@ -1867,7 +2103,7 @@ mod tests {
         let key = ObjectKey::new("note.txt").expect("key");
 
         catalog
-            .put_object(&object(bucket.id, "note.txt", 3))
+            .put_object(&object(bucket.id, "note.txt", 3), None, WriteOrigin::Direct)
             .await
             .expect("put");
         catalog
@@ -1883,7 +2119,10 @@ mod tests {
         );
 
         let revived = object(bucket.id, "note.txt", 7);
-        catalog.put_object(&revived).await.expect("put");
+        catalog
+            .put_object(&revived, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
         assert_eq!(
             catalog
                 .get_object(bucket.id, &key)
@@ -1923,11 +2162,22 @@ mod tests {
         let key = ObjectKey::new("note.txt").expect("key");
         let first = object(bucket.id, "note.txt", 3);
         let second = object(bucket.id, "note.txt", 5);
-        catalog.put_object(&first).await.expect("put");
-        catalog.put_object(&second).await.expect("put");
+        catalog
+            .put_object(&first, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
+        catalog
+            .put_object(&second, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
 
         catalog
-            .delete_object_version(bucket.id, &key, second.version_id)
+            .delete_object_version(
+                bucket.id,
+                &key,
+                second.version_id,
+                LockRelease::new(Utc::now(), 5),
+            )
             .await
             .expect("delete current");
 
@@ -1955,8 +2205,14 @@ mod tests {
         let key = ObjectKey::new("note.txt").expect("key");
         let first = object(bucket.id, "note.txt", 100);
         let second = object(bucket.id, "note.txt", 200);
-        catalog.put_object(&first).await.expect("put");
-        catalog.put_object(&second).await.expect("put");
+        catalog
+            .put_object(&first, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
+        catalog
+            .put_object(&second, None, WriteOrigin::Direct)
+            .await
+            .expect("put");
 
         let usage = catalog.bucket_usage().await.expect("usage");
         let before = usage.get(&bucket.id).expect("summary");
@@ -1964,7 +2220,12 @@ mod tests {
         assert_eq!(before.version_bytes, 300);
 
         catalog
-            .delete_object_version(bucket.id, &key, first.version_id)
+            .delete_object_version(
+                bucket.id,
+                &key,
+                first.version_id,
+                LockRelease::new(Utc::now(), 5),
+            )
             .await
             .expect("delete version");
 
@@ -1985,7 +2246,7 @@ mod tests {
             .expect("enable");
         for key in ["a", "b", "c"] {
             catalog
-                .put_object(&object(bucket.id, key, 1))
+                .put_object(&object(bucket.id, key, 1), None, WriteOrigin::Direct)
                 .await
                 .expect("put");
         }

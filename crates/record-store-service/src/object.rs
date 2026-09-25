@@ -3,8 +3,10 @@
 use std::sync::{Arc, atomic::Ordering};
 
 use futures_util::StreamExt;
-use record_store_core::{BucketName, ObjectKey, ObjectMetadata, ObjectVersionRecord, VersionId};
-use record_store_events::{EventRepository, StorageEvent, StorageEventType};
+use record_store_core::{
+    BucketName, ObjectKey, ObjectLockState, ObjectMetadata, ObjectVersionRecord, VersionId,
+    WriteOrigin,
+};
 use record_store_metadata::{
     ListObjectVersionsRequest as MetadataVersionListRequest, MetadataRepository,
 };
@@ -12,10 +14,9 @@ use record_store_storage::{
     DeleteObjectRequest, DeleteObjectVersionRequest, GetObjectRequest, GetObjectVersionRequest,
     HeadObjectRequest, ObjectStore, PutObjectRequest, PutObjectResult, StorageError,
 };
-use tokio::sync::Semaphore;
 
 use crate::error::map_storage;
-use crate::events::publish_event;
+use crate::lock::LockPolicy;
 use crate::services::BucketCoordinator;
 use crate::*;
 
@@ -24,11 +25,11 @@ pub struct ObjectService {
     pub(crate) storage: Arc<dyn ObjectStore>,
     pub(crate) metadata: Arc<dyn MetadataRepository>,
     pub(crate) coordinator: Arc<BucketCoordinator>,
-    pub(crate) operations: Arc<Semaphore>,
+    pub(crate) admission: Arc<crate::admission::Admission>,
     pub(crate) metrics: Arc<ServiceMetrics>,
     pub(crate) maximum_custom_metadata_entries: usize,
     pub(crate) maximum_custom_metadata_bytes: usize,
-    pub(crate) events: Option<Arc<dyn EventRepository>>,
+    pub(crate) policy: Arc<LockPolicy>,
 }
 
 impl ObjectService {
@@ -40,16 +41,7 @@ impl ObjectService {
         let bucket = self.resolve_bucket(&request.bucket).await?;
         let lock = self.coordinator.lock(bucket.id)?;
         let _bucket_guard = lock.read().await;
-        let event_type = if self
-            .metadata
-            .get_object(bucket.id, &request.key)
-            .await?
-            .is_some()
-        {
-            StorageEventType::ObjectUpdated
-        } else {
-            StorageEventType::ObjectCreated
-        };
+        let object_lock = ObjectLockService::initial_state(&bucket, request.object_lock)?;
         let result = self
             .storage
             .put(PutObjectRequest {
@@ -60,6 +52,8 @@ impl ObjectService {
                 expected_checksum: request.expected_checksum,
                 object_id: None,
                 protocol_etag: None,
+                object_lock,
+                origin: WriteOrigin::Direct,
                 body: request.body,
             })
             .await
@@ -70,15 +64,6 @@ impl ObjectService {
                 self.metrics
                     .upload_bytes
                     .fetch_add(result.metadata.size, Ordering::Relaxed);
-                publish_event(
-                    &self.events,
-                    StorageEvent::new(event_type, bucket.name.as_str()).object(
-                        result.metadata.key.as_str(),
-                        Some(result.metadata.version_id),
-                        Some(result.metadata.size),
-                    ),
-                )
-                .await;
                 Ok(result)
             }
             Err(error) => {
@@ -280,17 +265,6 @@ impl ObjectService {
             Err(StorageError::ObjectNotFound) => false,
             Err(error) => return Err(map_storage(error)),
         };
-        if result {
-            publish_event(
-                &self.events,
-                StorageEvent::new(StorageEventType::ObjectDeleted, bucket.name.as_str()).object(
-                    key.as_str(),
-                    None,
-                    None,
-                ),
-            )
-            .await;
-        }
         Ok(result)
     }
 
@@ -322,20 +296,6 @@ impl ObjectService {
             }
             Err(error) => return Err(map_storage(error)),
         };
-        if result.previously_visible || result.delete_marker.is_some() {
-            publish_event(
-                &self.events,
-                StorageEvent::new(StorageEventType::ObjectDeleted, bucket.name.as_str()).object(
-                    key.as_str(),
-                    result
-                        .delete_marker
-                        .as_ref()
-                        .map(|marker| marker.version_id),
-                    None,
-                ),
-            )
-            .await;
-        }
         Ok(ServiceDeleteResult {
             delete_marker: result.delete_marker,
             previously_visible: result.previously_visible,
@@ -343,34 +303,56 @@ impl ObjectService {
     }
 
     /// Permanently removes an explicitly selected immutable version.
+    ///
+    /// Object Lock is enforced inside the metadata transaction that removes the
+    /// version, so a retention placed concurrently cannot be raced. This layer
+    /// supplies the clock and bypass inputs it is judged against, and records
+    /// an exercised bypass in the durable audit trail.
     pub async fn delete_version(
         &self,
         bucket_name: &BucketName,
         key: ObjectKey,
         version_id: VersionId,
+        context: &LockContext,
     ) -> Result<(), ServiceError> {
         self.metrics.requests.fetch_add(1, Ordering::Relaxed);
         let _permit = self.acquire().await?;
         let bucket = self.resolve_bucket(bucket_name).await?;
         let lock = self.coordinator.lock(bucket.id)?;
         let _guard = lock.read().await;
-        self.storage
+        // The bypass is announced before the version can be gone, and the
+        // deletion is refused when the announcement cannot be made durable.
+        let intent = self
+            .policy
+            .begin_bypass(
+                context,
+                "object-lock.bypass-delete-version",
+                bucket_name,
+                &key,
+                version_id,
+            )
+            .await?;
+        let result = self
+            .storage
             .delete_version(DeleteObjectVersionRequest {
                 bucket_id: bucket.id,
                 key: key.clone(),
                 version_id,
+                release: self.policy.release(context),
             })
             .await
-            .map_err(map_storage)?;
-        publish_event(
-            &self.events,
-            StorageEvent::new(StorageEventType::ObjectDeleted, bucket.name.as_str()).object(
-                key.as_str(),
-                Some(version_id),
-                None,
-            ),
-        )
-        .await;
+            .map_err(map_storage);
+        self.policy
+            .complete_bypass(
+                intent,
+                if result.is_ok() {
+                    record_store_audit::AuditResult::Success
+                } else {
+                    record_store_audit::AuditResult::Denied
+                },
+            )
+            .await;
+        result?;
         Ok(())
     }
 
@@ -379,6 +361,7 @@ impl ObjectService {
         &self,
         bucket_name: &BucketName,
         key: ObjectKey,
+        context: &LockContext,
     ) -> Result<(), ServiceError> {
         let bucket = self.resolve_bucket(bucket_name).await?;
         let record = self
@@ -386,8 +369,19 @@ impl ObjectService {
             .get_null_version(bucket.id, &key)
             .await?
             .ok_or(ServiceError::ObjectNotFound)?;
-        self.delete_version(bucket_name, key, record.version_id())
+        self.delete_version(bucket_name, key, record.version_id(), context)
             .await
+    }
+
+    /// Returns the Object Lock state of one version, for response headers.
+    pub async fn version_lock(
+        &self,
+        version_id: VersionId,
+    ) -> Result<ObjectLockState, ServiceError> {
+        self.metadata
+            .get_object_lock(version_id)
+            .await
+            .map_err(crate::error::map_metadata)
     }
 
     /// Lists immutable versions and delete markers without unbounded loading.

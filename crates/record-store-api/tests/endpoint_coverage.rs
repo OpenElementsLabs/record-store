@@ -42,6 +42,9 @@ impl Audience {
 /// The declared audience of every management route.
 const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/audit/events", Audience::ConsoleAndCli),
+    // Verifying the chain is an auditor's question asked from a shell, and its
+    // answer is a report rather than a screen.
+    ("/api/v1/audit/chain", Audience::Cli),
     ("/api/v1/auth/session", Audience::Console),
     ("/api/v1/buckets", Audience::Console),
     ("/api/v1/buckets/{}", Audience::Console),
@@ -58,6 +61,15 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/buckets/{}/objects", Audience::Console),
     ("/api/v1/buckets/{}/quota", Audience::Console),
     ("/api/v1/buckets/{}/versioning", Audience::ConsoleAndCli),
+    // Object Lock has no console screen yet; it is administered from the CLI
+    // and the S3 surface.
+    ("/api/v1/buckets/{}/object-lock", Audience::Cli),
+    ("/api/v1/buckets/{}/object-lock/{}", Audience::Cli),
+    // Proof bundles are fetched by the CLI and verified offline afterwards.
+    ("/api/v1/buckets/{}/proof/{}", Audience::Cli),
+    ("/api/v1/audit/export", Audience::Cli),
+    ("/api/v1/audit/export/manifest", Audience::Cli),
+    ("/api/v1/reports/retention", Audience::Cli),
     ("/api/v1/cluster", Audience::ConsoleAndCli),
     // The console's Drives screen lists devices and drives their lifecycle; the
     // CLI covers the same ground for automation.
@@ -144,6 +156,9 @@ const CLASSIFIED: &[(&str, Audience)] = &[
     ("/api/v1/storage/usage", Audience::Console),
     ("/api/v1/system/info", Audience::Console),
     ("/api/v1/system/metrics", Audience::Console),
+    // Seeds the metrics screen's charts; same audience and same role gate as the
+    // reading it is a history of.
+    ("/api/v1/system/metrics/history", Audience::Console),
     ("/api/v1/verify/buckets/{}", Audience::ConsoleAndCli),
     ("/api/v1/verify/objects/{}/{}", Audience::ConsoleAndCli),
     ("/api/v1/webhook-deliveries", Audience::ConsoleAndCli),

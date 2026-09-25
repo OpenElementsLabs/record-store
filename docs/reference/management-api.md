@@ -51,6 +51,7 @@ The request ID is also in the `x-request-id` response header, and an inbound
 | --- | --- | --- |
 | `GET` | `/api/v1/system/info` | Version and capabilities |
 | `GET` | `/api/v1/system/metrics` | The same values `/metrics` exposes, as JSON |
+| `GET` | `/api/v1/system/metrics/history` | The last hour of counter readings, in memory, for charts |
 | `GET` | `/api/v1/auth/session` | The role behind the presented credential |
 
 ## Buckets
@@ -144,11 +145,24 @@ Updates are complete replacements. See
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/v1/audit/events` | Query the audit trail |
+| `GET` | `/api/v1/audit/chain` | Recompute the hash chain over a span of the log |
 
 Parameters: `since`, `until`, `principal`, `operation`, `resource`, `result`,
 `source_ip`, `request_id`, `after_time`, `after_id`, `limit` (1–1000, default 100).
 
 `after_time` and `after_id` must be supplied together.
+
+`result` accepts `attempted`, `success`, `denied`, and `failure`. `attempted` is the
+record written before a change is made; see
+[Audit Log](../administration/audit-log.md#why-a-change-leaves-two-records).
+
+The response carries `scan_truncated`. When it is `true` the range was **not**
+exhausted — a filtered query scans rather than indexing, and gives up after a bounded
+number of records. Follow the cursor rather than reading a short page as the end.
+
+`/api/v1/audit/chain` takes `from` (sequence, default 0) and `limit` (1–10000,
+default 1000), and returns `intact`, `checked`, `verified`, `unchained`,
+`head_sequence`, `next_from`, and `problems`.
 
 ## Storage
 

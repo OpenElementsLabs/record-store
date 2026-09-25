@@ -20,7 +20,7 @@ use record_store_auth::{CredentialManager, SigningSecret};
 use record_store_core::OrganizationId;
 use record_store_metadata::MetadataRepository;
 use record_store_metadata::RedbMetadataRepository;
-use record_store_service::{ServiceLimits, Services};
+use record_store_service::{ObjectLockLimits, ServiceLimits, Services};
 use record_store_storage::LocalFilesystemStore;
 use record_store_storage::ObjectStore;
 use sha2::{Digest, Sha256};
@@ -33,8 +33,30 @@ use crate::{S3State, router};
 pub(crate) const TEST_ACCESS_KEY: &str = "root-test-access";
 pub(crate) const TEST_SECRET_KEY: &str = "root-test-secret-at-least-sixteen";
 
+/// Builds the S3 surface the way a deployment runs it: with a durable audit
+/// trail. Operations that must leave evidence — a governance bypass above all
+/// — are refused without one, so a fixture that omitted it would be testing a
+/// configuration nothing ships.
 pub(crate) async fn test_router() -> (TempDir, Router, Arc<CredentialManager>) {
+    let (directory, state, credentials) = test_state().await;
+    (directory, router(state), credentials)
+}
+
+/// Builds the S3 surface over a durable audit trail, real or fault-injected.
+pub(crate) async fn test_router_with_audit(
+    audit: Arc<dyn record_store_audit::AuditRepository>,
+) -> (TempDir, Router, Arc<CredentialManager>) {
+    let (directory, state, credentials) = test_state().await;
+    (directory, router(state.with_audit(audit)), credentials)
+}
+
+async fn test_state() -> (TempDir, S3State, Arc<CredentialManager>) {
     let directory = tempdir().expect("temporary directory");
+    let audit: Arc<dyn record_store_audit::AuditRepository> = Arc::new(
+        record_store_audit::RedbAuditRepository::open(directory.path().join("audit.redb"))
+            .await
+            .expect("audit repository"),
+    );
     let metadata_impl = Arc::new(
         RedbMetadataRepository::open(directory.path().join("metadata.redb"))
             .await
@@ -51,15 +73,18 @@ pub(crate) async fn test_router() -> (TempDir, Router, Arc<CredentialManager>) {
         .expect("filesystem store"),
     );
     let storage: Arc<dyn ObjectStore> = storage_impl;
-    let services = Services::new(
+    let services = Services::new_with_audit(
         storage,
         metadata,
         OrganizationId::new(),
         ServiceLimits {
             maximum_concurrent_operations: 16,
+            admission_wait_limit_seconds: 5,
             maximum_custom_metadata_entries: 8,
             maximum_custom_metadata_bytes: 1_024,
+            object_lock: ObjectLockLimits::default(),
         },
+        Arc::clone(&audit),
     );
     let credentials = Arc::new(
         CredentialManager::open(
@@ -75,7 +100,9 @@ pub(crate) async fn test_router() -> (TempDir, Router, Arc<CredentialManager>) {
     let authorizer: Arc<dyn Authorizer> = credentials.clone();
     (
         directory,
-        router(S3State::new(services, provider).with_authorizer(authorizer)),
+        S3State::new(services, provider)
+            .with_authorizer(authorizer)
+            .with_audit(audit),
         credentials,
     )
 }
@@ -85,6 +112,39 @@ pub(crate) fn signed_request(
     uri: &str,
     payload: &[u8],
     extra_headers: &[(&str, &str)],
+    access_key: &str,
+    secret_key: &str,
+    time: DateTime<Utc>,
+) -> HttpRequest<Body> {
+    signed_request_leaving_unsigned(
+        method,
+        uri,
+        payload,
+        extra_headers,
+        &[],
+        access_key,
+        secret_key,
+        time,
+    )
+}
+
+/// Signs a request with every header it carries except those named in
+/// `unsigned`, which are sent but left out of `SignedHeaders`.
+///
+/// The signature is genuine over what remains, so a refusal can only come from
+/// the server noticing what the signature leaves out, never from a signature
+/// that simply fails to match.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the signing inputs are independent; bundling them would only \
+              hide which one a test is varying"
+)]
+pub(crate) fn signed_request_leaving_unsigned(
+    method: Method,
+    uri: &str,
+    payload: &[u8],
+    extra_headers: &[(&str, &str)],
+    unsigned: &[&str],
     access_key: &str,
     secret_key: &str,
     time: DateTime<Utc>,
@@ -111,6 +171,7 @@ pub(crate) fn signed_request(
     let mut signed_headers = headers
         .keys()
         .map(|name| name.as_str().to_owned())
+        .filter(|name| !unsigned.contains(&name.as_str()))
         .collect::<Vec<_>>();
     signed_headers.sort();
     let payload_hash = headers["x-amz-content-sha256"]
@@ -264,4 +325,54 @@ pub(crate) async fn put(application: &Router, bucket: &str, key: &str, body: &[u
         axum::http::StatusCode::OK,
         "put {bucket}/{key}"
     );
+}
+
+/// Creates a bucket with Object Lock enabled for its lifetime.
+pub(crate) async fn make_locked_bucket(application: &Router, bucket: &str) {
+    let response = send(
+        application,
+        Method::PUT,
+        &format!("/{bucket}"),
+        b"",
+        &[("x-amz-bucket-object-lock-enabled", "true")],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "create locked bucket {bucket}"
+    );
+}
+
+/// Stores an object and returns the version identifier it was published under.
+pub(crate) async fn put_returning_version(
+    application: &Router,
+    bucket: &str,
+    key: &str,
+    body: &[u8],
+    headers: &[(&str, &str)],
+) -> String {
+    let response = send(
+        application,
+        Method::PUT,
+        &format!("/{bucket}/{key}"),
+        body,
+        headers,
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "put {bucket}/{key}"
+    );
+    response_header(&response, "x-amz-version-id").expect("a versioned put reports its version")
+}
+
+/// Reads one response header as a string.
+pub(crate) fn response_header(response: &Response, name: &str) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }

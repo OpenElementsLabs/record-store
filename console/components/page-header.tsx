@@ -14,14 +14,14 @@ export function PageHeader({
   readonly actions?: React.ReactNode;
 }) {
   return (
-    <header className="flex flex-col gap-4 border-b border-border pb-4 pt-1 sm:flex-row sm:items-end sm:justify-between">
-      <div className="space-y-1.5">
+    <header className="flex flex-col gap-4 border-b border-border pb-6 pt-1 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0 space-y-2.5">
         {eyebrow ? <p className="type-eyebrow-accent">{eyebrow}</p> : null}
-        <h1 className="type-page-title">{title}</h1>
+        <h1 className="type-page-title break-words">{title}</h1>
         {description ? <p className="max-w-2xl type-page-description">{description}</p> : null}
       </div>
       {actions ? (
-        <div className="flex items-center gap-2 self-start sm:self-auto">{actions}</div>
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">{actions}</div>
       ) : null}
     </header>
   );

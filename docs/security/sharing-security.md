@@ -77,9 +77,15 @@ Unknown-token lookups are rate-limited per client
 entropy, guessing is not a realistic attack — the limit is there so probing is also not
 a cheap way to load the server.
 
-Client identity comes from the first entry of `X-Forwarded-For`, falling back to the
-socket address. Set that header at a proxy you control and have it overwrite whatever
-the client sent; otherwise every visitor behind the proxy shares one counter.
+Client identity is the address the request arrived from, unless it arrived from a hop
+listed in `server.trusted_proxies` — in which case `X-Forwarded-For` names the client.
+The header is never believed from an unlisted source: it is written by whoever sent
+the request, and a limit on a value the caller chooses is not a limit. An attacker
+rotating the header would otherwise get a fresh allowance on every attempt.
+
+The cost of leaving the list empty behind a proxy is the opposite failure: every
+visitor shares one counter. See
+[Reverse Proxy and TLS](../deployment/reverse-proxy.md#client-address-headers).
 
 ## Response headers
 

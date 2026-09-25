@@ -1,5 +1,5 @@
 use record_store_core::ServiceAccountId;
-use redb::{Database, ReadableTable};
+use redb::{Database, ReadableDatabase, ReadableTable};
 use uuid::Uuid;
 
 use crate::keys::{prefix_successor, store_backend};

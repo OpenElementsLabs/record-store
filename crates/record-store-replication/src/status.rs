@@ -115,14 +115,62 @@ pub struct ReplicationStatus {
     pub tombstones: u64,
 }
 
-/// Repair and movement queue depth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Repair and movement queue depth, age, and why work is stuck.
+///
+/// Depth alone does not tell an operator whether repair is healthy. A backlog of
+/// ten that is four hours old is a stalled cluster; a backlog of a thousand that
+/// turns over in seconds is a busy one. The age and the reasons are what make the
+/// difference visible without reading logs on every node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepairStatus {
     /// Movement tasks still to run.
     pub active_tasks: u64,
     /// Tasks parked after exhausting their retries.
     pub parked_tasks: u64,
+    /// Age of the oldest outstanding task, in seconds.
+    ///
+    /// `None` when nothing is outstanding. This is the number that says whether
+    /// the queue is moving: a backlog that never ages is working.
+    pub oldest_task_age_seconds: Option<i64>,
+    /// Payloads that cannot currently be repaired because no healthy replica
+    /// remains to copy from.
+    ///
+    /// Reported separately from the backlog on purpose. These are not queued
+    /// work that will eventually drain — they are objects that need a holder to
+    /// return or an external backup, and counting them as backlog would report
+    /// unrecoverable data as merely pending.
+    pub unrepairable_payloads: u64,
+    /// A bounded sample of why work is currently failing, most recent first.
+    ///
+    /// Sampled rather than complete: an operator needs the reasons, not one row
+    /// per affected object.
+    #[serde(default)]
+    pub failure_reasons: Vec<RepairFailure>,
 }
+
+/// One task's failure, as an operator needs to read it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepairFailure {
+    /// Task the failure belongs to.
+    pub task_id: record_store_core::ReplicaTaskId,
+    /// Payload the task was moving.
+    pub object_id: record_store_core::ObjectId,
+    /// What kind of movement it was.
+    pub kind: String,
+    /// Attempts made so far.
+    pub attempts: u32,
+    /// Whether the task has exhausted its retries and stopped.
+    pub parked: bool,
+    /// The failure as reported by the executing node.
+    pub reason: String,
+    /// When the task was last updated.
+    pub last_attempt_at: DateTime<Utc>,
+}
+
+/// How many distinct failures the status document samples.
+const FAILURE_SAMPLE_LIMIT: usize = 16;
+/// How many queued tasks are examined to derive age and failure samples.
+const TASK_SCAN_LIMIT: usize = 512;
 
 /// The complete cluster status document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,10 +285,7 @@ impl ClusterStatus {
                 unavailable_payloads: usage.unavailable_payloads,
                 tombstones: usage.tombstones,
             },
-            repair: RepairStatus {
-                active_tasks: usage.active_tasks,
-                parked_tasks: usage.parked_tasks,
-            },
+            repair: repair_status(context, &usage).await,
             nodes,
             operations,
             local_tasks,
@@ -266,6 +311,63 @@ impl ClusterStatus {
     pub const fn quorum(&self) -> &QuorumStatus {
         &self.metadata.status
     }
+}
+
+/// Derives repair depth, age, and failure reasons from the movement queue.
+///
+/// Counters alone answer "how much"; this answers "for how long" and "why". The
+/// scan is bounded so asking a struggling cluster how it is doing stays cheap,
+/// and a failure to read the queue degrades to the counters rather than failing
+/// the whole status document — an operator asking during an incident must still
+/// get an answer.
+async fn repair_status(context: &ClusterContext, usage: &ClusterUsage) -> RepairStatus {
+    let mut status = RepairStatus {
+        active_tasks: usage.active_tasks,
+        parked_tasks: usage.parked_tasks,
+        oldest_task_age_seconds: None,
+        // A payload with no healthy replica cannot be repaired at all: there is
+        // nothing valid to copy from. It is counted here so it is visible as
+        // unrecoverable rather than hidden inside the backlog.
+        unrepairable_payloads: usage.unavailable_payloads,
+        failure_reasons: Vec::new(),
+    };
+    let Ok(page) = context.cluster.queued_tasks(TASK_SCAN_LIMIT).await else {
+        return status;
+    };
+    let now = Utc::now();
+    let mut failures: Vec<RepairFailure> = Vec::new();
+    for task in &page.tasks {
+        if task.state.active() {
+            let age = now.signed_duration_since(task.created_at).num_seconds();
+            status.oldest_task_age_seconds = Some(
+                status
+                    .oldest_task_age_seconds
+                    .map_or(age, |oldest| oldest.max(age)),
+            );
+        }
+        if let Some(reason) = &task.last_error {
+            failures.push(RepairFailure {
+                task_id: task.id,
+                object_id: task.object_id,
+                kind: task.kind.to_string(),
+                attempts: task.attempts,
+                parked: !task.state.active(),
+                reason: reason.clone(),
+                last_attempt_at: task.updated_at,
+            });
+        }
+    }
+    // Parked work first, then most recently failed: a task that has given up
+    // needs an operator, a task that is still retrying may not.
+    failures.sort_by(|left, right| {
+        right
+            .parked
+            .cmp(&left.parked)
+            .then(right.last_attempt_at.cmp(&left.last_attempt_at))
+    });
+    failures.truncate(FAILURE_SAMPLE_LIMIT);
+    status.failure_reasons = failures;
+    status
 }
 
 fn display<E: std::fmt::Display>(error: E) -> String {

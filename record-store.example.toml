@@ -2,11 +2,20 @@
 s3_bind = "0.0.0.0:7600"
 api_bind = "0.0.0.0:7601"
 shutdown_grace_period_seconds = 30
+# Reverse-proxy hops whose X-Forwarded-For header may be believed. Empty means
+# the header is ignored and every request is attributed to the socket it
+# arrived on, which is safe everywhere and coarse behind a proxy: until the
+# proxy is named here, every visitor through it shares one identity for rate
+# limiting and appears in the audit trail as the proxy's address.
+# Name only hops you actually run.
+# trusted_proxies = ["10.0.0.0/8"]
 
 [storage]
 data_directory = "./data"
 encryption_enabled = false # requires a stable RECORD_STORE_CREDENTIAL_MASTER_KEY
-# Keep this on the same filesystem as data_directory when overriding it.
+# Keep this on the same filesystem as data_directory when overriding it: a payload is
+# published by renaming it out of here, and a rename cannot cross a mount boundary.
+# `record-store server doctor` refuses a deployment that gets this wrong.
 # temporary_directory = "./data/tmp"
 
 [auth]
@@ -22,6 +31,11 @@ root_s3_enabled = true # disable after attaching policies to service accounts
 
 [limits]
 maximum_concurrent_operations = 256
+# How long an operation may wait for one of those slots before it is refused with a
+# retryable "slow down" rather than queued. The concurrency limit bounds the work in
+# flight; this bounds the work waiting to be, which is what otherwise grows without
+# limit under sustained overload.
+admission_wait_limit_seconds = 15
 maximum_custom_metadata_entries = 64
 maximum_custom_metadata_bytes = 16384
 maximum_header_bytes = 65536
@@ -37,6 +51,15 @@ poll_interval_seconds = 2
 [lifecycle]
 interval_seconds = 3600
 batch_size = 100
+
+[object_lock]
+# A retention date is only as trustworthy as the clock judging it, so Record
+# Store keeps a monotonic high-water mark of the furthest point in time it has
+# observed and refuses to release a retained version while the clock is behind
+# it. The interval refreshes that mark while the node is idle; the tolerance
+# absorbs ordinary NTP correction rather than a jump.
+clock_watermark_interval_seconds = 60
+clock_backwards_tolerance_seconds = 5
 
 [sharing]
 # Share links are for people; embed links are for websites and applications.

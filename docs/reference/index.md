@@ -10,6 +10,8 @@ Exact values, verified against the implementation.
 -   **[Ports](ports.md)** — what listens where, and what to expose
 -   **[S3 Compatibility](s3-compatibility.md)** — what is and is not supported
 -   **[Management API](management-api.md)** — routes and shapes
+-   **[Proof Bundle Format](proof-bundle.md)** — the signed document, byte for byte
+-   **[Audit Chain and Checkpoints](audit-chain.md)** — the hash chain, the Merkle tree, the checkpoint preimage
 -   **[Error Reference](errors.md)** — codes and what to do about them
 -   **[Glossary](glossary.md)** — terms used throughout
 
@@ -36,9 +38,9 @@ Documented so you do not go looking:
 | | Status |
 | --- | --- |
 | Erasure coding | Not implemented — nothing produces or reads erasure stripes |
+| Enabling Object Lock on an existing bucket | Refused — it is chosen at creation, see [Object Lock](../administration/object-lock.md) |
 | `UploadPartCopy` | Unsupported |
 | Server-side encryption request headers | Unsupported — encryption is a deployment setting |
 | Access control lists | Unsupported — use [policies](../administration/policies.md) |
-| Object Lock | Unsupported |
 | `aws-chunked` transfer encoding | Unsupported |
 | Session tokens (STS-style) | Not issued. [Temporary credentials](../administration/temporary-credentials.md) are plain key pairs |

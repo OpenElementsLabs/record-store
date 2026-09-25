@@ -22,6 +22,8 @@ The request ID is also in `x-amz-request-id`.
 | Code | Cause | Fix |
 | --- | --- | --- |
 | `AccessDenied` | Authenticated, but no policy allows it | Check the account's [policies](../administration/policies.md) |
+| `AccessDenied` | The version is under retention or a legal hold | Read the message: it names which, and whether a bypass exists. See [Object Lock](../administration/object-lock.md) |
+| `AccessDenied` | `There were headers present in the request which were not signed` | Sign every `x-amz-*` header the request sends, including on a presigned URL. See [S3 Compatibility](s3-compatibility.md#signed-headers) |
 | `InvalidAccessKeyId` | The access key is not known | Check the key; check the account is not deleted |
 | `SignatureDoesNotMatch` | The signature does not verify | Usually a proxy rewriting `Host`, or a wrong secret |
 | `RequestTimeTooSkewed` | Client clock is too far off | Sync time |
@@ -37,6 +39,8 @@ The request ID is also in `x-amz-request-id`.
 | `NoSuchKey` | The key does not exist, or its current version is a delete marker |
 | `NoSuchUpload` | The multipart upload ID is unknown or already completed |
 | `NoSuchCORSConfiguration` | No CORS configuration on this bucket |
+| `ObjectLockConfigurationNotFoundError` | The bucket never had Object Lock enabled |
+| `NoSuchObjectLockConfiguration` | That object version carries no retention |
 
 ### Conflict — `409`
 
@@ -44,6 +48,7 @@ The request ID is also in `x-amz-request-id`.
 | --- | --- |
 | `BucketAlreadyExists` | Name already in use |
 | `BucketNotEmpty` | Delete the objects first, including old versions |
+| `InvalidBucketState` | Versioning cannot be suspended while [Object Lock](../administration/object-lock.md) is enabled |
 
 ### Bad request — `400`
 
@@ -66,8 +71,8 @@ The request ID is also in `x-amz-request-id`.
 | `412` | `PreconditionFailed` | An `If-Match` or `If-Unmodified-Since` condition failed |
 | `416` | `InvalidRange` | The requested range starts at or past the end of the object |
 | `501` | `NotImplemented` | An [unsupported operation](s3-compatibility.md#unsupported) |
-| `503` | `ServiceUnavailable` | The server is not ready |
-| `500` | `InternalError` | Check the logs with the request ID |
+| `503` | `ServiceUnavailable` | The server is not ready, the clock is behind the recorded [Object Lock high-water mark](../security/object-lock.md#the-clock), or a change could not be [recorded in the audit trail](../administration/audit-log.md#why-a-change-leaves-two-records) |
+| `500` | `InternalError` | Check the logs with the request ID. Includes stored bytes that no longer match the checksum recorded for them — the server log names the object |
 
 ## Management API errors
 
@@ -155,7 +160,8 @@ Three of these are refusals by design rather than bugs:
 
 | Status | Code | Cause |
 | --- | --- | --- |
-| `503` | `SERVICE_NOT_READY` | A subsystem is not ready — check `/ready` and the logs |
+| `503` | `SERVICE_NOT_READY` | A subsystem is not ready — check `/ready` and the logs. Also returned when a change could not be [recorded in the audit trail](../administration/audit-log.md#why-a-change-leaves-two-records), in which case nothing was changed |
+| `500` | `OBJECT_INTEGRITY_FAILED` | The stored bytes do not match the checksum recorded when they were committed — see [Integrity Verification](../operations/integrity-verification.md) |
 | `500` | `INTERNAL_ERROR` | Check the logs with the request ID |
 
 ## Tracing an error

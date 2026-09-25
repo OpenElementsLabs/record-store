@@ -82,7 +82,7 @@ export function AppShell({
       <div
         className="min-h-screen lg:grid"
         style={{
-          gridTemplateColumns: collapsed ? '4.5rem minmax(0, 1fr)' : '15rem minmax(0, 1fr)',
+          gridTemplateColumns: collapsed ? '4.5rem minmax(0, 1fr)' : '16.5rem minmax(0, 1fr)',
         }}
       >
         <a
@@ -126,8 +126,8 @@ export function AppShell({
             mobileOpen={mobileOpen}
             onOpenPalette={() => setPaletteOpen(true)}
           />
-          <main id="main" className="min-w-0 flex-1 px-4 py-6 sm:px-6">
-            <div className="mx-auto max-w-7xl space-y-6">{children}</div>
+          <main id="main" className="min-w-0 flex-1 px-4 py-7 sm:px-8 lg:py-9">
+            <div className="mx-auto max-w-7xl space-y-7">{children}</div>
           </main>
         </div>
       </div>
@@ -194,7 +194,7 @@ function Sidebar({
       aria-label="Console sections"
       className={cn(
         'flex-col overflow-y-auto border-r border-border bg-surface lg:sticky lg:top-0 lg:h-screen',
-        collapsed ? 'px-2 py-3' : 'px-3 py-3',
+        collapsed ? 'px-2 py-3' : 'px-4 py-5',
         className,
       )}
     >
@@ -225,7 +225,7 @@ function Sidebar({
       </div>
 
       {collapsed ? null : (
-        <p className="mt-1 px-2 type-meta">
+        <p className="mt-4 rounded-control border border-border bg-surface-subtle px-3 py-2 type-meta">
           {deploymentModeLabel(deployment.info.mode)} · {deployment.info.version}
         </p>
       )}
@@ -242,9 +242,9 @@ function Sidebar({
         </Button>
       ) : null}
 
-      <div className="mt-5 flex flex-1 flex-col gap-4">
+      <div className="mt-7 flex flex-1 flex-col gap-6">
         {sections.map((section) => (
-          <div key={section.title} className="space-y-1">
+          <div key={section.title} className="space-y-2">
             {collapsed ? (
               // A separator instead of a heading: a truncated word is worse
               // than none, and the grouping is still legible.
@@ -264,10 +264,10 @@ function Sidebar({
                       aria-current={active ? 'page' : undefined}
                       title={collapsed ? item.label : undefined}
                       className={cn(
-                        'relative flex items-center gap-2.5 rounded-control text-sm',
-                        collapsed ? 'justify-center px-2 py-2' : 'px-2 py-1.5',
+                        'relative flex items-center gap-3 rounded-control text-sm transition-quiet',
+                        collapsed ? 'justify-center px-2 py-2' : 'px-3 py-2.5',
                         active
-                          ? 'bg-accent-soft font-medium text-accent'
+                          ? 'bg-accent-soft font-semibold text-accent'
                           : 'text-ink-muted hover:bg-surface-muted hover:text-ink',
                       )}
                     >
@@ -311,7 +311,7 @@ function TopBar({
   readonly onOpenPalette: () => void;
 }) {
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-surface/90 px-4 backdrop-blur-sm sm:px-6">
+    <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border bg-surface/90 px-4 backdrop-blur-sm sm:px-8">
       <Button
         variant="ghost"
         size="icon"

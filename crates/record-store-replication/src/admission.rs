@@ -99,6 +99,26 @@ impl ClusterAdmission for JoinCoordinator {
         })?;
 
         let node_id = request.registration.node_id;
+        // A node that was decommissioned must not be able to re-enter under its
+        // old identity, even holding a valid token: its replicas were released
+        // on the assumption it was gone, and its local state no longer reflects
+        // any placement the cluster believes in. It has to arrive as a new node.
+        if let Some(existing) = self
+            .context
+            .cluster
+            .node(node_id)
+            .await
+            .map_err(|error| ConsensusError::Internal(error.to_string()))?
+            && existing.state == record_store_cluster::NodeState::Decommissioned
+        {
+            return Err(rejection_error(
+                record_store_consensus::RejectionKind::InvalidTransition,
+                format!(
+                    "node {node_id} was decommissioned from this cluster; it must be given a new \
+                     node identity before it can rejoin"
+                ),
+            ));
+        }
         let issued = NodeCredential::issue(node_id, now);
         // The token consumption, the membership record, and the node credential
         // are committed together, so a partially joined node cannot exist.
@@ -182,6 +202,20 @@ impl ClusterAdmission for JoinCoordinator {
                 format!(
                     "node {node_id} is consensus member {} and cannot activate as member {member_id}",
                     record.raft_id
+                ),
+            ));
+        }
+        // A decommissioned node still holds its credential and its member
+        // identifier on disk, so restarting it would otherwise walk it straight
+        // back into the consensus group it was deliberately removed from — with
+        // whatever stale local state it still has. Removal is only removal if
+        // rejoining requires a fresh admission decision.
+        if record.state == record_store_cluster::NodeState::Decommissioned {
+            return Err(rejection_error(
+                record_store_consensus::RejectionKind::InvalidTransition,
+                format!(
+                    "node {node_id} was decommissioned and cannot rejoin with its previous \
+                     membership; issue a new join token and admit it as a new member"
                 ),
             ));
         }

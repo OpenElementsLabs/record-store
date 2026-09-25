@@ -132,17 +132,45 @@ Traefik passes `Host` through and sets `X-Forwarded-*` by default.
 
 ## Client-address headers
 
-Record Store reads the first entry of `X-Forwarded-For` to identify a client for
-share-link and embed abuse controls — password attempt limits and unknown-token probe
-limits. Without it, every visitor behind the proxy shares one counter and the limits
-apply far too coarsely.
+Record Store identifies a client from `X-Forwarded-For` **only when the request
+arrived from a hop you have named**. Name them:
 
-The value is attacker-influenced, so it is length-bounded and character-restricted,
-and is used for nothing but partitioning a counter. Set it at a proxy you control, and
-have that proxy overwrite rather than append any header the client sent.
+```toml
+[server]
+trusted_proxies = ["10.0.0.0/8"]
+```
 
-This only works when the management listener is not itself internet-facing — which is
-how Record Store is meant to be deployed.
+or `RECORD_STORE_SERVER_TRUSTED_PROXIES=10.0.0.0/8,192.168.1.5`. Entries are IP
+addresses or CIDR blocks, in either address family.
+
+!!! warning "Behind a proxy, this is not optional"
+    The list is **empty by default**, and while it is empty the header is ignored
+    entirely: every request is attributed to the socket it arrived on. Behind a
+    proxy that socket is the proxy, for every visitor in the world. The
+    consequences are concrete:
+
+    - share-password attempt limits and unknown-token probe limits
+      ([Sharing Security](../security/sharing-security.md)) apply to all visitors
+      together rather than per visitor;
+    - every [audit record](../administration/audit-log.md) says the proxy's
+      address instead of the caller's.
+
+Name only hops you actually run. Anything you name is trusted to tell Record Store
+who the caller is, so naming an address that is not in front of Record Store hands
+whoever can reach the listener from there the ability to choose their own identity —
+including the identity that rate limits and audit records are written against.
+
+How the header is read, once a hop is trusted:
+
+- the chain is walked **from the right**, discarding entries that are themselves
+  trusted hops, and the first remaining entry is the client;
+- everything to the left of that entry was written by somebody who could write
+  anything, so it is never used;
+- a chain that is entirely trusted hops, a malformed value, or an oversized one
+  falls back to the address the request arrived from.
+
+Your proxy should still overwrite rather than append whatever header the client sent,
+but Record Store no longer depends on it doing so.
 
 ## Console cookies
 

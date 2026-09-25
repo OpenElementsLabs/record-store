@@ -1,8 +1,8 @@
 //! Durable single-node metadata catalog.
 
 use record_store_core::{
-    BucketId, DeleteMarker, MultipartUpload, ObjectId, ObjectMetadata, ObjectVersionRecord,
-    UploadId, UploadedPart, VersionId,
+    BucketId, DeleteMarker, MultipartUpload, ObjectId, ObjectKey, ObjectLockState, ObjectMetadata,
+    ObjectVersionRecord, UploadId, UploadedPart, VersionId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -88,6 +88,32 @@ pub struct DeleteVersionResult {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MultipartCleanupResult {
     pub parts: Vec<UploadedPart>,
+}
+
+/// One version that Object Lock currently holds a record for.
+///
+/// A record can outlive the retention it describes, so a caller reporting these
+/// has to compare the retention against the current time rather than treat the
+/// record's presence as meaning the version is still held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockedVersion {
+    /// Owning bucket.
+    pub bucket_id: BucketId,
+    /// Logical key.
+    pub key: ObjectKey,
+    /// The version the lock is on.
+    pub version_id: VersionId,
+    /// Retention and legal hold as recorded.
+    pub state: ObjectLockState,
+}
+
+/// Bounded page of locked versions.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LockedVersionPage {
+    /// Locked versions in this page.
+    pub versions: Vec<LockedVersion>,
+    /// Cursor for the next page, when one exists.
+    pub next: Option<VersionId>,
 }
 
 /// Bounded page of immutable payload identifiers referenced by metadata.

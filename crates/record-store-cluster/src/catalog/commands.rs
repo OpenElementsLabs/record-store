@@ -42,6 +42,27 @@ pub fn apply_command_tx(
         ClusterCommand::InitializeCluster { identity, config } => {
             initialize_cluster(write, identity, *config)
         }
+        ClusterCommand::RecordRecovery {
+            recovery_id,
+            reason,
+            at,
+        } => {
+            let mut identity: ClusterIdentity =
+                get(write, IDENTITY, SINGLETON)?.ok_or(ClusterCatalogError::NotInitialized)?;
+            // The generation advances and the lineage is replaced. Both matter:
+            // the generation says authority was rebuilt, and the lineage says
+            // *which* rebuild this is, so two independent recoveries of one
+            // cluster can be told apart rather than quietly coexisting.
+            identity.recovery_generation = identity.recovery_generation.saturating_add(1);
+            identity.recovery_id = Some(recovery_id);
+            identity.recovered_at = Some(at);
+            put(write, IDENTITY, SINGLETON, &identity)?;
+            // Placement decisions made before authority was rebuilt must not be
+            // mistaken for current ones.
+            advance_cluster_map_epoch(write)?;
+            let _ = reason;
+            Ok(ClusterOutcome::Identity(Box::new(identity)))
+        }
         ClusterCommand::UpdateConfig { config, at: _ } => {
             config.validate()?;
             put(write, CONFIG, SINGLETON, &*config)?;
@@ -68,6 +89,7 @@ pub fn apply_command_tx(
             node_id,
             rpc_address,
             s3_endpoint,
+            management_endpoint,
             versions,
             storage_class,
             failure_domain,
@@ -77,6 +99,7 @@ pub fn apply_command_tx(
             let mut node = require_node(write, node_id)?;
             node.rpc_address = rpc_address;
             node.s3_endpoint = s3_endpoint;
+            node.management_endpoint = management_endpoint;
             node.protocol = versions.protocol;
             node.software_version = versions.software.clone();
             node.storage_format_version = versions.storage_format;
@@ -379,8 +402,22 @@ pub fn apply_command_tx(
             put(write, TASKS, task_id.as_uuid().as_bytes(), &task)?;
             Ok(ClusterOutcome::Task(Box::new(task)))
         }
-        ClusterCommand::CompleteTask { task_id, at } => {
+        ClusterCommand::CompleteTask {
+            task_id,
+            node_id,
+            fence,
+            at,
+        } => {
             let mut task = require_task(write, task_id)?;
+            // A report from a worker that no longer owns the claim is ignored
+            // rather than applied. Applying it would mark a task complete while
+            // the node that actually owns it is still copying, and the two
+            // workers would then race to publish contradictory placement.
+            if let Some(node_id) = node_id
+                && !task.holds_claim(node_id, fence)
+            {
+                return Ok(ClusterOutcome::Changed(false));
+            }
             remove_task_queue_entry(write, &task)?;
             let was_active = task.state.active();
             task.complete(at);
@@ -393,11 +430,20 @@ pub fn apply_command_tx(
         }
         ClusterCommand::FailTask {
             task_id,
+            node_id,
+            fence,
             reason,
             maximum_attempts,
             at,
         } => {
             let mut task = require_task(write, task_id)?;
+            // A stale worker's failure must not consume the attempt budget of
+            // the claim that replaced it, nor park a task that is progressing.
+            if let Some(node_id) = node_id
+                && !task.holds_claim(node_id, fence)
+            {
+                return Ok(ClusterOutcome::Changed(false));
+            }
             remove_task_queue_entry(write, &task)?;
             let was_active = task.state.active();
             task.fail(reason, maximum_attempts, at);
@@ -499,9 +545,20 @@ pub fn apply_command_tx(
             put(write, JOIN_TOKENS, token.id.as_uuid().as_bytes(), &*token)?;
             Ok(ClusterOutcome::None)
         }
-        ClusterCommand::ConsumeJoinToken { token_id, at: _ } => {
+        ClusterCommand::ConsumeJoinToken { token_id, at } => {
             let mut token: JoinToken = get(write, JOIN_TOKENS, token_id.as_uuid().as_bytes())?
                 .ok_or(ClusterCatalogError::JoinTokenNotFound(token_id))?;
+            // Single use has to be decided here, where every member reaches the
+            // same conclusion in the same log position. The admission handler
+            // checks the token too, but it does so against an unbarriered local
+            // read, so two nodes presenting one token concurrently — or one node
+            // retrying against a lagging member — would both pass that check and
+            // both be admitted. `at` is the leader's proposal time carried in the
+            // log, so expiry is evaluated identically on every member rather than
+            // against each member's own clock.
+            if token.spent(at) {
+                return Err(ClusterCatalogError::JoinTokenNotFound(token_id));
+            }
             token.consume();
             put(write, JOIN_TOKENS, token_id.as_uuid().as_bytes(), &token)?;
             Ok(ClusterOutcome::Changed(true))
@@ -1647,6 +1704,173 @@ mod tests {
         assert!(matches!(result, Err(ClusterCatalogError::NodeNotFound(_))));
     }
 
+    /// The scenario this fencing exists for: a worker's lease expires, the
+    /// coordinator returns the task to the queue, and the task is claimed again
+    /// — possibly by the same node. The first worker is still running and will
+    /// eventually report an outcome. If that report were accepted it would mark
+    /// the task finished while the current owner is still copying, and the two
+    /// would race to publish contradictory placement for the same payload.
+    #[tokio::test]
+    async fn a_worker_whose_lease_was_reclaimed_cannot_report_an_outcome() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let task = queued_repair_task(node_id, now);
+        catalog
+            .apply(ClusterCommand::EnqueueTask {
+                task: Box::new(task.clone()),
+            })
+            .await
+            .expect("enqueue");
+
+        let ClusterOutcome::Task(first) = catalog
+            .apply(ClusterCommand::ClaimTask {
+                task_id: task.id,
+                node_id,
+                lease_seconds: 60,
+                at: now,
+            })
+            .await
+            .expect("first claim")
+        else {
+            panic!("a claim must return the claimed task");
+        };
+        let stale_fence = first.fence;
+
+        // The lease expires and the coordinator reclaims the task; a new claim
+        // is then granted, which advances the fence.
+        catalog
+            .apply(ClusterCommand::RequeueTask {
+                task_id: task.id,
+                reason: Some("execution lease expired".into()),
+                at: now,
+            })
+            .await
+            .expect("requeue");
+        let ClusterOutcome::Task(second) = catalog
+            .apply(ClusterCommand::ClaimTask {
+                task_id: task.id,
+                node_id,
+                lease_seconds: 60,
+                at: now,
+            })
+            .await
+            .expect("second claim")
+        else {
+            panic!("a claim must return the claimed task");
+        };
+        assert!(
+            second.fence > stale_fence,
+            "every claim has to advance the fence, or a reclaimed lease would be              indistinguishable from the one it replaced"
+        );
+
+        // The original worker finally reports success under its old token.
+        catalog
+            .apply(ClusterCommand::CompleteTask {
+                task_id: task.id,
+                node_id: Some(node_id),
+                fence: stale_fence,
+                at: now,
+            })
+            .await
+            .expect("a stale report is ignored, not an error");
+        let current = catalog
+            .task(task.id)
+            .await
+            .expect("read")
+            .expect("task still exists");
+        assert!(
+            matches!(current.state, ReplicaTaskState::Running { .. }),
+            "a stale worker must not be able to complete the claim that replaced it"
+        );
+        assert_eq!(current.fence, second.fence, "the live claim must be intact");
+
+        // A stale failure is refused for the same reason: it would spend the
+        // attempt budget and could park a task that is progressing normally.
+        catalog
+            .apply(ClusterCommand::FailTask {
+                task_id: task.id,
+                node_id: Some(node_id),
+                fence: stale_fence,
+                reason: "stale worker gave up".into(),
+                maximum_attempts: 1,
+                at: now,
+            })
+            .await
+            .expect("a stale failure is ignored, not an error");
+        let current = catalog
+            .task(task.id)
+            .await
+            .expect("read")
+            .expect("task still exists");
+        assert_eq!(
+            current.attempts, 0,
+            "a stale failure must not consume the live claim's retry budget"
+        );
+
+        // The current owner's report, under the live token, is accepted.
+        catalog
+            .apply(ClusterCommand::CompleteTask {
+                task_id: task.id,
+                node_id: Some(node_id),
+                fence: second.fence,
+                at: now,
+            })
+            .await
+            .expect("complete");
+        assert!(matches!(
+            catalog
+                .task(task.id)
+                .await
+                .expect("read")
+                .expect("task")
+                .state,
+            ReplicaTaskState::Completed { .. }
+        ));
+    }
+
+    /// A task written before fencing existed decodes with token zero. Accepting
+    /// it would reintroduce exactly the unfenced behaviour, so zero is never a
+    /// valid claim and such a task is simply reclaimed and re-issued a token.
+    #[tokio::test]
+    async fn a_task_from_before_fencing_is_not_trusted_on_its_absent_token() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let node_id = register(&catalog, now).await;
+        let mut task = queued_repair_task(node_id, now);
+        task.state = ReplicaTaskState::Running {
+            node_id,
+            started_at: now,
+            lease_expires_at: now + chrono::Duration::seconds(60),
+        };
+        assert_eq!(task.fence, 0, "a pre-fencing task carries no token");
+        assert!(
+            !task.holds_claim(node_id, 0),
+            "token zero must never satisfy a claim check"
+        );
+    }
+
+    fn queued_repair_task(node_id: NodeId, now: DateTime<Utc>) -> ReplicaTask {
+        ReplicaTask {
+            id: ReplicaTaskId::new(),
+            object_id: ObjectId::new(),
+            kind: ReplicaTaskKind::Repair,
+            priority: ReplicaTaskPriority::High,
+            source_node: None,
+            source_device: None,
+            target_node: Some(node_id),
+            target_device: None,
+            operation_id: None,
+            size: 1_024,
+            fence: 0,
+            state: ReplicaTaskState::Queued,
+            attempts: 0,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     /// A task moves through claim, completion, and purge. Each step has to be
     /// durable so a coordinator restart does not redo finished work.
     #[tokio::test]
@@ -1665,6 +1889,7 @@ mod tests {
             target_device: None,
             operation_id: None,
             size: 1_024,
+            fence: 0,
             state: ReplicaTaskState::Queued,
             attempts: 0,
             last_error: None,
@@ -1704,6 +1929,8 @@ mod tests {
         catalog
             .apply(ClusterCommand::CompleteTask {
                 task_id: task.id,
+                node_id: Some(node_id),
+                fence: 1,
                 at: now,
             })
             .await
@@ -1746,6 +1973,7 @@ mod tests {
             target_device: None,
             operation_id: None,
             size: 1,
+            fence: 0,
             state: ReplicaTaskState::Queued,
             attempts: 0,
             last_error: None,
@@ -1761,6 +1989,8 @@ mod tests {
         catalog
             .apply(ClusterCommand::FailTask {
                 task_id: task.id,
+                node_id: None,
+                fence: 0,
                 reason: "peer refused".to_owned(),
                 maximum_attempts: 3,
                 at: now,
@@ -1871,6 +2101,123 @@ mod tests {
                 .apply(ClusterCommand::ConsumeJoinToken {
                     token_id: record_store_core::JoinTokenId::new(),
                     at: Utc::now(),
+                })
+                .await,
+            Err(ClusterCatalogError::JoinTokenNotFound(_))
+        ));
+    }
+
+    /// Single use is a security property, so it has to hold where the decision
+    /// is replicated rather than only where the request is handled. The
+    /// admission handler validates a token against its own unbarriered local
+    /// state; two nodes presenting the same token concurrently would both see
+    /// `uses = 0` there and both proceed. Only the state machine sees the
+    /// commands in a single order, so it is the state machine that must refuse
+    /// the second one.
+    #[tokio::test]
+    async fn a_single_use_token_cannot_be_consumed_twice_even_when_both_requests_are_valid() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let issued = JoinToken::issue(3_600, 1, "one node".to_owned(), now);
+        catalog
+            .apply(ClusterCommand::IssueJoinToken {
+                token: Box::new(issued.record.clone()),
+            })
+            .await
+            .expect("issue");
+
+        // Both requests validated against a view in which the token was unused.
+        issued
+            .record
+            .verify(issued.token.expose(), now)
+            .expect("the token is valid for the first joiner");
+        issued
+            .record
+            .verify(issued.token.expose(), now)
+            .expect("and for the second, which is the whole problem");
+
+        catalog
+            .apply(ClusterCommand::ConsumeJoinToken {
+                token_id: issued.record.id,
+                at: now,
+            })
+            .await
+            .expect("the first join consumes the token");
+        let second = catalog
+            .apply(ClusterCommand::ConsumeJoinToken {
+                token_id: issued.record.id,
+                at: now,
+            })
+            .await;
+        assert!(
+            matches!(second, Err(ClusterCatalogError::JoinTokenNotFound(_))),
+            "a spent single-use token must not admit a second node"
+        );
+        assert_eq!(
+            catalog
+                .join_token(issued.record.id)
+                .await
+                .expect("read")
+                .expect("token")
+                .uses,
+            1,
+            "the refused attempt must not be counted as a use either"
+        );
+    }
+
+    /// Expiry is evaluated against the timestamp carried in the committed
+    /// command, not each member's own clock, so a node with a fast or slow clock
+    /// cannot admit a joiner the rest of the cluster would refuse.
+    #[tokio::test]
+    async fn an_expired_token_is_refused_on_the_committed_timestamp() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let issued = JoinToken::issue(60, 1, "short lived".to_owned(), now);
+        catalog
+            .apply(ClusterCommand::IssueJoinToken {
+                token: Box::new(issued.record.clone()),
+            })
+            .await
+            .expect("issue");
+
+        let after_expiry = now + chrono::Duration::seconds(120);
+        assert!(matches!(
+            catalog
+                .apply(ClusterCommand::ConsumeJoinToken {
+                    token_id: issued.record.id,
+                    at: after_expiry,
+                })
+                .await,
+            Err(ClusterCatalogError::JoinTokenNotFound(_))
+        ));
+    }
+
+    /// Revocation has to bind at the same place, or a token revoked while a join
+    /// was in flight would still be honoured by the state machine.
+    #[tokio::test]
+    async fn a_revoked_token_is_refused_by_the_state_machine() {
+        let (_directory, catalog) = initialized().await;
+        let now = Utc::now();
+        let issued = JoinToken::issue(3_600, 1, "revoked".to_owned(), now);
+        catalog
+            .apply(ClusterCommand::IssueJoinToken {
+                token: Box::new(issued.record.clone()),
+            })
+            .await
+            .expect("issue");
+        catalog
+            .apply(ClusterCommand::RevokeJoinToken {
+                token_id: issued.record.id,
+                at: now,
+            })
+            .await
+            .expect("revoke");
+
+        assert!(matches!(
+            catalog
+                .apply(ClusterCommand::ConsumeJoinToken {
+                    token_id: issued.record.id,
+                    at: now,
                 })
                 .await,
             Err(ClusterCatalogError::JoinTokenNotFound(_))

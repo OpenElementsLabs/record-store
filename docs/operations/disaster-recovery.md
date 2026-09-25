@@ -25,13 +25,33 @@ bytes are gone.
 
 ## Server will not start
 
-Read the logs first. Startup validation reports every problem at once.
+Ask the machine first. `doctor` reports every precondition at once, without starting
+anything and without printing a secret:
+
+```bash
+record-store server --config /etc/record-store/config.toml doctor
+```
+
+| Check | Cause | Fix |
+| --- | --- | --- |
+| `configuration` | Invalid or missing settings | Correct the listed settings |
+| `data_directory` | Not writable, or the volume is mounted read-only | Ownership — uid 10001 in the container image |
+| `data_directory_permissions` | World-writable data directory | `chmod 0700` |
+| `atomic_publication` | Temporary directory on a different filesystem | Move it onto the data directory's filesystem |
+| `storage_format` | On-disk format from another release | Run the matching release, or restore into an empty directory |
+| `restore_state` | A restore never finished | Run the restore again |
+| `free_space` | The filesystem is nearly full | Free space before starting |
+| `s3_listener` / `management_listener` | Another process holds the address | Stop it, or configure a different one |
+| `credential_master_key` | Encryption on without a key | Set it — the **original** key |
+| `object_encryption` | This directory holds encrypted payloads and no key is set | Set the key the payloads were written with |
+
+It exits 0 when nothing failed and 7 when something did, so it also works in a
+pre-start hook.
+
+Two failures cannot be seen ahead of time and appear only in the logs:
 
 | Message | Cause | Fix |
 | --- | --- | --- |
-| Configuration validation failed | Invalid or missing settings | `record-store server check-config` |
-| Root credentials are required | Not set | Set both root variables |
-| `credential_master_key` is required | Encryption on without a key | Set it — the **original** key |
 | Data directory in use | Another process holds the lock | Stop it; check for a stale container |
 | Schema newer than supported | Binary downgraded past a schema change | Use the newer binary, or restore a matching backup |
 
@@ -41,17 +61,20 @@ Read the logs first. Startup validation reports every problem at once.
 # 1. Preserve it
 mv /var/lib/record-store /var/lib/record-store.broken
 
-# 2. Restore from backup into a fresh directory
-mkdir -p /var/lib/record-store
-record-store server restore-metadata /backups/latest/metadata
-rsync -a /backups/latest/objects/ /var/lib/record-store/objects/
+# 2. Check the backup before trusting it
+record-store server verify-backup /backups/latest --level full
 
-# 3. Start and verify
+# 3. Restore into a fresh directory
+mkdir -p /var/lib/record-store
+record-store server restore /backups/latest --level full
+
+# 4. Start and verify
 record-store storage inspect --endpoint http://127.0.0.1:7601
 record-store verify bucket uploads --endpoint http://127.0.0.1:7601
 ```
 
-Restore metadata and payloads from the **same** backup. See
+Metadata, payloads, and system records all come from the one backup, so there is no
+way to mix a Tuesday catalog with a Thursday payload directory. See
 [Backup and Restore](backup-and-restore.md).
 
 ## The master key is lost

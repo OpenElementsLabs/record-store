@@ -33,27 +33,6 @@ impl LifecycleRule {
     }
 }
 
-/// Foundation for future Object Lock enforcement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RetentionMode {
-    /// Deletion may be bypassed by an appropriately authorized administrator.
-    Governance,
-    /// Deletion is forbidden until the retention time has elapsed.
-    Compliance,
-}
-
-/// Retention metadata stored independently from payload layout.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObjectRetention {
-    /// Optional future retention mode.
-    pub mode: Option<RetentionMode>,
-    /// Optional time before which deletion is not allowed.
-    pub retain_until: Option<DateTime<Utc>>,
-    /// Independent legal-hold flag.
-    pub legal_hold: bool,
-}
-
 /// Aggregate storage accounting values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageUsage {

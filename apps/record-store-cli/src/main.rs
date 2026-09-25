@@ -55,6 +55,11 @@ enum Command {
     },
     /// Query the durable security audit trail.
     Audit(AuditArgs),
+    /// Export the audit trail, or report what Object Lock holds.
+    AuditExport {
+        #[command(subcommand)]
+        command: AuditExportCommand,
+    },
     /// Verify persisted checksums.
     Verify {
         #[command(subcommand)]
@@ -115,9 +120,42 @@ struct ServerArgs {
 enum ServerCommand {
     /// Validate configuration without starting listeners.
     CheckConfig,
-    /// Create a consistent offline metadata backup directory.
+    /// Report whether this machine can run the configured deployment.
+    ///
+    /// Checks the data directory, its permissions, the filesystem arrangement
+    /// that makes payload publication atomic, the on-disk storage format, free
+    /// space, the configured addresses, and which key material is present. No
+    /// secret value is ever printed.
+    Doctor,
+    /// Back up a stopped deployment: payloads, metadata, and system records.
+    Backup {
+        /// Destination directory. Must be empty or absent.
+        output: PathBuf,
+        /// Replace a destination holding an interrupted backup. A completed
+        /// backup is never overwritten.
+        #[arg(long)]
+        replace_incomplete: bool,
+    },
+    /// Check a backup without restoring it.
+    VerifyBackup {
+        /// Backup directory.
+        input: PathBuf,
+        /// How much to check: `manifest`, `checksums`, or `full`. A
+        /// metadata-only check is never reported as a full verification.
+        #[arg(long, default_value = "checksums")]
+        level: String,
+    },
+    /// Restore a verified backup into an empty data directory.
+    Restore {
+        /// Backup directory.
+        input: PathBuf,
+        /// Verification to run before anything is written.
+        #[arg(long, default_value = "checksums")]
+        level: String,
+    },
+    /// Deprecated. Use `backup`, which also covers payloads and system records.
     BackupMetadata { output: PathBuf },
-    /// Restore a validated offline backup into an empty metadata directory.
+    /// Deprecated. Use `restore`, which also restores payloads.
     RestoreMetadata { input: PathBuf },
 }
 
@@ -301,10 +339,66 @@ enum BucketCommand {
         #[command(flatten)]
         endpoint: EndpointArgs,
     },
+    /// Inspect or change Object Lock on a bucket.
+    ///
+    /// Object Lock is enabled when a bucket is created and never afterwards,
+    /// because enabling it later would claim protection over versions that were
+    /// written without it. Create a locked bucket over S3 with
+    /// `x-amz-bucket-object-lock-enabled: true`.
+    ObjectLock {
+        #[command(subcommand)]
+        command: BucketObjectLockCommand,
+    },
     /// Inspect or change bucket versioning.
     Versioning {
         #[command(subcommand)]
         command: BucketVersioningCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BucketObjectLockCommand {
+    /// Show a bucket's Object Lock configuration.
+    Show {
+        /// Bucket name.
+        name: String,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Replace the default retention applied to new object versions.
+    ///
+    /// The default is materialized onto each version as it is written, so
+    /// changing it never alters a version that already exists.
+    SetDefault {
+        /// Bucket name.
+        name: String,
+        /// Retention mode. COMPLIANCE cannot be shortened or bypassed by
+        /// anyone, including the root credential.
+        #[arg(long, value_parser = ["GOVERNANCE", "COMPLIANCE"])]
+        mode: String,
+        /// Retention period in whole days. Mutually exclusive with --years.
+        #[arg(long, conflicts_with = "years")]
+        days: Option<u16>,
+        /// Retention period in whole years, counted as 365 days each.
+        #[arg(long)]
+        years: Option<u16>,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Show the retention and legal hold on one object version.
+    ///
+    /// Read-only. Placing or releasing a retention is an S3 action governed by
+    /// S3 policy; the management plane deliberately offers no second door to it.
+    Status {
+        /// Bucket name.
+        name: String,
+        /// Object key.
+        key: String,
+        /// Version to inspect. Defaults to the current version.
+        #[arg(long)]
+        version_id: Option<String>,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
     },
 }
 
@@ -447,12 +541,99 @@ struct AuditArgs {
 }
 
 #[derive(Subcommand)]
+enum AuditExportCommand {
+    /// Write a bounded, streamed export of an audit range to a directory.
+    ///
+    /// The directory holds the records, a manifest naming the range and who
+    /// exported it, the covering checkpoint roots, and a SHA256SUMS file over
+    /// all three. The export never loads the range into memory, and the server
+    /// records that it was made.
+    ///
+    /// SHA256SUMS establishes that the copy reached you unaltered. It does not
+    /// establish that the log was not edited before the copy was taken; only a
+    /// checkpoint covering the range does that.
+    Export {
+        /// Start of the range, RFC 3339. Inclusive.
+        #[arg(long)]
+        from: String,
+        /// End of the range, RFC 3339. Exclusive, so adjacent exports tile.
+        #[arg(long)]
+        to: String,
+        /// Record format.
+        #[arg(long, default_value = "json", value_parser = ["json", "csv"])]
+        format: String,
+        /// Directory to create and write the export into.
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Report which buckets have Object Lock and what it currently holds.
+    RetentionReport {
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+    /// Recompute the audit hash chain and report whether it still verifies.
+    ///
+    /// This detects a record that was edited, removed, or reordered by anyone
+    /// who could not also rewrite every later link — which is what an operator
+    /// with database access would have to do. It does not detect an operator
+    /// who rewrote the whole log and every hash in it; only an external anchor
+    /// over a checkpoint reaches that far.
+    ///
+    /// A long log is walked in spans: follow `next_from` until it is absent.
+    VerifyChain {
+        /// Sequence to start from. Zero verifies from the genesis value.
+        #[arg(long, default_value_t = 0)]
+        from: u64,
+        /// Records to examine in this span.
+        #[arg(long, default_value_t = 1_000)]
+        limit: usize,
+        #[command(flatten)]
+        endpoint: EndpointArgs,
+    },
+}
+
+#[derive(Subcommand)]
 enum VerifyCommand {
+    /// Verify an object's stored checksum, and optionally emit a proof bundle.
     Object {
         bucket: String,
         key: String,
+        /// Version to describe. Defaults to the current version.
+        #[arg(long)]
+        version_id: Option<String>,
+        /// Write a portable proof bundle to this path.
+        ///
+        /// The bundle is a signed JSON document describing the object version:
+        /// its identity, the SHA-256 recorded when it was written, and the
+        /// deployment's public verification key. It contains no credentials,
+        /// no capability tokens, and not the object itself, so it is safe to
+        /// send to whoever needs to check the file.
+        #[arg(long, value_name = "FILE")]
+        proof: Option<PathBuf>,
         #[command(flatten)]
         endpoint: EndpointArgs,
+    },
+    /// Check a proof bundle against a file, offline.
+    ///
+    /// Contacts nothing. It recomputes the file's SHA-256, checks the bundle's
+    /// signature, and prints every check it performed along with every one it
+    /// could not perform, so a passing result never claims more than it
+    /// established.
+    Proof {
+        /// The bundle to check.
+        bundle: PathBuf,
+        /// The file the bundle should describe.
+        #[arg(long, value_name = "FILE")]
+        object: PathBuf,
+        /// The deployment's published public key, hex.
+        ///
+        /// Without this the signature is only checked against the key carried
+        /// inside the bundle, which establishes that the bundle is internally
+        /// consistent but not which deployment produced it.
+        #[arg(long, value_name = "HEX")]
+        public_key: Option<String>,
     },
     Bucket {
         bucket: String,
@@ -494,6 +675,36 @@ enum ClusterCommand {
         description: String,
         #[command(flatten)]
         endpoint: EndpointArgs,
+    },
+    /// Report what a stopped member's metadata state holds, changing nothing.
+    ///
+    /// Run this on every survivor before recovering: the member that has
+    /// applied the most is the one to rebuild from, and that cannot be known
+    /// without looking.
+    InspectState {
+        /// TOML configuration file for the stopped member.
+        #[arg(long, env = "RECORD_STORE_CONFIG_FILE")]
+        config: Option<PathBuf>,
+    },
+    /// Rebuild metadata authority around this stopped member. Disaster recovery.
+    ///
+    /// Only for a cluster whose voter majority is permanently lost. It discards
+    /// any metadata the lost quorum committed but never replicated here, and it
+    /// cannot be undone. Running it on two survivors separately produces two
+    /// clusters that can never be reconciled.
+    Recover {
+        /// Cluster this member belongs to, as `inspect-state` reports it.
+        #[arg(long)]
+        cluster_id: String,
+        /// Why this is being done. Kept in the cluster's own record.
+        #[arg(long)]
+        reason: String,
+        /// Acknowledge that unreplicated committed metadata is lost.
+        #[arg(long)]
+        accept_data_loss: bool,
+        /// TOML configuration file for the stopped member.
+        #[arg(long, env = "RECORD_STORE_CONFIG_FILE")]
+        config: Option<PathBuf>,
     },
 }
 
@@ -575,6 +786,224 @@ struct StatusResponse {
     status: String,
 }
 
+/// Exit codes the maintenance commands use.
+///
+/// A backup script needs to tell "this backup is damaged" from "the disk is
+/// full" from "somebody is still running the server", and a single non-zero
+/// code cannot say which. These are stable: automation may match on them.
+mod exit {
+    /// The command did what was asked.
+    pub const OK: i32 = 0;
+    /// Something unexpected went wrong.
+    pub const FAILED: i32 = 1;
+    /// The configuration or the arguments were not usable.
+    pub const CONFIGURATION: i32 = 2;
+    /// The backup cannot be restored, or verification found problems.
+    pub const UNUSABLE_BACKUP: i32 = 3;
+    /// The destination already holds something this must not overwrite.
+    pub const DESTINATION_CONFLICT: i32 = 4;
+    /// The destination filesystem cannot hold the copy.
+    pub const INSUFFICIENT_SPACE: i32 = 5;
+    /// A Record Store process still holds the data directory.
+    pub const DATA_DIRECTORY_IN_USE: i32 = 6;
+    /// Diagnostic checks failed.
+    pub const CHECKS_FAILED: i32 = 7;
+}
+
+fn backup_exit_code(error: &record_store_server::backup::BackupError) -> i32 {
+    use record_store_server::backup::BackupError::*;
+
+    match error {
+        Configuration(_) | NotInitialized(_) => exit::CONFIGURATION,
+        DataDirectoryInUse(_) => exit::DATA_DIRECTORY_IN_USE,
+        DestinationHoldsBackup(_) | DestinationNotEmpty(_) => exit::DESTINATION_CONFLICT,
+        InsufficientSpace { .. } => exit::INSUFFICIENT_SPACE,
+        MissingComponent(_) | NoManifest(_) | InvalidManifest | Unusable(_)
+        | ChecksumMismatch(_) | UnsafePath(_) | Catalog(_) => exit::UNUSABLE_BACKUP,
+        Io(_) | Encoding(_) => exit::FAILED,
+    }
+}
+
+/// Reports the failure on stderr, and the machine-readable form on stdout when
+/// asked, so a JSON consumer always gets JSON.
+fn report_backup_error(error: &record_store_server::backup::BackupError, json: bool) -> i32 {
+    let code = backup_exit_code(error);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "ok": false, "error": error.to_string(), "exit_code": code })
+        );
+    }
+    eprintln!("error: {error}");
+    code
+}
+
+fn doctor(config: &record_store_config::Config, json: bool) -> i32 {
+    let report = record_store_server::preflight::inspect(config, true);
+    if json {
+        match serde_json::to_string_pretty(&report) {
+            Ok(rendered) => println!("{rendered}"),
+            Err(error) => {
+                eprintln!("error: {error}");
+                return exit::FAILED;
+            }
+        }
+    } else {
+        for check in &report.checks {
+            let marker = match check.status {
+                record_store_server::preflight::Status::Pass => "ok  ",
+                record_store_server::preflight::Status::Warn => "warn",
+                record_store_server::preflight::Status::Fail => "FAIL",
+            };
+            println!("{marker}  {:<28}  {}", check.name, check.detail);
+            if let Some(remedy) = &check.remedy {
+                println!("      {:<28}  -> {remedy}", "");
+            }
+        }
+    }
+    if report.has_failures() {
+        exit::CHECKS_FAILED
+    } else {
+        exit::OK
+    }
+}
+
+fn run_backup(
+    config: &record_store_config::Config,
+    output: &std::path::Path,
+    replace_incomplete: bool,
+    json: bool,
+) -> i32 {
+    match record_store_server::backup::backup(config, output, replace_incomplete) {
+        Ok(report) => {
+            if json {
+                match serde_json::to_string_pretty(&report) {
+                    Ok(rendered) => println!("{rendered}"),
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        return exit::FAILED;
+                    }
+                }
+            } else {
+                println!("backup complete: {}", report.destination.display());
+                for component in &report.manifest.components {
+                    println!(
+                        "  {:<10}  {:>8} files  {:>14} bytes",
+                        component.name, component.file_count, component.bytes
+                    );
+                }
+                println!("  consistency  {}", report.manifest.consistency);
+                println!("  secrets      not included; recover key material separately");
+            }
+            exit::OK
+        }
+        Err(error) => report_backup_error(&error, json),
+    }
+}
+
+fn run_verify_backup(
+    input: &std::path::Path,
+    level: &str,
+    master_key: Option<&[u8]>,
+    json: bool,
+) -> i32 {
+    let Some(level) = record_store_server::backup::VerificationLevel::parse(level) else {
+        eprintln!("error: unknown verification level; expected manifest, checksums, or full");
+        return exit::CONFIGURATION;
+    };
+    match record_store_server::backup::verify(input, level, master_key) {
+        Ok(report) => {
+            if json {
+                match serde_json::to_string_pretty(&report) {
+                    Ok(rendered) => println!("{rendered}"),
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        return exit::FAILED;
+                    }
+                }
+            } else {
+                println!("backup   {}", report.backup.display());
+                println!("level    {}", report.level);
+                println!("usable   {}", if report.usable { "yes" } else { "no" });
+                println!(
+                    "checked  {} files, {} bytes read",
+                    report.files_checksummed, report.bytes_read
+                );
+                if let Some(references) = report.payload_references_checked {
+                    println!(
+                        "payloads {references} references, {} missing, {} unreferenced",
+                        report.missing_payloads.unwrap_or_default(),
+                        report.unreferenced_payloads.unwrap_or_default()
+                    );
+                }
+                println!(
+                    "key      {}",
+                    match report.encryption_key_matches {
+                        Some(true) => "the supplied master key matches these payloads",
+                        Some(false) => "the supplied master key does NOT match these payloads",
+                        None => "not checked (unencrypted backup, or no key supplied)",
+                    }
+                );
+                for problem in &report.problems {
+                    println!("problem  {problem}");
+                }
+            }
+            if report.usable {
+                exit::OK
+            } else {
+                exit::UNUSABLE_BACKUP
+            }
+        }
+        Err(error) => report_backup_error(&error, json),
+    }
+}
+
+fn run_restore(
+    config: &record_store_config::Config,
+    input: &std::path::Path,
+    level: &str,
+    json: bool,
+) -> i32 {
+    let Some(level) = record_store_server::backup::VerificationLevel::parse(level) else {
+        eprintln!("error: unknown verification level; expected manifest, checksums, or full");
+        return exit::CONFIGURATION;
+    };
+    match record_store_server::backup::restore(config, input, level) {
+        Ok(report) => {
+            if json {
+                match serde_json::to_string_pretty(&report) {
+                    Ok(rendered) => println!("{rendered}"),
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        return exit::FAILED;
+                    }
+                }
+            } else {
+                println!(
+                    "restored {} into {}",
+                    report.source.display(),
+                    report.data_directory.display()
+                );
+                println!("verified at level {}", report.verified_at_level);
+                for component in &report.components {
+                    println!(
+                        "  {:<10}  {:>8} files  {:>14} bytes",
+                        component.name, component.file_count, component.bytes
+                    );
+                }
+                if report.cleared_interrupted_restore {
+                    println!("  cleared an interrupted earlier restore first");
+                }
+                for outstanding in &report.outstanding {
+                    println!("  note: {outstanding}");
+                }
+            }
+            exit::OK
+        }
+        Err(error) => report_backup_error(&error, json),
+    }
+}
+
 #[derive(Serialize)]
 struct NameRequest<'a> {
     name: &'a str,
@@ -591,9 +1020,53 @@ async fn main() -> Result<()> {
                 Config::load(arguments.config.as_deref()).context("configuration is invalid")?;
                 println!("configuration is valid");
             }
+            Some(ServerCommand::Doctor) => {
+                let config = Config::load(arguments.config.as_deref())
+                    .context("load Record Store configuration")?;
+                std::process::exit(doctor(&config, json));
+            }
+            Some(ServerCommand::Backup {
+                output,
+                replace_incomplete,
+            }) => {
+                let config = Config::load(arguments.config.as_deref())
+                    .context("load Record Store configuration")?;
+                std::process::exit(run_backup(&config, &output, replace_incomplete, json));
+            }
+            Some(ServerCommand::VerifyBackup { input, level }) => {
+                // A backup is often checked on a machine that is not the
+                // deployment, where no root credentials are set and a full
+                // configuration cannot load. That must not stop the check, so a
+                // missing configuration only costs the key comparison.
+                let master_key =
+                    Config::load(arguments.config.as_deref())
+                        .ok()
+                        .and_then(|config| {
+                            config
+                                .auth
+                                .credential_master_key
+                                .as_ref()
+                                .map(|key| key.expose().as_bytes().to_vec())
+                        });
+                std::process::exit(run_verify_backup(
+                    &input,
+                    &level,
+                    master_key.as_deref(),
+                    json,
+                ));
+            }
+            Some(ServerCommand::Restore { input, level }) => {
+                let config = Config::load(arguments.config.as_deref())
+                    .context("load Record Store configuration")?;
+                std::process::exit(run_restore(&config, &input, &level, json));
+            }
             Some(ServerCommand::BackupMetadata { output }) => {
                 let config = Config::load(arguments.config.as_deref())
                     .context("load Record Store configuration")?;
+                eprintln!(
+                    "warning: backup-metadata copies metadata only. `record-store server backup` \
+                     also copies payloads and system records, which a restore needs."
+                );
                 record_store_server::backup_metadata(&config, &output)
                     .context("back up Record Store metadata")?;
                 println!("metadata backup created at {}", output.display());
@@ -601,6 +1074,10 @@ async fn main() -> Result<()> {
             Some(ServerCommand::RestoreMetadata { input }) => {
                 let config = Config::load(arguments.config.as_deref())
                     .context("load Record Store configuration")?;
+                eprintln!(
+                    "warning: restore-metadata restores metadata only. `record-store server \
+                     restore` also restores payloads and system records."
+                );
                 record_store_server::restore_metadata(&config, &input)
                     .context("restore Record Store metadata")?;
                 println!("metadata restored from {}", input.display());
@@ -622,6 +1099,7 @@ async fn main() -> Result<()> {
         Command::Policy { command } => policy(command, json).await?,
         Command::Webhook { command } => webhook(command, json).await?,
         Command::Audit(arguments) => audit(arguments, json).await?,
+        Command::AuditExport { command } => audit_export(command, json).await?,
         Command::Verify { command } => verify(command, json).await?,
         Command::Storage { command } => storage(command, json).await?,
         Command::Cluster { command } => cluster(command, json).await?,
@@ -750,6 +1228,7 @@ async fn bucket(command: BucketCommand, json: bool) -> Result<()> {
             }
         }
         BucketCommand::Versioning { command } => bucket_versioning(command, json).await?,
+        BucketCommand::ObjectLock { command } => bucket_object_lock(command, json).await?,
     }
     Ok(())
 }
@@ -814,6 +1293,64 @@ async fn service_account(command: ServiceAccountCommand, json: bool) -> Result<(
         }
     }
     Ok(())
+}
+
+async fn bucket_object_lock(command: BucketObjectLockCommand, json: bool) -> Result<()> {
+    let request = match command {
+        BucketObjectLockCommand::Show { name, endpoint } => client()?.get(api_url(
+            &endpoint,
+            &format!("/api/v1/buckets/{name}/object-lock"),
+        )),
+        BucketObjectLockCommand::SetDefault {
+            name,
+            mode,
+            days,
+            years,
+            endpoint,
+        } => {
+            // Clap's `conflicts_with` rules out naming both; naming neither is
+            // still possible and means no period at all, which is not a rule.
+            let period = match (days, years) {
+                (Some(days), None) => serde_json::json!({"unit": "days", "value": days}),
+                (None, Some(years)) => serde_json::json!({"unit": "years", "value": years}),
+                _ => {
+                    anyhow::bail!("a default retention needs exactly one of --days or --years");
+                }
+            };
+            client()?
+                .put(api_url(
+                    &endpoint,
+                    &format!("/api/v1/buckets/{name}/object-lock"),
+                ))
+                .json(&serde_json::json!({
+                    "object_lock": {
+                        "default_retention": {"mode": mode.to_lowercase(), "period": period}
+                    }
+                }))
+        }
+        BucketObjectLockCommand::Status {
+            name,
+            key,
+            version_id,
+            endpoint,
+        } => {
+            let url = api_url(
+                &endpoint,
+                &format!("/api/v1/buckets/{name}/object-lock/{key}"),
+            );
+            let request = client()?.get(url);
+            match version_id {
+                Some(version_id) => request.query(&[("version_id", version_id)]),
+                None => request,
+            }
+        }
+    };
+    let value = send_admin(request)
+        .await?
+        .json::<serde_json::Value>()
+        .await
+        .context("decode object lock response")?;
+    print_value(&value, json)
 }
 
 async fn bucket_versioning(command: BucketVersioningCommand, json: bool) -> Result<()> {
@@ -1045,14 +1582,34 @@ async fn audit(arguments: AuditArgs, json: bool) -> Result<()> {
 
 async fn verify(command: VerifyCommand, json: bool) -> Result<()> {
     let request = match command {
+        VerifyCommand::Proof {
+            bundle,
+            object,
+            public_key,
+        } => return verify_proof(&bundle, &object, public_key.as_deref()).await,
         VerifyCommand::Object {
             bucket,
             key,
+            version_id,
+            proof,
             endpoint,
-        } => client()?.post(api_url(
-            &endpoint,
-            &format!("/api/v1/verify/objects/{bucket}/{key}"),
-        )),
+        } => {
+            if let Some(destination) = proof {
+                return write_proof_bundle(
+                    &endpoint,
+                    &bucket,
+                    &key,
+                    version_id.as_deref(),
+                    &destination,
+                    json,
+                )
+                .await;
+            }
+            client()?.post(api_url(
+                &endpoint,
+                &format!("/api/v1/verify/objects/{bucket}/{key}"),
+            ))
+        }
         VerifyCommand::Bucket { bucket, endpoint } => client()?.post(api_url(
             &endpoint,
             &format!("/api/v1/verify/buckets/{bucket}"),
@@ -1093,7 +1650,146 @@ async fn storage(command: StorageCommand, json: bool) -> Result<()> {
     print_value(&value, json)
 }
 
+/// Returns the consensus directory of a stopped member.
+fn consensus_directory(config: Option<PathBuf>) -> Result<PathBuf> {
+    let config = Config::load(config.as_deref()).context("configuration is invalid")?;
+    Ok(config
+        .storage
+        .data_directory
+        .join("metadata")
+        .join("consensus"))
+}
+
+/// Reports what a stopped member holds, without touching it.
+async fn inspect_state(config: Option<PathBuf>, json: bool) -> Result<()> {
+    let directory = consensus_directory(config)?;
+    let assessment = record_store_consensus::recovery::inspect(&directory)
+        .await
+        .with_context(|| format!("inspect the consensus state in {}", directory.display()))?;
+    if json {
+        return print_json(&serde_json::to_value(&assessment)?);
+    }
+    println!("{}", assessment.summary);
+    if let Some(cluster) = &assessment.cluster {
+        println!("Cluster:            {}", cluster.cluster_id);
+        println!("Recovery generation: {}", cluster.recovery_generation);
+    }
+    match assessment.last_applied {
+        Some(index) => println!("Applied index:      {index}"),
+        None => println!("Applied index:      none"),
+    }
+    println!("Unapplied entries:  {}", assessment.log_entries);
+    println!(
+        "Recorded members:   {}",
+        assessment
+            .members
+            .iter()
+            .map(|(id, address)| format!("{id} ({address})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    match &assessment.snapshot {
+        record_store_consensus::SnapshotHealth::Absent => println!("Snapshot:           none"),
+        record_store_consensus::SnapshotHealth::Present { index } => println!(
+            "Snapshot:           present{}",
+            index.map_or_else(String::new, |index| format!(" at index {index}"))
+        ),
+        record_store_consensus::SnapshotHealth::Damaged { reason } => {
+            println!("Snapshot:           DAMAGED — {reason}");
+        }
+    }
+    if !assessment.recoverable {
+        println!("\nThis member cannot be recovered from.");
+    }
+    Ok(())
+}
+
+/// Rebuilds metadata authority around one stopped member.
+async fn recover_cluster(
+    config: Option<PathBuf>,
+    cluster_id: &str,
+    reason: String,
+    accept_data_loss: bool,
+    json: bool,
+) -> Result<()> {
+    let directory = consensus_directory(config.clone())?;
+    let cluster_id = record_store_core::ClusterId::from_uuid(
+        cluster_id
+            .parse()
+            .context("--cluster-id must be the identifier `cluster inspect-state` reports")?,
+    );
+    let loaded = Config::load(config.as_deref()).context("configuration is invalid")?;
+    let identity =
+        record_store_cluster::NodeIdentityStore::new(&loaded.storage.data_directory).load()?;
+    let member_id = identity
+        .and_then(|identity| identity.raft_id)
+        .context("this data directory has no consensus member identifier")?;
+    let address = loaded.server.effective_rpc_advertise();
+
+    let report = record_store_consensus::recovery::recover_single_member(
+        &directory,
+        record_store_consensus::RecoveryIntent {
+            cluster_id,
+            member_id,
+            address,
+            reason,
+            accept_data_loss,
+        },
+    )
+    .await
+    .context("rebuild metadata authority")?;
+
+    if json {
+        return print_json(&serde_json::to_value(&report)?);
+    }
+    println!(
+        "Rebuilt metadata authority for cluster {}",
+        report.cluster_id
+    );
+    println!("  member:               {}", report.member_id);
+    println!("  recovery generation:  {}", report.recovery_generation);
+    println!("  recovery id:          {}", report.recovery_id);
+    println!(
+        "  voters removed:       {}",
+        report
+            .removed_voters
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!("  log entries discarded: {}", report.discarded_log_entries);
+    println!(
+        "  payloads:             {} total, {} readable here, {} needing another holder",
+        report.payloads_total, report.payloads_held_here, report.payloads_elsewhere
+    );
+    if !report.fully_readable() {
+        println!(
+            "\n{} payload(s) have no replica on this member. They stay unreadable until one of \
+             their other holders returns, or must be restored from an external backup.",
+            report.payloads_elsewhere
+        );
+    }
+    println!(
+        "\nStart this member, confirm it elects, then re-admit the other nodes with fresh join \
+         tokens. Do not run this command on another survivor."
+    );
+    Ok(())
+}
+
 async fn cluster(command: ClusterCommand, json: bool) -> Result<()> {
+    match command {
+        ClusterCommand::InspectState { config } => return inspect_state(config, json).await,
+        ClusterCommand::Recover {
+            cluster_id,
+            reason,
+            accept_data_loss,
+            config,
+        } => {
+            return recover_cluster(config, &cluster_id, reason, accept_data_loss, json).await;
+        }
+        _ => {}
+    }
     let request = match command {
         ClusterCommand::Init(endpoint) => {
             client()?.post(api_url(&endpoint, "/api/v1/cluster/init"))
@@ -1109,6 +1805,9 @@ async fn cluster(command: ClusterCommand, json: bool) -> Result<()> {
                 "lifetime_seconds": lifetime_seconds,
                 "description": description,
             })),
+        ClusterCommand::InspectState { .. } | ClusterCommand::Recover { .. } => {
+            unreachable!("handled above; these never reach a management API")
+        }
     };
     let value = send_admin(request)
         .await?
@@ -1509,16 +2208,305 @@ fn print_action(action: &str, id: &str, json: bool) -> Result<()> {
 }
 
 async fn send_admin(builder: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    let retry = builder.try_clone();
     let response = admin_request(builder)?
         .send()
         .await
         .context("send management request")?;
     if response.status().is_success() {
-        Ok(response)
+        return Ok(response);
+    }
+    // Some operations are planned by whichever member holds metadata
+    // leadership, and any other member answers with where to go. The redirect is
+    // followed here rather than by the HTTP client because credentials must be
+    // re-applied: a client library drops them across hosts, correctly.
+    //
+    // Exactly one hop. Leadership can move again while this is in flight, and a
+    // client that chased every redirect would turn an election into a loop.
+    if response.status() == reqwest::StatusCode::TEMPORARY_REDIRECT
+        && let Some(location) = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned)
+        && let Some(retry) = retry
+    {
+        let mut request = admin_request(retry)?
+            .build()
+            .context("rebuild the request for the metadata leader")?;
+        // Only the destination changes: the method, headers, and body are the
+        // ones the caller meant, which is what a 307 promises to preserve.
+        *request.url_mut() = location.parse().with_context(|| {
+            format!("the leader redirect named an unusable address: {location}")
+        })?;
+        let response = client()?
+            .execute(request)
+            .await
+            .with_context(|| format!("follow redirect to the metadata leader at {location}"))?;
+        return if response.status().is_success() {
+            Ok(response)
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            bail!("the metadata leader at {location} returned HTTP {status}: {body}")
+        };
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    bail!("management API returned HTTP {status}: {body}")
+}
+
+/// Fetches a signed proof bundle and writes it to a file.
+///
+/// The bundle is produced and signed by the server, which is what holds the
+/// deployment master key. Nothing secret reaches this process.
+async fn write_proof_bundle(
+    endpoint: &EndpointArgs,
+    bucket: &str,
+    key: &str,
+    version_id: Option<&str>,
+    destination: &std::path::Path,
+    json: bool,
+) -> Result<()> {
+    let url = api_url(endpoint, &format!("/api/v1/buckets/{bucket}/proof/{key}"));
+    let request = client()?.get(url);
+    let request = match version_id {
+        Some(version_id) => request.query(&[("version_id", version_id)]),
+        None => request,
+    };
+    let bundle = send_admin(request)
+        .await?
+        .json::<record_store_proof::ProofBundle>()
+        .await
+        .context("decode proof bundle")?;
+    let document = serde_json::to_string_pretty(&bundle).context("encode proof bundle")?;
+    tokio::fs::write(destination, document.as_bytes())
+        .await
+        .with_context(|| format!("write {}", destination.display()))?;
+    if json {
+        print_value(
+            &serde_json::json!({
+                "proof": destination.display().to_string(),
+                "key_id": bundle.deployment.key_id,
+                "version_id": bundle.object.version_id,
+            }),
+            true,
+        )?;
     } else {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        bail!("management API returned HTTP {status}: {body}")
+        println!("wrote proof bundle to {}", destination.display());
+        println!(
+            "  object     {}/{}",
+            bundle.object.bucket, bundle.object.key
+        );
+        println!("  version    {}", bundle.object.version_id);
+        println!("  sha256     {}", bundle.payload.sha256);
+        println!("  signed by  {}", bundle.deployment.key_id);
+        println!(
+            "\nCheck it anywhere with:\n  record-store verify proof {} --object <file>",
+            destination.display()
+        );
+    }
+    Ok(())
+}
+
+/// Checks a proof bundle against a file without contacting anything.
+async fn verify_proof(
+    bundle_path: &std::path::Path,
+    object_path: &std::path::Path,
+    public_key: Option<&str>,
+) -> Result<()> {
+    let document = tokio::fs::read(bundle_path)
+        .await
+        .with_context(|| format!("read {}", bundle_path.display()))?;
+    let bundle: record_store_proof::ProofBundle =
+        serde_json::from_slice(&document).context("parse proof bundle")?;
+    let expected = public_key
+        .map(|value| hex::decode(value.trim()).context("decode --public-key as hex"))
+        .transpose()?;
+    let verdict = record_store_proof::verify_bundle(&bundle, object_path, expected.as_deref())
+        .await
+        .context("verify proof bundle")?;
+
+    println!(
+        "{}/{} version {}",
+        bundle.object.bucket, bundle.object.key, bundle.object.version_id
+    );
+    for check in &verdict.checks {
+        println!(
+            "  [{}] {}: {}",
+            check.status.marker(),
+            check.name,
+            check.detail
+        );
+    }
+    let unproved = verdict.unproved();
+    if verdict.is_verified() {
+        println!("\nVERIFIED: every check that could be performed passed.");
+        if !unproved.is_empty() {
+            // Naming the gaps beside the verdict is the point. A reader who
+            // stops at the word "verified" must still see what it did not cover.
+            println!("This does NOT establish:");
+            for check in unproved {
+                println!("  - {}", check.name);
+            }
+        }
+    } else {
+        println!("\nFAILED: at least one check did not pass.");
+        // A non-zero exit so a script cannot mistake failure for success.
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Runs the auditor-facing export commands.
+async fn audit_export(command: AuditExportCommand, json: bool) -> Result<()> {
+    match command {
+        AuditExportCommand::RetentionReport { endpoint } => {
+            let request = client()?.get(api_url(&endpoint, "/api/v1/reports/retention"));
+            let value = send_admin(request)
+                .await?
+                .json::<serde_json::Value>()
+                .await
+                .context("decode retention report")?;
+            print_value(&value, json)
+        }
+        AuditExportCommand::VerifyChain {
+            from,
+            limit,
+            endpoint,
+        } => {
+            let request = client()?
+                .get(api_url(&endpoint, "/api/v1/audit/chain"))
+                .query(&[("from", from.to_string()), ("limit", limit.to_string())]);
+            let value = send_admin(request)
+                .await?
+                .json::<serde_json::Value>()
+                .await
+                .context("decode audit chain verification")?;
+            print_value(&value, json)
+        }
+        AuditExportCommand::Export {
+            from,
+            to,
+            format,
+            out,
+            endpoint,
+        } => write_audit_export(&endpoint, &from, &to, &format, &out, json).await,
+    }
+}
+
+/// Writes an export directory: records, manifest, checkpoints and SHA256SUMS.
+///
+/// The records are streamed to disk and hashed as they pass, so an export of a
+/// year costs one buffer rather than a year of memory, and SHA256SUMS needs no
+/// second read of the file.
+async fn write_audit_export(
+    endpoint: &EndpointArgs,
+    from: &str,
+    to: &str,
+    format: &str,
+    out: &std::path::Path,
+    json: bool,
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+
+    // The manifest is fetched first: it is what records the export in the audit
+    // trail, so a refused export never streams a single record.
+    let manifest_request = client()?
+        .get(api_url(endpoint, "/api/v1/audit/export/manifest"))
+        .query(&[("from", from), ("to", to), ("format", format)]);
+    let manifest = send_admin(manifest_request)
+        .await?
+        .json::<serde_json::Value>()
+        .await
+        .context("decode export manifest")?;
+    let record_file = manifest["record_file"]
+        .as_str()
+        .context("manifest names no record file")?
+        .to_owned();
+
+    tokio::fs::create_dir_all(out)
+        .await
+        .with_context(|| format!("create {}", out.display()))?;
+
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).context("encode manifest")?;
+    let checkpoint_bytes =
+        serde_json::to_vec_pretty(&manifest["checkpoints"]).context("encode checkpoints")?;
+    tokio::fs::write(out.join("manifest.json"), &manifest_bytes)
+        .await
+        .context("write manifest.json")?;
+    tokio::fs::write(out.join("checkpoints.json"), &checkpoint_bytes)
+        .await
+        .context("write checkpoints.json")?;
+
+    let records_request = client()?
+        .get(api_url(endpoint, "/api/v1/audit/export"))
+        .query(&[("from", from), ("to", to), ("format", format)]);
+    let mut response = send_admin(records_request).await?;
+    let records_path = out.join(&record_file);
+    let mut file = tokio::fs::File::create(&records_path)
+        .await
+        .with_context(|| format!("create {}", records_path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut bytes_written = 0_u64;
+    while let Some(chunk) = response.chunk().await.context("read export stream")? {
+        hasher.update(&chunk);
+        bytes_written += chunk.len() as u64;
+        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+            .await
+            .context("write export records")?;
+    }
+    tokio::io::AsyncWriteExt::flush(&mut file)
+        .await
+        .context("flush export records")?;
+    let records_digest = hex::encode(hasher.finalize());
+
+    // sha256sum(1) format, so an auditor can check it with the tool they have
+    // rather than one this project ships.
+    let sums = format!(
+        "{records_digest}  {record_file}\n{}  manifest.json\n{}  checkpoints.json\n",
+        hex::encode(Sha256::digest(&manifest_bytes)),
+        hex::encode(Sha256::digest(&checkpoint_bytes)),
+    );
+    tokio::fs::write(out.join("SHA256SUMS"), sums.as_bytes())
+        .await
+        .context("write SHA256SUMS")?;
+
+    if json {
+        print_value(
+            &serde_json::json!({
+                "directory": out.display().to_string(),
+                "export_id": manifest["export_id"],
+                "record_file": record_file,
+                "bytes": bytes_written,
+                "sha256": records_digest,
+                "checkpoints": manifest["checkpoints"]["status"],
+            }),
+            true,
+        )
+    } else {
+        println!("wrote audit export to {}", out.display());
+        println!(
+            "  export id   {}",
+            manifest["export_id"].as_str().unwrap_or("?")
+        );
+        println!(
+            "  exported by {}",
+            manifest["exported_by"].as_str().unwrap_or("?")
+        );
+        println!("  records     {record_file} ({bytes_written} bytes)");
+        println!("  sha256      {records_digest}");
+        if manifest["checkpoints"]["status"] == "unavailable" {
+            println!(
+                "\nNo checkpoint covers this range. SHA256SUMS shows this copy reached you\n\
+                 unaltered; it does not show the log was unedited before the copy was taken."
+            );
+        }
+        println!(
+            "\nCheck the copy with:\n  cd {} && sha256sum -c SHA256SUMS",
+            out.display()
+        );
+        Ok(())
     }
 }
 
@@ -1555,6 +2543,7 @@ mod tests {
                 Command::Policy { .. } => "policy",
                 Command::Webhook { .. } => "webhook",
                 Command::Audit(_) => "audit",
+                Command::AuditExport { .. } => "audit-export",
                 Command::Verify { .. } => "verify",
                 Command::Storage { .. } => "storage",
                 Command::Cluster { .. } => "cluster",
@@ -1595,6 +2584,73 @@ mod tests {
             arguments.command.is_none(),
             "bare `server` must not select a subcommand"
         );
+    }
+
+    /// The maintenance commands are what a backup script drives, so their
+    /// arguments and defaults are pinned here rather than discovered at 3am.
+    #[test]
+    fn the_maintenance_commands_parse_with_safe_defaults() {
+        let Command::Server(doctor) = parse(&["record-store", "server", "doctor"]).command else {
+            panic!("expected the server command");
+        };
+        assert!(matches!(doctor.command, Some(ServerCommand::Doctor)));
+
+        let Command::Server(backup) =
+            parse(&["record-store", "server", "backup", "/backups/today"]).command
+        else {
+            panic!("expected the server command");
+        };
+        let Some(ServerCommand::Backup {
+            output,
+            replace_incomplete,
+        }) = backup.command
+        else {
+            panic!("expected the backup subcommand");
+        };
+        assert_eq!(output, *std::path::Path::new("/backups/today"));
+        assert!(
+            !replace_incomplete,
+            "replacing an earlier attempt has to be asked for explicitly"
+        );
+
+        let Command::Server(verify) =
+            parse(&["record-store", "server", "verify-backup", "/backups/today"]).command
+        else {
+            panic!("expected the server command");
+        };
+        let Some(ServerCommand::VerifyBackup { level, .. }) = verify.command else {
+            panic!("expected the verify-backup subcommand");
+        };
+        assert_eq!(
+            level, "checksums",
+            "the default must read the bytes, not just the manifest"
+        );
+
+        let Command::Server(restore) =
+            parse(&["record-store", "server", "restore", "/backups/today"]).command
+        else {
+            panic!("expected the server command");
+        };
+        let Some(ServerCommand::Restore { level, .. }) = restore.command else {
+            panic!("expected the restore subcommand");
+        };
+        assert_eq!(level, "checksums");
+    }
+
+    /// An unknown level has to be refused rather than quietly downgraded to the
+    /// cheapest check.
+    #[test]
+    fn an_unrecognized_verification_level_is_not_silently_accepted() {
+        assert!(record_store_server::backup::VerificationLevel::parse("thorough").is_none());
+        for level in ["manifest", "checksums", "full"] {
+            assert_eq!(
+                record_store_server::backup::VerificationLevel::parse(level)
+                    .expect("a documented level")
+                    .as_str(),
+                level,
+                "a level must report itself by the name it was asked for"
+            );
+        }
     }
 
     #[test]

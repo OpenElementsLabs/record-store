@@ -57,6 +57,23 @@ reachable. See [Ports](../reference/ports.md).
 These are process-lifetime counters. They reset on restart — use `rate()` and
 `increase()` rather than reading the raw value.
 
+### Admission control
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `record_store_operations_active` | gauge | Operations holding a concurrency permit |
+| `record_store_operations_queued` | gauge | Operations waiting for one |
+| `record_store_operations_rejected_total` | counter | Operations refused for waiting longer than `limits.admission_wait_limit_seconds` |
+| `record_store_operations_concurrency_limit` | gauge | The configured `limits.maximum_concurrent_operations` |
+
+Saturation is `active / concurrency_limit`; the limit is exported so the ratio can be
+computed in the query rather than pinned in the dashboard.
+
+A rejection is not an error. It is the deployment refusing work it has no capacity
+for, answered to S3 clients as `SlowDown` and to the management API as
+`TOO_MANY_OPERATIONS`, both with `503`, both retryable. `record_store_errors_total`
+does not count them.
+
 ### Storage
 
 | Metric | Type | Meaning |
@@ -68,6 +85,9 @@ These are process-lifetime counters. They reset on restart — use `rate()` and
 | `record_store_storage_bytes` | gauge | Same value, kept for existing scrapers |
 | `record_store_storage_physical_bytes` | gauge | Bytes actually occupied |
 | `record_store_multipart_bytes` | gauge | Bytes held by in-progress multipart uploads |
+| `record_store_temporary_bytes` | gauge | Bytes held by upload staging files not yet published |
+| `record_store_filesystem_capacity_bytes` | gauge | Size of the filesystem holding the data directory |
+| `record_store_filesystem_available_bytes` | gauge | Bytes still free on it |
 
 The gap between logical and physical bytes is version history and multipart parts.
 Watch physical bytes for capacity, logical bytes for what users think they have. See
@@ -120,10 +140,11 @@ groups:
 The `for:` clauses matter. A brief spike during a restart resolves itself; alerting
 instantly produces noise that gets muted, which is worse than no alert.
 
-!!! note "Free disk space is not a Record Store metric"
-    `record_store_storage_bytes` is what Record Store has stored, not what the
-    filesystem has left. Alert on free space with a host exporter — Record Store
-    does not report the disk's own capacity. See
+!!! note "Two different numbers about space"
+    `record_store_storage_bytes` is what Record Store has stored.
+    `record_store_filesystem_available_bytes` is what the filesystem holding the data
+    directory has left — which is the one to alert on, because anything else on that
+    filesystem consumes it too. See
     [Capacity Planning](../operations/capacity-planning.md).
 
 ## JSON view
@@ -136,6 +157,39 @@ curl https://management.example.com/api/v1/system/metrics \
 ```
 
 Use this when you want the numbers in a script and already hold a management token.
+
+## Recent readings
+
+Record Store exposes counters, not rates, so a rate only exists once two readings
+have been compared. The server takes its own reading every 15 seconds and keeps the
+last hour of them, which is what lets the console's charts draw immediately instead
+of standing there watching until it has seen enough:
+
+```bash
+curl https://management.example.com/api/v1/system/metrics/history \
+  -H "Authorization: Bearer <your-management-token>"
+```
+
+```json
+{
+  "interval_seconds": 15,
+  "capacity": 240,
+  "started_at": "2026-09-20T09:15:54Z",
+  "samples": [
+    { "at": "2026-09-20T09:15:54Z", "requests": 0, "errors": 0,
+      "upload_bytes": 0, "download_bytes": 0 }
+  ]
+}
+```
+
+Samples are counters, oldest first, exactly as a scraper would see them — differentiate
+consecutive readings to get a rate, and use each sample's own `at` rather than assuming
+`interval_seconds`, since real spacing varies.
+
+**This is held in memory and is not a record.** It exists to draw a graph, so it is
+bounded at one hour and starts again when the process restarts. `started_at` tells you
+when sampling began: a window shorter than an hour means the server restarted, not that
+traffic stopped. For history that outlives a restart, scrape `/metrics` into Prometheus.
 
 ## What is not here
 
