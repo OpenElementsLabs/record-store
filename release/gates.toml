@@ -15,7 +15,7 @@
 # of the rules produced a decision. See release/README.md.
 
 schema = 1
-matrix_version = "2026.09.24-2"
+matrix_version = "2026.09.25-1"
 scope = "standalone"
 
 # Stages, cheapest first. A stage includes every gate listed for it; "candidate"
@@ -188,15 +188,17 @@ title = "Every paginated listing returns every item exactly once"
 area = "correctness"
 guarantee = """Walked at several page sizes, with and without filters, over datasets larger than a page: \
 ListObjectsV2 (plain, prefix, delimiter, StartAfter; keys with spaces, '+', '%', non-ASCII), ListObjectVersions \
-with delete markers, ListMultipartUploads (through the SDK paginator), ListParts, the storage-event feed \
-(plain and prefix-filtered) and the audit trail (bounded by until) return every item once, in the promised order."""
+with delete markers, ListMultipartUploads (through the SDK paginator, and by hand from each page's NextKeyMarker and \
+NextUploadIdMarker, which a truncated page must both carry; a KeyMarker alone resumes after that key), ListParts, the \
+storage-event feed (plain and prefix-filtered) and the audit trail (bounded by until) return every item once, in the \
+promised order."""
 modes = ["standalone"]
 platforms = ["linux-amd64", "darwin-arm64 (developer)"]
 stages = ["integration", "candidate"]
 blocking = true
 command = "python3 tests/gates/pagination.py --bin-dir ${CANDIDATE}/bin"
 environment = "candidate binaries; python venv"
-fixtures = "1206 objects in 3 prefixes plus special-character keys; 40 keys x 3 versions + 10 delete markers; 26 open uploads; 12 parts"
+fixtures = "1206 objects in 3 prefixes plus special-character keys; 40 keys x 3 versions + 10 delete markers; 30 open uploads, 4 of them on one key; 12 parts"
 failure_injection = "none"
 evidence = "detail.json with missing/duplicate counts and samples per walk"
 implementation = ["tests/gates/pagination.py", "tests/gates/gatelib.py"]
@@ -204,8 +206,8 @@ timeout_minutes = 15
 infra_retries = 1
 binds_artifact = true
 limitations = """The management API's own object listing and webhook-delivery log are not walked. Filters other than \
-prefix and type on the event feed, and audit filters, are not combined with pagination here. A truncated \
-ListMultipartUploads page omits NextKeyMarker (RSG-009); recorded, not asserted, because the SDK paginator copes."""
+prefix and type on the event feed, and audit filters, are not combined with pagination here. An upload completed \
+or aborted between two pages is covered in-process (redb_store.rs), not here."""
 [gate.reuse]
 max_age_days = 0
 
@@ -214,8 +216,9 @@ id = "CMP-UNSUPPORTED"
 title = "Unsupported S3 operations are refused explicitly"
 area = "compatibility"
 guarantee = """docs/reference/s3-compatibility.md: UploadPartCopy, SSE request headers, ACLs and aws-chunked \
-payloads return 501 NotImplemented and change nothing. A flexible-checksum header (CRC32, CRC32C, SHA-1, \
-SHA-256) that contradicts the body is never stored: it is verified or refused, not silently ignored."""
+payloads return 501 NotImplemented and change nothing -- on CopyObject as on PutObject, where conditional-copy \
+headers are refused too. A flexible-checksum header (CRC32, CRC32C, SHA-1, SHA-256) that contradicts the body is \
+never stored: it is verified or refused, not silently ignored."""
 modes = ["standalone"]
 platforms = ["linux-amd64"]
 stages = ["integration", "candidate"]
@@ -289,8 +292,9 @@ area = "recovery"
 guarantee = """docs/operations/backup-and-restore.md, with the shipped CLI and its exit codes: backup refuses a \
 running server (6) and never overwrites a completed backup (4); full verification passes a good backup; a \
 flipped payload byte, an INCOMPLETE marker, an unlisted component and missing component files are refused (3) \
-without writing anything; the wrong master key is refused before anything is written and the refusal names no \
-key; an interrupted restore blocks start-up and a re-run succeeds; the restored deployment serves identical \
+without writing anything; the wrong master key is refused before anything is written, with payload encryption on \
+or off, and the refusal names no key; an interrupted restore blocks start-up, cannot be backed up (2), and a re-run \
+succeeds; the restored deployment serves identical \
 object bytes, versions, delete markers, enforced compliance retention, legal holds, working service-account \
 credentials, share links, an intact audit chain and the same event ids; a write made after the backup is absent."""
 modes = ["standalone"]
@@ -326,6 +330,48 @@ unit = "s"
 threshold = "<= 30"
 kind = "contract"
 basis = "server.shutdown_grace_period_seconds default 30; documented stop uses --time 40"
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
+id = "RES-MEMORY"
+title = "Resident memory stops growing with history once the caches are full"
+area = "resources"
+guarantee = """docs/operations/capacity-planning.md#memory: the metadata page cache is bounded by \
+storage.metadata_cache_mib and is the only part of the server's memory that grows with its databases. Under the \
+endurance workload (16 clients, 200 keys, 70 % reads, 1-256 KiB objects) with an 8 MiB cache, in the environment the \
+image ships (MALLOC_ARENA_MAX=2), after a 120 s warm-up: the databases outgrow the cache several times over, resident \
+memory grows by at most 256 bytes per request, peak RSS stays under 256 MiB, and no request fails."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "linux-arm64 (developer, Docker)"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/memory_bound.py --bin-dir ${CANDIDATE}/bin"
+environment = "candidate binaries; python venv; loopback ports only; the data directory on the runner's disk"
+fixtures = "one bucket, 200 keys; 4 client processes x 4 threads for 300 s"
+failure_injection = "none"
+evidence = "detail.json with every RSS, request-count and .redb-size sample"
+implementation = ["tests/gates/memory_bound.py", "tests/gates/gatelib.py"]
+timeout_minutes = 15
+infra_retries = 1
+binds_artifact = true
+limitations = """A five-minute run shows that memory stops following the databases, not that it is flat for days; \
+the 90-minute soak behind RSG-011's closure is recorded in docs/operations/capacity-planning.md, not re-run per \
+change. Judged per request, so a slower runner makes fewer requests and is held to the same ratio; fewer than \
+15 000 requests in the window is an invalid measurement. glibc without MALLOC_ARENA_MAX, and musl, are measured \
+in that soak, not here."""
+[[gate.metrics]]
+name = "rss_bytes_per_request_after_warm_up"
+unit = "B"
+threshold = "<= 256"
+kind = "structural"
+basis = "an unbounded cache grew 1189-1300 B/request under this workload (RSG-011); bounded, 50-160 B/request on a contended Linux host"
+[[gate.metrics]]
+name = "peak_rss_bytes"
+unit = "B"
+threshold = "<= 256 MiB"
+kind = "contract"
+basis = "half of the 512 MiB memory request the Helm chart makes, at an 8 MiB cache"
 [gate.reuse]
 max_age_days = 0
 
@@ -557,6 +603,46 @@ limitations = "Substring match on the raw values; an encoded or partial leak (ba
 max_age_days = 0
 
 [[gate]]
+id = "SEC-SLOW-CLIENTS"
+title = "A client that never finishes its request cannot hold a connection"
+area = "security"
+guarantee = """docs/reference/configuration.md, server.header_read_timeout_seconds: on both listeners, a connection \
+whose request headers have not arrived within the timeout -- trickled a line at a time, or never sent -- and a \
+kept-alive connection idle that long are closed by the server; well-behaved clients are served throughout, no \
+descriptor outlives the attack, and the shipped default is 30 s."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "darwin-arm64 (developer)"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/slow_clients.py --bin-dir ${CANDIDATE}/bin"
+environment = "candidate binaries; python venv; loopback ports only"
+fixtures = "per listener: 32 connections trickling a header line every 250 ms and 16 silent ones; one idle keep-alive"
+failure_injection = "slowloris-style clients"
+evidence = "detail.json with the longest hold per listener and the descriptor counts; server logs"
+implementation = ["tests/gates/slow_clients.py", "tests/gates/gatelib.py"]
+timeout_minutes = 10
+infra_retries = 1
+binds_artifact = true
+limitations = """Bounds how long a connection can be held, not how many a client may open: 48 concurrent slow \
+connections per listener are exercised, not descriptor exhaustion. A slow request body or a slow reader of a \
+response is not limited (a large transfer is legitimately slow). HTTP/2 prior-knowledge connections are covered \
+in-process (serve.rs), not here."""
+[[gate.metrics]]
+name = "<listener>_slow_header_connection_hold_seconds_max"
+unit = "s"
+threshold = "<= header_read_timeout_seconds (3 in the gate) + 2"
+kind = "contract"
+basis = "server.header_read_timeout_seconds; replaces PERF-OVERLOAD's advisory slow_header_connection_hold_seconds (RSG-004)"
+[[gate.metrics]]
+name = "default_slow_header_connection_hold_seconds"
+unit = "s"
+threshold = "28 <= hold <= 32"
+kind = "contract"
+basis = "documented default header_read_timeout_seconds = 30"
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
 id = "SEC-FUZZ"
 title = "Every fuzz target builds, reaches its parser and holds its invariant"
 area = "security"
@@ -583,8 +669,9 @@ id = "ART-IDENTITY"
 title = "The tested binaries are the candidate, identified by digest"
 area = "artifact"
 guarantee = """tests/gates/build-candidate.sh records the commit, tree cleanliness, Cargo.lock digest, toolchain and \
-binary digests; every artifact-bound result must carry the same digests or the evaluator rejects it. On a tag, \
-the binaries are the ones extracted from the published image, and the reported version equals the tag."""
+binary digests; every artifact-bound result must carry the same digests or the evaluator rejects it. The CLI \
+(`record-store version`) and the running server (/api/v1/system/info) name the candidate's commit. On a tag, the \
+binaries are the ones extracted from the published image, and the reported version equals the tag."""
 modes = ["standalone"]
 platforms = ["linux-amd64", "linux-arm64"]
 stages = ["integration", "candidate"]
@@ -594,12 +681,13 @@ environment = "the candidate directory"
 fixtures = "candidate.json"
 failure_injection = "none"
 evidence = "candidate.json"
-implementation = ["tests/gates/artifact_identity.py", "tests/gates/build-candidate.sh"]
+implementation = ["tests/gates/artifact_identity.py", "tests/gates/build-candidate.sh", "tests/gates/gatelib.py"]
 timeout_minutes = 5
 infra_retries = 0
 binds_artifact = true
-limitations = """Binaries do not embed their commit, and unreleased builds report the previous release's version \
-until the release bump, so identity rests on digests recorded at build time (RSG-006)."""
+limitations = """Unreleased builds report the previous release's version until the release bump; the embedded \
+commit and the digests are what tell them apart. A build from a modified tree embeds its base commit, which is \
+why tree cleanliness is recorded and checked separately."""
 [gate.reuse]
 max_age_days = 0
 

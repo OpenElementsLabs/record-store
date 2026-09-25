@@ -197,6 +197,7 @@ impl ObjectService {
             .list_multipart_uploads(MetadataMultipartListRequest {
                 bucket_id: bucket.id,
                 prefix: request.prefix,
+                key_marker: request.key_marker,
                 upload_id_marker: request.upload_id_marker,
                 limit: request.maximum_uploads,
             })

@@ -1,6 +1,10 @@
 //! Explicit Record Store server initialization and dual-listener lifecycle orchestration.
 
 pub mod backup;
+
+/// The commit this binary was built from, or `unknown` (see `build.rs`).
+pub const BUILD_COMMIT: &str = env!("RECORD_STORE_BUILD_COMMIT");
+
 mod cluster;
 pub mod discovery;
 pub mod preflight;
@@ -45,6 +49,7 @@ pub struct ServerRuntime {
     management: axum::Router,
     s3: axum::Router,
     shutdown_grace_period: Duration,
+    header_read_timeout: Duration,
     webhook_worker: WebhookWorker,
     event_pump: StorageEventPump,
     lifecycle_worker: LifecycleWorker,
@@ -91,6 +96,7 @@ impl ServerRuntime {
                     self.s3,
                     s3_shutdown,
                     self.shutdown_grace_period,
+                    self.header_read_timeout,
                 )
                 .await
                 .map_err(StartupError::Http)
@@ -101,6 +107,7 @@ impl ServerRuntime {
                     self.management,
                     api_shutdown,
                     self.shutdown_grace_period,
+                    self.header_read_timeout,
                 )
                 .await
                 .map_err(StartupError::Http)
@@ -207,6 +214,9 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         .await?,
     );
 
+    // Each database's page cache is bounded, so what the server holds in memory
+    // for its metadata stops growing once the databases outgrow the budget.
+    let cache_budget = config.storage.metadata_cache_budget();
     let cluster_dependencies = if config.server.mode.clustered() {
         Some(cluster::initialize(config).await?)
     } else {
@@ -220,16 +230,20 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
                 .data_directory
                 .join("metadata")
                 .join("catalog.redb");
-            Arc::new(RedbMetadataRepository::open(catalog_path).await?)
+            Arc::new(
+                RedbMetadataRepository::open_with_cache(catalog_path, cache_budget.catalog_bytes)
+                    .await?,
+            )
         }
     };
     let audit = Arc::new(
-        RedbAuditRepository::open(
+        RedbAuditRepository::open_with_cache(
             config
                 .storage
                 .data_directory
                 .join("metadata")
                 .join("audit.redb"),
+            cache_budget.audit_bytes,
         )
         .await?,
     );
@@ -242,7 +256,7 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         poll_interval: Duration::from_secs(config.webhooks.poll_interval_seconds),
     };
     let events = Arc::new(
-        RedbEventRepository::open(
+        RedbEventRepository::open_with_cache(
             config
                 .storage
                 .data_directory
@@ -254,6 +268,7 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
                 .as_ref()
                 .map(|key| key.expose().as_bytes()),
             webhook_config.clone(),
+            cache_budget.events_bytes,
         )
         .await?,
     );
@@ -410,6 +425,7 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         owner,
         env!("CARGO_PKG_VERSION"),
     )
+    .with_build_commit(BUILD_COMMIT)
     .with_mode(config.server.mode)
     .with_trusted_proxies(trusted_proxies.clone())
     .with_metrics_history(Arc::clone(&metrics_history))
@@ -499,6 +515,7 @@ pub async fn initialize(config: &Config) -> Result<ServerRuntime, StartupError> 
         management,
         s3,
         shutdown_grace_period: Duration::from_secs(config.server.shutdown_grace_period_seconds),
+        header_read_timeout: Duration::from_secs(config.server.header_read_timeout_seconds),
         webhook_worker: WebhookWorker::new(
             event_dependency,
             Duration::from_secs(config.webhooks.poll_interval_seconds),
@@ -540,7 +557,12 @@ where
             source,
         })?;
     let runtime = initialize(config).await?;
-    info!(mode = %config.server.mode, "Record Store starting");
+    info!(
+        mode = %config.server.mode,
+        version = env!("CARGO_PKG_VERSION"),
+        commit = BUILD_COMMIT,
+        "Record Store starting"
+    );
     info!(address = %config.server.s3_bind, "S3 API listening");
     info!(address = %config.server.api_bind, "management API listening");
     if !config.server.mode.clustered() {

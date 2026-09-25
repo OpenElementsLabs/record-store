@@ -2,6 +2,9 @@
 s3_bind = "0.0.0.0:7600"
 api_bind = "0.0.0.0:7601"
 shutdown_grace_period_seconds = 30
+# Closes a connection whose request headers take longer than this to arrive, or
+# that sits idle longer than this between requests.
+header_read_timeout_seconds = 30
 # Reverse-proxy hops whose X-Forwarded-For header may be believed. Empty means
 # the header is ignored and every request is attributed to the socket it
 # arrived on, which is safe everywhere and coarse behind a proxy: until the
@@ -13,6 +16,9 @@ shutdown_grace_period_seconds = 30
 [storage]
 data_directory = "./data"
 encryption_enabled = false # requires a stable RECORD_STORE_CREDENTIAL_MASTER_KEY
+# Page cache, in MiB, for the catalog, audit trail and event journal. The part of
+# memory that grows with history; it never exceeds this.
+metadata_cache_mib = 128
 # Keep this on the same filesystem as data_directory when overriding it: a payload is
 # published by renaming it out of here, and a rename cannot cross a mount boundary.
 # `record-store server doctor` refuses a deployment that gets this wrong.

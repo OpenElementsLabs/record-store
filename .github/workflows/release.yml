@@ -482,6 +482,7 @@ jobs:
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
+          RECORD_STORE_BUILD_COMMIT: ${{ github.sha }}
         run: |
           cargo build --locked --release --target ${{ matrix.target }} \
             --bin record-store --bin record-store-server
@@ -534,7 +535,8 @@ jobs:
             set -eu
             apt-get update -qq > /dev/null
             apt-get install -y -qq curl > /dev/null
-            apt-get install -y -qq "/pkg/record-store_'"${VERSION}"'_${{ matrix.architecture }}.deb" > /dev/null
+            # Debian spells a pre-release 0.2.0~rc.1, which sorts before 0.2.0.
+            apt-get install -y -qq "/pkg/record-store_'"${VERSION//-/\~}"'_${{ matrix.architecture }}.deb" > /dev/null
             test -f /etc/record-store/record-store.env
             test "$(stat -c %a /etc/record-store/record-store.env)" = 600
             systemd-analyze verify /usr/lib/systemd/system/record-store.service
@@ -560,7 +562,7 @@ jobs:
           set -euo pipefail
           docker run --rm --volume "${PWD}/dist:/pkg:ro" rockylinux/rockylinux:9 bash -c '
             set -eu
-            dnf install -y -q "/pkg/record-store-'"${VERSION}"'-1.${{ matrix.rpm-architecture }}.rpm"
+            dnf install -y -q "/pkg/record-store-'"${VERSION//-/\~}"'-1.${{ matrix.rpm-architecture }}.rpm"
             test -f /etc/record-store/record-store.env
             test "$(stat -c %a /etc/record-store/record-store.env)" = 600
             rpm -q --configfiles record-store | grep -q /etc/record-store/record-store.toml
@@ -579,10 +581,12 @@ jobs:
           retention-days: 7
 
   # The Helm chart, published to GHCR as an OCI artifact beside the images and
-  # attached to the release as a tarball for air-gapped installs.
+  # attached to the release as a tarball for air-gapped installs. Only after the
+  # release decision: unlike an image, nothing else waits on the chart, so a
+  # blocked release leaves no published chart pointing at it.
   chart:
     name: Helm chart
-    needs: [validate, server-image, console-image]
+    needs: [validate, server-image, console-image, release-decision]
     runs-on: ubuntu-latest
     permissions:
       contents: read

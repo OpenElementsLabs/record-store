@@ -1440,6 +1440,7 @@ mod tests {
                 .list_multipart_uploads(record_store_metadata::ListMultipartUploadsRequest {
                     bucket_id: record.id,
                     prefix: String::new(),
+                    key_marker: None,
                     upload_id_marker: None,
                     limit: 10,
                 })

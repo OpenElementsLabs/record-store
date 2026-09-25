@@ -46,6 +46,7 @@ DOCUMENTED = [
     'backup /backups/pre-upgrade',
     'verify-backup /backups/pre-upgrade --level full',
     '"$NEW" check-config',
+    '--volumes-from record-store --env-file /etc/record-store/env "$NEW" doctor',
     "mv /var/lib/record-store /var/lib/record-store.failed",
     "chown 10001:10001 /var/lib/record-store",
     "restore /backups/pre-upgrade --level full",
@@ -122,7 +123,9 @@ def main(gate: Gate) -> None:
     logs.mkdir(parents=True, exist_ok=True)
 
     docker("pull", PREVIOUS_IMAGE)
-    built = docker("build", "--file", "deploy/docker/Dockerfile", "--tag", CANDIDATE_IMAGE, str(REPOSITORY_ROOT), timeout=3600)
+    commit = subprocess.run(["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    built = docker("build", "--file", "deploy/docker/Dockerfile", "--build-arg", f"RECORD_STORE_BUILD_COMMIT={commit}",
+                   "--tag", CANDIDATE_IMAGE, str(REPOSITORY_ROOT), timeout=3600)
     gate.context["images"] = {
         "previous": docker("image", "inspect", PREVIOUS_IMAGE, "--format", "{{.Id}}").stdout.strip(),
         "candidate": docker("image", "inspect", CANDIDATE_IMAGE, "--format", "{{.Id}}").stdout.strip(),
@@ -158,10 +161,14 @@ def main(gate: Gate) -> None:
         checked = docker("run", "--rm", "--env-file", str(env_file), CANDIDATE_IMAGE, "check-config", check=False)
         gate.check("step 4: check-config runs and passes as documented", checked.returncode == 0,
                    (checked.stdout + checked.stderr)[-500:])
+        doctor = docker("run", "--rm", "--volumes-from", "record-store", "--env-file", str(env_file),
+                        CANDIDATE_IMAGE, "doctor", check=False)
+        gate.check("step 5: doctor finds nothing that would stop the new image starting on the 0.1.3 data",
+                   doctor.returncode == 0, (doctor.stdout + doctor.stderr)[-800:])
         run_server("record-store-new", CANDIDATE_IMAGE, data, env_file)
-        gate.require("step 5: the new image starts on the 0.1.3 data", wait_ready("record-store-new"))
+        gate.require("step 6: the new image starts on the 0.1.3 data", wait_ready("record-store-new"))
         status, body = api(token, "GET", "/api/v1/buckets/upgrade/object-content/before.bin")
-        gate.check("step 6: the object written by 0.1.3 reads back byte for byte",
+        gate.check("step 7: the object written by 0.1.3 reads back byte for byte",
                    status == 200 and hashlib.sha256(body).hexdigest() == digest, status)
         status, _ = api(token, "PUT", "/api/v1/buckets/upgrade/object/after.bin", b"written after upgrade", "application/octet-stream")
         gate.check("the upgraded deployment accepts writes", status in (200, 201), status)

@@ -122,7 +122,8 @@ Exit codes are stable, so a backup script can tell the cases apart:
 | Code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 2 | Configuration or arguments unusable |
+| 1 | Unexpected failure, such as an I/O error; the message says what failed |
+| 2 | Configuration or arguments unusable, or a data directory holding an unfinished restore |
 | 3 | The backup is damaged, incomplete, or missing a required component |
 | 4 | The destination already holds something that must not be overwritten |
 | 5 | Not enough space at the destination |
@@ -226,7 +227,12 @@ record-store verify bucket uploads --endpoint http://127.0.0.1:7601
 ```
 
 Use the **same master key**. A restore with a different one is refused before
-anything is written, which is exactly the failure a drill should catch.
+anything is written, which is exactly the failure a drill should catch. That holds
+with payload encryption off too: the master key — or, where none is configured, the
+root secret — also seals service-account secrets, share links and webhook secrets,
+which would never unseal. The backup records a one-way reference to that key material
+(`sealing_key_reference` in the manifest), never the material itself; backups taken
+before this reference existed are restored without the check.
 
 ## Compatibility with older backups
 

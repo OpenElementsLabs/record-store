@@ -33,6 +33,7 @@ empty, TOML is the only way to set it. See
 | `s3_bind` | socket address | `0.0.0.0:7600` | `RECORD_STORE_S3_BIND` |
 | `api_bind` | socket address | `0.0.0.0:7601` | `RECORD_STORE_API_BIND` |
 | `shutdown_grace_period_seconds` | integer 1–300 | `30` | `RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS` |
+| `header_read_timeout_seconds` | integer 1–3600 | `30` | `RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS` |
 | `trusted_proxies` | list of IPs or CIDR blocks, at most 64 | `[]` | `RECORD_STORE_SERVER_TRUSTED_PROXIES` (comma-separated) |
 
 Constraints:
@@ -48,6 +49,15 @@ attributed to the socket it arrived on — safe everywhere, and behind a proxy i
 rate limits and audit records all name the proxy. See
 [Reverse Proxy and TLS](../deployment/reverse-proxy.md#client-address-headers).
 
+`header_read_timeout_seconds` bounds how long a client may take to send a request's
+headers on either listener, and how long a kept-alive connection may sit idle before
+its next request; past it the connection is closed. It does not limit a request body
+or a response, so a slow upload or download of a large object is unaffected. Without
+it, a client that trickled one header line at a time held a connection for as long as
+it liked. A reverse proxy in front usually has its own limit (nginx
+`client_header_timeout`, 60 s); this one protects the listeners when nothing is in
+front.
+
 `api_bind` is unrestricted administrative access. Do not publish it. See
 [Ports](ports.md).
 
@@ -58,6 +68,7 @@ rate limits and audit records all name the proxy. See
 | `data_directory` | path | `./data` | `RECORD_STORE_STORAGE_DATA_DIRECTORY` |
 | `temporary_directory` | path | `<data_directory>/tmp` | `RECORD_STORE_STORAGE_TEMPORARY_DIRECTORY` |
 | `encryption_enabled` | boolean | `false` | `RECORD_STORE_STORAGE_ENCRYPTION_ENABLED` |
+| `metadata_cache_mib` | integer 8–1048576 | `128` | `RECORD_STORE_STORAGE_METADATA_CACHE_MIB` |
 
 `temporary_directory` must be on the same filesystem as the data directory. A payload
 is published by renaming it out of there, and a rename cannot cross a mount boundary.
@@ -67,6 +78,14 @@ wrong, rather than letting it fail on the first upload.
 `encryption_enabled` requires `auth.credential_master_key`. It applies to newly
 committed payloads; it does not re-encrypt existing objects. See
 [Encryption](../security/encryption.md).
+
+`metadata_cache_mib` is the page cache shared by the catalog (half), the audit trail
+(a quarter) and the storage-event journal (a quarter); the credential, sharing and
+lifecycle databases keep 16 MiB each. The cache fills as those databases grow and
+never exceeds this, so it is the part of the server's memory that grows with history
+rather than with load. Raise it when the catalog holds millions of objects and the
+host has memory to spare; a read that misses it is served from the operating
+system's file cache or the disk. See [Capacity Planning](../operations/capacity-planning.md#memory).
 
 ## `[auth]`
 
@@ -215,6 +234,7 @@ trusted_proxies = ["10.0.0.0/8"]
 [storage]
 data_directory = "/var/lib/record-store"
 encryption_enabled = true
+metadata_cache_mib = 128
 
 [limits]
 maximum_concurrent_operations = 256

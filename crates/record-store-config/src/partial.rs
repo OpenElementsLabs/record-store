@@ -66,6 +66,7 @@ pub(crate) struct PartialServerConfig {
     rpc_bind: Option<SocketAddr>,
     rpc_advertise: Option<String>,
     shutdown_grace_period_seconds: Option<u64>,
+    header_read_timeout_seconds: Option<u64>,
     trusted_proxies: Option<Vec<String>>,
 }
 
@@ -88,6 +89,9 @@ impl PartialServerConfig {
         }
         if let Some(value) = self.shutdown_grace_period_seconds {
             target.shutdown_grace_period_seconds = value;
+        }
+        if let Some(value) = self.header_read_timeout_seconds {
+            target.header_read_timeout_seconds = value;
         }
         if let Some(value) = self.trusted_proxies {
             target.trusted_proxies = value;
@@ -193,6 +197,7 @@ pub(crate) struct PartialStorageConfig {
     /// declare one. Without this field the whole section is rejected as an
     /// unknown key, which is how it should fail if it is ever removed.
     devices: Option<Vec<StorageDeviceConfig>>,
+    metadata_cache_mib: Option<u64>,
 }
 
 impl PartialStorageConfig {
@@ -208,6 +213,9 @@ impl PartialStorageConfig {
         }
         if let Some(value) = self.devices {
             target.devices = value;
+        }
+        if let Some(value) = self.metadata_cache_mib {
+            target.metadata_cache_mib = value;
         }
     }
 }

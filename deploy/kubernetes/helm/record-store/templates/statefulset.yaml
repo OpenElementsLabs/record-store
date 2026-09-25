@@ -79,8 +79,11 @@ spec:
               value: "0.0.0.0:{{ .Values.service.ports.s3 }}"
             - name: RECORD_STORE_API_BIND
               value: "0.0.0.0:{{ .Values.service.ports.api }}"
+            # A directory the server creates itself inside the volume, never the
+            # volume root: provisioners such as local-path and NFS create the
+            # root world-writable, which the server refuses to store data in.
             - name: RECORD_STORE_STORAGE_DATA_DIRECTORY
-              value: /var/lib/record-store
+              value: /var/lib/record-store/data
             - name: RECORD_STORE_ROOT_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
@@ -189,8 +192,10 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: data
+        # Only labels that never change: volumeClaimTemplates are immutable,
+        # and a chart or app version here would refuse every upgrade.
         labels:
-          {{- include "record-store.labels" . | nindent 10 }}
+          {{- include "record-store.server.selectorLabels" . | nindent 10 }}
         {{- with .Values.persistence.annotations }}
         annotations:
           {{- toYaml . | nindent 10 }}

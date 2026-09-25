@@ -15,7 +15,7 @@ import type { Session, SystemInfo } from '@/types/api';
  */
 async function loadDeployment(
   token: string,
-): Promise<{ info: SystemInfo; session: Session } | 'unauthorized' | 'unreachable'> {
+): Promise<{ info: SystemInfo; session: Session } | 'unauthorized' | 'not-ready' | 'unreachable'> {
   const base = managementApiUrl();
   const headers = { authorization: `Bearer ${token}`, accept: 'application/json' };
   try {
@@ -24,6 +24,9 @@ async function loadDeployment(
       fetch(`${base}/api/v1/auth/session`, { headers, cache: 'no-store' }),
     ]);
     if (sessionResponse.status === 401) return 'unauthorized';
+    // The API answered, and said it cannot serve yet: starting, or a check it
+    // depends on is failing. That is a different fault from not answering.
+    if (infoResponse.status === 503) return 'not-ready';
     if (!infoResponse.ok || !sessionResponse.ok) return 'unreachable';
     return {
       info: (await infoResponse.json()) as SystemInfo,
@@ -40,15 +43,19 @@ export default async function ConsoleLayout({ children }: { children: React.Reac
 
   const deployment = await loadDeployment(token);
   if (deployment === 'unauthorized') redirect('/login');
-  if (deployment === 'unreachable') {
+  if (deployment === 'unreachable' || deployment === 'not-ready') {
+    const notReady = deployment === 'not-ready';
     return (
       <main className="flex min-h-screen items-center justify-center px-4">
         <div className="max-w-md space-y-2 text-center" role="alert">
           <BrandMark className="mx-auto mb-6 w-12" />
-          <h1 className="text-lg font-semibold text-ink">Record Store is unreachable</h1>
+          <h1 className="text-lg font-semibold text-ink">
+            {notReady ? 'Record Store is not ready' : 'Record Store is unreachable'}
+          </h1>
           <p className="text-sm text-ink-muted">
-            The console could not reach the Record Store management API. It will work again as soon
-            as the API responds; no console state has been lost.
+            {notReady
+              ? 'The management API answered but is not ready to serve: the server is starting, or a check it depends on is failing. Its readiness endpoint and logs say which. The console will work again as soon as it is ready; no console state has been lost.'
+              : 'The console could not reach the Record Store management API. It will work again as soon as the API responds; no console state has been lost.'}
           </p>
         </div>
       </main>

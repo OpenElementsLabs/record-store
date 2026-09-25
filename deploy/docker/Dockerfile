@@ -1,6 +1,11 @@
-FROM rust:1.98-bookworm@sha256:9a73a5088750b4c95158ab26629c854c3d6fc4b173cb7bc8079ad252d8ed7bfa AS builder
+# The toolchain rust-toolchain.toml pins, so the image digest pins the compiler
+# and the build needs no toolchain download. Bump the two together.
+FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
 WORKDIR /src
 
+# The build context has no .git, so the commit is passed in; the binaries
+# report it (record-store version, /api/v1/system/info, backup manifests).
+ARG RECORD_STORE_BUILD_COMMIT=unknown
 COPY . .
 RUN cargo build --locked --release --bin record-store-server --bin record-store
 
@@ -17,10 +22,16 @@ COPY --from=builder /src/target/release/record-store /usr/local/bin/record-store
 # The image is labelled Apache-2.0, so it carries the licence it claims.
 COPY --from=builder /src/LICENSE /usr/share/licenses/record-store/LICENSE
 
+# glibc gives each thread that contends for the allocator an arena of its own,
+# up to eight per core, and keeps what every arena once held. Under steady load
+# the server's resident memory then keeps climbing while its live heap stays
+# flat; two arenas held it at half, with no difference in throughput (see
+# docs/operations/capacity-planning.md#memory).
 ENV RECORD_STORE_S3_BIND=0.0.0.0:7600 \
     RECORD_STORE_API_BIND=0.0.0.0:7601 \
     RECORD_STORE_STORAGE_DATA_DIRECTORY=/var/lib/record-store \
-    RECORD_STORE_LOG_JSON=true
+    RECORD_STORE_LOG_JSON=true \
+    MALLOC_ARENA_MAX=2
 
 USER record-store:record-store
 VOLUME ["/var/lib/record-store"]

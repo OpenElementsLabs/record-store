@@ -15,9 +15,9 @@ tests.
 | `BucketCors` | Get, put, delete |
 | `ObjectOperations` | Put, get, head, delete |
 | `ListObjectsV2` | Prefix, delimiter, pagination |
-| `MultipartUpload` | Create, upload part, complete, abort, list |
+| `MultipartUpload` | Create, upload part, complete, abort, list; `ListMultipartUploads` pages by `key-marker` and `upload-id-marker` and returns both next markers on a truncated page |
 | `ObjectVersioning` | Enable, suspend, list versions, delete markers |
-| `CopyObject` | Server-side copy |
+| `CopyObject` | Server-side copy with `x-amz-metadata-directive`; Object Lock headers apply to the new version. A copy refuses what a PUT refuses, and conditional-copy (`x-amz-copy-source-if-*`) and tagging headers, with `501 NotImplemented` |
 | `RangeAndConditionalReads` | `Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since` |
 | `ClientSha256Checksums` | `x-amz-content-sha256` |
 | `ClientBodyDigests` | `Content-MD5` and `x-amz-checksum-crc32`, `-crc32c`, `-sha1`, `-sha256` are verified against the body; a mismatch is `400 BadDigest` and stores nothing. A verified `x-amz-checksum-*` is echoed in the response |

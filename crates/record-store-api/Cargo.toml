@@ -11,6 +11,8 @@ base64.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 http.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 record-store-auth = { path = "../record-store-auth" }
 record-store-audit = { path = "../record-store-audit" }
 record-store-cluster = { path = "../record-store-cluster" }
@@ -29,7 +31,7 @@ sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tower.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
@@ -40,7 +42,6 @@ openraft.workspace = true
 record-store-rpc = { path = "../record-store-rpc" }
 serde_json.workspace = true
 tempfile.workspace = true
-tower.workspace = true
 
 [lints]
 workspace = true

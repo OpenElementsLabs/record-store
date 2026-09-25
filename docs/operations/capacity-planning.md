@@ -82,6 +82,56 @@ Rules of thumb:
 Measure your own ratios rather than trusting an estimate — run for a week and read
 `storage inspect`.
 
+## Memory
+
+The server's memory has a part that follows load and a part that follows history.
+
+- **Load**: requests in flight, their buffers, and the threads serving them. It rises
+  and falls with traffic and is bounded by `limits.maximum_concurrent_operations`.
+- **History**: the page cache of the metadata databases. The catalog, the audit trail
+  and the storage-event journal grow with every request, and redb caches their pages
+  as it reads and writes them. `storage.metadata_cache_mib` (default 128) is shared
+  between those three — half for the catalog, a quarter each for the others — and the
+  credential, sharing and lifecycle databases keep 16 MiB each. Once the databases
+  outgrow it, this part stops growing.
+
+Up to 0.1.3, every database cached up to 1 GiB, so memory followed the database files
+until each cache was full — about 1.3 KB per request under a steady mixed workload.
+Measured on Linux with that workload (16 clients, 200 keys, 70 % reads, 1–256 KiB
+objects), anonymous memory of the server container with a 384 MiB limit:
+
+| Minutes | 0.1.3-style caches | Bounded cache, glibc defaults | Bounded cache, `MALLOC_ARENA_MAX=2` |
+| --- | --- | --- | --- |
+| 5 | 174 MiB | 108 MiB | 67 MiB |
+| 10 | 291 MiB | 148 MiB | 75 MiB |
+| 14 | 374 MiB, then killed by the limit | 174 MiB | 87 MiB |
+| 30 | — | 205 MiB | 99 MiB |
+| 60 | — | 232 MiB | — |
+
+With the cache bounded, memory levels off; what continues to rise slowly afterwards
+is glibc's allocator keeping memory in per-thread arenas, not live data. A heap
+profile of the bounded server over 12 minutes found a peak of 66 MB of live
+allocations, most of it the audit and event caches, and 0.4 MB unreleased at exit.
+Capping glibc at two arenas halves resident memory with no measurable change in
+throughput, so **the container image sets `MALLOC_ARENA_MAX=2`**, and so does
+anything built on it, the Helm chart and the Compose files included. Set it yourself
+when you run the glibc binary archive directly. The static (`-musl`) binaries in the
+archives and the Debian and RPM packages use musl's allocator, which the variable does
+not affect.
+
+To size a container or a unit's `MemoryMax`, start from what was measured: with the
+default cache and the image's settings the server levelled off near 100 MiB, with
+glibc's defaults near 230 MiB, and both ran under a 384 MiB limit that 0.1.3's caches
+exceeded within a quarter of an hour. Allow at least 384 MiB, plus whatever you add to
+`metadata_cache_mib`, and more if your clients hold many large transfers open at
+once. The Helm chart requests 512 MiB and limits the pod to 2 GiB. A read that misses the cache is served from the
+operating system's file cache or the disk, so a small cache costs latency on a large
+catalog, not correctness.
+
+The `RES-MEMORY` release gate holds this: with an 8 MiB cache, after the caches have
+filled, resident memory may grow by at most 256 bytes per request — a fifth of what
+the unbounded cache produced.
+
 ## Bounding growth
 
 **Lifecycle rules** for version history and old objects:

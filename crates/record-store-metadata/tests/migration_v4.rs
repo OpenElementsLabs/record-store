@@ -187,6 +187,19 @@ async fn a_schema_four_directory_starts_migrates_and_serves_every_object_unchang
     let fixture = write_v4_fixture(directory.path());
     let path = directory.path().join("metadata").join("catalog.redb");
 
+    // Read without migrating, as a backup labels the catalog it copied, and
+    // without changing the file.
+    let before = std::fs::read(&path).expect("fixture bytes");
+    assert_eq!(
+        record_store_metadata::stored_schema_version(&path).expect("read-only schema read"),
+        Some(4)
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("fixture bytes"),
+        before,
+        "reading changed the file"
+    );
+
     // Confirm the fixture really is v4 and really lacks the new tables, so a
     // later refactor cannot turn this into a test of nothing.
     {

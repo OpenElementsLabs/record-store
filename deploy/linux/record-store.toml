@@ -5,9 +5,9 @@
 # .rpmnew alongside it when the shipped default changes.
 #
 # Secrets do NOT belong here. This file is readable by the record-store group;
-# credentials live in record-store.env, which is 0600 and owned by root. See
-# `record-store server --config /etc/record-store/record-store.toml check-config`
-# to validate changes before restarting.
+# credentials live in record-store.env, which is 0600 and owned by root. The
+# check validates both together, before a restart:
+#   sudo sh -c 'set -a; . /etc/record-store/record-store.env; exec record-store server --config /etc/record-store/record-store.toml check-config'
 
 [server]
 s3_bind = "0.0.0.0:7600"

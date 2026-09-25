@@ -22,6 +22,7 @@ Some settings are file-only. Those are listed at the end.
 | `RECORD_STORE_S3_BIND` | S3 API listener | `0.0.0.0:7600` |
 | `RECORD_STORE_API_BIND` | Management API listener | `0.0.0.0:7601` |
 | `RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS` | Graceful drain ceiling, 1–300 | `30` |
+| `RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS` | Longest a client may take to send request headers, or idle between requests, before its connection is closed; 1–3600 | `30` |
 | `RECORD_STORE_SERVER_TRUSTED_PROXIES` | Comma-separated reverse-proxy addresses or CIDR blocks whose `X-Forwarded-For` is believed | empty (header ignored) |
 
 ## Storage
@@ -30,6 +31,7 @@ Some settings are file-only. Those are listed at the end.
 | --- | --- | --- |
 | `RECORD_STORE_STORAGE_DATA_DIRECTORY` | Root of all durable state | `./data` |
 | `RECORD_STORE_STORAGE_TEMPORARY_DIRECTORY` | Incomplete payload staging | `<data>/tmp` |
+| `RECORD_STORE_STORAGE_METADATA_CACHE_MIB` | Page cache for the catalog, audit trail and event journal, 8–1048576 | `128` |
 | `RECORD_STORE_STORAGE_ENCRYPTION_ENABLED` | Encrypt new payloads at rest | `false` |
 
 ## Credentials and tokens

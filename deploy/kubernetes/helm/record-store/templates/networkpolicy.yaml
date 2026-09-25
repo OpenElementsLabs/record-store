@@ -23,7 +23,10 @@ spec:
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-    # The management API: the console, plus anything the operator names.
+    # The management API: the console, plus anything the operator names. With
+    # neither there is no rule at all -- a rule with an empty `from` would
+    # admit every source.
+    {{- if or .Values.console.enabled .Values.networkPolicy.apiFrom }}
     - ports:
         - port: api
           protocol: TCP
@@ -33,11 +36,8 @@ spec:
             matchLabels:
               {{- include "record-store.console.selectorLabels" . | nindent 14 }}
         {{- end }}
-        # kubelet probes come from the node, not from a pod, and a podSelector
-        # would never match them.
-        - ipBlock:
-            cidr: 0.0.0.0/0
         {{- with .Values.networkPolicy.apiFrom }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+    {{- end }}
 {{- end }}

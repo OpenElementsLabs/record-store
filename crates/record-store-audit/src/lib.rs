@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt::Display, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use record_store_core::{AuditEventId, open_database};
+use record_store_core::{AuditEventId, DEFAULT_CACHE_BYTES, open_database_with_cache};
 use redb::{Database, ReadableDatabase, TableDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -317,12 +317,23 @@ fn commit_batch(database: &Database, batch: Vec<PendingAppend>) {
 
 impl RedbAuditRepository {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, AuditError> {
+        Self::open_with_cache(path, DEFAULT_CACHE_BYTES).await
+    }
+
+    /// Opens the trail with at most `cache_bytes` of page cache. The trail is
+    /// append-mostly and grows with every request, so the pages worth keeping
+    /// are the few near its head, not the whole file.
+    pub async fn open_with_cache(
+        path: impl AsRef<Path>,
+        cache_bytes: usize,
+    ) -> Result<Self, AuditError> {
         let path = path.as_ref().to_path_buf();
         tokio::task::spawn_blocking(move || {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(AuditError::Directory)?;
             }
-            let database = open_database(path).map_err(|error| backend("open", error))?;
+            let database = open_database_with_cache(path, cache_bytes)
+                .map_err(|error| backend("open", error))?;
             let write = database
                 .begin_write()
                 .map_err(|error| backend("initialize", error))?;

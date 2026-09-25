@@ -39,7 +39,7 @@ evaluated separately. It is excluded from the documentation build.
 CMP-UPGRADE upgrades from the previous release (`v0.1.3` today). When a release
 ships, the workflows' previous-release reference moves to it.
 
-## Negative controls demonstrated at matrix 2026.09.23-2
+## Negative controls demonstrated at matrix 2026.09.23-2 and 2026.09.25-1
 
 A gate that has never failed is not yet evidence. Each of these was observed to
 fail on a real defect or an injected one:
@@ -50,6 +50,9 @@ fail on a real defect or an injected one:
 | REC-CRASH | A run whose kills never landed mid-upload: reported `invalid_measurement`, not pass |
 | REC-CRASH | A torn publication record that stopped start-up, deterministically (an empty record) |
 | COR-PAGINATION | Storage-event pagination dropping one event per page, at every page size |
+| COR-PAGINATION | A truncated ListMultipartUploads page without NextKeyMarker, and a KeyMarker ignored (RSG-009), against the pre-fix binaries |
+| SEC-SLOW-CLIENTS | All 96 trickling and silent connections still held when the gate gave up (RSG-004), against the pre-fix binaries |
+| RES-MEMORY | 1189 bytes of resident memory per request under an 8 MiB cache setting the pre-fix binaries ignore (RSG-011) |
 | COR-INTEGRITY | A corrupted plaintext read served as a complete 200 |
 | CMP-UNSUPPORTED | Checksum headers accepted and ignored (and a malformed-value variant, removed so a refusal cannot be a parse error) |
 | CL-EVIDENCE | A failure-matrix row citing a test that does not exist |

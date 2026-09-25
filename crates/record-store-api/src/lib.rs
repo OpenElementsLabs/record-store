@@ -2,12 +2,7 @@
 
 mod sharing;
 
-use std::{
-    future::{Future, IntoFuture},
-    net::SocketAddr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use crate::auth::{ManagementPrincipal, auth_session};
 use crate::error::{ApiError, ReadinessError};
@@ -69,8 +64,6 @@ use record_store_replication::{ClusterContext, ClusterOperations, ClusterStatus,
 use record_store_service::Services;
 use record_store_sharing::redact_capability_path;
 use record_store_storage::ObjectStore;
-use tokio::{net::TcpListener, time::timeout};
-use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, error, info, info_span};
 
 pub use crate::sharing::SharingManagement;
@@ -147,6 +140,7 @@ pub struct AppState {
     audit: Arc<dyn AuditRepository>,
     owner: OrganizationId,
     version: &'static str,
+    commit: &'static str,
     mode: DeploymentMode,
     management_auth: ManagementAuth,
     metrics_auth: MetricsAuth,
@@ -233,6 +227,7 @@ impl AppState {
             audit,
             owner,
             version,
+            commit: "unknown",
             mode: DeploymentMode::Standalone,
             management_auth,
             metrics_auth: MetricsAuth::disabled(),
@@ -244,6 +239,13 @@ impl AppState {
             metrics_history: Arc::new(crate::history::MetricsHistory::new(chrono::Utc::now())),
             trusted_proxies: Arc::new(TrustedProxies::default()),
         }
+    }
+
+    /// Names the commit this build came from, reported beside the version.
+    #[must_use]
+    pub const fn with_build_commit(mut self, commit: &'static str) -> Self {
+        self.commit = commit;
+        self
     }
 
     /// Names the reverse-proxy hops whose forwarding headers may be believed.
@@ -383,6 +385,7 @@ mod error;
 mod handlers;
 pub mod history;
 mod metrics;
+mod serve;
 
 #[cfg(test)]
 mod test_support;
@@ -390,6 +393,7 @@ mod test_support;
 pub use auth::{ManagementAuth, ManagementRole, MetricsAuth};
 pub use dto::RequestId;
 pub use error::ServerError;
+pub use serve::serve;
 
 /// Builds public operational routes and authenticated administrative routes.
 pub fn router(state: AppState) -> Router {
@@ -719,36 +723,6 @@ pub fn embed_router(state: AppState) -> Router {
             request_context,
         ))
         .with_state(state)
-}
-
-/// Serves until shutdown is requested, then drains requests up to `grace_period`.
-pub async fn serve<F>(
-    listener: TcpListener,
-    application: Router,
-    shutdown: F,
-    grace_period: Duration,
-) -> Result<(), ServerError>
-where
-    F: Future<Output = ()> + Send + 'static,
-{
-    let cancellation = CancellationToken::new();
-    let graceful = axum::serve(
-        listener,
-        application.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(cancellation.clone().cancelled_owned())
-    .into_future();
-    tokio::pin!(graceful);
-    tokio::select! {
-        result = &mut graceful => result.map_err(ServerError::Serve),
-        () = shutdown => {
-            cancellation.cancel();
-            match timeout(grace_period, &mut graceful).await {
-                Ok(result) => result.map_err(ServerError::Serve),
-                Err(_) => Err(ServerError::ShutdownTimeout(grace_period)),
-            }
-        }
-    }
 }
 
 /// The intent record a mutating management request wrote before it ran.

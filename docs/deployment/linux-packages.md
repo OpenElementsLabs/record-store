@@ -15,13 +15,13 @@ Download the package for your architecture from the
 === "Debian, Ubuntu"
 
     ```bash
-    sudo apt-get install ./record-store_0.1.3_amd64.deb
+    sudo apt-get install ./record-store_0.2.0_amd64.deb
     ```
 
 === "RHEL, Rocky, Fedora, openSUSE"
 
     ```bash
-    sudo dnf install ./record-store-0.1.3-1.x86_64.rpm
+    sudo dnf install ./record-store-0.2.0-1.x86_64.rpm
     ```
 
 Verify the download against `SHA256SUMS` from the same release first — see
@@ -47,11 +47,13 @@ onwards, RHEL 8 onwards, and their derivatives.
 Installing does not start anything. Record Store holds data, and the first start
 is a decision about where that data goes, so it is left to you.
 
-Read the generated credentials, check the configuration, then start:
+Read the generated credentials, check the configuration, then start. The check
+reads the credentials from `record-store.env` the way the systemd unit does;
+without them it fails on the missing root credentials, not on your file:
 
 ```bash
 sudo cat /etc/record-store/record-store.env
-sudo record-store server --config /etc/record-store/record-store.toml check-config
+sudo sh -c 'set -a; . /etc/record-store/record-store.env; exec record-store server --config /etc/record-store/record-store.toml check-config'
 sudo systemctl enable --now record-store
 systemctl status record-store
 ```
@@ -91,7 +93,7 @@ set `root_s3_enabled = false`.
 Edit `/etc/record-store/record-store.toml`, validate, restart:
 
 ```bash
-sudo record-store server --config /etc/record-store/record-store.toml check-config
+sudo sh -c 'set -a; . /etc/record-store/record-store.env; exec record-store server --config /etc/record-store/record-store.toml check-config'
 sudo systemctl restart record-store
 ```
 
@@ -127,7 +129,7 @@ Install the new package over the old one. Configuration, credentials and data
 are kept; the service restarts on the new binary.
 
 ```bash
-sudo apt-get install ./record-store_0.1.4_amd64.deb   # or dnf install
+sudo apt-get install ./record-store_<new-version>_amd64.deb   # or dnf install
 sudo systemctl restart record-store
 ```
 
@@ -158,7 +160,7 @@ The release workflow runs the same script you can:
 ```bash
 cargo build --release --target x86_64-unknown-linux-musl \
   --bin record-store --bin record-store-server
-deploy/linux/build-packages.sh amd64 0.1.3 \
+deploy/linux/build-packages.sh amd64 0.2.0 \
   target/x86_64-unknown-linux-musl/release
 ```
 

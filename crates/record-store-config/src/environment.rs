@@ -31,6 +31,18 @@ impl Config {
             self.server.shutdown_grace_period_seconds =
                 parse_environment("RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS", value)?;
         }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS")?
+        {
+            self.server.header_read_timeout_seconds =
+                parse_environment("RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS", value)?;
+        }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_STORAGE_METADATA_CACHE_MIB")?
+        {
+            self.storage.metadata_cache_mib =
+                parse_environment("RECORD_STORE_STORAGE_METADATA_CACHE_MIB", value)?;
+        }
         if let Some(value) = environment_value(environment, "RECORD_STORE_STORAGE_DATA_DIRECTORY")?
         {
             self.storage.data_directory = PathBuf::from(value);
@@ -455,6 +467,7 @@ mod exhaustive_tests {
             ("RECORD_STORE_RPC_ADVERTISE", "node-a:17603".into()),
             ("RECORD_STORE_API_BIND", "127.0.0.1:17601".into()),
             ("RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS", "45".into()),
+            ("RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS", "12".into()),
             (
                 "RECORD_STORE_SERVER_TRUSTED_PROXIES",
                 "10.0.0.0/8, 192.168.1.5".into(),
@@ -465,6 +478,7 @@ mod exhaustive_tests {
                 "/srv/records-tmp".into(),
             ),
             ("RECORD_STORE_STORAGE_ENCRYPTION_ENABLED", "true".into()),
+            ("RECORD_STORE_STORAGE_METADATA_CACHE_MIB", "64".into()),
             (
                 "RECORD_STORE_CREDENTIAL_MASTER_KEY",
                 "credential-master-key-at-least-32-bytes".into(),
@@ -618,6 +632,7 @@ mod exhaustive_tests {
         assert_eq!(config.server.rpc_advertise.as_deref(), Some("node-a:17603"));
         assert_eq!(config.server.api_bind.to_string(), "127.0.0.1:17601");
         assert_eq!(config.server.shutdown_grace_period_seconds, 45);
+        assert_eq!(config.server.header_read_timeout_seconds, 12);
 
         assert_eq!(
             config.storage.data_directory,
@@ -628,6 +643,7 @@ mod exhaustive_tests {
             Some(std::path::PathBuf::from("/srv/records-tmp"))
         );
         assert!(config.storage.encryption_enabled);
+        assert_eq!(config.storage.metadata_cache_mib, 64);
 
         assert!(!config.auth.root_s3_enabled);
         assert!(config.auth.credential_master_key.is_some());

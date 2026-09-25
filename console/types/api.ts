@@ -140,6 +140,8 @@ export type MetricsHistory = {
   readonly started_at: string;
   /** Samples, oldest first. */
   readonly samples: readonly MetricsSample[];
+  /** The server's clock when it answered; absent from older servers. */
+  readonly now?: string;
 };
 
 export type SystemMetrics = {

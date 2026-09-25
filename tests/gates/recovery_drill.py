@@ -48,6 +48,7 @@ from gatelib import (
 )
 
 MIB = 1024 * 1024
+EXIT_CONFIGURATION = 2
 EXIT_UNUSABLE = 3
 EXIT_CONFLICT = 4
 EXIT_IN_USE = 6
@@ -324,17 +325,19 @@ def main(gate: Gate) -> None:
         gate.check(f"{mode}: restore refuses a backup whose component files are gone, writing nothing",
                    restore.returncode == EXIT_UNUSABLE and data_directory_untouched(target), restore.stderr[-300:])
 
-        if encrypted:
-            target = root / "restore-wrong-key"
-            wrong = source.cli("server", "restore", str(backup), "--level", "full", extra_environment={
-                "RECORD_STORE_STORAGE_DATA_DIRECTORY": str(target),
-                "RECORD_STORE_CREDENTIAL_MASTER_KEY": Secrets().master_key,
-            })
-            gate.check("encrypted: restore with the wrong master key is refused before writing anything",
-                       wrong.returncode != 0 and data_directory_untouched(target),
-                       {"exit": wrong.returncode, "stderr": wrong.stderr.strip()[-300:]})
-            leaked = [v for v in credentials.values() if v in wrong.stdout + wrong.stderr]
-            gate.check("encrypted: the refusal names no key material", not leaked)
+        # The master key seals credentials, share links and webhook secrets in
+        # both modes, so the wrong one is refused in both, not only when
+        # payloads are encrypted.
+        target = root / "restore-wrong-key"
+        wrong = source.cli("server", "restore", str(backup), "--level", "full", extra_environment={
+            "RECORD_STORE_STORAGE_DATA_DIRECTORY": str(target),
+            "RECORD_STORE_CREDENTIAL_MASTER_KEY": Secrets().master_key,
+        })
+        gate.check(f"{mode}: restore with the wrong master key is refused before writing anything",
+                   wrong.returncode == EXIT_UNUSABLE and data_directory_untouched(target),
+                   {"exit": wrong.returncode, "stderr": wrong.stderr.strip()[-300:]})
+        leaked = [v for v in credentials.values() if v in wrong.stdout + wrong.stderr]
+        gate.check(f"{mode}: the refusal names no key material", not leaked)
 
         populated = source.cli("server", "restore", str(backup), "--level", "full")
         gate.check(f"{mode}: restore refuses the populated source data directory",
@@ -365,6 +368,14 @@ def main(gate: Gate) -> None:
         code, text = blocked.start_expecting_refusal()
         gate.check(f"{mode}: a half-restored data directory refuses to start",
                    code not in (None, 0) and "restore" in text, text.strip()[-300:])
+        # Nor is it backed up: the copy would look complete and hold a
+        # deployment that never existed.
+        half = root / f"backup-of-half-restore"
+        refused = subprocess.run([str(artifact.cli), "server", "backup", str(half)], env=environment,
+                                 capture_output=True, text=True, timeout=120)
+        gate.check(f"{mode}: a half-restored data directory is refused as a backup source (exit 2), writing nothing",
+                   refused.returncode == EXIT_CONFIGURATION and not (half / "backup-manifest.json").exists(),
+                   {"exit": refused.returncode, "stderr": refused.stderr.strip()[-300:]})
 
         started = time.monotonic()
         retried = subprocess.run([str(artifact.cli), "server", "restore", str(backup), "--level", "full"],

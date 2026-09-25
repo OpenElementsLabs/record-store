@@ -66,6 +66,27 @@ pub(crate) const MULTIPART_BYTES: &str = "multipart_bytes";
 /// Commit-order counter for the storage-event journal.
 pub(crate) const MUTATION_EVENT_SEQUENCE: &str = "mutation_event_sequence";
 
+/// Reads the schema version a catalog file was last written at, without
+/// migrating or otherwise changing it. `None` for a file with no catalog in it.
+pub fn stored_schema_version(path: &std::path::Path) -> Result<Option<u64>, MetadataError> {
+    use redb::ReadableDatabase;
+
+    let database =
+        redb::ReadOnlyDatabase::open(path).map_err(|e| backend("open catalog read-only", e))?;
+    let read = database
+        .begin_read()
+        .map_err(|e| backend("begin schema read", e))?;
+    let table = match read.open_table(SCHEMA) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+        Err(error) => return Err(backend("open schema", error)),
+    };
+    Ok(table
+        .get("metadata")
+        .map_err(|e| backend("read schema", e))?
+        .map(|value| value.value()))
+}
+
 pub(crate) fn initialize_schema(database: &Database) -> Result<(), MetadataError> {
     let write = database
         .begin_write()

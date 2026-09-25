@@ -101,6 +101,11 @@ pub(crate) async fn list_multipart_uploads(
         .map(|value| value.parse::<UploadId>())
         .transpose()
         .map_err(|_| S3Error::new(S3ErrorKind::InvalidRequest, request_id.clone(), &bucket))?;
+    // An empty key-marker is what a client sends for "from the start".
+    let key_marker = query
+        .get("key-marker")
+        .filter(|value| !value.is_empty())
+        .cloned();
     let prefix = query.get("prefix").cloned().unwrap_or_default();
     let result = state
         .services
@@ -108,19 +113,28 @@ pub(crate) async fn list_multipart_uploads(
         .list_multipart_uploads(ServiceListMultipartUploadsRequest {
             bucket: bucket_name(&bucket, &request_id)?,
             prefix: prefix.clone(),
+            key_marker: key_marker.clone(),
             upload_id_marker: marker,
             maximum_uploads: maximum,
         })
         .await
         .map_err(|error| service_error(error, request_id.clone(), &bucket))?;
     let is_truncated = result.next_upload_id_marker.is_some();
+    // S3 names the resume point by both markers: the last upload's key and id.
+    let next_key_marker = if is_truncated {
+        result.uploads.last().map(|upload| upload.key.to_string())
+    } else {
+        None
+    };
     xml_response(
         StatusCode::OK,
         &ListMultipartUploadsResult {
             xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
             bucket,
             prefix,
+            key_marker,
             upload_id_marker: marker.map(|value| value.to_string()),
+            next_key_marker,
             next_upload_id_marker: result.next_upload_id_marker.map(|value| value.to_string()),
             max_uploads: maximum,
             is_truncated,

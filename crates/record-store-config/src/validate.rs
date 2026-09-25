@@ -59,6 +59,12 @@ impl Config {
             issues
                 .push("server.shutdown_grace_period_seconds must be between 1 and 300".to_owned());
         }
+        if !(1..=3_600).contains(&self.server.header_read_timeout_seconds) {
+            issues.push("server.header_read_timeout_seconds must be between 1 and 3600".to_owned());
+        }
+        if !(8..=1_048_576).contains(&self.storage.metadata_cache_mib) {
+            issues.push("storage.metadata_cache_mib must be between 8 and 1048576".to_owned());
+        }
         if self.storage.data_directory.as_os_str().is_empty() {
             issues.push("storage.data_directory must not be empty".to_owned());
         }

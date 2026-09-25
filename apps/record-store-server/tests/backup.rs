@@ -543,11 +543,17 @@ async fn an_incompatible_backup_is_refused_with_an_upgrade_instruction() {
     let directory = tempdir().expect("temporary directory");
     let (source_config, _) = populated_deployment(&directory, false).await;
     let backup_directory = directory.path().join("backup");
-    backup::backup(&source_config, &backup_directory, false).expect("take a backup");
+    let report = backup::backup(&source_config, &backup_directory, false).expect("take a backup");
+    // The manifest names the schema the copied catalog is at, read from it.
+    assert_eq!(
+        report.manifest.metadata_schema_version,
+        record_store_metadata::METADATA_SCHEMA_VERSION
+    );
 
     for (field, value) in [
         ("backup_format_version", json!(99)),
         ("metadata_schema_version", json!(9_999)),
+        ("storage_format_version", json!(99)),
     ] {
         let future = directory.path().join(format!("future-{field}"));
         copy_tree(&backup_directory, &future);
@@ -635,6 +641,48 @@ async fn an_encrypted_backup_checks_the_key_without_ever_exposing_it() {
     restored.stop().await;
 }
 
+/// Credentials, share links and webhook secrets are sealed under the master key
+/// whether or not payloads are encrypted. Restoring them under another key
+/// produces a deployment that starts and then cannot authenticate its own
+/// service accounts, so the restore refuses before it writes anything.
+#[tokio::test]
+async fn a_plaintext_restore_under_the_wrong_master_key_is_refused_before_writing() {
+    let directory = tempdir().expect("temporary directory");
+    let (source_config, _) = populated_deployment(&directory, false).await;
+    let backup_directory = directory.path().join("backup");
+    backup::backup(&source_config, &backup_directory, false).expect("take a backup");
+    let manifest =
+        std::fs::read_to_string(backup_directory.join(backup::MANIFEST_NAME)).expect("manifest");
+    assert!(
+        !manifest.contains(MASTER_KEY),
+        "the reference is not the key"
+    );
+
+    let mut wrong = config_for(directory.path().join("wrong-key"));
+    wrong.auth.credential_master_key = Some(SecretValue::new(
+        "a-different-master-key-also-32-bytes-long",
+    ));
+    let error = backup::restore(&wrong, &backup_directory, VerificationLevel::Checksums)
+        .expect_err("the wrong key must not restore");
+    assert!(error.to_string().contains("master key"), "{error}");
+    assert!(
+        !error.to_string().contains(MASTER_KEY),
+        "the refusal names no key"
+    );
+    for component in ["metadata", "objects", "system"] {
+        assert!(
+            !wrong.storage.data_directory.join(component).exists(),
+            "{component} was written before the refusal"
+        );
+    }
+
+    let right = config_for(directory.path().join("right-key"));
+    backup::restore(&right, &backup_directory, VerificationLevel::Checksums).expect("restore");
+    let restored = Deployment::start(&right).await;
+    assert!(restored.has_service_account(DRILL_ACCOUNT).await);
+    restored.stop().await;
+}
+
 /// A restore that dies partway must not leave something that starts and serves
 /// half a deployment, and the retry must not need an operator to tidy up first.
 #[tokio::test]
@@ -669,11 +717,37 @@ async fn an_interrupted_restore_blocks_start_up_and_retries_cleanly() {
         b"partial",
     )
     .expect("a partial component");
+    std::fs::create_dir_all(restored_config.storage.data_directory.join("system"))
+        .expect("half-restored system records");
+    std::fs::copy(
+        source_config
+            .storage
+            .data_directory
+            .join("system")
+            .join("storage-format.json"),
+        restored_config
+            .storage
+            .data_directory
+            .join("system")
+            .join("storage-format.json"),
+    )
+    .expect("a restored storage format record");
 
     assert!(
         backup::restore_in_progress(&restored_config.storage.data_directory),
         "the marker is what makes the state recognizable"
     );
+    // Nor may it be backed up: the copy would look complete and hold a
+    // deployment that never existed.
+    let half_backup = directory.path().join("half-backup");
+    let Err(error) = backup::backup(&restored_config, &half_backup, false) else {
+        panic!("a half-restored data directory must not be backed up");
+    };
+    assert!(
+        matches!(error, backup::BackupError::RestoreInProgress(_)),
+        "{error}"
+    );
+    assert!(!half_backup.join(backup::MANIFEST_NAME).exists());
     let Err(error) = record_store_server::initialize(&restored_config).await else {
         panic!("a half-restored deployment must not start");
     };
