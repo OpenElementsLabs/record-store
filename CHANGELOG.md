@@ -384,7 +384,9 @@ some deployments that 0.1.3 accepted.
 
 - The console tells a server that answers "not ready" (`503`) apart from one it cannot
   reach, and reports an upload refused for quota as failed rather than as "outcome
-  unknown".
+  unknown". Dropping files onto the object list while a Find is shown no longer
+  uploads them: they landed at the bucket root, checked for overwrites against the
+  find results instead of the root's listing.
 
 - **The console's metrics charts draw immediately instead of filling in over minutes.**
   Record Store exposes counters, so a rate can only come from comparing two readings.

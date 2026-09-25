@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -504,6 +504,28 @@ describe('finding objects by key', () => {
 
     await screen.findByText('documents/report.pdf');
     expect(screen.queryByLabelText('Upload files')).toBeNull();
+  });
+
+  /**
+   * The drop target is the same affordance. A drop while finding would land at
+   * the bucket root, checked for overwrites against the find results rather
+   * than the root's own listing -- an unversioned object could be replaced
+   * without the confirmation that exists to stop it.
+   */
+  it('ignores dropped files while finding, as it hides the upload control', async () => {
+    searchParams = new URLSearchParams('find=doc');
+    fetchMock.mockResolvedValue(jsonResponse(page({ prefixes: [] })));
+    const open = vi.spyOn(XMLHttpRequest.prototype, 'open');
+    renderWithProviders(<ObjectBrowser bucket="uploads" />);
+
+    const row = await screen.findByText('documents/report.pdf');
+    const file = new File(['replacement'], 'report.pdf', { type: 'application/pdf' });
+    fireEvent.dragOver(row, { dataTransfer: { files: [file] } });
+    fireEvent.drop(row, { dataTransfer: { files: [file] } });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
   });
 
   it('keeps the find in the URL so the result set survives navigation', async () => {

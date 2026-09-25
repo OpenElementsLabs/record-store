@@ -259,10 +259,15 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
     uploads.enqueue(bucket, prefix, [...files]);
   }
 
+  // Uploading is offered only in a folder. Find results span the bucket and
+  // have no folder of their own, so a drop there would land at the bucket root
+  // with its overwrite check made against the wrong listing.
+  const acceptsUploads = permissions.manage_objects && !searching;
+
   function onDrop(event: React.DragEvent) {
     event.preventDefault();
     setDragging(false);
-    if (!permissions.manage_objects) return;
+    if (!acceptsUploads) return;
     submit(Array.from(event.dataTransfer.files));
   }
 
@@ -317,7 +322,7 @@ export function ObjectBrowser({ bucket }: { readonly bucket: string }) {
       <Card
         ref={dropRef}
         onDragOver={(event) => {
-          if (!permissions.manage_objects) return;
+          if (!acceptsUploads) return;
           event.preventDefault();
           setDragging(true);
         }}
