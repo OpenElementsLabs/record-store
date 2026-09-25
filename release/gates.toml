@@ -559,6 +559,46 @@ limitations = "Substring match on the raw values; an encoded or partial leak (ba
 max_age_days = 0
 
 [[gate]]
+id = "SEC-SLOW-CLIENTS"
+title = "A client that never finishes its request cannot hold a connection"
+area = "security"
+guarantee = """docs/reference/configuration.md, server.header_read_timeout_seconds: on both listeners, a connection \
+whose request headers have not arrived within the timeout -- trickled a line at a time, or never sent -- and a \
+kept-alive connection idle that long are closed by the server; well-behaved clients are served throughout, no \
+descriptor outlives the attack, and the shipped default is 30 s."""
+modes = ["standalone"]
+platforms = ["linux-amd64", "darwin-arm64 (developer)"]
+stages = ["integration", "candidate"]
+blocking = true
+command = "python3 tests/gates/slow_clients.py --bin-dir ${CANDIDATE}/bin"
+environment = "candidate binaries; python venv; loopback ports only"
+fixtures = "per listener: 32 connections trickling a header line every 250 ms and 16 silent ones; one idle keep-alive"
+failure_injection = "slowloris-style clients"
+evidence = "detail.json with the longest hold per listener and the descriptor counts; server logs"
+implementation = ["tests/gates/slow_clients.py", "tests/gates/gatelib.py"]
+timeout_minutes = 10
+infra_retries = 1
+binds_artifact = true
+limitations = """Bounds how long a connection can be held, not how many a client may open: 48 concurrent slow \
+connections per listener are exercised, not descriptor exhaustion. A slow request body or a slow reader of a \
+response is not limited (a large transfer is legitimately slow). HTTP/2 prior-knowledge connections are covered \
+in-process (serve.rs), not here."""
+[[gate.metrics]]
+name = "<listener>_slow_header_connection_hold_seconds_max"
+unit = "s"
+threshold = "<= header_read_timeout_seconds (3 in the gate) + 2"
+kind = "contract"
+basis = "server.header_read_timeout_seconds; replaces PERF-OVERLOAD's advisory slow_header_connection_hold_seconds (RSG-004)"
+[[gate.metrics]]
+name = "default_slow_header_connection_hold_seconds"
+unit = "s"
+threshold = "28 <= hold <= 32"
+kind = "contract"
+basis = "documented default header_read_timeout_seconds = 30"
+[gate.reuse]
+max_age_days = 0
+
+[[gate]]
 id = "SEC-FUZZ"
 title = "Every fuzz target builds, reaches its parser and holds its invariant"
 area = "security"

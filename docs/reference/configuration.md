@@ -33,6 +33,7 @@ empty, TOML is the only way to set it. See
 | `s3_bind` | socket address | `0.0.0.0:7600` | `RECORD_STORE_S3_BIND` |
 | `api_bind` | socket address | `0.0.0.0:7601` | `RECORD_STORE_API_BIND` |
 | `shutdown_grace_period_seconds` | integer 1–300 | `30` | `RECORD_STORE_SHUTDOWN_TIMEOUT_SECONDS` |
+| `header_read_timeout_seconds` | integer 1–3600 | `30` | `RECORD_STORE_HEADER_READ_TIMEOUT_SECONDS` |
 | `trusted_proxies` | list of IPs or CIDR blocks, at most 64 | `[]` | `RECORD_STORE_SERVER_TRUSTED_PROXIES` (comma-separated) |
 
 Constraints:
@@ -47,6 +48,15 @@ believed. While it is empty the header is ignored entirely and every request is
 attributed to the socket it arrived on — safe everywhere, and behind a proxy it means
 rate limits and audit records all name the proxy. See
 [Reverse Proxy and TLS](../deployment/reverse-proxy.md#client-address-headers).
+
+`header_read_timeout_seconds` bounds how long a client may take to send a request's
+headers on either listener, and how long a kept-alive connection may sit idle before
+its next request; past it the connection is closed. It does not limit a request body
+or a response, so a slow upload or download of a large object is unaffected. Without
+it, a client that trickled one header line at a time held a connection for as long as
+it liked. A reverse proxy in front usually has its own limit (nginx
+`client_header_timeout`, 60 s); this one protects the listeners when nothing is in
+front.
 
 `api_bind` is unrestricted administrative access. Do not publish it. See
 [Ports](ports.md).
