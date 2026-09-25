@@ -52,6 +52,9 @@ pub struct ObjectVersionPage {
 pub struct ListMultipartUploadsRequest {
     pub bucket_id: BucketId,
     pub prefix: String,
+    /// Resume after this key's uploads, or -- with `upload_id_marker` naming
+    /// one of them -- after that upload.
+    pub key_marker: Option<String>,
     pub upload_id_marker: Option<UploadId>,
     pub limit: usize,
 }

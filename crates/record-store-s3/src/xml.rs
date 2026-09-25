@@ -242,8 +242,12 @@ pub(crate) struct ListMultipartUploadsResult<'a> {
     pub(crate) bucket: String,
     #[serde(rename = "Prefix")]
     pub(crate) prefix: String,
+    #[serde(rename = "KeyMarker", skip_serializing_if = "Option::is_none")]
+    pub(crate) key_marker: Option<String>,
     #[serde(rename = "UploadIdMarker", skip_serializing_if = "Option::is_none")]
     pub(crate) upload_id_marker: Option<String>,
+    #[serde(rename = "NextKeyMarker", skip_serializing_if = "Option::is_none")]
+    pub(crate) next_key_marker: Option<String>,
     #[serde(rename = "NextUploadIdMarker", skip_serializing_if = "Option::is_none")]
     pub(crate) next_upload_id_marker: Option<String>,
     #[serde(rename = "MaxUploads")]

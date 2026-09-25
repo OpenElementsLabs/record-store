@@ -56,12 +56,7 @@ def walk_versions(client, page: int) -> list[tuple[str, str]]:
 
 
 def walk_uploads(client, page: int) -> list[str]:
-    """Pages uploads the way the AWS SDK does: its own paginator.
-
-    The server resumes from NextUploadIdMarker and omits NextKeyMarker, which
-    the S3 API returns on a truncated page (release/findings/RSG-009); boto3's
-    paginator copes with that, and it is what clients use.
-    """
+    """Pages uploads the way the AWS SDK does: its own paginator."""
     seen = []
     for response in client.get_paginator("list_multipart_uploads").paginate(
             Bucket="pages", PaginationConfig={"PageSize": page}):
@@ -69,6 +64,24 @@ def walk_uploads(client, page: int) -> list[str]:
         if len(seen) > 10_000:
             raise AssertionError("upload pagination did not terminate")
     return seen
+
+
+def walk_uploads_by_markers(client, page: int) -> list[str]:
+    """Pages uploads the way the S3 API specifies, by hand: each request carries
+    the previous page's NextKeyMarker and NextUploadIdMarker, and a truncated
+    page must name both (release/findings/RSG-009 was the missing key marker)."""
+    seen, key_marker, upload_marker = [], None, None
+    while True:
+        request = {"Bucket": "pages", "MaxUploads": page}
+        if key_marker is not None:
+            request.update(KeyMarker=key_marker, UploadIdMarker=upload_marker)
+        response = client.list_multipart_uploads(**request)
+        seen += [u["UploadId"] for u in response.get("Uploads", [])]
+        if not response["IsTruncated"] or len(seen) > 10_000:
+            return seen
+        if "NextKeyMarker" not in response or "NextUploadIdMarker" not in response:
+            raise AssertionError(f"a truncated page lacks a marker: {sorted(response)}")
+        key_marker, upload_marker = response["NextKeyMarker"], response["NextUploadIdMarker"]
 
 
 def walk_parts(client, upload_id: str, page: int) -> list[int]:
@@ -153,17 +166,28 @@ def main(gate: Gate) -> None:
                      walk_versions(client, page), versions)
 
     uploads = {client.create_multipart_upload(Bucket="pages", Key=f"upload/{index:02d}")["UploadId"] for index in range(25)}
+    # Several uploads of one key, so a page boundary falls inside a key.
+    uploads |= {client.create_multipart_upload(Bucket="pages", Key="upload/same")["UploadId"] for _ in range(4)}
     many = client.create_multipart_upload(Bucket="pages", Key="many-parts")["UploadId"]
     uploads.add(many)
     for number in range(1, 13):
         client.upload_part(Bucket="pages", Key="many-parts", UploadId=many, PartNumber=number, Body=b"p" * 1024)
-    for page in (1, 7, 1000):
+    for page in (1, 3, 7, 1000):
         exactly_once(gate, f"ListMultipartUploads at MaxUploads={page} returns every upload once",
                      walk_uploads(client, page), uploads)
+        name = f"ListMultipartUploads by KeyMarker and UploadIdMarker at MaxUploads={page} returns every upload once"
+        try:
+            exactly_once(gate, name, walk_uploads_by_markers(client, page), uploads)
+        except AssertionError as error:
+            gate.check(name, False, str(error))
     truncated = client.list_multipart_uploads(Bucket="pages", MaxUploads=2)
     gate.context["multipart_truncated_page_fields"] = sorted(k for k in truncated if k != "ResponseMetadata")
-    if truncated.get("IsTruncated") and "NextKeyMarker" not in truncated:
-        gate.note("a truncated ListMultipartUploads page carries no NextKeyMarker (RSG-009)")
+    gate.check("a truncated ListMultipartUploads page names NextKeyMarker and NextUploadIdMarker",
+               truncated.get("IsTruncated") is True and {"NextKeyMarker", "NextUploadIdMarker"} <= set(truncated),
+               gate.context["multipart_truncated_page_fields"])
+    after_key = [u["Key"] for u in client.list_multipart_uploads(Bucket="pages", KeyMarker="upload/12").get("Uploads", [])]
+    gate.check("KeyMarker alone resumes after every upload of that key",
+               after_key == [f"upload/{index:02d}" for index in range(13, 25)] + ["upload/same"] * 4, after_key)
     for page in (1, 5, 1000):
         parts = walk_parts(client, many, page)
         gate.check(f"ListParts at MaxParts={page} returns every part once, in order", parts == list(range(1, 13)), parts)

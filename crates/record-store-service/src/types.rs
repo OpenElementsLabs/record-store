@@ -82,6 +82,7 @@ pub struct ServiceListVersionsResult {
 pub struct ServiceListMultipartUploadsRequest {
     pub bucket: BucketName,
     pub prefix: String,
+    pub key_marker: Option<String>,
     pub upload_id_marker: Option<UploadId>,
     pub maximum_uploads: usize,
 }

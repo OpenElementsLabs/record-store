@@ -15,7 +15,7 @@
 # of the rules produced a decision. See release/README.md.
 
 schema = 1
-matrix_version = "2026.09.24-2"
+matrix_version = "2026.09.25-1"
 scope = "standalone"
 
 # Stages, cheapest first. A stage includes every gate listed for it; "candidate"
@@ -188,15 +188,17 @@ title = "Every paginated listing returns every item exactly once"
 area = "correctness"
 guarantee = """Walked at several page sizes, with and without filters, over datasets larger than a page: \
 ListObjectsV2 (plain, prefix, delimiter, StartAfter; keys with spaces, '+', '%', non-ASCII), ListObjectVersions \
-with delete markers, ListMultipartUploads (through the SDK paginator), ListParts, the storage-event feed \
-(plain and prefix-filtered) and the audit trail (bounded by until) return every item once, in the promised order."""
+with delete markers, ListMultipartUploads (through the SDK paginator, and by hand from each page's NextKeyMarker and \
+NextUploadIdMarker, which a truncated page must both carry; a KeyMarker alone resumes after that key), ListParts, the \
+storage-event feed (plain and prefix-filtered) and the audit trail (bounded by until) return every item once, in the \
+promised order."""
 modes = ["standalone"]
 platforms = ["linux-amd64", "darwin-arm64 (developer)"]
 stages = ["integration", "candidate"]
 blocking = true
 command = "python3 tests/gates/pagination.py --bin-dir ${CANDIDATE}/bin"
 environment = "candidate binaries; python venv"
-fixtures = "1206 objects in 3 prefixes plus special-character keys; 40 keys x 3 versions + 10 delete markers; 26 open uploads; 12 parts"
+fixtures = "1206 objects in 3 prefixes plus special-character keys; 40 keys x 3 versions + 10 delete markers; 30 open uploads, 4 of them on one key; 12 parts"
 failure_injection = "none"
 evidence = "detail.json with missing/duplicate counts and samples per walk"
 implementation = ["tests/gates/pagination.py", "tests/gates/gatelib.py"]
@@ -204,8 +206,8 @@ timeout_minutes = 15
 infra_retries = 1
 binds_artifact = true
 limitations = """The management API's own object listing and webhook-delivery log are not walked. Filters other than \
-prefix and type on the event feed, and audit filters, are not combined with pagination here. A truncated \
-ListMultipartUploads page omits NextKeyMarker (RSG-009); recorded, not asserted, because the SDK paginator copes."""
+prefix and type on the event feed, and audit filters, are not combined with pagination here. An upload completed \
+or aborted between two pages is covered in-process (redb_store.rs), not here."""
 [gate.reuse]
 max_age_days = 0
 

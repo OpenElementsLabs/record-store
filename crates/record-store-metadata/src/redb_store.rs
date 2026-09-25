@@ -638,18 +638,60 @@ impl MetadataRepository for RedbMetadataRepository {
                 .open_table(MULTIPART_ORDER)
                 .map_err(|e| backend("open multipart order", e))?;
             let prefix = object_prefix(request.bucket_id, &request.prefix);
-            let mut start = prefix.clone();
-            if let Some(marker) = request.upload_id_marker {
-                let bytes = uploads
-                    .get(marker.as_uuid().as_bytes().as_slice())
+            let marker = match request.upload_id_marker {
+                Some(id) => uploads
+                    .get(id.as_uuid().as_bytes().as_slice())
                     .map_err(|e| backend("read multipart marker", e))?
-                    .map(|v| v.value().to_vec())
-                    .ok_or(MetadataError::MultipartUploadNotFound)?;
-                let upload: MultipartUpload = serde_json::from_slice(&bytes)?;
-                start = multipart_order_key(&upload);
-                start.push(0);
-            }
+                    .map(|v| serde_json::from_slice::<MultipartUpload>(v.value()))
+                    .transpose()?
+                    .filter(|upload| upload.bucket_id == request.bucket_id),
+                None => None,
+            };
+            // Uploads are ordered by key, then by initiation. A resume point is
+            // just past the marker upload, or past every upload of the marker
+            // key. When the marker upload has since completed or been aborted,
+            // the page restarts at the marker key's first upload: a client may
+            // see that key's remaining uploads twice, but never misses one.
+            let resume = match (
+                request.key_marker.as_deref(),
+                marker,
+                request.upload_id_marker,
+            ) {
+                (Some(key), Some(upload), Some(_)) if upload.key.as_str() == key => {
+                    let mut after = multipart_order_key(&upload);
+                    after.push(0);
+                    Some(after)
+                }
+                (Some(key), _, Some(_)) => {
+                    let mut at = object_prefix(request.bucket_id, key);
+                    at.push(0);
+                    Some(at)
+                }
+                (Some(key), _, None) => {
+                    let mut after = object_prefix(request.bucket_id, key);
+                    after.push(1);
+                    Some(after)
+                }
+                // An upload id without a key marker is not how S3 pages, but
+                // earlier releases resumed from it, so it still does.
+                (None, Some(upload), Some(_)) => {
+                    let mut after = multipart_order_key(&upload);
+                    after.push(0);
+                    Some(after)
+                }
+                (None, None, Some(_)) => return Err(MetadataError::MultipartUploadNotFound),
+                (None, _, None) => None,
+            };
+            // Never before the prefix: a marker outside it must not widen the
+            // listing to keys the prefix excludes.
+            let start = resume.map_or_else(|| prefix.clone(), |resume| resume.max(prefix.clone()));
             let end = prefix_successor(&prefix);
+            if start >= end {
+                return Ok(MultipartUploadPage {
+                    uploads: Vec::new(),
+                    next_upload_id_marker: None,
+                });
+            }
             let mut out = Vec::with_capacity(request.limit.min(1_000) + 1);
             for entry in order
                 .range(start.as_slice()..end.as_slice())
@@ -1426,6 +1468,7 @@ mod tests {
             .list_multipart_uploads(ListMultipartUploadsRequest {
                 bucket_id: bucket.id,
                 prefix: String::new(),
+                key_marker: None,
                 upload_id_marker: None,
                 limit: 10,
             })
@@ -1457,6 +1500,75 @@ mod tests {
                 .expect("lookup")
                 .is_none()
         );
+    }
+
+    /// S3 pages uploads by the pair (key-marker, upload-id-marker), and a client
+    /// that follows the specification sends a key marker, sometimes alone.
+    /// Every such walk must return every upload exactly once.
+    #[tokio::test]
+    async fn multipart_uploads_page_by_key_marker_and_upload_id_marker() {
+        let (_directory, catalog, bucket) = catalog_with_bucket("photos").await;
+        let mut expected = Vec::new();
+        // Three uploads of one key, so a page can end in the middle of a key.
+        for key in ["a", "b", "b", "b", "c", "d/1", "d/2"] {
+            let mut upload = upload(bucket.id, key);
+            upload.initiated_at += chrono::Duration::microseconds(expected.len() as i64);
+            catalog
+                .create_multipart_upload(&upload)
+                .await
+                .expect("create upload");
+            expected.push((key.to_owned(), upload.id));
+        }
+        let list = |prefix: &str, key_marker: Option<&str>, upload_id_marker, limit| {
+            catalog.list_multipart_uploads(ListMultipartUploadsRequest {
+                bucket_id: bucket.id,
+                prefix: prefix.to_owned(),
+                key_marker: key_marker.map(str::to_owned),
+                upload_id_marker,
+                limit,
+            })
+        };
+
+        for limit in 1..=8 {
+            let (mut seen, mut markers) = (Vec::new(), (None::<String>, None));
+            loop {
+                let page = list("", markers.0.as_deref(), markers.1, limit)
+                    .await
+                    .expect("page");
+                seen.extend(page.uploads.iter().map(|u| (u.key.to_string(), u.id)));
+                let Some(next) = page.next_upload_id_marker else {
+                    break;
+                };
+                let last = page.uploads.last().expect("a truncated page is not empty");
+                assert_eq!(last.id, next, "the next marker is the last upload returned");
+                markers = (Some(last.key.to_string()), Some(next));
+                assert!(seen.len() <= expected.len(), "paging must terminate");
+            }
+            assert_eq!(seen, expected, "limit {limit}: every upload once, in order");
+        }
+
+        // A key marker alone resumes after every upload of that key.
+        let after_b = list("", Some("b"), None, 10).await.expect("key marker");
+        let keys: Vec<_> = after_b.uploads.iter().map(|u| u.key.to_string()).collect();
+        assert_eq!(keys, ["c", "d/1", "d/2"]);
+
+        // A marker upload that has since been aborted restarts at its key:
+        // repeated, never skipped.
+        let (_, gone) = expected[2].clone();
+        catalog.abort_multipart_upload(gone).await.expect("abort");
+        let resumed = list("", Some("b"), Some(gone), 10).await.expect("resume");
+        let ids: Vec<_> = resumed.uploads.iter().map(|u| u.id).collect();
+        assert_eq!(ids[..2], [expected[1].1, expected[3].1]);
+        assert_eq!(resumed.uploads.len(), 5);
+
+        // A marker before the prefix never widens the listing past it.
+        let within = list("d/", Some("a"), Some(expected[0].1), 10)
+            .await
+            .expect("prefix");
+        let keys: Vec<_> = within.uploads.iter().map(|u| u.key.to_string()).collect();
+        assert_eq!(keys, ["d/1", "d/2"]);
+        let beyond = list("a", Some("z"), None, 10).await.expect("beyond");
+        assert!(beyond.uploads.is_empty() && beyond.next_upload_id_marker.is_none());
     }
 
     #[tokio::test]
