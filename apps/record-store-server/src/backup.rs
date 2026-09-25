@@ -109,6 +109,13 @@ pub struct BackupManifest {
     pub secrets_included: bool,
     /// Whether payloads in this backup are encrypted at rest.
     pub objects_encrypted: bool,
+    /// A one-way reference to the key material that seals this deployment's
+    /// credentials, share links and webhook secrets: the credential master
+    /// key, or the root secret where none is set. A restore under other
+    /// material is refused before it writes anything, because those secrets
+    /// would never unseal. Absent from backups made before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealing_key_reference: Option<String>,
     /// Per-component inventory.
     pub components: Vec<BackupComponent>,
     /// Every file, with the checksum that proves it arrived intact.
@@ -257,6 +264,12 @@ pub fn backup(
         return Err(BackupError::NotInitialized(data_directory.clone()));
     }
     let _lock = acquire_data_lock(data_directory).map_err(BackupError::DataDirectoryInUse)?;
+    // A restore that never finished may have moved some components into place
+    // and not others. Copying that would publish a complete-looking backup of
+    // a deployment that never existed.
+    if restore_in_progress(data_directory) {
+        return Err(BackupError::RestoreInProgress(data_directory.clone()));
+    }
     // A data directory with no storage format record was never opened by a
     // server. Backing it up would produce a manifest promising components that
     // do not exist, so the refusal names what is actually wrong.
@@ -312,7 +325,7 @@ pub fn backup(
         backup_format_version: BACKUP_FORMAT_VERSION,
         record_store_version: env!("CARGO_PKG_VERSION").to_owned(),
         record_store_commit: Some(crate::BUILD_COMMIT.to_owned()),
-        metadata_schema_version: record_store_metadata::METADATA_SCHEMA_VERSION,
+        metadata_schema_version: copied_schema_version(destination),
         storage_format_version: read_storage_format_version(destination)?,
         created_unix_seconds: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -324,6 +337,7 @@ pub fn backup(
             .join("system")
             .join("object-encryption.json")
             .is_file(),
+        sealing_key_reference: Some(sealing_key_reference(config)?),
         total_bytes: files.iter().map(|file| file.size).sum(),
         components,
         files,
@@ -381,6 +395,13 @@ pub fn verify(
         report.problems.push(format!(
             "backup format {} is newer than this release understands ({BACKUP_FORMAT_VERSION}); upgrade Record Store before restoring",
             manifest.backup_format_version
+        ));
+    }
+    if manifest.storage_format_version > crate::preflight::SUPPORTED_STORAGE_FORMAT {
+        report.problems.push(format!(
+            "storage format {} is newer than this release understands ({}); upgrade Record Store before restoring",
+            manifest.storage_format_version,
+            crate::preflight::SUPPORTED_STORAGE_FORMAT
         ));
     }
     if manifest.metadata_schema_version > record_store_metadata::METADATA_SCHEMA_VERSION {
@@ -496,6 +517,28 @@ pub fn verify(
     Ok(report)
 }
 
+/// A reference to the material credentials are sealed under, safe to store
+/// and print: a domain-separated digest, from which the material cannot be
+/// recovered. The material is what the credential store derives its key from.
+fn sealing_key_reference(config: &Config) -> Result<String, BackupError> {
+    let material = match &config.auth.credential_master_key {
+        Some(key) => key.expose().to_owned(),
+        None => config
+            .root_credentials()
+            .map_err(BackupError::Configuration)?
+            .1
+            .expose()
+            .to_owned(),
+    };
+    let mut digest = sha2::Sha256::new();
+    sha2::Digest::update(
+        &mut digest,
+        b"record-store/backup-sealing-key-reference/v1\0",
+    );
+    sha2::Digest::update(&mut digest, material.as_bytes());
+    Ok(hex::encode(&sha2::Digest::finalize(digest)[..16]))
+}
+
 /// Compares a master key against the reference the backup carries.
 ///
 /// Only the derived reference is compared; the key itself is never written
@@ -533,6 +576,17 @@ pub fn restore(
         .manifest
         .clone()
         .ok_or_else(|| BackupError::Unusable(vec!["the backup has no manifest".to_owned()]))?;
+    if manifest
+        .sealing_key_reference
+        .as_ref()
+        .is_some_and(|recorded| *recorded != sealing_key_reference(config).unwrap_or_default())
+    {
+        return Err(BackupError::Unusable(vec![
+            "the configured credential master key (or, without one, the root secret) is not the \
+             one this deployment's credentials, share links and webhook secrets were sealed under"
+                .to_owned(),
+        ]));
+    }
 
     let data_directory = &config.storage.data_directory;
     std::fs::create_dir_all(data_directory).map_err(BackupError::Io)?;
@@ -798,6 +852,17 @@ fn write_incomplete_marker(destination: &Path) -> Result<(), BackupError> {
     sync_directory(destination)
 }
 
+/// The schema the copied catalog is actually at. A pre-upgrade backup taken
+/// with a newer binary holds the older release's catalog, and says so. A
+/// catalog that cannot be read without repair -- one a crash left behind --
+/// is labelled with this binary's schema, the most it can be.
+fn copied_schema_version(backup: &Path) -> u64 {
+    record_store_metadata::stored_schema_version(&backup.join("metadata").join("catalog.redb"))
+        .ok()
+        .flatten()
+        .unwrap_or(record_store_metadata::METADATA_SCHEMA_VERSION)
+}
+
 fn read_storage_format_version(backup: &Path) -> Result<u32, BackupError> {
     #[derive(Deserialize)]
     struct Record {
@@ -879,6 +944,7 @@ fn legacy_manifest(encoded: &[u8]) -> Result<BackupManifest, BackupError> {
         consistency: "offline-exclusive-lock".to_owned(),
         secrets_included: false,
         objects_encrypted: false,
+        sealing_key_reference: None,
         components: vec![BackupComponent {
             name: "metadata".to_owned(),
             required: true,
@@ -1150,6 +1216,12 @@ pub enum BackupError {
     /// A server, or another maintenance command, holds the data directory.
     #[error("the data directory is in use by another Record Store process; stop the server first")]
     DataDirectoryInUse(#[source] std::io::Error),
+    /// A restore into the data directory never finished.
+    #[error(
+        "{} holds a restore that never finished; run the restore again to completion before backing it up",
+        .0.display()
+    )]
+    RestoreInProgress(PathBuf),
     /// The destination already holds a completed backup.
     #[error(
         "{} already holds a completed backup; choose a new destination rather than overwriting it",

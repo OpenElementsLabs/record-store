@@ -390,7 +390,7 @@ fn storage_format_check(config: &Config) -> Check {
 /// Kept here rather than imported because the storage crate keeps it private,
 /// and a diagnostic that opens the store to ask would defeat the point of
 /// checking before anything is opened. The test below pins the two together.
-const SUPPORTED_STORAGE_FORMAT: u32 = 1;
+pub(crate) const SUPPORTED_STORAGE_FORMAT: u32 = 1;
 
 fn restore_marker_check(config: &Config) -> Check {
     if crate::backup::restore_in_progress(&config.storage.data_directory) {
