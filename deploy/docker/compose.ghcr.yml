@@ -10,11 +10,11 @@
 # docs/deployment/container-images.md for pinning an exact digest, which is
 # stronger still.
 #
-#   RECORD_STORE_VERSION=0.2.0 docker compose --env-file .env -f compose.ghcr.yml up -d
+#   RECORD_STORE_VERSION=0.2.1 docker compose --env-file .env -f compose.ghcr.yml up -d
 #   RECORD_STORE_VERSION=latest docker compose --env-file .env -f compose.ghcr.yml up -d
 services:
   record-store:
-    image: ghcr.io/openelementslabs/record-store:${RECORD_STORE_VERSION:-0.2.0}
+    image: ghcr.io/openelementslabs/record-store:${RECORD_STORE_VERSION:-0.2.1}
     read_only: true
     tmpfs:
       - /tmp
@@ -46,7 +46,7 @@ services:
       retries: 3
 
   console:
-    image: ghcr.io/openelementslabs/record-store-console:${RECORD_STORE_VERSION:-0.2.0}
+    image: ghcr.io/openelementslabs/record-store-console:${RECORD_STORE_VERSION:-0.2.1}
     read_only: true
     tmpfs:
       - /tmp

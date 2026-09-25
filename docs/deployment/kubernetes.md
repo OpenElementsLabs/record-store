@@ -6,7 +6,7 @@ API off the network edge.
 
 ```bash
 helm install record-store \
-  oci://ghcr.io/openelementslabs/charts/record-store --version 0.2.0 \
+  oci://ghcr.io/openelementslabs/charts/record-store --version 0.2.1 \
   --namespace record-store --create-namespace \
   --set auth.rootAccessKey=admin \
   --set auth.rootSecretKey="$(openssl rand -hex 24)" \
@@ -186,7 +186,7 @@ The chart is attached to each release as a tarball, so it can be installed
 without reaching a registry:
 
 ```bash
-helm install record-store ./record-store-0.2.0.tgz --values my-values.yaml
+helm install record-store ./record-store-0.2.1.tgz --values my-values.yaml
 ```
 
 You will also need to mirror `ghcr.io/openelementslabs/record-store` and

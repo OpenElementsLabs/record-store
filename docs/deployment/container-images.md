@@ -17,8 +17,8 @@ docker pull ghcr.io/openelementslabs/record-store:latest
 docker pull ghcr.io/openelementslabs/record-store-console:latest
 
 # Or a release you name, which is what a deployment should do
-docker pull ghcr.io/openelementslabs/record-store:0.2.0
-docker pull ghcr.io/openelementslabs/record-store-console:0.2.0
+docker pull ghcr.io/openelementslabs/record-store:0.2.1
+docker pull ghcr.io/openelementslabs/record-store-console:0.2.1
 ```
 
 Keep both images on the same version. They are released together and only that
@@ -31,14 +31,14 @@ Every release publishes a multi-platform manifest covering `linux/amd64` and
 per-architecture tags to choose between.
 
 ```bash
-docker buildx imagetools inspect ghcr.io/openelementslabs/record-store:0.2.0
+docker buildx imagetools inspect ghcr.io/openelementslabs/record-store:0.2.1
 ```
 
 ## Tags
 
 | Tag | Points at | Use it for |
 | --- | --- | --- |
-| `0.2.0` | Exactly that release, forever | Production |
+| `0.2.1` | Exactly that release, forever | Production |
 | `0.1` | The newest patch of 0.1 | Automatic patch updates |
 | `0` | The newest 0.x release | Rarely what you want before 1.0 |
 | `latest` | The newest stable release | Trying it out |
@@ -55,7 +55,7 @@ running deployment, and it tells you nothing about what you are running.
 | You are | Use |
 | --- | --- |
 | Trying Record Store out | `latest` |
-| Running it anywhere that matters | The exact version, `0.2.0` |
+| Running it anywhere that matters | The exact version, `0.2.1` |
 | Reproducing a deployment exactly | A [digest](#pinning-a-digest) |
 
 Every Compose file in this documentation takes the tag from
@@ -63,7 +63,7 @@ Every Compose file in this documentation takes the tag from
 
 ```bash
 RECORD_STORE_VERSION=latest   # newest stable release
-RECORD_STORE_VERSION=0.2.0    # that release, forever
+RECORD_STORE_VERSION=0.2.1    # that release, forever
 RECORD_STORE_VERSION=0.1      # newest patch of 0.1
 ```
 
@@ -84,7 +84,7 @@ The strong form is a digest.
 A version tag selects a *release*. A digest selects an *artifact*.
 
 ```text
-ghcr.io/openelementslabs/record-store:0.2.0
+ghcr.io/openelementslabs/record-store:0.2.1
     convenient, readable, and correct as long as the release process is
 
 ghcr.io/openelementslabs/record-store@sha256:<digest>
@@ -94,7 +94,7 @@ ghcr.io/openelementslabs/record-store@sha256:<digest>
 Find the digest of what you are about to deploy:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/openelementslabs/record-store:0.2.0 \
+docker buildx imagetools inspect ghcr.io/openelementslabs/record-store:0.2.1 \
   --format '{{ .Manifest.Digest }}'
 ```
 
@@ -115,7 +115,7 @@ wherever a deployment must be reproducible, and version tags everywhere else.
 published images, with no build step and no repository checkout:
 
 ```bash
-RECORD_STORE_VERSION=0.2.0 \
+RECORD_STORE_VERSION=0.2.1 \
   docker compose --env-file .env -f deploy/docker/compose.ghcr.yml up -d
 ```
 

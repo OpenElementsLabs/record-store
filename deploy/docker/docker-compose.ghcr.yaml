@@ -14,14 +14,14 @@
 #
 # Both packages are public, so no registry credentials are needed on the server.
 #
-# Set RECORD_STORE_VERSION to the release you intend to run, for example 0.2.0,
+# Set RECORD_STORE_VERSION to the release you intend to run, for example 0.2.1,
 # or `latest` to take the newest stable release on every redeploy. The default is
 # pinned rather than floating: `latest` moves under a running deployment.
 #
 # See docs/deployment/coolify.md.
 services:
   record-store:
-    image: ghcr.io/openelementslabs/record-store:${RECORD_STORE_VERSION:-0.2.0}
+    image: ghcr.io/openelementslabs/record-store:${RECORD_STORE_VERSION:-0.2.1}
 
     read_only: true
 
@@ -91,7 +91,7 @@ services:
       retries: 3
 
   console:
-    image: ghcr.io/openelementslabs/record-store-console:${RECORD_STORE_VERSION:-0.2.0}
+    image: ghcr.io/openelementslabs/record-store-console:${RECORD_STORE_VERSION:-0.2.1}
 
     read_only: true
 

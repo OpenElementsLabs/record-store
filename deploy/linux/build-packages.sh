@@ -5,7 +5,7 @@
 #   deploy/linux/build-packages.sh <arch> <version> <binary-directory> [output]
 #
 #   arch              amd64 or arm64, as nfpm names them
-#   version           release version without a leading v, e.g. 0.2.0
+#   version           release version without a leading v, e.g. 0.2.1
 #   binary-directory  holds record-store and record-store-server
 #   output            where the packages land; defaults to dist
 #
