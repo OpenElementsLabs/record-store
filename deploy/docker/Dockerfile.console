@@ -3,12 +3,12 @@
 # The console is a client of the management API, never a second source of truth.
 # It is deliberately a separate image so a headless Record Store deployment carries no
 # frontend, and so the console can be upgraded independently.
-FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS deps
+FROM node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2 AS deps
 WORKDIR /app
 COPY console/package.json console/package-lock.json ./
 RUN npm ci --ignore-scripts
 
-FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS builder
+FROM node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2 AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY console/ ./
@@ -16,7 +16,7 @@ COPY console/ ./
 # agnostic and no localhost assumption is baked into the bundle.
 RUN npm run build
 
-FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS runtime
+FROM node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2 AS runtime
 WORKDIR /app
 RUN groupadd --system --gid 10002 console \
     && useradd --system --uid 10002 --gid console --home-dir /nonexistent --shell /usr/sbin/nologin console
