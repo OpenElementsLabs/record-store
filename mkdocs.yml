@@ -1,6 +1,7 @@
 site_name: Record Store
 site_description: Self-hosted, S3-compatible object storage written in Rust.
-site_url: https://openelementslabs.github.io/record-store/
+# Overridden per deployment (the Coolify image sets SITE_URL at build time).
+site_url: !ENV [SITE_URL, https://openelementslabs.github.io/record-store/]
 repo_name: OpenElementsLabs/record-store
 repo_url: https://github.com/OpenElementsLabs/record-store
 edit_uri: edit/main/docs/
