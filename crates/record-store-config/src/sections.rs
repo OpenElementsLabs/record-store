@@ -18,6 +18,14 @@ pub struct ServerConfig {
     /// How this process participates in a deployment.
     #[serde(default)]
     pub mode: DeploymentMode,
+    /// Acknowledges that `cluster` and `control` modes are unsupported.
+    ///
+    /// Clustering is under development and is not part of any compatibility
+    /// promise: its data format, configuration and behaviour can change in any
+    /// release. Start-up refuses a clustered mode unless this is set, so that a
+    /// release binary cannot be put into one by accident.
+    #[serde(default)]
+    pub unsupported_cluster_mode: bool,
     /// S3-compatible API listener.
     pub s3_bind: SocketAddr,
     /// Native management API listener.
@@ -89,6 +97,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             mode: DeploymentMode::Standalone,
+            unsupported_cluster_mode: false,
             s3_bind: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 7_600)),
             api_bind: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 7_601)),
             rpc_bind: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 7_603)),

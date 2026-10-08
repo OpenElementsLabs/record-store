@@ -118,6 +118,7 @@ impl Report {
 pub fn inspect(config: &Config, bind_ports: bool) -> Report {
     let mut checks = Vec::new();
     checks.push(configuration_check(config));
+    checks.push(deployment_mode_check(config));
     checks.extend(data_directory_checks(config));
     checks.push(temporary_directory_check(config));
     checks.push(storage_format_check(config));
@@ -143,6 +144,7 @@ pub fn inspect(config: &Config, bind_ports: bool) -> Report {
 #[must_use]
 pub fn startup_checks(config: &Config) -> Report {
     let mut checks = Vec::new();
+    checks.push(deployment_mode_check(config));
     checks.extend(data_directory_checks(config));
     checks.push(temporary_directory_check(config));
     checks.push(restore_marker_check(config));
@@ -162,6 +164,29 @@ fn configuration_check(config: &Config) -> Check {
             error.to_string(),
             "correct the listed settings in the configuration file or environment",
         ),
+    }
+}
+
+/// Clustering ships in the binary but is not supported: it has no compatibility
+/// promise and its own readiness gates are not met. A clustered mode reached by
+/// a stray `mode` value would put real data on that footing without anybody
+/// having chosen to, so it is refused unless explicitly acknowledged.
+fn deployment_mode_check(config: &Config) -> Check {
+    let mode = config.server.mode;
+    if !mode.clustered() {
+        Check::pass("deployment_mode", format!("{mode} is supported"))
+    } else if config.server.unsupported_cluster_mode {
+        Check::warn(
+            "deployment_mode",
+            format!("{mode} is unsupported and was explicitly acknowledged"),
+            "do not keep data you cannot lose in a clustered deployment: its format and behaviour can change in any release",
+        )
+    } else {
+        Check::fail(
+            "deployment_mode",
+            format!("{mode} is not a supported deployment mode"),
+            "set server.mode to standalone; clustering is unsupported and refused unless server.unsupported_cluster_mode is set",
+        )
     }
 }
 
@@ -558,7 +583,7 @@ fn writable(directory: &Path) -> Result<(), std::io::Error> {
 
 #[cfg(test)]
 mod tests {
-    use record_store_config::SecretValue;
+    use record_store_config::{DeploymentMode, SecretValue};
 
     use super::*;
 
@@ -593,6 +618,44 @@ mod tests {
         assert_eq!(check(&report, "storage_format").status, Status::Pass);
         assert_eq!(check(&report, "restore_state").status, Status::Pass);
         assert!(!report.has_failures(), "{}", report.failure_summary());
+    }
+
+    /// A clustered mode in a configuration is not a choice to run unsupported
+    /// code. Start-up refuses it, and says how to get back to standalone.
+    #[test]
+    fn a_clustered_mode_is_refused_unless_acknowledged() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        for mode in [DeploymentMode::Cluster, DeploymentMode::Control] {
+            let mut config = base_config(directory.path().join("data"));
+            config.server.mode = mode;
+
+            let report = startup_checks(&config);
+            let refused = check(&report, "deployment_mode");
+            assert_eq!(refused.status, Status::Fail, "{refused:?}");
+            assert!(report.failure_summary().contains("standalone"));
+
+            config.server.unsupported_cluster_mode = true;
+            let report = startup_checks(&config);
+            let acknowledged = check(&report, "deployment_mode");
+            assert_eq!(acknowledged.status, Status::Warn, "{acknowledged:?}");
+            assert!(!report.has_failures(), "{}", report.failure_summary());
+        }
+    }
+
+    /// The acknowledgement changes nothing for a standalone deployment.
+    #[test]
+    fn standalone_passes_the_mode_check_either_way() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut config = base_config(directory.path().join("data"));
+        assert_eq!(
+            check(&inspect(&config, false), "deployment_mode").status,
+            Status::Pass
+        );
+        config.server.unsupported_cluster_mode = true;
+        assert_eq!(
+            check(&inspect(&config, false), "deployment_mode").status,
+            Status::Pass
+        );
     }
 
     /// The whole point of the diagnostic: a data directory nobody can write to
