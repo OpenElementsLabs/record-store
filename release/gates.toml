@@ -15,7 +15,7 @@
 # of the rules produced a decision. See release/README.md.
 
 schema = 1
-matrix_version = "2026.09.25-1"
+matrix_version = "2026.10.08-1"
 scope = "standalone"
 
 # Stages, cheapest first. A stage includes every gate listed for it; "candidate"
@@ -657,10 +657,10 @@ fixtures = "fuzz/ targets"
 failure_injection = "fuzzed input"
 evidence = "crashing inputs uploaded on failure"
 implementation = ["tests/fuzz-smoke.sh"]
-timeout_minutes = 30
+timeout_minutes = 45
 infra_retries = 1
 binds_artifact = false
-limitations = "20 s per target is a smoke run, not a search; the scheduled stage runs 300 s per target."
+limitations = "20 s per target is a smoke run, not a search; the scheduled stage runs 30 minutes split evenly across the targets, leaving 15 minutes for the build."
 [gate.reuse]
 max_age_days = 0
 

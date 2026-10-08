@@ -120,7 +120,8 @@ cargo install cargo-fuzz --locked
 rustup toolchain install nightly
 
 tests/fuzz-smoke.sh                 # every target, 20s each
-FUZZ_SECONDS=300 tests/fuzz-smoke.sh
+FUZZ_SECONDS=300 tests/fuzz-smoke.sh          # every target, 300s each
+FUZZ_TOTAL_SECONDS=1800 tests/fuzz-smoke.sh   # the scheduled run: 30 minutes split across targets
 
 cd fuzz && cargo +nightly fuzz run s3_xml_documents
 ```
