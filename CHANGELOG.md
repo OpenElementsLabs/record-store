@@ -9,6 +9,35 @@ publishes, so keep it factual and written for the people upgrading.
 
 ## [Unreleased]
 
+### Added
+
+- **A compatibility promise.** [Compatibility and Support](docs/reference/compatibility.md)
+  states which interfaces are covered, what a patch, minor and major release may
+  change, the supported upgrade path, how long a deprecation lasts, and which
+  releases receive fixes. It applies from 1.0.0; until then it records how 0.x
+  releases already behave.
+
+### Changed
+
+- **Undocumented deployment modes are refused at start-up.** A `server.mode` other
+  than `standalone` now fails the `deployment_mode` start-up check, and `doctor`
+  reports it, unless `server.unsupported_cluster_mode` acknowledges that the mode is
+  unsupported and outside the compatibility promise. Standalone deployments are
+  unaffected. The `cluster` and `node` CLI commands are hidden from `--help`.
+
+### Fixed
+
+- **The weekly release-gate run was always blocked.** Its fuzzing stage ran seven
+  targets for 300 seconds each, which with the build exceeded the 30-minute gate
+  timeout, so `SEC-FUZZ` timed out on every scheduled run since 0.2.1 without
+  finding anything. The scheduled stage now gives all targets 30 minutes together,
+  split evenly, after building them, under a 45-minute timeout (gate matrix
+  2026.10.08-1). `tests/fuzz-smoke.sh` takes `FUZZ_TOTAL_SECONDS` for this. The same
+  run also failed its repository job by asking for two gates the scheduled stage
+  does not include; that job now runs only the gates the stage selects.
+- The README described the tamper-evident audit history as in development; it
+  shipped in 0.2.0.
+
 ## [0.2.1] - 2026-09-25
 
 The first complete publication of 0.2. Upgrade from 0.1.3 as the

@@ -169,6 +169,7 @@ nav:
       - Proof Bundle Format: reference/proof-bundle.md
       - Audit Chain and Checkpoints: reference/audit-chain.md
       - Management API: reference/management-api.md
+      - Compatibility and Support: reference/compatibility.md
       - Error Reference: reference/errors.md
       - Glossary: reference/glossary.md
   - Troubleshooting:

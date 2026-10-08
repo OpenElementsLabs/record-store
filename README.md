@@ -57,7 +57,7 @@ underlying storage and your backups.
 | Automatic expiration | Lifecycle rules for current and non-current object versions |
 | A simple deployment | A single-machine server with embedded metadata databases and an optional web console |
 | Built-in replication or automatic failover | Not implemented; recovery requires restoring or recovering the machine |
-| Tamper-evident audit history | In development; durable audit logging is available today |
+| Tamper-evident audit history | A hash-chained audit log, verifiable with `record-store audit-export verify-chain` |
 
 ## Quickstart
 
@@ -227,6 +227,7 @@ and [durability](https://openelementslabs.github.io/record-store/concepts/durabi
 | Configure the deployment | [Configuration](https://openelementslabs.github.io/record-store/reference/configuration/) and [environment variables](https://openelementslabs.github.io/record-store/reference/environment-variables/) |
 | Set up credentials and policies | [Service accounts](https://openelementslabs.github.io/record-store/administration/service-accounts/) and [policies](https://openelementslabs.github.io/record-store/administration/policies/) |
 | Retain records | [Object Lock](https://openelementslabs.github.io/record-store/administration/object-lock/) |
+| Plan an upgrade | [Compatibility and support](https://openelementslabs.github.io/record-store/reference/compatibility/) and [upgrading](https://openelementslabs.github.io/record-store/deployment/upgrading/) |
 | Back up or recover data | [Backup and restore](https://openelementslabs.github.io/record-store/operations/backup-and-restore/) |
 | Verify stored data | [Integrity verification](https://openelementslabs.github.io/record-store/operations/integrity-verification/) and [proof bundles](https://openelementslabs.github.io/record-store/reference/proof-bundle/) |
 | Share or embed files | [Share links](https://openelementslabs.github.io/record-store/guides/share-links/) and [embed links](https://openelementslabs.github.io/record-store/guides/embed-links/) |

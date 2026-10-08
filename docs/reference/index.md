@@ -12,6 +12,7 @@ Exact values, verified against the implementation.
 -   **[Management API](management-api.md)** — routes and shapes
 -   **[Proof Bundle Format](proof-bundle.md)** — the signed document, byte for byte
 -   **[Audit Chain and Checkpoints](audit-chain.md)** — the hash chain, the Merkle tree, the checkpoint preimage
+-   **[Compatibility and Support](compatibility.md)** — what an upgrade may change, and which upgrades are supported
 -   **[Error Reference](errors.md)** — codes and what to do about them
 -   **[Glossary](glossary.md)** — terms used throughout
 
