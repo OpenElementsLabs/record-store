@@ -3,7 +3,8 @@
 ## Before you start
 
 1. **Read the release notes** for every version between the one you run and the one
-   you want. They are generated from
+   you want, and [Compatibility and Support](../reference/compatibility.md) for which
+   upgrades are supported and what a release may change. They are generated from
    [CHANGELOG.md](https://github.com/OpenElementsLabs/record-store/blob/main/CHANGELOG.md)
    and list anything that requires action on your part.
 2. **Plan a verified backup of the stopped deployment.** An upgrade is the moment a

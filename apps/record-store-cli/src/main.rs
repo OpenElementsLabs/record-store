@@ -71,11 +71,17 @@ enum Command {
         command: StorageCommand,
     },
     /// Initialize and inspect a distributed cluster.
+    ///
+    /// Hidden: clustering is unsupported and outside the compatibility promise.
+    #[command(hide = true)]
     Cluster {
         #[command(subcommand)]
         command: ClusterCommand,
     },
     /// Inspect or change cluster node lifecycle state.
+    ///
+    /// Hidden: clustering is unsupported and outside the compatibility promise.
+    #[command(hide = true)]
     Node {
         #[command(subcommand)]
         command: NodeCommand,

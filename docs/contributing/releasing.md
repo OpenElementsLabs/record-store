@@ -43,9 +43,11 @@ gates the release will, without publishing anything.
 
 ### 1. Choose the version
 
-Semantic versioning. A patch release for fixes, a minor release for additions, a
-major release for breaking changes. Before 1.0, judgement applies: a rename or a
-configuration break deserves at least a minor bump.
+Semantic versioning, as [Compatibility and Support](../reference/compatibility.md)
+defines it for users: what each kind of release may change, which interfaces are
+covered, and how long a deprecation lasts. A change that the page does not allow in
+the release you are cutting needs a different version, not an exception. Before
+1.0, a break to a covered interface needs at least a minor bump.
 
 ### 2. Update the version and the changelog
 
