@@ -109,7 +109,7 @@ jobs:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: inputs.candidate-artifact == ''
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: inputs.candidate-artifact != ''
         with:
           name: ${{ inputs.candidate-artifact }}
@@ -128,7 +128,7 @@ jobs:
             tests/gates/build-candidate.sh out/candidate
           fi
           tar -czf candidate.tar.gz -C out candidate
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.PREFIX }}-candidate
           path: candidate.tar.gz
@@ -167,7 +167,7 @@ jobs:
       - run: cp previous-src/record-store.example.toml previous/
       - run: previous/bin/record-store --version
       - run: tar -czf previous.tar.gz previous
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.PREFIX }}-previous
           path: previous.tar.gz
@@ -184,7 +184,7 @@ jobs:
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - uses: taiki-e/install-action@de5687a3b26eb438afcf64719052c77a7f728817 # cargo-audit
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: "${{ env.PREFIX }}-candidate" }
       - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
       - name: Standalone gates
@@ -210,7 +210,7 @@ jobs:
             || echo "::notice::internal cluster gates are not all passing; see the internal cluster report"
           # Deliberately not failing the job: cluster readiness is decided by the
           # internal cluster report and must never block a standalone release.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ env.PREFIX }}-results-rust
@@ -231,7 +231,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { pattern: "${{ env.PREFIX }}-{candidate,previous}", merge-multiple: true }
       - run: |
           mkdir -p out && tar -xzf candidate.tar.gz -C out
@@ -247,7 +247,7 @@ jobs:
           done
           [[ ${#selected[@]} -eq 0 ]] || PREVIOUS_BIN_DIR="$PWD/previous/bin" GATE_EVALUATE=0 \
             tests/gates/run-stage.sh "$STAGE" out "${selected[@]}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ env.PREFIX }}-results-binary
@@ -265,11 +265,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: "${{ env.PREFIX }}-candidate" }
       - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
       - run: GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out REC-CRASH
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ env.PREFIX }}-results-crash
@@ -287,11 +287,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: "${{ env.PREFIX }}-candidate" }
       - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
       - run: GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out RES-MEMORY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ env.PREFIX }}-results-memory
@@ -307,7 +307,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -320,11 +320,11 @@ jobs:
           java-version: "21"
           cache: maven
           cache-dependency-path: tests/compatibility/java/pom.xml
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: "${{ env.PREFIX }}-candidate" }
       - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
       - run: GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out CMP-S3-SDK
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ env.PREFIX }}-results-sdk
@@ -340,12 +340,12 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: console/package-lock.json
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: "${{ env.PREFIX }}-candidate" }
       - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
       - name: Console gates
@@ -364,7 +364,7 @@ jobs:
           mkdir -p out-cluster && cp -R out/candidate out-cluster/
           GATE_EVALUATE=0 GATE_MATRIX=internal/cluster/gates.toml tests/gates/run-stage.sh "$STAGE" out-cluster CL-CONSOLE-E2E \
             || echo "::notice::internal cluster console E2E is not passing; see the internal cluster report"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ env.PREFIX }}-results-console
@@ -387,7 +387,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install --requirement requirements-docs.txt
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: "${{ env.PREFIX }}-candidate" }
       - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
       - name: Repository gates
@@ -400,7 +400,7 @@ jobs:
             [[ " $GATES " == *" $gate "* ]] && selected+=("$gate")
           done
           [[ ${#selected[@]} -eq 0 ]] || GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out "${selected[@]}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ env.PREFIX }}-results-repository
@@ -422,13 +422,13 @@ jobs:
             .
             fuzz
       - run: cargo install cargo-fuzz --locked
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: "${{ env.PREFIX }}-candidate" }
       - run: mkdir -p out && tar -xzf candidate.tar.gz -C out
       - run: |
           if [[ "$STAGE" == scheduled ]]; then export FUZZ_TOTAL_SECONDS=1800; fi
           GATE_EVALUATE=0 tests/gates/run-stage.sh "$STAGE" out SEC-FUZZ
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ env.PREFIX }}-results-fuzz
@@ -450,7 +450,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: python3 tests/gates/record.py --gate CMP-UPGRADE-CONTAINER --stage "$STAGE" --results out/results
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ env.PREFIX }}-results-container
@@ -470,7 +470,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: ${{ env.PREFIX }}-*
           path: collected
@@ -501,7 +501,7 @@ jobs:
               --candidate collected/candidate-x/candidate "${results[@]}" --out cluster-report || true
           fi
           exit "$status"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ${{ env.PREFIX }}-report
