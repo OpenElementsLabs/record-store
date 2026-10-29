@@ -2032,7 +2032,7 @@ checksum = "08ad765b21a08b1a8e5cdce052719188a23772bcbefb3c439f0baaf62c56ceac"
 
 [[package]]
 name = "record-store-api"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2072,7 +2072,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-audit"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-auth"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2116,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-cluster"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2160,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-config"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "record-store-core",
  "serde",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-consensus"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2192,7 +2192,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "hex",
@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-erasure"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2226,7 +2226,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-events"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2252,7 +2252,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-lifecycle"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-metadata"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2289,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-observability"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "record-store-config",
  "thiserror 2.0.21",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-proof"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "hex",
@@ -2317,7 +2317,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-protocol"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -2329,7 +2329,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-replication"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2359,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-rpc"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2389,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-s3"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2427,7 +2427,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-server"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2471,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-service"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-sharing"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2517,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "record-store-storage"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
