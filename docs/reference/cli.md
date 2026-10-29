@@ -50,7 +50,7 @@ record-store version
 ```
 
 ```text
-record-store 0.2.1
+record-store 0.3.0
 commit 3f1c9a…
 ```
 

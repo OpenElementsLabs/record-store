@@ -9,6 +9,26 @@ publishes, so keep it factual and written for the people upgrading.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-29
+
+A minor release: a written compatibility promise, a start-up check that refuses
+clustered deployment modes nobody chose, and security fixes in the server's and the
+console's dependencies. The on-disk format, the metadata schema and the S3 API are
+unchanged from 0.2.1.
+
+### Upgrading
+
+- **From 0.2.0 or 0.2.1, replace the image or binary.** Nothing is migrated on first
+  start, and moving back to 0.2.1 is the same swap. From 0.1.3, upgrade to 0.2.1 and
+  start it once first, as the [0.2.0 notes](#020---2026-09-25) describe.
+- **Standalone deployments need no change.** A deployment whose `server.mode` is
+  `cluster` or `control` no longer starts unless `server.unsupported_cluster_mode`
+  (`RECORD_STORE_UNSUPPORTED_CLUSTER_MODE`) is `true`. Run `doctor` with the new
+  version before starting it, as [Upgrading](docs/deployment/upgrading.md) shows; the
+  `deployment_mode` check reports whether this applies. 0.2.1 does not know the
+  setting and refuses a configuration file that contains it, so remove it before
+  moving back.
+
 ### Added
 
 - **A compatibility promise.** [Compatibility and Support](docs/reference/compatibility.md)
@@ -37,6 +57,27 @@ publishes, so keep it factual and written for the people upgrading.
   does not include; that job now runs only the gates the stage selects.
 - The README described the tamper-evident audit history as in development; it
   shipped in 0.2.0.
+
+### Security
+
+Dependency updates only; none needs action beyond upgrading.
+
+- `ctutils` moves from 0.4.2 to 0.4.5, closing RUSTSEC-2026-0385: mask generation
+  and `u128` comparisons were not constant-time. It is used through `aes-gcm` in
+  the auth, events and sharing crates.
+- `rustls` moves from 0.23.45 to 0.23.46 (RUSTSEC-2026-0346 to RUSTSEC-2026-0349),
+  `rustls-webpki` from 0.103.14 to 0.103.16 (RUSTSEC-2026-0382), `webpki-roots`
+  from 1.0.9 to 1.0.10 (RUSTSEC-2026-0381), and `quinn-proto` from 0.11.17 to
+  0.11.19 (RUSTSEC-2026-0338, -0340 and -0343). All four arrive through `reqwest`.
+- `tokio` moves from 1.53.1 to 1.54.1, closing RUSTSEC-2026-0386: its safe
+  `AsyncFd` constructors could lead to a use-after-free. Record Store does not call
+  `AsyncFd`.
+- The console moves from Next.js 16.3.5 to 16.4.2, closing GHSA-2464-fhr4-w9xw,
+  GHSA-673q-mjm6-r5xr and GHSA-p3m5-59mp-jv5r (two of them critical) and the six
+  high-severity advisories fixed in 16.3.8. `sharp` moves from 0.35.4 to 0.35.5
+  and `source-map-js` from 1.2.1 to 1.2.2, both for high-severity advisories.
+- `pulldown-cmark` moves from 0.13.4 to 0.13.5, closing RUSTSEC-2026-0414. It is
+  used only at build time, through `prost-build`, and is not in the binary.
 
 ## [0.2.1] - 2026-09-25
 
@@ -709,7 +750,10 @@ from a repository checkout.
 
 First tagged release, distributed as source.
 
-[unreleased]: https://github.com/OpenElementsLabs/record-store/compare/v0.1.3...HEAD
+[unreleased]: https://github.com/OpenElementsLabs/record-store/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/OpenElementsLabs/record-store/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/OpenElementsLabs/record-store/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/OpenElementsLabs/record-store/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/OpenElementsLabs/record-store/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/OpenElementsLabs/record-store/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/OpenElementsLabs/record-store/compare/v0.1.0...v0.1.1
