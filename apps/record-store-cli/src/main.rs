@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, time::Duration};
+use std::{collections::HashMap, ffi::OsStr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -1146,13 +1146,23 @@ fn client() -> Result<reqwest::Client> {
         .context("build HTTP client")
 }
 
+/// Credentials come from the process environment or, for local use, `.env`.
 fn admin_request(builder: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
-    if let Ok(token) = env::var("RECORD_STORE_MANAGEMENT_TOKEN") {
+    let environment: HashMap<_, _> = record_store_config::resolved_environment()
+        .context("read the environment")?
+        .into_iter()
+        .collect();
+    let variable = |name: &str| {
+        environment
+            .get(OsStr::new(name))
+            .and_then(|value| value.to_str())
+    };
+    if let Some(token) = variable("RECORD_STORE_MANAGEMENT_TOKEN") {
         return Ok(builder.bearer_auth(token));
     }
-    let access = env::var("RECORD_STORE_ROOT_ACCESS_KEY")
+    let access = variable("RECORD_STORE_ROOT_ACCESS_KEY")
         .context("RECORD_STORE_ROOT_ACCESS_KEY is required")?;
-    let secret = env::var("RECORD_STORE_ROOT_SECRET_KEY")
+    let secret = variable("RECORD_STORE_ROOT_SECRET_KEY")
         .context("RECORD_STORE_ROOT_SECRET_KEY is required")?;
     Ok(builder.basic_auth(access, Some(secret)))
 }

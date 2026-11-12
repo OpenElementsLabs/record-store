@@ -27,6 +27,9 @@ Group=record-store
 # leading '-' is absent on purpose: the server has no default credentials and
 # refusing to start without the file is the honest failure.
 EnvironmentFile=/etc/record-store/record-store.env
+# A `.env` in the working directory is a development convenience; a service
+# takes its settings from the files above only.
+Environment=RECORD_STORE_DOTENV=false
 ExecStart=/usr/bin/record-store server --config /etc/record-store/record-store.toml
 
 # systemd creates and owns these, so the package does not have to guess at

@@ -31,7 +31,8 @@ Every command that talks to a running server takes `--endpoint`, defaulting to
 
 ## Authentication
 
-The CLI reads credentials from the environment:
+The CLI reads credentials from the environment, or from a `.env` file in the working
+directory (see [Environment Variables](environment-variables.md#env-file)):
 
 | Variable | Used for |
 | --- | --- |
