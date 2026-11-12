@@ -31,6 +31,7 @@ ENV RECORD_STORE_S3_BIND=0.0.0.0:7600 \
     RECORD_STORE_API_BIND=0.0.0.0:7601 \
     RECORD_STORE_STORAGE_DATA_DIRECTORY=/var/lib/record-store \
     RECORD_STORE_LOG_JSON=true \
+    RECORD_STORE_DOTENV=false \
     MALLOC_ARENA_MAX=2
 
 USER record-store:record-store

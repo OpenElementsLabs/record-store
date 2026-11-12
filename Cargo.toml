@@ -46,6 +46,7 @@ clap = { version = "4.5.47", features = ["derive", "env"] }
 crc32c = "0.6"
 crc32fast = "1.5"
 criterion = { version = "0.8.2", features = ["async_tokio"] }
+dotenvy = "0.15.7"
 futures-core = "0.3.31"
 futures-util = "0.3.31"
 fs2 = "0.4.3"
