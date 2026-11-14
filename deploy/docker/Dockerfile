@@ -1,6 +1,6 @@
 # The toolchain rust-toolchain.toml pins, so the image digest pins the compiler
 # and the build needs no toolchain download. Bump the two together.
-FROM rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS builder
+FROM rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS builder
 WORKDIR /src
 
 # The build context has no .git, so the commit is passed in; the binaries
@@ -9,7 +9,7 @@ ARG RECORD_STORE_BUILD_COMMIT=unknown
 COPY . .
 RUN cargo build --locked --release --bin record-store-server --bin record-store
 
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS runtime
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
