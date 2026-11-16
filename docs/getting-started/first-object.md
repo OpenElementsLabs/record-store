@@ -1,107 +1,141 @@
-# First Bucket and Object
+# Buckets, objects, and service accounts
 
-This page explains what the [Quick Start](quick-start.md) actually did, and sets up
-the credentials an application should use.
+This page explains the buckets and objects that you created in the
+[Quick start](quick-start.md). It also shows you how to create the credentials
+that an application uses.
 
 ## Buckets
 
-A bucket is a named container for objects. Bucket names are validated against
-S3-compatible rules: 3–63 bytes, lowercase letters, digits, hyphens and dots,
-beginning and ending with a letter or digit, and not written as an IP address.
+A *bucket* is a named container for objects. A bucket name must follow
+S3-compatible rules:
+
+- It's 3–63 bytes long.
+- It contains only lowercase letters, digits, hyphens, and dots.
+- It starts and ends with a letter or a digit.
+- It isn't formatted as an IP address.
+
+The following names are reserved:
+
+- Names that start with `xn--` or `sthree-`.
+- Names that end with `-s3alias` or `--ol-s3`.
+- The internal names `record-store-system` and `record-store-internal`.
+
+To create a bucket named `photos` and list your buckets, run the following
+commands:
 
 ```bash
 record-store bucket create photos
 record-store bucket list
 ```
 
-A few names are reserved: the `xn--` and `sthree-` prefixes, the `-s3alias` and
-`--ol-s3` suffixes, and the internal names `record-store-system` and
-`record-store-internal`.
-
-A bucket must be empty before it can be deleted.
+To delete a bucket, first delete every object in it, and then run the following
+command:
 
 ```bash
-record-store bucket delete photos
+record-store bucket delete BUCKET_NAME
 ```
+
+Replace `BUCKET_NAME` with the name of the bucket.
 
 ## Objects and keys
 
-An object is a sequence of bytes plus metadata, addressed by a **key** within a bucket.
+An *object* is a sequence of bytes plus metadata. A *key* identifies an object
+within a bucket.
 
-Keys look like paths but there are no directories. `invoices/2026/03/inv-1.pdf` is a
-single key that happens to contain slashes. Listing with a prefix and a delimiter is
-what makes it *look* like a folder tree. See
-[Buckets and Objects](../concepts/buckets-and-objects.md).
+Keys look like file paths, but Record Store has no directories. For example,
+`invoices/2026/03/inv-1.pdf` is one key that contains slashes. When you list
+objects with a prefix and a delimiter, the results look like a folder tree. For
+more information, see [Buckets and objects](../concepts/buckets-and-objects.md).
 
-Keys are validated. These are rejected:
+Record Store rejects keys like the ones in the following table:
 
-| Key | Why |
+| Key | Reason |
 | --- | --- |
-| `/leading` | Leading slash |
-| `../secret` | Path traversal |
-| `a//b` | Empty segment |
-| `a\b` | Backslash |
+| `/leading` | Starts with a slash. |
+| `../secret` | Contains path traversal. |
+| `a//b` | Contains an empty segment. |
+| `a\b` | Contains a backslash. |
 
-A bucket name or key never becomes a filesystem path. Payloads are stored under
-generated UUIDs.
+Record Store never uses a bucket name or a key as a file system path. It stores
+each payload under a generated UUID.
 
 ## Create a service account for your application
 
-Root credentials are bootstrap credentials. Applications should use a **service
-account** with only the permissions it needs.
+The root credentials exist to set up Record Store. Applications must use a
+*service account* that has only the permissions that the application needs.
 
-```bash
-record-store service-account create my-app
-```
+1.  Create a service account:
 
-```text
-Account ID     0195f0c8-....
-Access key     SA4D8F0BEE8270423EA5D1
-Secret key     <shown once>
-```
+    ```bash
+    record-store service-account create my-app
+    ```
 
-!!! warning "The secret is shown once"
-    Record Store stores signing material encrypted and never returns it again. If you
-    lose it, rotate the credential rather than trying to recover it.
+    The output is similar to the following:
 
-A new service account has no policies attached, so it can do nothing until you grant
-it something. Create a policy and attach it:
+    ```text
+    Account ID     0195f0c8-....
+    Access key     SA4D8F0BEE8270423EA5D1
+    Secret key     <shown once>
+    ```
+ 
 
-```json title="read-write-photos.json"
-{
-  "name": "read-write-photos",
-  "description": "Full object access to the photos bucket",
-  "statements": [
+> !!! warning "Save the secret key now"
+>
+>  Record Store encrypts the secret key and never shows it again. If you lose the secret key, rotate the credential. You can't recover it.
+
+
+1.  A new service account has no policies, so it can't perform any actions.
+    Create a file named `read-write-photos.json` that defines a policy:
+
+    ```json title="read-write-photos.json"
     {
-      "effect": "allow",
-      "actions": ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-      "resources": ["bucket:photos", "bucket:photos/*"]
+      "name": "read-write-photos",
+      "description": "Full object access to the photos bucket",
+      "statements": [
+        {
+          "effect": "allow",
+          "actions": ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+          "resources": ["bucket:photos", "bucket:photos/*"]
+        }
+      ]
     }
-  ]
-}
-```
+    ```
 
-```bash
-record-store policy create ./read-write-photos.json
-record-store policy attach <policy-id> <account-id>
-```
+1.  Create the policy and attach it to the service account:
 
-See [Policies](../administration/policies.md) for the full action and resource model.
+    ```bash
+    record-store policy create ./read-write-photos.json
+    record-store policy attach POLICY_ID ACCOUNT_ID
+    ```
 
-## Turn off root S3 access
+    Replace the following:
 
-Once your applications use service accounts, take the root credential off the data
-plane:
+    - `POLICY_ID`: the ID that the `policy create` command returns.
+    - `ACCOUNT_ID`: the account ID that the `service-account create` command
+      returned.
+
+For more information about actions and resources, see
+[Policies](../administration/policies.md).
+
+## Turn off root access to the S3 API
+
+After your applications use service accounts, stop the root credentials from
+accessing the S3 API. Set the following environment variable for the Record
+Store server:
 
 ```bash
 RECORD_STORE_ROOT_S3_ENABLED=false
 ```
 
-Root remains usable for management. See [Authentication](../security/authentication.md).
+You can still use the root credentials for management. For more information,
+see [Authentication](../security/authentication.md).
 
-## Next
+## What's next
 
-- [Application Integration](../guides/application-integration.md) — the architecture to use
-- [JavaScript and TypeScript](../sdk/javascript.md) — or [Python](../sdk/python.md),
-  [Go](../sdk/go.md), [Rust](../sdk/rust.md)
-- [Production Checklist](../deployment/production-checklist.md) — before you go live
+- To design how your application uses Record Store, see
+  [Application integration](../guides/application-integration.md).
+- To connect from code, see the SDK guide for
+  [JavaScript and TypeScript](../sdk/javascript.md), [Python](../sdk/python.md),
+  [Go](../sdk/go.md), or [Rust](../sdk/rust.md).
+- Before you go live, complete the
+  [Production checklist](../deployment/production-checklist.md).

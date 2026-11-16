@@ -75,6 +75,7 @@ copies them gets the previous release:
 | `docs/deployment/container-images.md` | Tag table and examples |
 | `docs/deployment/docker-compose.md`, `docs/deployment/upgrading.md` | Examples |
 | `docs/getting-started/installation.md`, `README.md` | Pinned-version examples |
+| `docs/getting-started/quick-start.md` | Download URL tag, `RECORD_STORE_VERSION`, tested-with note |
 
 `grep -rn "X\.Y\.Z" docs deploy README.md` finds the previous release's
 leftovers. Leave references that are deliberately historical, such as which

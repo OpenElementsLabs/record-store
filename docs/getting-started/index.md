@@ -1,38 +1,43 @@
-# Introduction
+# Overview
 
-Record Store stores files — objects — and serves them over an S3-compatible HTTP API.
-If your application can talk to Amazon S3, it can talk to Record Store.
+Record Store stores files, called *objects*, and serves them over an
+S3-compatible HTTP API. If your application works with Amazon S3, it works with
+Record Store.
 
-## What it is for
+## Use cases
 
-Record Store is useful when you want object storage that you run yourself:
+Use Record Store when you want to run your own object storage. Typical uses
+include the following:
 
-- application file storage (uploads, exports, generated documents, media)
-- storage that must stay on infrastructure you control
-- an S3 endpoint for development that behaves like the one in production
-- storage for a small team or a single application, without operating a distributed
-  system from day one
+- Application file storage, such as uploads, exports, generated documents, and
+  media.
+- Storage that must stay on infrastructure you control.
+- A development S3 endpoint that behaves like the one in production.
+- Storage for a small team or a single application, without operating a
+  distributed system.
 
-It is a single Rust binary with an embedded metadata database. There is no external
-database, message queue, or object gateway to run alongside it.
+Record Store is a single Rust binary with an embedded metadata database. You
+don't run an external database, message queue, or object gateway alongside it.
 
-## How it is organised
+## Listeners and ports
 
-Record Store exposes three listeners. Each has a distinct audience.
+Record Store exposes three listeners. Each listener serves a different audience,
+as shown in the following table:
 
-| Port | Listener | Who talks to it |
+| Port | Listener | Clients |
 | --- | --- | --- |
 | 7600 | S3 API | Applications, AWS SDKs, embed links |
-| 7601 | Management API | The console, the CLI, automation |
+| 7601 | Management API | The web console, the CLI, automation |
 | 7602 | Web console | Administrators, share-link recipients |
 
-Only 7600 and 7602 are normally reachable from outside your network. See
-[Ports](../reference/ports.md) for the full picture and
-[Reverse Proxy and TLS](../deployment/reverse-proxy.md) for publishing them.
+In most deployments, only ports 7600 and 7602 are reachable from outside your
+network. For more information, see [Ports](../reference/ports.md) and
+[Reverse proxy and TLS](../deployment/reverse-proxy.md).
 
-## The shape of a deployment
+## Deployment architecture
 
-A deployment is one process with one copy of your data, on one machine.
+A Record Store deployment is one process that keeps one copy of your data on one
+machine:
 
 ```mermaid
 flowchart LR
@@ -41,17 +46,19 @@ flowchart LR
     RS --> Disk[(Data directory)]
 ```
 
-There is nothing else to stand up: no external database to provision, no coordination
-service, and no gateway in front. What you are responsible for is the data directory
-underneath it. Put it on durable storage, and read
-[Durability](../concepts/durability.md) for exactly what a successful write promises.
+You don't provision an external database, a coordination service, or a gateway.
+You are responsible for the data directory. Put the data directory on durable
+storage. To learn what a successful write guarantees, see
+[Durability](../concepts/durability.md).
 
-!!! warning "Redundant storage is not backup"
-    Redundant disks protect against hardware failure. They do not protect against a
-    mistaken delete, which is written through just as reliably as anything else. Read
-    [Backup and Restore](../operations/backup-and-restore.md).
+>!!! warning "Redundant storage is not a backup"
+    Redundant disks protect your data against hardware failure. They don't
+    protect it against an accidental delete, because Record Store writes a
+    delete as reliably as any other change. To plan backups, see
+    [Backup and restore](../operations/backup-and-restore.md).
 
-## Next
+## What's next
 
-- [Installation](installation.md) — the supported ways to obtain and run Record Store
-- [Quick Start](quick-start.md) — running and storing an object in about five minutes
+- To choose an installation method, see [Installation](installation.md).
+- To run Record Store and store an object in about five minutes, see the
+  [Quick start](quick-start.md).
