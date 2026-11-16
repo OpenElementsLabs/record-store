@@ -24,7 +24,7 @@ if you also want to send requests to the S3 API, which is how applications
 connect to Record Store. If you don't install it, skip
 [Configure the AWS CLI](#configure-the-aws-cli) and use the **Console** tabs.
 
-> This quick start was tested with Record Store 0.2.1 and AWS CLI 2.27.
+> This quick start was tested with Record Store 0.3.0 and AWS CLI 2.27.
 
 ## Download the Compose file
 
@@ -34,7 +34,7 @@ release:
 ```bash
 mkdir record-store-quickstart && cd record-store-quickstart
 curl -fsSL -o compose.yaml \
-  https://raw.githubusercontent.com/OpenElementsLabs/record-store/v0.2.1/deploy/docker/compose.ghcr.yml
+  https://raw.githubusercontent.com/OpenElementsLabs/record-store/v0.3.0/deploy/docker/compose.ghcr.yml
 ```
 
 The Compose file runs two public images, `ghcr.io/openelementslabs/record-store`

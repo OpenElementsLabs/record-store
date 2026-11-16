@@ -92,7 +92,7 @@ the Compose file and start it:
 
 ```bash
 curl -fsSL -o compose.yaml \
-  https://raw.githubusercontent.com/OpenElementsLabs/record-store/v0.2.1/deploy/docker/compose.ghcr.yml
+  https://raw.githubusercontent.com/OpenElementsLabs/record-store/v0.3.0/deploy/docker/compose.ghcr.yml
 docker compose --env-file .env up -d
 ```
 
