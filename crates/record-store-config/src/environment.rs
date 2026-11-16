@@ -13,6 +13,12 @@ impl Config {
         if let Some(value) = environment_value(environment, "RECORD_STORE_MODE")? {
             self.server.mode = value.parse()?;
         }
+        if let Some(value) =
+            environment_value(environment, "RECORD_STORE_UNSUPPORTED_CLUSTER_MODE")?
+        {
+            self.server.unsupported_cluster_mode =
+                parse_environment("RECORD_STORE_UNSUPPORTED_CLUSTER_MODE", value)?;
+        }
         if let Some(value) = environment_value(environment, "RECORD_STORE_S3_BIND")? {
             self.server.s3_bind = parse_environment("RECORD_STORE_S3_BIND", value)?;
         }
@@ -462,6 +468,7 @@ mod exhaustive_tests {
     fn every_variable(directory: &std::path::Path) -> Vec<(&'static str, String)> {
         let mut settings: Vec<(&'static str, String)> = vec![
             ("RECORD_STORE_MODE", "cluster".into()),
+            ("RECORD_STORE_UNSUPPORTED_CLUSTER_MODE", "true".into()),
             ("RECORD_STORE_S3_BIND", "127.0.0.1:17600".into()),
             ("RECORD_STORE_RPC_BIND", "127.0.0.1:17603".into()),
             ("RECORD_STORE_RPC_ADVERTISE", "node-a:17603".into()),
@@ -627,6 +634,7 @@ mod exhaustive_tests {
         let (_directory, config) = loaded();
 
         assert_eq!(config.server.mode, DeploymentMode::Cluster);
+        assert!(config.server.unsupported_cluster_mode);
         assert_eq!(config.server.s3_bind.to_string(), "127.0.0.1:17600");
         assert_eq!(config.server.rpc_bind.to_string(), "127.0.0.1:17603");
         assert_eq!(config.server.rpc_advertise.as_deref(), Some("node-a:17603"));

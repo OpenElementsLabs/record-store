@@ -2,7 +2,6 @@
 
 use std::{
     collections::HashMap,
-    env,
     ffi::OsString,
     fmt::{self, Debug, Formatter},
     fs,
@@ -44,6 +43,7 @@ impl Debug for SecretValue {
 
 mod cluster;
 mod deployment;
+mod dotenv;
 mod environment;
 mod error;
 mod partial;
@@ -56,6 +56,7 @@ mod test_support;
 
 pub use cluster::{ClusterConfig, ClusterTlsConfig};
 pub use deployment::DeploymentMode;
+pub use dotenv::resolved_environment;
 pub use error::ConfigError;
 pub use sections::{
     AuthConfig, LifecycleConfig, LimitsConfig, MetadataCacheBudget, ObjectLockConfig,
@@ -90,9 +91,15 @@ pub struct Config {
 
 impl Config {
     /// Loads defaults, overlays an optional TOML file, overlays `RECORD_STORE_*`
-    /// environment variables, and validates the result.
+    /// variables from `.env` in the working directory and then from the process
+    /// environment, and validates the result. Exported variables win over `.env`.
     pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
-        Self::load_with_environment(path, env::vars_os())
+        let environment = resolved_environment()?;
+        let named = path
+            .is_none()
+            .then(|| dotenv::config_file(&environment))
+            .flatten();
+        Self::load_with_environment(path.or(named.as_deref()), environment)
     }
 
     /// Loads configuration using an explicit environment source.

@@ -3,7 +3,8 @@
 ## Before you start
 
 1. **Read the release notes** for every version between the one you run and the one
-   you want. They are generated from
+   you want, and [Compatibility and Support](../reference/compatibility.md) for which
+   upgrades are supported and what a release may change. They are generated from
    [CHANGELOG.md](https://github.com/OpenElementsLabs/record-store/blob/main/CHANGELOG.md)
    and list anything that requires action on your part.
 2. **Plan a verified backup of the stopped deployment.** An upgrade is the moment a
@@ -94,7 +95,7 @@ moving to, and to be able to move back to what you had. See
 ```bash
 # Confirm what you are about to run before you run it
 docker run --rm --entrypoint record-store \
-  ghcr.io/openelementslabs/record-store:0.2.1 --version
+  ghcr.io/openelementslabs/record-store:0.3.0 --version
 ```
 
 Check the digest and the checksums before you deploy — see

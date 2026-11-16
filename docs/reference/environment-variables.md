@@ -15,6 +15,19 @@ after the TOML file and override it.
 
 Some settings are file-only. Those are listed at the end.
 
+## `.env` file
+
+For local development, the server and the CLI also read `KEY=value` lines from a
+`.env` file in the working directory. Variables exported in the process environment
+take precedence over the file.
+
+- A missing file is ignored. A malformed one stops startup, naming the line but not
+  its contents.
+- On Unix, a file that every user can write to is refused.
+- `RECORD_STORE_DOTENV=false` turns the file off. It is read from the process
+  environment only. The container image and the systemd unit set it.
+- `RECORD_STORE_CONFIG_FILE` may be set in the file.
+
 ## Server
 
 | Variable | Effect | Default |

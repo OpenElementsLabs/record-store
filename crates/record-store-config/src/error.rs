@@ -30,6 +30,14 @@ pub enum ConfigError {
         #[source]
         source: toml::de::Error,
     },
+    /// The `.env` file could not be used. File contents are intentionally omitted.
+    #[error("failed to load '{}': {reason}", path.display())]
+    EnvFile {
+        /// Dotenv file path.
+        path: PathBuf,
+        /// Why the file was refused.
+        reason: String,
+    },
     /// An environment variable was not valid Unicode.
     #[error("environment variable {0} is not valid Unicode")]
     NonUnicodeEnvironment(&'static str),

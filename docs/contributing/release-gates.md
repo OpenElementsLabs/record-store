@@ -14,7 +14,7 @@ file is also what actually runs.
 | --- | --- | --- |
 | `pr` | Every push and pull request | Format, Clippy, tests, skip accounting, console checks, dependency and secret scanning, fuzz smoke, documentation build |
 | `integration` | Changes to code, lockfiles, packaging, tests or workflows | Real-binary gates: integrity on read, unsupported operations, crash recovery, backup and restore, upgrade from the previous release, S3 SDKs, console end-to-end, secret redaction, artifact identity |
-| `scheduled` | Weekly | Longer crash runs, 300 s fuzzing |
+| `scheduled` | Weekly | Longer crash runs, 30 minutes of fuzzing across all targets |
 | `candidate` | `workflow_dispatch` of the Gates workflow, a push to a `candidate/*` branch, and every release | Everything, against one candidate, plus packaging, provenance and both-architecture smoke tests in `release.yml` |
 
 ## What a gate result is bound to

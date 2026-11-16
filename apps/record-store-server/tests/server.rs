@@ -228,6 +228,7 @@ async fn cluster_mode_bootstraps_persistent_identity_and_exposes_status() {
     let directory = tempdir().expect("temporary directory");
     let mut config = Config::default();
     config.server.mode = DeploymentMode::Cluster;
+    config.server.unsupported_cluster_mode = true;
     let rpc_probe = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve RPC address");
     config.server.rpc_bind = rpc_probe.local_addr().expect("RPC address");
     config.server.rpc_advertise = Some(config.server.rpc_bind.to_string());
@@ -326,6 +327,7 @@ async fn a_token_joined_node_enters_the_consensus_group() {
     drop(first_rpc);
     let mut first = Config::default();
     first.server.mode = DeploymentMode::Cluster;
+    first.server.unsupported_cluster_mode = true;
     first.server.rpc_bind = first_rpc_address;
     first.server.rpc_advertise = Some(first_rpc_address.to_string());
     first.server.shutdown_grace_period_seconds = 2;

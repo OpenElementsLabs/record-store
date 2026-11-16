@@ -1264,6 +1264,7 @@ mod tests {
     fn node_config(data_directory: PathBuf, rpc: SocketAddr, rack: &str) -> Config {
         let mut config = Config::default();
         config.server.mode = DeploymentMode::Cluster;
+        config.server.unsupported_cluster_mode = true;
         config.server.rpc_bind = rpc;
         config.server.rpc_advertise = Some(rpc.to_string());
         config.server.shutdown_grace_period_seconds = 2;

@@ -54,8 +54,11 @@ cargo run --bin record-store -- status --endpoint http://127.0.0.1:7601
     its sealed contents unreadable. If a local deployment starts failing to decrypt
     after you changed the key, delete `./data` and start over.
 
-An `.env` file plus `set -a; source .env; set +a` is a convenient way to keep these
-consistent.
+Instead of exporting them, you can put these variables in a `.env` file at the
+repository root, which Git ignores. Both the `server` command and `record-store-server`
+read `.env` from the working directory on start, and so do CLI commands that call the
+management API. Variables exported in the shell take precedence over the file. A file
+that every user can write to is refused.
 
 ## Console
 

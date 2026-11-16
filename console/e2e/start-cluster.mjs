@@ -115,6 +115,7 @@ function spawnNode(node, joinToken) {
     env: {
       ...process.env,
       RECORD_STORE_MODE: 'cluster',
+      RECORD_STORE_UNSUPPORTED_CLUSTER_MODE: 'true',
       RECORD_STORE_STORAGE_DATA_DIRECTORY: join(runDirectory, `node-${node.number}`),
       ...(configFile ? { RECORD_STORE_CONFIG_FILE: configFile } : {}),
       RECORD_STORE_S3_BIND: `${host}:${node.s3}`,

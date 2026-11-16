@@ -45,8 +45,8 @@ compile anything.
     instead, so that you control when you upgrade:
 
     ```bash
-    docker pull ghcr.io/openelementslabs/record-store:0.2.1
-    docker pull ghcr.io/openelementslabs/record-store-console:0.2.1
+    docker pull ghcr.io/openelementslabs/record-store:0.3.0
+    docker pull ghcr.io/openelementslabs/record-store-console:0.3.0
     ```
 
     Keep both images on the same version. Both images support `linux/amd64` and
@@ -153,8 +153,8 @@ the machine.
 To install the package, run the command for your distribution:
 
 ```bash
-sudo apt-get install ./record-store_0.2.1_amd64.deb    # Debian, Ubuntu
-sudo dnf install ./record-store-0.2.1-1.x86_64.rpm     # RHEL, Rocky, Fedora
+sudo apt-get install ./record-store_0.3.0_amd64.deb    # Debian, Ubuntu
+sudo dnf install ./record-store-0.3.0-1.x86_64.rpm     # RHEL, Rocky, Fedora
 ```
 
 The binaries are statically linked, so the packages have no dependencies. The
@@ -167,7 +167,7 @@ To install Record Store with Helm, run the following command:
 
 ```bash
 helm install record-store \
-  oci://ghcr.io/openelementslabs/charts/record-store --version 0.2.1 \
+  oci://ghcr.io/openelementslabs/charts/record-store --version 0.3.0 \
   --namespace record-store --create-namespace \
   --set auth.rootAccessKey=admin \
   --set auth.rootSecretKey="$(openssl rand -hex 24)" \
@@ -186,8 +186,8 @@ container. Each release includes two archives for each architecture:
 
 | Archive | When to use it |
 | --- | --- |
-| `record-store-0.2.1-linux-amd64-musl.tar.gz` | On any Linux host. Statically linked, with no libc dependency. |
-| `record-store-0.2.1-linux-amd64.tar.gz` | When you want the same binaries as the container image. |
+| `record-store-0.3.0-linux-amd64-musl.tar.gz` | On any Linux host. Statically linked, with no libc dependency. |
+| `record-store-0.3.0-linux-amd64.tar.gz` | When you want the same binaries as the container image. |
 
 Both archives contain the `record-store` and `record-store-server` binaries.
 
@@ -197,7 +197,7 @@ Both archives contain the `record-store` and `record-store-server` binaries.
 1.  Extract the archive and install the binaries:
 
     ```bash
-    tar xzf record-store-0.2.1-linux-amd64-musl.tar.gz
+    tar xzf record-store-0.3.0-linux-amd64-musl.tar.gz
     sudo install -m 0755 record-store record-store-server /usr/local/bin/
     ```
 

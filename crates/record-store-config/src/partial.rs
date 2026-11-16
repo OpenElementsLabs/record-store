@@ -61,6 +61,7 @@ impl PartialConfig {
 #[serde(deny_unknown_fields)]
 pub(crate) struct PartialServerConfig {
     mode: Option<DeploymentMode>,
+    unsupported_cluster_mode: Option<bool>,
     s3_bind: Option<SocketAddr>,
     api_bind: Option<SocketAddr>,
     rpc_bind: Option<SocketAddr>,
@@ -74,6 +75,9 @@ impl PartialServerConfig {
     pub(crate) fn apply(self, target: &mut ServerConfig) {
         if let Some(value) = self.mode {
             target.mode = value;
+        }
+        if let Some(value) = self.unsupported_cluster_mode {
+            target.unsupported_cluster_mode = value;
         }
         if let Some(value) = self.s3_bind {
             target.s3_bind = value;
@@ -456,6 +460,7 @@ mod tests {
             r#"
 [server]
 mode = "cluster"
+unsupported_cluster_mode = true
 api_bind = "127.0.0.1:18601"
 rpc_bind = "127.0.0.1:18603"
 rpc_advertise = "node-a:18603"
@@ -560,6 +565,7 @@ json = true
         let (_directory, config) = from_file();
 
         assert_eq!(config.server.mode, DeploymentMode::Cluster);
+        assert!(config.server.unsupported_cluster_mode);
         assert_eq!(config.server.api_bind.to_string(), "127.0.0.1:18601");
         assert_eq!(config.server.rpc_bind.to_string(), "127.0.0.1:18603");
         assert_eq!(config.server.rpc_advertise.as_deref(), Some("node-a:18603"));
