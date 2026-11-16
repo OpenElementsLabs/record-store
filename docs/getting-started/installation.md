@@ -45,11 +45,11 @@ compile anything.
     instead, so that you control when you upgrade:
 
     ```bash
-    docker pull ghcr.io/openelementslabs/record-store:0.3.0
-    docker pull ghcr.io/openelementslabs/record-store-console:0.3.0
+     docker pull ghcr.io/openelementslabs/record-store:0.3.0
+     docker pull ghcr.io/openelementslabs/record-store-console:0.3.0
     ```
 
-    Keep both images on the same version. Both images support `linux/amd64` and
+  Keep both images on the same version. Both images support `linux/amd64` and
     `linux/arm64`, and Docker pulls the correct architecture automatically.
 
 1.  Record Store has no built-in credentials and doesn't start until you provide
@@ -189,6 +189,12 @@ container. Each release includes two archives for each architecture:
 | `record-store-0.3.0-linux-amd64-musl.tar.gz` | On any Linux host. Statically linked, with no libc dependency. |
 | `record-store-0.3.0-linux-amd64.tar.gz` | When you want the same binaries as the container image. |
 
+```bash
+tar xzf record-store-0.3.0-linux-amd64-musl.tar.gz
+sudo install -m 0755 record-store record-store-server /usr/local/bin/
+record-store --version
+```
+
 Both archives contain the `record-store` and `record-store-server` binaries.
 
 1.  Check the archive against the `SHA256SUMS` file from the same release. For
@@ -197,7 +203,7 @@ Both archives contain the `record-store` and `record-store-server` binaries.
 1.  Extract the archive and install the binaries:
 
     ```bash
-    tar xzf record-store-0.3.0-linux-amd64-musl.tar.gz
+    tar xzf record-store-0.2.1-linux-amd64-musl.tar.gz
     sudo install -m 0755 record-store record-store-server /usr/local/bin/
     ```
 
