@@ -1,40 +1,41 @@
 # Migrating from MinIO
 
-This page is for moving an existing MinIO deployment's data and clients onto
-Record Store. It covers the ports, the credentials, the client settings that have
-to change, what Record Store supports, and — at the end, in full — what it does
-not do.
+This page shows you how to move data and clients from an existing [MinIO](https://www.min.io/)
+deployment to Record Store. It covers ports, credentials, client settings, and
+supported features. The last section lists what Record Store doesn't support.
 
-Read the last section first if you are evaluating rather than committed. Record
-Store is a records store built around one authoritative copy on one node. If your
-deployment depends on multi-node replication or erasure coding, Record Store will
-not replace it, and finding that out on this page is cheaper than finding it out
-halfway through a copy.
+!!! note "Evaluating Record Store? Start with the limitations"
+  Record Store keeps one authoritative copy of your data on one node. If your deployment depends on multi-node replication or erasure coding, Record Store can't replace it. Before you start a migration, read [Unsupported features](#unsupported-features).
 
 ## Ports
 
-| | MinIO (default) | Record Store (default) |
+The following table compares the default ports:
+
+| Listener | MinIO | Record Store |
 | --- | --- | --- |
 | S3 API | 9000 | **7600** |
 | Web console | 9001 | **7602** |
-| Management API | — served on the S3 port | **7601**, a separate listener |
+| Management API | Shares the S3 port | **7601**, a separate listener |
 | Internal cluster RPC | — | 7603 |
 
-The management plane being its own listener is the difference that matters when you
-write firewall rules. Administration does not travel over the S3 port, so port 7600
-can be published while 7601 stays on a private network. Only `GET /health` and
-`GET /ready` are public; `GET /metrics` takes its own dedicated token.
+The separate management listener affects your firewall rules. Administration
+traffic doesn't use the S3 port, so you can publish port 7600 and keep port 7601
+on a private network. On port 7601, only `GET /health` and `GET /ready` are
+public. `GET /metrics` requires its own token.
 
-Every listener is configurable:
+You can change the address of every listener. For example, to keep the MinIO S3
+port, set the following variables:
 
 ```bash
-export RECORD_STORE_S3_BIND="0.0.0.0:9000"    # if you must keep the old port
+export RECORD_STORE_S3_BIND="0.0.0.0:9000"
 export RECORD_STORE_API_BIND="127.0.0.1:7601"
 ```
 
-See [Ports](../reference/ports.md).
+For more information, see [Ports](../reference/ports.md).
 
 ## Credentials
+
+The following table maps MinIO credential variables to Record Store variables:
 
 | MinIO | Record Store |
 | --- | --- |
@@ -43,57 +44,75 @@ See [Ports](../reference/ports.md).
 | — | `RECORD_STORE_CREDENTIAL_MASTER_KEY` **(required)** |
 | — | `RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN` |
 
-Two of these have no MinIO equivalent and neither is optional in practice.
+Two variables have no MinIO equivalent. In practice, you need both.
 
-**`RECORD_STORE_CREDENTIAL_MASTER_KEY`** is injected, never stored by Record Store,
-and is what encrypts service-account secrets, webhook signing secrets, capability
-tokens, and — when enabled — object payloads. It also derives the key that signs
-proof bundles. Keep it stable and back it up somewhere other than the data
-directory: lose it and the encrypted material is unreadable. Startup refuses a
-missing or mismatched key rather than quietly degrading.
+- **`RECORD_STORE_CREDENTIAL_MASTER_KEY`** encrypts service-account secrets,
+  webhook signing secrets, capability tokens, and, if you turn on encryption,
+  object payloads. Record Store also derives the key that signs proof bundles
+  from it. You provide this key at startup, and Record Store never stores it.
+  Keep the key stable, and back it up outside the data directory. If you lose
+  the key, Record Store can't read the encrypted data. If the key is missing or
+  doesn't match, Record Store doesn't start.
+- **`RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN`** authenticates requests to the
+  management API. Management roles are separate from S3 policies. The roles are
+  system administrator, storage administrator, and read-only auditor.
 
-**`RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN`** authenticates the management plane. The
-management roles are separate from S3 policies: system administrator, storage
-administrator, and a read-only auditor.
+To set the credentials and turn on encryption at rest, export the following
+variables:
 
 ```bash
-export RECORD_STORE_ROOT_ACCESS_KEY='local-admin'
-export RECORD_STORE_ROOT_SECRET_KEY='replace-with-a-long-random-secret'
-export RECORD_STORE_CREDENTIAL_MASTER_KEY='replace-with-a-stable-32-byte-or-longer-key'
-export RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN='replace-with-a-distinct-32-byte-or-longer-token'
+export RECORD_STORE_ROOT_ACCESS_KEY='ROOT_ACCESS_KEY'
+export RECORD_STORE_ROOT_SECRET_KEY='ROOT_SECRET_KEY'
+export RECORD_STORE_CREDENTIAL_MASTER_KEY='CREDENTIAL_MASTER_KEY'
+export RECORD_STORE_MANAGEMENT_SYSTEM_TOKEN='MANAGEMENT_SYSTEM_TOKEN'
 export RECORD_STORE_STORAGE_ENCRYPTION_ENABLED=true
 ```
 
-### After the move, stop using root on the data plane
+Replace the following:
 
-Root exists to bootstrap. Create a service account, attach a policy, and turn root
-off for S3:
+- `ROOT_ACCESS_KEY`: the access key ID for the root S3 credentials.
+- `ROOT_SECRET_KEY`: a long, random secret key.
+- `CREDENTIAL_MASTER_KEY`: a stable key of 32 or more bytes.
+- `MANAGEMENT_SYSTEM_TOKEN`: a separate token of 32 or more bytes.
+
+### Stop using root credentials for S3 after the migration
+
+The root credentials exist to set up Record Store. After the migration, create a
+service account, attach a policy to it, and turn off root access to the S3 API:
 
 ```bash
 record-store service-account create my-app
 record-store policy create ./policy.json
-record-store policy attach <policy-id> <account-id>
+record-store policy attach POLICY_ID ACCOUNT_ID
 export RECORD_STORE_ROOT_S3_ENABLED=false
 ```
 
-Policies are Record Store's own allow/deny model, not IAM JSON — explicit deny wins,
-no matching allow is an implicit deny, and resources use canonical decoded keys with
-only a trailing wildcard. See [Policies](../administration/policies.md).
+Replace `POLICY_ID` and `ACCOUNT_ID` with the IDs that the first two commands
+return.
 
-## Client configuration
+Record Store policies use their own allow-and-deny model, not IAM JSON:
 
-Three settings usually need changing. All three are the same ones the
-[AWS CLI guide](../guides/aws-cli.md) describes.
+- An explicit deny overrides any allow.
+- If no statement allows a request, Record Store denies it.
+- Resources use canonical decoded keys, and a wildcard is allowed only at the
+  end.
 
-**Path-style addressing is required.** Virtual-hosted style
-(`https://bucket.storage.example.com/key`) is not supported.
+For more information, see [Policies](../administration/policies.md).
 
-**Disable `aws-chunked` trailing checksums.** Record Store reports that encoding as
-unsupported rather than silently accepting it, so newer AWS SDKs need telling not to
-send it.
+## Configure your clients
 
-**Point at the endpoint explicitly**, and set a region — any region string works;
-SigV4 just needs one to sign with.
+You usually need to change three client settings. The
+[AWS CLI guide](../guides/aws-cli.md) describes the same settings.
+
+- **Use path-style addressing.** Record Store doesn't support virtual-hosted
+  style addressing, such as `https://bucket.storage.example.com/key`.
+- **Turn off `aws-chunked` trailing checksums.** Record Store rejects this
+  encoding as unsupported. Recent AWS SDKs use it by default, so you must turn
+  it off.
+- **Set the endpoint and a region explicitly.** Any region string works,
+  because SigV4 needs a region only to sign requests.
+
+The following example configures the AWS CLI and lists your buckets:
 
 ```bash
 export AWS_ACCESS_KEY_ID="$RECORD_STORE_ROOT_ACCESS_KEY"
@@ -107,13 +126,19 @@ aws configure set s3.addressing_style path
 aws --endpoint-url http://localhost:7600 s3api list-buckets
 ```
 
-With a named profile, apply the addressing style to that profile too:
-`aws configure set s3.addressing_style path --profile PROFILE`.
+If you use a named profile, set the addressing style for that profile:
 
-### `rclone`
+```bash
+aws configure set s3.addressing_style path --profile PROFILE
+```
 
-Set the listing version explicitly. Record Store implements `ListObjectsV2` only,
-and `rclone` will otherwise choose for itself based on provider detection:
+Replace `PROFILE` with the name of your profile.
+
+### Configure rclone
+
+Record Store supports only `ListObjectsV2`. If you don't set the listing version,
+`rclone` chooses one based on the provider it detects. Set `list_version = 2` in
+your remote configuration:
 
 ```ini
 [recordstore]
@@ -127,139 +152,156 @@ force_path_style = true
 list_version = 2
 ```
 
-### A note on `mc`
+### Don't use mc with Record Store
 
-MinIO's `mc` is not tested against Record Store. Its administrative commands target
-MinIO's own admin API, which Record Store does not implement, and its listing
-behaviour is not something this project verifies. Use it to read *from* MinIO if you
-like; use `aws-cli` or `rclone` for the side that talks to Record Store.
+This project doesn't test MinIO's `mc` client against Record Store. The `mc`
+administration commands use the MinIO admin API, which Record Store doesn't
+implement, and this project doesn't verify the `mc` listing behavior. You can
+use `mc` to read from MinIO, but use `aws-cli` or `rclone` to write to Record
+Store.
 
-The clients this project does test on every change are boto3, the AWS SDK for
-JavaScript v3, the AWS SDK for Go, and the AWS SDK for Java v2. See
-[Testing](../contributing/testing.md).
+This project tests the following clients on every change:
 
-## Moving the data
+- boto3
+- AWS SDK for JavaScript v3
+- AWS SDK for Go
+- AWS SDK for Java v2
 
-Create the buckets first — Record Store does not create one implicitly — then copy.
+For more information, see [Testing](../contributing/testing.md).
+
+## Copy the data
+
+Record Store doesn't create buckets automatically. Before you copy any data,
+decide how to configure each bucket:
+
+- **Versioning.** Versioning is set for each bucket and is off by default. If you
+  want to keep the history of later writes, turn on versioning before you copy.
+  A copy doesn't reproduce the version history from MinIO. Record Store writes
+  each current object as a new version.
+- **Object Lock.** You can turn on Object Lock only when you create a bucket.
+  Record Store refuses to turn it on later, because the lock would claim to
+  protect versions that were written without it. For more information, see
+  [Object Lock](../administration/object-lock.md).
+
+To create a bucket, turn on versioning, and copy the data from MinIO, run the
+following commands:
 
 ```bash
-# Buckets
 aws --endpoint-url http://localhost:7600 s3api create-bucket --bucket records
 
-# Enable versioning before copying if you want history from here on.
 aws --endpoint-url http://localhost:7600 s3api put-bucket-versioning \
   --bucket records --versioning-configuration Status=Enabled
 
-# Copy, reading from MinIO and writing to Record Store.
 rclone sync minio:records recordstore:records --progress
 ```
 
-Two things to decide before you start:
+If the data needs a retention period, create the bucket with Object Lock
+instead:
 
-- **Versioning is per bucket and off by default.** Turn it on before the copy if you
-  want every later write to keep history. A copy into a versioned bucket does not
-  reconstruct the source's version history — it writes current objects as new
-  versions here.
-- **Object Lock can only be enabled when a bucket is created.** If the data needs
-  retention, create the bucket with lock enabled up front:
+```bash
+aws --endpoint-url http://localhost:7600 s3api create-bucket \
+  --bucket records --object-lock-enabled-for-bucket
+```
 
-  ```bash
-  aws --endpoint-url http://localhost:7600 s3api create-bucket \
-    --bucket records --object-lock-enabled-for-bucket
-  ```
+### Verify the copy
 
-  Enabling it later is refused, deliberately: it would claim protection over versions
-  written without it. See [Object Lock](../administration/object-lock.md).
+Record Store checksums every payload when it writes the payload and verifies the
+checksum when it reads the payload. If a transfer corrupts a payload, the write
+fails and Record Store doesn't store the payload.
 
-### Checking the copy
-
-Every payload is checksummed on write and verified on read, so a corrupted transfer
-fails rather than being stored. To check explicitly:
+To verify a bucket or a single object, run the following commands:
 
 ```bash
 record-store verify bucket records
 record-store verify object records reports/2026-q1.pdf
 ```
 
-## What is supported
+## Supported features
 
-| Capability | Notes |
+The following table lists the S3 features that Record Store supports:
+
+| Feature | Details |
 | --- | --- |
-| SigV4 header authentication | Header and presigned GET/PUT |
-| Buckets | Create, head, list, delete when empty |
-| Objects | Streaming put, get, head, idempotent delete |
-| `ListObjectsV2` | Prefix, delimiter, bounded pagination, continuation tokens |
-| Multipart upload | Create, upload part, list parts, complete, abort, list uploads |
-| Versioning | Enabled, suspended, delete markers, `ListObjectVersions` |
-| Object Lock | `GOVERNANCE`/`COMPLIANCE` retention, legal holds, bucket defaults |
-| `CopyObject` | Same-bucket and cross-bucket, `COPY` and `REPLACE` directives |
-| Ranges and conditionals | `Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since` |
-| CORS | Per bucket, with unsigned browser preflights |
-| Checksums | `x-amz-content-sha256`, single-part and multipart ETags |
-| Metadata | Content type and `x-amz-meta-*` |
-| Encryption at rest | Deployment-wide, AES-256-GCM, off by default |
-| Quotas and lifecycle expiration | Per bucket, with a supervised worker |
-| Share and embed links | Capability URLs for one object, revocable |
+| SigV4 authentication | Header authentication, and presigned GET and PUT requests. |
+| Buckets | Create, head, list, and delete when empty. |
+| Objects | Streaming put, get, head, and idempotent delete. |
+| `ListObjectsV2` | Prefix, delimiter, bounded pagination, and continuation tokens. |
+| Multipart upload | Create, upload part, list parts, complete, abort, and list uploads. |
+| Versioning | Enabled and suspended states, delete markers, and `ListObjectVersions`. |
+| Object Lock | `GOVERNANCE` and `COMPLIANCE` retention, legal holds, and bucket defaults. |
+| `CopyObject` | Within a bucket and across buckets, with `COPY` and `REPLACE` directives. |
+| Ranges and conditional requests | `Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`, and `If-Unmodified-Since`. |
+| CORS | Configured for each bucket, with unsigned browser preflight requests. |
+| Checksums | `x-amz-content-sha256`, and single-part and multipart ETags. |
+| Metadata | Content type and `x-amz-meta-*` headers. |
+| Encryption at rest | AES-256-GCM for the whole deployment. Off by default. |
+| Quotas and lifecycle expiration | Configured for each bucket, with a supervised worker. |
+| Share links and embed links | Revocable capability URLs for one object. |
 
-The machine-checked list lives in
-[S3 Compatibility](../reference/s3-compatibility.md) and is kept in step with the
-routing and the protocol tests rather than maintained separately.
+For the complete list, see [S3 compatibility](../reference/s3-compatibility.md).
+That list is machine-checked against the request routing and the protocol
+tests, so it stays current.
 
-## What Record Store does not do
+## Unsupported features
 
-Unsupported operations return S3 XML `NotImplemented`. They are never silently
-accepted, so a client learns immediately rather than discovering later that a header
-it sent was ignored.
+Record Store returns an S3 XML `NotImplemented` error for every unsupported
+operation. It never accepts an unsupported request silently, so a client knows
+immediately when Record Store doesn't support a header or operation.
 
-**Storage architecture**
+### Storage architecture
 
-- **No clustering, replication, or erasure coding.** One process, one machine, one
-  copy of your data. Redundancy under the data directory is the redundancy you have:
-  use RAID, a mirrored pool, or a replicated volume, and take backups. If this is the
-  blocker, it is the blocker — replication is substantial work this project intends
-  to fund with adoption rather than ship ahead of it.
+- **No clustering, replication, or erasure coding.** Record Store runs one
+  process on one machine and keeps one copy of your data. Your only redundancy
+  is the storage under the data directory. Use RAID, a mirrored pool, or a
+  replicated volume, and take backups. The project plans to fund replication
+  through adoption, not to ship it beforehand.
 - **No bucket-to-bucket or site-to-site replication.**
-- **No storage tiering or lifecycle transitions.** Lifecycle rules expire objects and
-  non-current versions; they do not move data between classes.
+- **No storage tiering or lifecycle transitions.** Lifecycle rules expire objects
+  and noncurrent versions. They don't move data between storage classes.
 
-**S3 API surface**
+### S3 API
 
-- **No `ListObjects` V1.** Only `ListObjectsV2` — a request without `list-type=2`
-  returns `NotImplemented`. This is the most common thing to trip over with an older
-  tool.
+- **No `ListObjects` V1.** Record Store supports only `ListObjectsV2`. A request
+  without `list-type=2` returns `NotImplemented`. Older tools often fail
+  because of this limitation.
 - **No `DeleteObjects` batch delete.** Delete objects one request at a time.
-- **No `UploadPartCopy`.** Download and re-upload the part.
-- **No ACLs.** Use [policies](../administration/policies.md).
-- **No S3 bucket policies or IAM policy documents.** Record Store has its own policy
-  model; an IAM JSON document will not be accepted.
-- **No server-side encryption request headers.** Encryption at rest is a deployment
-  setting, not a per-request one.
+- **No `UploadPartCopy`.** Download the part and upload it again.
+- **No ACLs.** Use [policies](../administration/policies.md) instead.
+- **No S3 bucket policies or IAM policy documents.** Record Store uses its own
+  policy model and rejects IAM JSON documents.
+- **No server-side encryption request headers.** Encryption at rest is a
+  deployment setting, not a per-request setting.
 - **No `aws-chunked` transfer encoding or trailing checksums.**
-- **No object tagging**, and no `x-amz-tagging` on write.
-- **No S3 bucket notifications.** Storage events are delivered by
+- **No object tagging**, including `x-amz-tagging` on writes.
+- **No S3 bucket notifications.** Record Store delivers storage events as
   [signed webhooks](../administration/events-and-webhooks.md) instead.
-- **No S3 Select, no object Lambda, no static website hosting.**
-- **No virtual-hosted-style addressing.** Path-style only.
-- **No STS or session tokens.** [Temporary credentials](../administration/temporary-credentials.md)
-  are plain expiring key pairs, not session tokens.
+- **No S3 Select, S3 Object Lambda, or static website hosting.**
+- **No virtual-hosted-style addressing.** Use path-style addressing.
+- **No STS or session tokens.**
+  [Temporary credentials](../administration/temporary-credentials.md) are
+  key pairs that expire, not session tokens.
 
-**Operational**
+### Operations
 
-- **No MinIO admin API**, and therefore no `mc admin`. Administration is the
-  management API on 7601, the CLI, or the console.
-- **No browser-resumable uploads through the console.** An interrupted upload is sent
-  again from the first byte.
-- **The tamper-evident audit chain is not shipped yet.** The audit trail is durable
-  and queryable, but a hash chain, checkpoints, and external anchoring are still in
-  progress. Proof bundles carry the section and report it as unavailable rather than
-  implying it is covered. Until then, what the audit trail reports is what the server
-  says, not evidence about the past.
+- **No MinIO admin API**, so `mc admin` doesn't work. To administer Record
+  Store, use the management API on port 7601, the CLI, or the console.
+- **No resumable browser uploads in the console.** If an upload is interrupted,
+  the console sends the file again from the first byte.
+- **No tamper-evident audit chain yet.** The audit trail is durable and you can
+  query it, but the hash chain, checkpoints, and external anchoring are still in
+  development. Proof bundles include the audit-chain section and report it as
+  unavailable. Until the audit chain ships, the audit trail records what the
+  server reports. It isn't evidence about past events.
 
-## After the move
+## What's next
 
-- Work through the [Security Checklist](../security/checklist.md).
-- Set `RECORD_STORE_ROOT_S3_ENABLED=false` once service accounts are in place.
-- Decide backups. Object Lock refuses deletions; it does not survive losing the
-  disk. See [Backup and Restore](../operations/backup-and-restore.md).
-- Configure CORS on any bucket a browser must reach. Browser access is denied by
-  default and there is no deployment-wide wildcard.
+After the migration, complete the following tasks:
+
+- Work through the [Security checklist](../security/checklist.md).
+- After your applications use service accounts, set
+  `RECORD_STORE_ROOT_S3_ENABLED=false`.
+- Plan backups. Object Lock prevents deletion, but it doesn't protect your data
+  if you lose the disk. For more information, see
+  [Backup and restore](../operations/backup-and-restore.md).
+- Configure CORS for every bucket that a browser must access. Record Store
+  denies browser access by default and has no deployment-wide wildcard.
