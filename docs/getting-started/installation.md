@@ -135,7 +135,7 @@ cd record-store
 docker compose -f deploy/docker/compose.console.yml up --build -d
 ```
 
->!!! warning "Use the source Compose files for development only"
+!!! warning "Use the source Compose files for development only"
     `compose.yml` and `compose.console.yml` contain development default values,
     marked `change-me`, for every secret. Don't use them in any real
     deployment. `compose.ghcr.yml` contains no default secrets and doesn't start

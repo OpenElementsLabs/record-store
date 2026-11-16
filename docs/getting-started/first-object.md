@@ -77,12 +77,10 @@ The root credentials exist to set up Record Store. Applications must use a
     Access key     SA4D8F0BEE8270423EA5D1
     Secret key     <shown once>
     ```
- 
 
-> !!! warning "Save the secret key now"
->
->  Record Store encrypts the secret key and never shows it again. If you lose the secret key, rotate the credential. You can't recover it.
-
+    !!! warning "Save the secret key now"
+        Record Store encrypts the secret key and never shows it again. If you
+        lose the secret key, rotate the credential. You can't recover it.
 
 1.  A new service account has no policies, so it can't perform any actions.
     Create a file named `read-write-photos.json` that defines a policy:

@@ -75,7 +75,7 @@ Store uses internally:
 
 `RECORD_STORE_VERSION` sets both images to the same release.
 
-> !!! danger "Use these values only on your own computer"
+!!! danger "Use these values only on your own computer"
     These values are for this quick start only. Before you deploy Record Store,
     generate real secrets as described in
     [Secrets and keys](../security/encryption.md#the-credential-master-key).
@@ -154,7 +154,9 @@ To let the console use the cookie over HTTP, do the following:
 
 1.  Sign in again.
 
-> !!! warning "Use this setting only for local testing"Remove `RECORD_STORE_CONSOLE_SECURE_COOKIES=false` before you serve the console over TLS.
+!!! warning "Use this setting only for local testing"
+    Remove `RECORD_STORE_CONSOLE_SECURE_COOKIES=false` before you serve the
+    console over TLS.
 
 ## Configure the AWS CLI
 
@@ -194,7 +196,7 @@ this section before you send your first request.
 
     In the output, the `profile` row shows `record-store`.
 
-> !!! warning "Run the `export` commands in every new terminal"
+!!! warning "Run the `export` commands in every new terminal"
     Environment variables apply only to the current shell. If you open a new
     terminal and don't set `AWS_PROFILE=record-store`, the AWS CLI uses your
     default profile. If your default profile has real AWS credentials, the
@@ -213,7 +215,7 @@ The following table explains each setting:
 | `AWS_EC2_METADATA_DISABLED` | Prevents a delay while the CLI looks for EC2 instance metadata. |
 | `AWS_REQUEST_CHECKSUM_CALCULATION`, `AWS_RESPONSE_CHECKSUM_VALIDATION` | Prevents the CLI from using `aws-chunked` trailing-checksum encoding, which Record Store doesn't support. Without these variables, uploads from recent CLI versions fail with a `NotImplemented` error. |
 
-> !!! note "Use root credentials only for testing"
+!!! note "Use root credentials only for testing"
     Applications must use a
     [service account](../administration/service-accounts.md) with only the
     permissions that they need. For more information, see
@@ -310,7 +312,7 @@ from the same directory:
 docker compose up -d
 ```
 
-> !!! danger "Delete the data only when you're finished"
+!!! danger "Delete the data only when you're finished"
     The `docker compose down -v` command also deletes the `record-store-data`
     volume, including every bucket and object. Run it only when you no longer
     need the data.

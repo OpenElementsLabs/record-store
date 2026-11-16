@@ -4,7 +4,7 @@ This page shows you how to move data and clients from an existing [MinIO](https:
 deployment to Record Store. It covers ports, credentials, client settings, and
 supported features. The last section lists what Record Store doesn't support.
 
-> !!! note "Evaluating Record Store? Start with the limitations"
+!!! note "Evaluating Record Store? Start with the limitations"
   Record Store keeps one authoritative copy of your data on one node. If your deployment depends on multi-node replication or erasure coding, Record Store can't replace it. Before you start a migration, read [Unsupported features](#unsupported-features).
 
 ## Ports

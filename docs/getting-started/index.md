@@ -51,7 +51,7 @@ You are responsible for the data directory. Put the data directory on durable
 storage. To learn what a successful write guarantees, see
 [Durability](../concepts/durability.md).
 
->!!! warning "Redundant storage is not a backup"
+!!! warning "Redundant storage is not a backup"
     Redundant disks protect your data against hardware failure. They don't
     protect it against an accidental delete, because Record Store writes a
     delete as reliably as any other change. To plan backups, see
