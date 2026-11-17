@@ -144,12 +144,14 @@ and upgrade the console after the server.
 
 ## After the upgrade
 
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
 record-store status --endpoint http://127.0.0.1:7601
 
 # Round-trip a real object
-aws --endpoint-url https://storage.example.com s3 cp /tmp/smoke.txt s3://smoke-test/
-aws --endpoint-url https://storage.example.com s3 cp s3://smoke-test/smoke.txt -
+aws --profile record-store s3 cp /tmp/smoke.txt s3://smoke-test/
+aws --profile record-store s3 cp s3://smoke-test/smoke.txt -
 ```
 
 Watch error rates and log volume for a while afterwards. Keep the pre-upgrade backup

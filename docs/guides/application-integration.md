@@ -97,8 +97,11 @@ The same choice applies.
 Browser access is denied by default. Record Store applies no deployment-wide wildcard;
 you configure CORS per bucket.
 
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
-aws --endpoint-url https://storage.example.com s3api put-bucket-cors --bucket uploads \
+aws --profile record-store s3api put-bucket-cors --bucket uploads \
+  --checksum-algorithm CRC32 \
   --cors-configuration '{
     "CORSRules": [{
       "AllowedOrigins": ["https://app.example.com"],
@@ -109,6 +112,9 @@ aws --endpoint-url https://storage.example.com s3api put-bucket-cors --bucket up
     }]
   }'
 ```
+
+The `--checksum-algorithm CRC32` option is required. For the reason, see
+[Commands that require a checksum](aws-cli.md#commands-that-require-a-checksum).
 
 A successful preflight is unauthenticated, but it grants only the origins, methods,
 and headers stored on that bucket. The signed request that follows still needs its own
@@ -133,10 +139,13 @@ tenants/<tenant-id>/invoices/2026/03/<uuid>.pdf
 
 ```bash
 RECORD_STORE_ENDPOINT=https://storage.example.com
-RECORD_STORE_ACCESS_KEY=<service account access key>
-RECORD_STORE_SECRET_KEY=<service account secret key>
+RECORD_STORE_ACCESS_KEY=SERVICE_ACCOUNT_ACCESS_KEY
+RECORD_STORE_SECRET_KEY=SERVICE_ACCOUNT_SECRET_KEY
 RECORD_STORE_BUCKET=uploads
 ```
 
-Every SDK needs `forcePathStyle` (or its equivalent) and a region string of
-`us-east-1`. See the [SDK guides](../sdk/index.md).
+`RECORD_STORE_ACCESS_KEY` and `RECORD_STORE_SECRET_KEY` are the service
+account's S3 credentials, not the management token. Every SDK also needs a
+region of `us-east-1`, path-style addressing, and checksum calculation set to
+"when required". For the settings and why each is needed, see
+[SDKs](../sdk/index.md#client-settings).

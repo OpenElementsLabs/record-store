@@ -45,11 +45,22 @@ the holder everything that account can do.
 There is no session token. A temporary credential is an access key and a secret key,
 signed exactly like any other:
 
+The following command takes the temporary keys from the environment and every
+other setting from the `record-store` profile. Use `AWS_PROFILE`, not
+`--profile`: with `--profile`, the AWS CLI ignores credentials in the
+environment.
+
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
-AWS_ACCESS_KEY_ID=<temporary access key> \
-AWS_SECRET_ACCESS_KEY=<temporary secret key> \
-aws --endpoint-url https://storage.example.com s3 ls s3://uploads/
+AWS_PROFILE=record-store \
+AWS_ACCESS_KEY_ID=TEMPORARY_ACCESS_KEY \
+AWS_SECRET_ACCESS_KEY=TEMPORARY_SECRET_KEY \
+aws s3 ls s3://uploads/
 ```
+
+Replace `TEMPORARY_ACCESS_KEY` and `TEMPORARY_SECRET_KEY` with the temporary
+key pair.
 
 Do not set `AWS_SESSION_TOKEN`. Record Store does not issue or expect one.
 

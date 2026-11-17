@@ -11,7 +11,10 @@ runs with Java 21.
 </dependency>
 ```
 
-Configure a path-style endpoint and disable AWS chunked encoding:
+## Client
+
+The client reads its settings from the environment variables described in
+[SDKs](index.md#environment-variables):
 
 ```java
 import java.net.URI;
@@ -25,11 +28,27 @@ S3Client s3 = S3Client.builder()
     .endpointOverride(URI.create(System.getenv("RECORD_STORE_ENDPOINT")))
     .region(Region.US_EAST_1)
     .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
-        System.getenv("AWS_ACCESS_KEY_ID"), System.getenv("AWS_SECRET_ACCESS_KEY"))))
+        System.getenv("RECORD_STORE_ACCESS_KEY"), System.getenv("RECORD_STORE_SECRET_KEY"))))
     .forcePathStyle(true)
     .serviceConfiguration(S3Configuration.builder().chunkedEncodingEnabled(false).build())
     .build();
 ```
+
+The following settings are specific to Record Store:
+
+- `endpointOverride`: the URL of the Record Store S3 API, for example
+  `https://storage.example.com`. The S3 API listens on port 7600 by default.
+- `credentialsProvider`: a service account's S3 access key pair. The management
+  token doesn't work with the S3 API.
+- `region`: Record Store has no regions, but SigV4 signs a region into every
+  request. Any value works if every client uses the same one.
+- `forcePathStyle(true)`: required. Puts the bucket name in the URL path instead
+  of the hostname.
+- `chunkedEncodingEnabled(false)`: required. Stops the SDK from sending
+  `aws-chunked` payloads, which Record Store rejects with `NotImplemented`.
+  The SDK can keep its default checksum calculation.
+
+## Payload signing
 
 Header-authenticated `UNSIGNED-PAYLOAD` requests are accepted, including
 CreateBucket, PutObject, and UploadPart. SigV4 credentials, signatures, and

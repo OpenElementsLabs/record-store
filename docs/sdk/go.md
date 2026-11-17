@@ -39,12 +39,36 @@ func New(ctx context.Context, endpoint, accessKey, secretKey string) (*s3.Client
 	return s3.NewFromConfig(cfg, func(options *s3.Options) {
 		options.BaseEndpoint = aws.String(endpoint)
 		options.UsePathStyle = true
+		options.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		options.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	}), nil
 }
 ```
 
-`BaseEndpoint` and `UsePathStyle` are the two Record Store-specific settings. This is
-exactly how the compatibility test builds its client.
+To create the client from the environment variables described in
+[SDKs](index.md#environment-variables), call `New` as follows:
+
+```go
+client, err := storage.New(ctx,
+	os.Getenv("RECORD_STORE_ENDPOINT"),
+	os.Getenv("RECORD_STORE_ACCESS_KEY"),
+	os.Getenv("RECORD_STORE_SECRET_KEY"),
+)
+```
+
+The following settings are specific to Record Store:
+
+- `BaseEndpoint`: the URL of the Record Store S3 API, for example
+  `https://storage.example.com`. The S3 API listens on port 7600 by default.
+- `accessKey` and `secretKey`: a service account's S3 access key pair. The
+  management token doesn't work with the S3 API.
+- `WithRegion("us-east-1")`: Record Store has no regions, but SigV4 signs a
+  region into every request. Any value works if every client uses the same one.
+- `UsePathStyle`: required. Puts the bucket name in the URL path instead of the
+  hostname.
+- `RequestChecksumCalculation` and `ResponseChecksumValidation`: required. Stop
+  the SDK from sending upload checksums as `aws-chunked` trailers, which Record
+  Store rejects with `NotImplemented`.
 
 ## Upload
 
@@ -137,8 +161,9 @@ object, err := client.GetObject(ctx, &s3.GetObjectInput{
 
 ## Checksums
 
-If uploads fail with `NotImplemented`, the SDK is using AWS's `aws-chunked` trailing
-checksums. Set:
+The [client](#client) sets `RequestChecksumCalculation` and
+`ResponseChecksumValidation` to their `WhenRequired` values. If you can't change
+the client code, set the equivalent environment variables instead:
 
 ```bash
 export AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED

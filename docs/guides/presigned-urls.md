@@ -27,16 +27,25 @@ is involved in creating the URL.
 
 ## Creating one
 
+The SDK examples use a client configured as shown in the SDK guides, with the
+Record Store endpoint, S3 credentials, region, and path-style addressing. A
+presigned URL embeds the endpoint and the signature, so the client that signs
+it must use the same endpoint that the URL's user reaches.
+
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 === "AWS CLI"
 
     ```bash
-    aws --profile record-store --endpoint-url https://storage.example.com \
+    aws --profile record-store \
       s3 presign s3://uploads/report.pdf --expires-in 900
     ```
 
 === "JavaScript"
 
-    ```ts
+  `client` is the `S3Client` from [JavaScript and TypeScript](../sdk/javascript.md#client).
+
+  ```ts
     import { GetObjectCommand } from "@aws-sdk/client-s3";
     import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
@@ -45,17 +54,19 @@ is involved in creating the URL.
       new GetObjectCommand({ Bucket: "uploads", Key: "report.pdf" }),
       { expiresIn: 900 },
     );
-    ```
+  ```
 
 === "Python"
 
-    ```python
+`s3` is the boto3 client from [Python](../sdk/python.md#client).
+
+  ```python
     url = s3.generate_presigned_url(
         "get_object",
         Params={"Bucket": "uploads", "Key": "report.pdf"},
         ExpiresIn=900,
     )
-    ```
+  ```
 
 For an upload, sign `PutObjectCommand` / `put_object` instead.
 

@@ -71,8 +71,10 @@ which is which.
 
 To encrypt existing data, rewrite it:
 
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
-aws --endpoint-url https://storage.example.com s3 cp \
+aws --profile record-store s3 cp \
   s3://uploads/key s3://uploads/key --metadata-directive REPLACE
 ```
 

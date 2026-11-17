@@ -88,17 +88,19 @@ These bound what your most careless administrator can create. See
 
 ## Final verification
 
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
 # Ready and correctly configured
 record-store status --endpoint http://127.0.0.1:7601
 
 # Round-trip through the public endpoint
-aws --endpoint-url https://storage.example.com s3 mb s3://smoke-test
+aws --profile record-store s3 mb s3://smoke-test
 echo "hello" > /tmp/smoke.txt
-aws --endpoint-url https://storage.example.com s3 cp /tmp/smoke.txt s3://smoke-test/
-aws --endpoint-url https://storage.example.com s3 cp s3://smoke-test/smoke.txt -
-aws --endpoint-url https://storage.example.com s3 rm s3://smoke-test/smoke.txt
-aws --endpoint-url https://storage.example.com s3 rb s3://smoke-test
+aws --profile record-store s3 cp /tmp/smoke.txt s3://smoke-test/
+aws --profile record-store s3 cp s3://smoke-test/smoke.txt -
+aws --profile record-store s3 rm s3://smoke-test/smoke.txt
+aws --profile record-store s3 rb s3://smoke-test
 
 # The audit trail recorded all of it
 record-store audit --limit 20 --endpoint http://127.0.0.1:7601

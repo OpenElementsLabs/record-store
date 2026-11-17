@@ -31,7 +31,7 @@ tests.
 | `ServerSideEncryptionHeaders` | [Encryption](../security/encryption.md) is a deployment setting, not per request |
 | `AccessControlLists` | [Policies](../administration/policies.md) |
 | `AwsChunkedEncoding` | Configure the SDK to send unsigned or fully-signed payloads |
-| `Crc64NvmeChecksums` | Use CRC32, CRC32C, SHA-1 or SHA-256; an unverifiable checksum is refused rather than ignored |
+| `Crc64NvmeChecksums` | Use CRC32, CRC32C, SHA-1 or SHA-256; an unverifiable checksum is refused rather than ignored. With the AWS CLI, pass `--checksum-algorithm CRC32` to [commands that require a checksum](../guides/aws-cli.md#commands-that-require-a-checksum) |
 
 Requests for an unsupported operation return `501 NotImplemented`.
 
@@ -62,7 +62,7 @@ Every SDK has a setting for this:
 
 | SDK | Setting |
 | --- | --- |
-| AWS CLI | `--endpoint-url` (path-style is used automatically) |
+| AWS CLI | `s3.addressing_style path` in the profile; see [AWS CLI](../guides/aws-cli.md) |
 | boto3 | `config=Config(s3={"addressing_style": "path"})` |
 | Go v2 | `o.UsePathStyle = true` |
 | Java v2 | `forcePathStyle(true)`, `chunkedEncodingEnabled(false)`; see [Java](../sdk/java.md) |
@@ -84,12 +84,20 @@ CRC64NVME is refused with `NotImplemented` rather than accepted unverified.
 Newer AWS SDKs default to calculating a checksum on every upload. Sent as a header, as
 they do over plain HTTP, it is verified. Sent as an `aws-chunked` trailer, as they
 typically do over HTTPS, it is refused with `NotImplemented`, because Record Store does
-not accept `aws-chunked` payloads. If uploads fail that way:
+not accept `aws-chunked` payloads. Configure every client to calculate checksums
+only when required, as each [SDK guide](../sdk/index.md#client-settings) shows,
+or set the following environment variables:
 
 ```bash
 export AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED
 export AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED
 ```
+
+`WHEN_REQUIRED` doesn't stop a checksum on requests where S3 requires one, such
+as changes to bucket versioning, CORS, or Object Lock settings. For those
+requests, recent AWS CLI versions choose CRC64NVME, which is refused. Pass
+`--checksum-algorithm CRC32` to those commands; see
+[AWS CLI](../guides/aws-cli.md#commands-that-require-a-checksum).
 
 ## Query parameters
 
@@ -179,10 +187,10 @@ bash tests/compatibility/run.sh
 
 | Tool | Works | Notes |
 | --- | --- | --- |
-| AWS CLI | Yes | `--endpoint-url` |
+| AWS CLI | Yes | `endpoint_url` and `s3.addressing_style path` in the profile |
 | `s3cmd` | Yes | `host_bucket` must be path-style |
-| `rclone` | Yes | Provider `Other`, `force_path_style` |
-| `mc` | Yes | Standard S3 endpoint configuration |
+| `rclone` | Yes | Provider `Other`, `force_path_style = true`, `list_version = 2` |
+| `mc` | Not tested | Its admin commands target the MinIO admin API, which Record Store doesn't implement. See [Migrating from MinIO](../getting-started/migrating-from-minio.md) |
 
 ## Extensions
 

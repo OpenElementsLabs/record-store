@@ -199,15 +199,15 @@ from the listener address and point at `127.0.0.1`.
 
 ## Verifying
 
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
 # Host is preserved and signing works
-AWS_ACCESS_KEY_ID=<your-access-key> \
-AWS_SECRET_ACCESS_KEY=<your-secret-key> \
-aws --endpoint-url https://storage.example.com s3 ls
+aws --profile record-store s3 ls
 
 # Large uploads are not truncated by a body limit
 head -c 100M /dev/urandom > /tmp/large.bin
-aws --endpoint-url https://storage.example.com s3 cp /tmp/large.bin s3://uploads/
+aws --profile record-store s3 cp /tmp/large.bin s3://uploads/
 
 # The management port is not publicly reachable
 curl -sS --max-time 5 https://storage.example.com:7601/health || echo "closed, as intended"

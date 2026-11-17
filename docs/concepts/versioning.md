@@ -21,10 +21,17 @@ overwritten or deleted. It is configured per bucket.
 
 === "AWS CLI"
 
+    This command uses the `record-store` AWS CLI profile. To set it up, see
+    [AWS CLI](../guides/aws-cli.md#configure-a-profile).
+
     ```bash
-    aws --endpoint-url http://127.0.0.1:7600 s3api put-bucket-versioning \
+    aws --profile record-store s3api put-bucket-versioning \
+      --checksum-algorithm CRC32 \
       --bucket demo --versioning-configuration Status=Enabled
     ```
+
+    The `--checksum-algorithm CRC32` option is required. For the reason, see
+    [Commands that require a checksum](../guides/aws-cli.md#commands-that-require-a-checksum).
 
 ### Transitions
 
@@ -48,9 +55,11 @@ that lets history stop being maintained.
 
 Each version has a `VersionId`. Reads and deletes can name one explicitly:
 
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
-aws --endpoint-url http://127.0.0.1:7600 s3api get-object \
-  --bucket demo --key report.pdf --version-id <version-id> ./report-old.pdf
+aws --profile record-store s3api get-object \
+  --bucket demo --key report.pdf --version-id VERSION_ID ./report-old.pdf
 ```
 
 `ListObjectVersions` returns the history, newest first, marking which entry is current.

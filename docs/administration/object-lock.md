@@ -11,8 +11,10 @@ legal hold, per-bucket defaults, and a governance bypass gated on its own permis
 
 Object Lock is chosen when a bucket is created, and never afterwards:
 
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
-aws --endpoint-url http://localhost:7600 s3api create-bucket \
+aws --profile record-store s3api create-bucket \
   --bucket records --object-lock-enabled-for-bucket
 ```
 
@@ -56,7 +58,7 @@ it counts as tightening and needs no bypass.
 At write time, with headers:
 
 ```bash
-aws --endpoint-url http://localhost:7600 s3api put-object \
+aws --profile record-store s3api put-object \
   --bucket records --key statement.pdf --body ./statement.pdf \
   --object-lock-mode COMPLIANCE \
   --object-lock-retain-until-date 2033-01-01T00:00:00Z
@@ -65,10 +67,16 @@ aws --endpoint-url http://localhost:7600 s3api put-object \
 Or afterwards, on a specific version:
 
 ```bash
-aws --endpoint-url http://localhost:7600 s3api put-object-retention \
+aws --profile record-store s3api put-object-retention \
+  --checksum-algorithm CRC32 \
   --bucket records --key statement.pdf --version-id <version> \
   --retention '{"Mode":"COMPLIANCE","RetainUntilDate":"2033-01-01T00:00:00Z"}'
 ```
+
+This command, and the other commands on this page that change Object Lock
+settings, pass `--checksum-algorithm CRC32`. The option is required. For the
+reason, see
+[Commands that require a checksum](../guides/aws-cli.md#commands-that-require-a-checksum).
 
 Setting a lock at write time needs the same permission as setting it afterwards, on top
 of `s3:PutObject`: `s3:PutObjectRetention` for `x-amz-object-lock-mode` and
@@ -98,7 +106,8 @@ A default applies to every version written into the bucket that does not name a 
 its own:
 
 ```bash
-aws --endpoint-url http://localhost:7600 s3api put-object-lock-configuration \
+aws --profile record-store s3api put-object-lock-configuration \
+  --checksum-algorithm CRC32 \
   --bucket records --object-lock-configuration \
   '{"ObjectLockEnabled":"Enabled","Rule":{"DefaultRetention":{"Mode":"GOVERNANCE","Days":365}}}'
 ```
@@ -120,7 +129,8 @@ A legal hold blocks deletion independently of any retention, in either mode, for
 as it is left on:
 
 ```bash
-aws --endpoint-url http://localhost:7600 s3api put-object-legal-hold \
+aws --profile record-store s3api put-object-legal-hold \
+  --checksum-algorithm CRC32 \
   --bucket records --key statement.pdf --version-id <version> \
   --legal-hold Status=ON
 ```

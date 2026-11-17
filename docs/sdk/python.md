@@ -9,25 +9,42 @@ pip install boto3
 
 ## Client
 
+The client reads its settings from the environment variables described in
+[SDKs](index.md#environment-variables):
+
 ```python
+import os
+
 import boto3
+from botocore.config import Config
 
 s3 = boto3.client(
     "s3",
-    endpoint_url="https://storage.example.com",
-    aws_access_key_id="<service account access key>",
-    aws_secret_access_key="<service account secret key>",
+    endpoint_url=os.environ["RECORD_STORE_ENDPOINT"],
+    aws_access_key_id=os.environ["RECORD_STORE_ACCESS_KEY"],
+    aws_secret_access_key=os.environ["RECORD_STORE_SECRET_KEY"],
     region_name="us-east-1",
-    config=boto3.session.Config(s3={"addressing_style": "path"}),
+    config=Config(
+        s3={"addressing_style": "path"},
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
+    ),
 )
 ```
 
-`addressing_style="path"` is required. Region is arbitrary but must be consistent —
-SigV4 signs it.
+The following settings are specific to Record Store:
 
-!!! tip "Prefer environment variables"
-    Read credentials from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` or your own
-    variables rather than committing them.
+- `endpoint_url`: the URL of the Record Store S3 API, for example
+  `https://storage.example.com`. The S3 API listens on port 7600 by default.
+- `aws_access_key_id` and `aws_secret_access_key`: a service account's S3 access
+  key pair. The management token doesn't work with the S3 API.
+- `region_name`: Record Store has no regions, but SigV4 signs a region into
+  every request. Any value works if every client uses the same one.
+- `addressing_style="path"`: required. Puts the bucket name in the URL path
+  instead of the hostname.
+- `request_checksum_calculation` and `response_checksum_validation`: required.
+  Stop boto3 from sending upload checksums as `aws-chunked` trailers, which
+  Record Store rejects with `NotImplemented`.
 
 ## Buckets
 
@@ -117,8 +134,9 @@ response = s3.get_object(Bucket="uploads", Key="big.bin", Range="bytes=0-1023")
 
 ## Checksums
 
-If uploads fail with `NotImplemented`, boto3 is using AWS's `aws-chunked` trailing
-checksums. Turn that off:
+The [client](#client) sets `request_checksum_calculation` and
+`response_checksum_validation` to `when_required`. If you can't change the client
+code, set the equivalent environment variables instead:
 
 ```bash
 export AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED

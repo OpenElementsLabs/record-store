@@ -2,16 +2,40 @@
 
 ## `NotImplemented` on every upload
 
-The SDK is sending AWS's `aws-chunked` trailing checksums, which Record Store does not
-accept.
+The client is sending AWS's `aws-chunked` trailing checksums, which Record Store
+does not accept. This affects AWS CLI 2.23 and later, and every AWS SDK that
+defaults to `WHEN_SUPPORTED`. It is the most common first-upload failure.
+
+Set request checksum calculation and response checksum validation to "when
+required" in the client:
+
+| Client | Setting |
+| --- | --- |
+| AWS CLI | `aws configure set request_checksum_calculation when_required --profile record-store` and `aws configure set response_checksum_validation when_required --profile record-store`. See [AWS CLI](../guides/aws-cli.md#configure-a-profile). |
+| JavaScript v3 | `requestChecksumCalculation: "WHEN_REQUIRED"` and `responseChecksumValidation: "WHEN_REQUIRED"`. See [JavaScript](../sdk/javascript.md#client). |
+| boto3 | `Config(request_checksum_calculation="when_required", response_checksum_validation="when_required")`. See [Python](../sdk/python.md#client). |
+| Go v2 | `RequestChecksumCalculation` and `ResponseChecksumValidation` set to their `WhenRequired` values. See [Go](../sdk/go.md#client). |
+| Rust | `.request_checksum_calculation(...)` and `.response_checksum_validation(...)` with `WhenRequired`. See [Rust](../sdk/rust.md#client). |
+| Java v2 | `chunkedEncodingEnabled(false)`. See [Java](../sdk/java.md#client). |
+
+If you can't change the client configuration, set the following environment
+variables instead. The AWS CLI and every AWS SDK read them:
 
 ```bash
 export AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED
 export AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED
 ```
 
-This affects recent versions of the AWS CLI and every AWS SDK that defaults to
-`WHEN_SUPPORTED`. It is the most common first-upload failure.
+## `NotImplemented` when changing bucket or Object Lock settings
+
+Uploads work, but a command such as `put-bucket-versioning`, `put-bucket-cors`,
+or `put-object-legal-hold` fails with `NotImplemented`.
+
+S3 requires a checksum on these requests, so the AWS CLI sends one even with
+`request_checksum_calculation when_required`. Recent versions of the AWS CLI
+use CRC64NVME, which Record Store doesn't support. Pass
+`--checksum-algorithm CRC32` to the command. For the full list of commands, see
+[Commands that require a checksum](../guides/aws-cli.md#commands-that-require-a-checksum).
 
 ## Uploads fail above a size threshold
 
@@ -25,11 +49,14 @@ proxy_request_buffering off;
 Caddy has no default limit. Traefik and Coolify's proxy do — raise them for the storage
 domain.
 
-Confirm by bypassing the proxy:
+Confirm by bypassing the proxy. On the Record Store host, upload a large file
+directly to the S3 listener. `--endpoint-url` overrides the profile's endpoint:
+
+--8<-- "docs/.snippets/aws-cli-profile.md"
 
 ```bash
 head -c 100M /dev/urandom > /tmp/large.bin
-aws --endpoint-url http://127.0.0.1:7600 s3 cp /tmp/large.bin s3://uploads/
+aws --profile record-store --endpoint-url http://127.0.0.1:7600 s3 cp /tmp/large.bin s3://uploads/
 ```
 
 Works direct and fails through the proxy — it is the proxy.
@@ -128,14 +155,14 @@ Multipart uploads are being started and never completed or aborted. Each holds i
 on disk until one or the other happens.
 
 ```bash
-aws --endpoint-url https://storage.example.com \
+aws --profile record-store \
   s3api list-multipart-uploads --bucket uploads
 ```
 
 Abort the stale ones:
 
 ```bash
-aws --endpoint-url https://storage.example.com \
+aws --profile record-store \
   s3api abort-multipart-upload \
   --bucket uploads --key <key> --upload-id <id>
 ```
@@ -150,10 +177,14 @@ The browser blocked it, and the request may never have reached Record Store.
 Configure CORS on the bucket:
 
 ```bash
-aws --endpoint-url https://storage.example.com \
+aws --profile record-store \
   s3api put-bucket-cors --bucket uploads \
+  --checksum-algorithm CRC32 \
   --cors-configuration file://cors.json
 ```
+
+The `--checksum-algorithm CRC32` option is required. For the reason, see
+[Commands that require a checksum](../guides/aws-cli.md#commands-that-require-a-checksum).
 
 ```json
 {

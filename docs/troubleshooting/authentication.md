@@ -13,12 +13,13 @@ that are otherwise correct.
 proxy_set_header Host $host;
 ```
 
-Test by bypassing the proxy:
+Test by bypassing the proxy. On the Record Store host, send the same request
+directly to the S3 listener. `--endpoint-url` overrides the profile's endpoint:
+
+--8<-- "docs/.snippets/aws-cli-profile.md"
 
 ```bash
-AWS_ACCESS_KEY_ID=<your-access-key> \
-AWS_SECRET_ACCESS_KEY=<your-secret-key> \
-aws --endpoint-url http://127.0.0.1:7600 s3 ls
+aws --profile record-store --endpoint-url http://127.0.0.1:7600 s3 ls
 ```
 
 Works direct and fails through the proxy — it is the proxy.

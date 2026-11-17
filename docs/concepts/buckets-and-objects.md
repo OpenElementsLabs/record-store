@@ -46,8 +46,10 @@ object under it is deleted.
 
 Prefixes and delimiters are what produce a folder-like view:
 
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
-aws --endpoint-url http://127.0.0.1:7600 s3api list-objects-v2 \
+aws --profile record-store s3api list-objects-v2 \
   --bucket demo --prefix reports/ --delimiter /
 ```
 

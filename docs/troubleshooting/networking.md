@@ -10,12 +10,14 @@ proxy_set_header Host $host;
 
 Caddy and Traefik preserve `Host` by default; Nginx does not unless told to.
 
-Confirm the diagnosis by bypassing the proxy:
+Confirm the diagnosis by bypassing the proxy. On the Record Store host, send the
+same request directly to the S3 listener. `--endpoint-url` overrides the
+profile's endpoint:
+
+--8<-- "docs/.snippets/aws-cli-profile.md"
 
 ```bash
-AWS_ACCESS_KEY_ID=<your-access-key> \
-AWS_SECRET_ACCESS_KEY=<your-secret-key> \
-aws --endpoint-url http://127.0.0.1:7600 s3 ls
+aws --profile record-store --endpoint-url http://127.0.0.1:7600 s3 ls
 ```
 
 ## Uploads truncated or refused by size
@@ -37,10 +39,14 @@ proxy_request_buffering off;
 A browser blocks the request before you ever see it in Record Store's logs.
 
 ```bash
-aws --endpoint-url https://storage.example.com \
+aws --profile record-store \
   s3api put-bucket-cors --bucket uploads \
+  --checksum-algorithm CRC32 \
   --cors-configuration file://cors.json
 ```
+
+The `--checksum-algorithm CRC32` option is required. For the reason, see
+[Commands that require a checksum](../guides/aws-cli.md#commands-that-require-a-checksum).
 
 ```json
 {
