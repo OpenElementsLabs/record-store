@@ -1,46 +1,64 @@
 # AWS CLI
 
-The AWS CLI works against Record Store once it is told to use a custom endpoint and
-path-style addressing.
+The AWS CLI works with any S3-compatible service, including Record Store. You
+configure it with the Record Store endpoint and a few settings that Record Store
+requires.
 
 ## Configure a profile
 
-```bash
-aws configure --profile record-store
-```
+Store the Record Store settings in a separate profile named `record-store`. A
+profile is a named set of AWS CLI credentials and settings, so your existing AWS
+configuration stays unchanged.
 
-Enter the access key and secret from a [service account](../administration/service-accounts.md).
-For **Default region name** use `us-east-1` — Record Store does not use regions, but
-SigV4 requires one and the signature must match.
-
-Path-style addressing must be set per profile:
+To create the profile, run the following commands:
 
 ```bash
+aws configure set endpoint_url ENDPOINT --profile record-store
+aws configure set aws_access_key_id ACCESS_KEY --profile record-store
+aws configure set aws_secret_access_key SECRET_KEY --profile record-store
+aws configure set region us-east-1 --profile record-store
 aws configure set s3.addressing_style path --profile record-store
+aws configure set request_checksum_calculation when_required --profile record-store
+aws configure set response_checksum_validation when_required --profile record-store
 ```
 
-!!! info "Why path-style"
-    Virtual-hosted style puts the bucket in the hostname (`demo.storage.example.com`),
-    which needs wildcard DNS and a wildcard certificate. Record Store expects the
-    bucket in the path (`storage.example.com/demo`).
+Replace the following:
 
-## Two environment settings you will want
+- `ENDPOINT`: the URL of the Record Store S3 API, which listens on port 7600 by
+  default. For example, `https://storage.example.com` or
+  `http://127.0.0.1:7600`.
+- `ACCESS_KEY` and `SECRET_KEY`: the access key pair of a
+  [service account](../administration/service-accounts.md). For local testing,
+  you can use the root key pair.
+
+The following table explains each setting:
+
+| Setting | Reason |
+| --- | --- |
+| `endpoint_url` | Sends requests from this profile to Record Store instead of AWS. Use the S3 API, not the management API (port 7601) or the web console (port 7602). Requires AWS CLI 2.13 or later. |
+| `aws_access_key_id`, `aws_secret_access_key` | **S3 credentials** that sign each request. The management token doesn't work here: it's for the web console and the `record-store` CLI. |
+| `region` | Record Store has no regions, but SigV4 signs a region into every request. Any value works if every client uses the same one. |
+| `s3.addressing_style` | Puts the bucket name in the URL path (`storage.example.com/demo`). Record Store doesn't support virtual-hosted style (`demo.storage.example.com`), which needs wildcard DNS and a wildcard certificate. |
+| `request_checksum_calculation`, `response_checksum_validation` | Stop the CLI from sending upload checksums as `aws-chunked` trailers, which Record Store rejects. Without these settings, uploads from AWS CLI 2.23 and later fail with a `NotImplemented` error. Earlier versions ignore them. |
+
+To confirm that the profile works, list your buckets:
 
 ```bash
-export AWS_EC2_METADATA_DISABLED=true
-export AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED
-export AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED
+aws --profile record-store s3api list-buckets
 ```
 
-The first stops the CLI pausing to look for EC2 instance metadata that is not there.
-The other two keep the CLI off AWS's `aws-chunked` trailing-checksum encoding, which
-Record Store reports as unsupported. Without them, newer AWS CLI versions can fail
-uploads with a `NotImplemented` error.
+!!! warning "Always pass the profile"
+    A command without `--profile record-store` uses your default profile. If
+    your default profile has AWS credentials, the command goes to your AWS
+    account instead of to Record Store. To use the profile for every command in
+    the current shell, run `export AWS_PROFILE=record-store`.
 
 ## Common operations
 
+To shorten the commands, define an alias for the profile:
+
 ```bash
-alias rs='aws --profile record-store --endpoint-url https://storage.example.com'
+alias rs='aws --profile record-store'
 ```
 
 === "Buckets"
@@ -64,17 +82,22 @@ alias rs='aws --profile record-store --endpoint-url https://storage.example.com'
 === "Versioning"
 
     ```bash
-    rs s3api put-bucket-versioning \
+    rs s3api put-bucket-versioning --checksum-algorithm CRC32 \
       --bucket demo --versioning-configuration Status=Enabled
     rs s3api list-object-versions --bucket demo
     rs s3api get-object --bucket demo --key report.pdf \
-      --version-id <version-id> ./old.pdf
+      --version-id VERSION_ID ./old.pdf
     ```
+
+    Replace `VERSION_ID` with a version ID from `list-object-versions`.
+    For why the first command passes `--checksum-algorithm CRC32`, see
+    [Commands that require a checksum](#commands-that-require-a-checksum).
 
 === "CORS"
 
     ```bash
-    rs s3api put-bucket-cors --bucket demo --cors-configuration '{
+    rs s3api put-bucket-cors --checksum-algorithm CRC32 \
+      --bucket demo --cors-configuration '{
       "CORSRules": [{
         "AllowedOrigins": ["https://app.example.com"],
         "AllowedMethods": ["PUT", "GET", "HEAD"],
@@ -84,6 +107,42 @@ alias rs='aws --profile record-store --endpoint-url https://storage.example.com'
       }]
     }'
     ```
+
+## Commands that require a checksum
+
+S3 requires a checksum on some requests, such as those that change bucket
+versioning, CORS, or Object Lock settings. For these commands, the AWS CLI
+always sends a checksum, even with `request_checksum_calculation when_required`.
+Recent versions of the AWS CLI use CRC64NVME by default, and Record Store
+rejects CRC64NVME with a `NotImplemented` error.
+
+To avoid the error, pass `--checksum-algorithm CRC32` to these commands:
+
+- `s3api put-bucket-versioning`
+- `s3api put-bucket-cors`
+- `s3api put-object-lock-configuration`
+- `s3api put-object-retention`
+- `s3api put-object-legal-hold`
+
+Record Store verifies CRC32 checksums against the request body. The examples in
+this documentation already include the option.
+
+## Use different credentials for one command
+
+To run a command as a different identity, such as a second service account or
+temporary credentials, set the keys in the environment and select the profile
+with `AWS_PROFILE`:
+
+```bash
+AWS_PROFILE=record-store \
+AWS_ACCESS_KEY_ID=OTHER_ACCESS_KEY \
+AWS_SECRET_ACCESS_KEY=OTHER_SECRET_KEY \
+aws s3 ls s3://demo/
+```
+
+The command uses the keys from the environment and every other setting from the
+profile. Don't use `--profile` here: with `--profile`, the AWS CLI ignores
+credentials in the environment.
 
 ## Copy
 

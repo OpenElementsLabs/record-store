@@ -39,8 +39,10 @@ sequenceDiagram
 
 ### Create
 
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
-aws --endpoint-url https://storage.example.com s3api create-multipart-upload \
+aws --profile record-store s3api create-multipart-upload \
   --bucket demo --key big.bin
 ```
 
@@ -51,7 +53,7 @@ Returns an `UploadId` identifying this upload.
 Parts are numbered from 1. Each returns an `ETag` you must keep.
 
 ```bash
-aws --endpoint-url https://storage.example.com s3api upload-part \
+aws --profile record-store s3api upload-part \
   --bucket demo --key big.bin --upload-id <upload-id> \
   --part-number 1 --body ./part-1
 ```
@@ -62,7 +64,7 @@ rejected at completion with `EntityTooSmall`. The final part may be any size.
 ### Complete
 
 ```bash
-aws --endpoint-url https://storage.example.com s3api complete-multipart-upload \
+aws --profile record-store s3api complete-multipart-upload \
   --bucket demo --key big.bin --upload-id <upload-id> \
   --multipart-upload '{"Parts":[{"PartNumber":1,"ETag":"..."},{"PartNumber":2,"ETag":"..."}]}'
 ```
@@ -77,7 +79,7 @@ Each entry's `ETag` must match the part Record Store stored. A mismatch is
 ### Abort
 
 ```bash
-aws --endpoint-url https://storage.example.com s3api abort-multipart-upload \
+aws --profile record-store s3api abort-multipart-upload \
   --bucket demo --key big.bin --upload-id <upload-id>
 ```
 
@@ -86,8 +88,8 @@ Aborting releases the parts and the storage they occupy.
 ## Inspecting uploads in flight
 
 ```bash
-aws --endpoint-url https://storage.example.com s3api list-multipart-uploads --bucket demo
-aws --endpoint-url https://storage.example.com s3api list-parts \
+aws --profile record-store s3api list-multipart-uploads --bucket demo
+aws --profile record-store s3api list-parts \
   --bucket demo --key big.bin --upload-id <upload-id>
 ```
 

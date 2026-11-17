@@ -257,13 +257,22 @@ objects — which writes a delete marker — but cannot erase history. See
 
 ## Testing a policy
 
-Policies are easiest to verify from the account's own credentials:
+Policies are easiest to verify from the account's own credentials. The
+following command takes the account's keys from the environment and every other
+setting from the `record-store` profile. Use `AWS_PROFILE`, not `--profile`:
+with `--profile`, the AWS CLI ignores credentials in the environment.
+
+--8<-- "docs/.snippets/aws-cli-profile.md"
 
 ```bash
-AWS_ACCESS_KEY_ID=<account access key> \
-AWS_SECRET_ACCESS_KEY=<account secret key> \
-aws --endpoint-url https://storage.example.com s3 ls s3://uploads/
+AWS_PROFILE=record-store \
+AWS_ACCESS_KEY_ID=ACCOUNT_ACCESS_KEY \
+AWS_SECRET_ACCESS_KEY=ACCOUNT_SECRET_KEY \
+aws s3 ls s3://uploads/
 ```
+
+Replace `ACCOUNT_ACCESS_KEY` and `ACCOUNT_SECRET_KEY` with the service account's
+S3 access key pair.
 
 A refusal returns `403 AccessDenied`. Record Store does not say which statement was
 responsible — that would leak the shape of a policy to a caller who cannot read it.

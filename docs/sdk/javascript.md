@@ -14,6 +14,9 @@ npm install @aws-sdk/s3-request-presigner
 
 ## Client
 
+The client reads its settings from the environment variables described in
+[SDKs](index.md#environment-variables):
+
 ```ts title="lib/record-store.ts"
 import { S3Client } from "@aws-sdk/client-s3";
 
@@ -21,17 +24,24 @@ export const recordStore = new S3Client({
   endpoint: process.env.RECORD_STORE_ENDPOINT!, // (1)!
   region: "us-east-1",                          // (2)!
   forcePathStyle: true,                         // (3)!
-  credentials: {
+  requestChecksumCalculation: "WHEN_REQUIRED",  // (4)!
+  responseChecksumValidation: "WHEN_REQUIRED",
+  credentials: {                                // (5)!
     accessKeyId: process.env.RECORD_STORE_ACCESS_KEY!,
     secretAccessKey: process.env.RECORD_STORE_SECRET_KEY!,
   },
 });
 ```
 
-1. Your Record Store S3 endpoint, for example `https://storage.example.com`.
-2. Record Store has no regions, but SigV4 requires a region and the signature must
-   match. Any consistent value works; `us-east-1` is conventional.
-3. Required. Puts the bucket in the path rather than the hostname.
+1. The URL of the Record Store S3 API, for example `https://storage.example.com`.
+   The S3 API listens on port 7600 by default.
+2. Record Store has no regions, but SigV4 signs a region into every request. Any
+   value works if every client uses the same one.
+3. Required. Puts the bucket name in the URL path instead of the hostname.
+4. Required. Stops the SDK from sending upload checksums as `aws-chunked`
+   trailers, which Record Store rejects with `NotImplemented`.
+5. A service account's S3 access key pair. The management token doesn't work
+   with the S3 API.
 
 !!! danger "Server-side only"
     This module reads secrets from the environment. Never import it into browser code.
@@ -148,8 +158,9 @@ An unsatisfiable range returns `416`.
 
 ## Checksums
 
-Newer SDK versions may default to AWS's `aws-chunked` trailing-checksum encoding,
-which Record Store reports as unsupported. If uploads fail with `NotImplemented`, set:
+The [client](#client) sets `requestChecksumCalculation` and
+`responseChecksumValidation` to `WHEN_REQUIRED`. If you can't change the client
+code, set the equivalent environment variables instead:
 
 ```bash
 AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED

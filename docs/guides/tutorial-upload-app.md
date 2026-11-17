@@ -122,12 +122,37 @@ The browser uploads directly, so the bucket must allow that origin:
 }
 ```
 
+Setting CORS requires the `s3:ManageBucket` permission, which the `upload-app`
+service account deliberately doesn't have. Use the root S3 credentials from
+`deploy/docker/.env` instead. Create an AWS CLI profile named `record-store`
+that sends requests to your local Record Store, not to AWS:
+
 ```bash
-AWS_ACCESS_KEY_ID=<service account access key> \
-AWS_SECRET_ACCESS_KEY=<service account secret key> \
-aws --endpoint-url http://127.0.0.1:7600 \
-  s3api put-bucket-cors --bucket uploads --cors-configuration file://cors.json
+aws configure set endpoint_url http://127.0.0.1:7600 --profile record-store
+aws configure set aws_access_key_id ROOT_ACCESS_KEY --profile record-store
+aws configure set aws_secret_access_key ROOT_SECRET_KEY --profile record-store
+aws configure set region us-east-1 --profile record-store
+aws configure set s3.addressing_style path --profile record-store
+aws configure set request_checksum_calculation when_required --profile record-store
+aws configure set response_checksum_validation when_required --profile record-store
 ```
+
+Replace `ROOT_ACCESS_KEY` and `ROOT_SECRET_KEY` with the values of
+`RECORD_STORE_ROOT_ACCESS_KEY` and `RECORD_STORE_ROOT_SECRET_KEY` from
+`deploy/docker/.env`. These are S3 credentials. The management token from step 1
+doesn't work with the S3 API. For an explanation of each setting, see
+[AWS CLI](aws-cli.md).
+
+Apply the CORS configuration:
+
+```bash
+aws --profile record-store \
+  s3api put-bucket-cors --bucket uploads --cors-configuration file://cors.json \
+  --checksum-algorithm CRC32
+```
+
+The `--checksum-algorithm CRC32` option is required. For the reason, see
+[Commands that require a checksum](aws-cli.md#commands-that-require-a-checksum).
 
 Origins are exact: scheme, host, and port all count. Add your production origin when
 you deploy.
@@ -143,9 +168,13 @@ npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner server-only
 ```bash title=".env.local"
 RECORD_STORE_ENDPOINT=http://127.0.0.1:7600
 RECORD_STORE_BUCKET=uploads
-RECORD_STORE_ACCESS_KEY=<service account access key>
-RECORD_STORE_SECRET_KEY=<service account secret key>
+RECORD_STORE_ACCESS_KEY=SERVICE_ACCOUNT_ACCESS_KEY
+RECORD_STORE_SECRET_KEY=SERVICE_ACCOUNT_SECRET_KEY
 ```
+
+Replace `SERVICE_ACCOUNT_ACCESS_KEY` and `SERVICE_ACCOUNT_SECRET_KEY` with the
+`upload-app` keys from step 3. These are S3 credentials: don't use the root key
+pair or the management token here.
 
 !!! danger "No `NEXT_PUBLIC_` prefix"
     Anything prefixed `NEXT_PUBLIC_` is inlined into the browser bundle. The secret key
@@ -165,6 +194,8 @@ export const recordStore = new S3Client({
   endpoint: process.env.RECORD_STORE_ENDPOINT!,
   region: "us-east-1",
   forcePathStyle: true,
+  requestChecksumCalculation: "WHEN_REQUIRED",
+  responseChecksumValidation: "WHEN_REQUIRED",
   credentials: {
     accessKeyId: process.env.RECORD_STORE_ACCESS_KEY!,
     secretAccessKey: process.env.RECORD_STORE_SECRET_KEY!,
@@ -175,7 +206,16 @@ export const recordStore = new S3Client({
 `import "server-only"` turns an accidental client import into a build error rather than
 a leaked secret.
 
-`forcePathStyle: true` is required.
+The following settings are required:
+
+- `forcePathStyle: true` puts the bucket name in the URL path instead of the
+  hostname.
+- `requestChecksumCalculation` and `responseChecksumValidation` stop the SDK from
+  sending upload checksums as `aws-chunked` trailers, which Record Store rejects
+  with `NotImplemented`.
+
+For an explanation of every client setting, see
+[JavaScript and TypeScript](../sdk/javascript.md#client).
 
 ## 7. The signing route
 
@@ -365,11 +405,21 @@ Open <http://localhost:3000>, upload a file, and it appears in the list.
 
 Confirm from the other side:
 
+The following command runs as the `upload-app` service account. It takes the
+service account's keys from the environment and every other setting from the
+`record-store` profile that you created in step 4. Use `AWS_PROFILE`, not
+`--profile`: with `--profile`, the AWS CLI ignores credentials in the
+environment.
+
 ```bash
-AWS_ACCESS_KEY_ID=<service account access key> \
-AWS_SECRET_ACCESS_KEY=<service account secret key> \
-aws --endpoint-url http://127.0.0.1:7600 s3 ls s3://uploads/ --recursive
+AWS_PROFILE=record-store \
+AWS_ACCESS_KEY_ID=SERVICE_ACCOUNT_ACCESS_KEY \
+AWS_SECRET_ACCESS_KEY=SERVICE_ACCOUNT_SECRET_KEY \
+aws s3 ls s3://uploads/ --recursive
 ```
+
+Replace `SERVICE_ACCOUNT_ACCESS_KEY` and `SERVICE_ACCOUNT_SECRET_KEY` with the
+keys from step 3.
 
 ## Troubleshooting
 
@@ -378,7 +428,8 @@ aws --endpoint-url http://127.0.0.1:7600 s3 ls s3://uploads/ --recursive
 | CORS error in the browser console | The origin is not in the bucket's CORS rules — exact match, including port |
 | `403` on the `PUT` | The URL expired, or `content-type` differs from what was signed |
 | `403` on listing | The policy is missing `bucket:uploads` for `s3:ListBucket` |
-| `NotImplemented` | Set `AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED` |
+| `NotImplemented` on an upload | The client is missing `requestChecksumCalculation: "WHEN_REQUIRED"`. See [step 6](#6-the-server-side-client) |
+| `NotImplemented` on `put-bucket-cors` | The command is missing `--checksum-algorithm CRC32`. See [step 4](#4-configure-cors) |
 | Uploads work, listing is empty | The listing route is querying a different bucket |
 
 More in [Upload Problems](../troubleshooting/uploads.md).

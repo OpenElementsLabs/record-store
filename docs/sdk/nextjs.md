@@ -39,6 +39,8 @@ export const recordStore = new S3Client({
   endpoint: process.env.RECORD_STORE_ENDPOINT!,
   region: "us-east-1",
   forcePathStyle: true,
+  requestChecksumCalculation: "WHEN_REQUIRED",
+  responseChecksumValidation: "WHEN_REQUIRED",
   credentials: {
     accessKeyId: process.env.RECORD_STORE_ACCESS_KEY!,
     secretAccessKey: process.env.RECORD_STORE_SECRET_KEY!,
@@ -47,6 +49,9 @@ export const recordStore = new S3Client({
 ```
 
 The `server-only` import turns an accidental client import into a build error.
+
+`forcePathStyle` and the two checksum settings are required. For an explanation
+of every client setting, see [JavaScript and TypeScript](javascript.md#client).
 
 ## Signing route
 
@@ -124,8 +129,11 @@ export async function uploadFile(file: File) {
 The browser `PUT` goes to Record Store's origin, so the bucket needs a CORS rule.
 Without it the request is blocked before it is sent, which looks like a network error.
 
+--8<-- "docs/.snippets/aws-cli-profile.md"
+
 ```bash
-aws --endpoint-url https://storage.example.com s3api put-bucket-cors --bucket uploads \
+aws --profile record-store s3api put-bucket-cors --bucket uploads \
+  --checksum-algorithm CRC32 \
   --cors-configuration '{
     "CORSRules": [{
       "AllowedOrigins": ["https://app.example.com"],
@@ -136,6 +144,9 @@ aws --endpoint-url https://storage.example.com s3api put-bucket-cors --bucket up
     }]
   }'
 ```
+
+The `--checksum-algorithm CRC32` option is required. For the reason, see
+[Commands that require a checksum](../guides/aws-cli.md#commands-that-require-a-checksum).
 
 ## Serving files back
 
@@ -184,9 +195,12 @@ expose presigned part URLs, so build this with the S3 API directly. See
 
 ```bash title=".env.local"
 RECORD_STORE_ENDPOINT=https://storage.example.com
-RECORD_STORE_ACCESS_KEY=<service account access key>
-RECORD_STORE_SECRET_KEY=<service account secret key>
+RECORD_STORE_ACCESS_KEY=SERVICE_ACCOUNT_ACCESS_KEY
+RECORD_STORE_SECRET_KEY=SERVICE_ACCOUNT_SECRET_KEY
 RECORD_STORE_BUCKET=uploads
 ```
+
+Replace `SERVICE_ACCOUNT_ACCESS_KEY` and `SERVICE_ACCOUNT_SECRET_KEY` with a
+service account's S3 access key pair, not the management token.
 
 None of these are `NEXT_PUBLIC_`, so none reach the browser.

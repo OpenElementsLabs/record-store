@@ -163,16 +163,31 @@ Redeploy for it to take effect.
 
 ## 8. Connect a client
 
-```bash
-aws configure set aws_access_key_id <service account access key>
-aws configure set aws_secret_access_key <service account secret key>
-aws configure set region us-east-1
+Create an AWS CLI profile named `record-store` for the service account. The
+profile sends requests to Record Store, not to AWS:
 
-aws --endpoint-url https://storage.example.com s3 mb s3://uploads
-aws --endpoint-url https://storage.example.com s3 ls
+```bash
+aws configure set endpoint_url https://storage.example.com --profile record-store
+aws configure set aws_access_key_id SERVICE_ACCOUNT_ACCESS_KEY --profile record-store
+aws configure set aws_secret_access_key SERVICE_ACCOUNT_SECRET_KEY --profile record-store
+aws configure set region us-east-1 --profile record-store
+aws configure set s3.addressing_style path --profile record-store
+aws configure set request_checksum_calculation when_required --profile record-store
+aws configure set response_checksum_validation when_required --profile record-store
 ```
 
-See [AWS CLI](../guides/aws-cli.md).
+Replace `SERVICE_ACCOUNT_ACCESS_KEY` and `SERVICE_ACCOUNT_SECRET_KEY` with the
+service account's S3 access key pair. Replace `https://storage.example.com` with
+your storage domain.
+
+Then create a bucket and list your buckets:
+
+```bash
+aws --profile record-store s3 mb s3://uploads
+aws --profile record-store s3 ls
+```
+
+For an explanation of each setting, see [AWS CLI](../guides/aws-cli.md).
 
 ## Persistence
 

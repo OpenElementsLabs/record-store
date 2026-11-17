@@ -148,11 +148,15 @@ aws --endpoint-url http://localhost:7600 s3api create-bucket --bucket records
 
 # Enable versioning before copying if you want history from here on.
 aws --endpoint-url http://localhost:7600 s3api put-bucket-versioning \
+  --checksum-algorithm CRC32 \
   --bucket records --versioning-configuration Status=Enabled
 
 # Copy, reading from MinIO and writing to Record Store.
 rclone sync minio:records recordstore:records --progress
 ```
+
+The `--checksum-algorithm CRC32` option is required. For the reason, see
+[Commands that require a checksum](../guides/aws-cli.md#commands-that-require-a-checksum).
 
 Two things to decide before you start:
 
